@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.1](https://github.com/ONREZA/bun-sqlx/compare/v0.4.0...v0.4.1) (2026-05-19)
+
+
+### Bug Fixes
+
+* scan sql.one/optional chains and encode primitive arrays as PG literals ([eb5e213](https://github.com/ONREZA/bun-sqlx/commit/eb5e21364093102e951b9b37b10c4e977c14f2ed))
+
+
+### Documentation
+
+* scanner coverage for one/optional chains, array param encoding ([ea51003](https://github.com/ONREZA/bun-sqlx/commit/ea51003a9cfdd4f91a59d04c8def30f633b7d5c8))
+
 ## [0.4.0](https://github.com/ONREZA/bun-sqlx/compare/v0.3.0...v0.4.0) (2026-05-19)
 
 
