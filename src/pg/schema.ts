@@ -1,4 +1,5 @@
 import { PgClient, decodeText } from "./wire";
+import { isBuiltinOid, oidToTs } from "./oids";
 
 export type ColumnInfo = {
   attrelid: number;
@@ -9,7 +10,9 @@ export type ColumnInfo = {
 
 export type EnumInfo = { kind: "enum"; name: string; values: string[] };
 export type EnumArrayInfo = { kind: "enumArray"; element: EnumInfo };
-export type CustomTypeInfo = EnumInfo | EnumArrayInfo;
+export type ScalarInfo = { kind: "scalar"; name: string; tsType: string };
+export type ScalarArrayInfo = { kind: "scalarArray"; name: string; element: ScalarInfo };
+export type CustomTypeInfo = EnumInfo | EnumArrayInfo | ScalarInfo | ScalarArrayInfo;
 
 export class SchemaCache {
   private byOidNum = new Map<string, ColumnInfo>();
@@ -19,8 +22,13 @@ export class SchemaCache {
   private fullyLoaded = new Set<number>();
   private customTypes = new Map<number, CustomTypeInfo>();
   private typesProbed = new Set<number>();
+  private typeRegistry: Record<string, string> = {};
 
   constructor(private client: PgClient) {}
+
+  setTypeRegistry(registry: Record<string, string>): void {
+    this.typeRegistry = registry;
+  }
 
   async loadAttributes(refs: { tableOid: number; attno: number }[]): Promise<void> {
     const need = refs.filter((r) => r.tableOid !== 0 && r.attno !== 0 && !this.byOidNum.has(key(r.tableOid, r.attno)));
@@ -137,34 +145,51 @@ export class SchemaCache {
     for (const oid of need) this.typesProbed.add(oid);
 
     const list1 = [...new Set(need)].join(",");
-    const sql1 = `SELECT oid::int8, typname, typtype, typcategory, typelem::int8, typarray::int8 FROM pg_type WHERE oid IN (${list1})`;
+    const sql1 = `SELECT oid::int8, typname, typtype, typcategory, typelem::int8, typbasetype::int8 FROM pg_type WHERE oid IN (${list1})`;
     const r1 = await this.client.simpleQueryAll(sql1);
 
     const enumOids: number[] = [];
-    const arrayInfos: { arrayOid: number; elemOid: number }[] = [];
+    const arrayInfos: { arrayOid: number; arrayName: string; elemOid: number }[] = [];
+    const domainInfos: { oid: number; name: string; baseOid: number }[] = [];
+
     for (const row of r1.rows) {
       const oid = Number(decodeText(row[0]!));
       const name = decodeText(row[1]!)!;
       const typtype = decodeText(row[2]!);
       const typcategory = decodeText(row[3]!);
       const typelem = Number(decodeText(row[4]!));
+      const typbasetype = Number(decodeText(row[5]!));
+
       if (typtype === "e") {
         enumOids.push(oid);
         this.customTypes.set(oid, { kind: "enum", name, values: [] });
       } else if (typcategory === "A" && typelem > 0) {
-        arrayInfos.push({ arrayOid: oid, elemOid: typelem });
+        arrayInfos.push({ arrayOid: oid, arrayName: name, elemOid: typelem });
+      } else if (typtype === "b" && this.typeRegistry[name]) {
+        this.customTypes.set(oid, { kind: "scalar", name, tsType: this.typeRegistry[name]! });
+      } else if (typtype === "d" && typbasetype > 0) {
+        domainInfos.push({ oid, name, baseOid: typbasetype });
       }
     }
 
-    const elemOidsToProbe = arrayInfos.map((a) => a.elemOid).filter((o) => !this.typesProbed.has(o));
-    if (elemOidsToProbe.length > 0) {
-      await this.loadCustomTypes(elemOidsToProbe);
+    const elemsToProbe = arrayInfos.map((a) => a.elemOid).filter((o) => !this.typesProbed.has(o));
+    const basesToProbe = domainInfos.map((d) => d.baseOid).filter((o) => !this.typesProbed.has(o) && !isBuiltinOid(o));
+    const recurse = [...new Set([...elemsToProbe, ...basesToProbe])];
+    if (recurse.length > 0) await this.loadCustomTypes(recurse);
+
+    for (const { oid, name, baseOid } of domainInfos) {
+      const resolved = this.resolveBaseTs(baseOid);
+      if (resolved) {
+        this.customTypes.set(oid, { kind: "scalar", name, tsType: resolved });
+      }
     }
 
-    for (const { arrayOid, elemOid } of arrayInfos) {
+    for (const { arrayOid, arrayName, elemOid } of arrayInfos) {
       const elem = this.customTypes.get(elemOid);
       if (elem && elem.kind === "enum") {
         this.customTypes.set(arrayOid, { kind: "enumArray", element: elem });
+      } else if (elem && elem.kind === "scalar") {
+        this.customTypes.set(arrayOid, { kind: "scalarArray", name: arrayName, element: elem });
       }
     }
 
@@ -179,6 +204,24 @@ export class SchemaCache {
         if (t && t.kind === "enum") t.values.push(label);
       }
     }
+  }
+
+  private resolveBaseTs(baseOid: number): string | undefined {
+    if (baseOid === 0) return undefined;
+    if (isBuiltinOid(baseOid)) return oidToTs(baseOid).ts;
+    const info = this.customTypes.get(baseOid);
+    if (!info) return undefined;
+    if (info.kind === "scalar") return info.tsType;
+    if (info.kind === "scalarArray") return `(${info.element.tsType})[]`;
+    if (info.kind === "enum") {
+      if (info.values.length === 0) return "string";
+      return info.values.map((v) => JSON.stringify(v)).join(" | ");
+    }
+    if (info.kind === "enumArray") {
+      if (info.element.values.length === 0) return "string[]";
+      return `(${info.element.values.map((v) => JSON.stringify(v)).join(" | ")})[]`;
+    }
+    return undefined;
   }
 
   customType(oid: number): CustomTypeInfo | undefined {

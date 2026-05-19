@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 export type BunSqlxConfig = {
   jsonbTypes?: Record<string, string>;
+  customTypes?: Record<string, string>;
 };
 
 export async function loadConfig(root: string): Promise<BunSqlxConfig> {

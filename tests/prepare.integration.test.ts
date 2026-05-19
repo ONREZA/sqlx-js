@@ -161,6 +161,119 @@ if (!dbAvailable) {
     expect(r.stderr + r.stdout).toMatch(/a\.ts:2:16.*nope\.sql/s);
   });
 
+  test("built-in extension types resolve via the registry (vector, hstore, citext, ltree)", () => {
+    const probe = spawnSync(
+      "bun",
+      ["-e", `
+        import { SQL } from "bun";
+        const c = new SQL({ url: "${DB_URL}" });
+        try {
+          await c.unsafe("CREATE EXTENSION IF NOT EXISTS vector", []);
+          await c.unsafe("CREATE EXTENSION IF NOT EXISTS hstore", []);
+          await c.unsafe("CREATE EXTENSION IF NOT EXISTS citext", []);
+          await c.unsafe("CREATE EXTENSION IF NOT EXISTS ltree", []);
+          process.stdout.write("ok");
+        } catch (e) {
+          process.stdout.write("nope: " + (e as Error).message);
+        }
+        await c.close();
+      `],
+      { encoding: "utf8" },
+    );
+    if (!probe.stdout?.startsWith("ok")) {
+      console.warn(`skipping extension integration: ${probe.stdout}`);
+      return;
+    }
+
+    writeFile("migrations/0002_ext.up.sql",
+      "CREATE TABLE IF NOT EXISTS tmp_ext (\n" +
+      "  id BIGSERIAL PRIMARY KEY,\n" +
+      "  embedding vector(3),\n" +
+      "  tags hstore,\n" +
+      "  slug citext NOT NULL,\n" +
+      "  path ltree NOT NULL\n" +
+      ");\n",
+    );
+    writeFile("migrations/0002_ext.down.sql", "DROP TABLE IF EXISTS tmp_ext;\n");
+    const mig = spawnSync(
+      "bun",
+      [join(repoRoot, "bin/bun-sqlx.ts"), "migrate", "run", "--root", tmp],
+      { env: { ...process.env, DATABASE_URL: DB_URL }, encoding: "utf8" },
+    );
+    expect(mig.status).toBe(0);
+
+    writeFile("a.ts",
+      "import { sql } from \"bun-sqlx\";\n" +
+      "await sql(\"SELECT id, embedding, tags, slug, path FROM tmp_ext WHERE id = $1\", 1);\n",
+    );
+    const r = prepare();
+    expect(r.code).toBe(0);
+    const dts = readFileSync(join(tmp, "bun-sqlx.d.ts"), "utf8");
+    expect(dts).toContain('"embedding": number[] | null');
+    expect(dts).toContain('"tags": Record<string, string | null> | null');
+    expect(dts).toContain('"slug": string');
+    expect(dts).toContain('"path": string');
+  });
+
+  test("user customTypes in bun-sqlx.config.ts override built-in defaults", () => {
+    const probe = spawnSync(
+      "bun",
+      ["-e", `
+        import { SQL } from "bun";
+        const c = new SQL({ url: "${DB_URL}" });
+        const res = await c.unsafe("SELECT 1 FROM pg_extension WHERE extname='vector'", []);
+        process.stdout.write(res.length > 0 ? "ok" : "skip");
+        await c.close();
+      `],
+      { encoding: "utf8" },
+    );
+    if (probe.stdout !== "ok") return;
+
+    writeFile("bun-sqlx.config.ts",
+      "import type { BunSqlxConfig } from \"bun-sqlx\";\n" +
+      "const c: BunSqlxConfig = { customTypes: { vector: \"Float32Array\" } };\n" +
+      "export default c;\n",
+    );
+    writeFile("a.ts",
+      "import { sql } from \"bun-sqlx\";\n" +
+      "await sql(\"SELECT id, embedding FROM tmp_ext WHERE id = $1\", 1);\n",
+    );
+    const r = prepare();
+    expect(r.code).toBe(0);
+    const dts = readFileSync(join(tmp, "bun-sqlx.d.ts"), "utf8");
+    expect(dts).toContain('"embedding": Float32Array | null');
+  });
+
+  test("domain types resolve to their base TS type", () => {
+    writeFile("migrations/0003_domain.up.sql",
+      "CREATE DOMAIN tmp_positive_int AS integer CHECK (VALUE > 0);\n" +
+      "CREATE TABLE IF NOT EXISTS tmp_counters (\n" +
+      "  id BIGSERIAL PRIMARY KEY,\n" +
+      "  value tmp_positive_int NOT NULL\n" +
+      ");\n",
+    );
+    writeFile("migrations/0003_domain.down.sql",
+      "DROP TABLE IF EXISTS tmp_counters;\n" +
+      "DROP DOMAIN IF EXISTS tmp_positive_int;\n",
+    );
+    const mig = spawnSync(
+      "bun",
+      [join(repoRoot, "bin/bun-sqlx.ts"), "migrate", "run", "--root", tmp],
+      { env: { ...process.env, DATABASE_URL: DB_URL }, encoding: "utf8" },
+    );
+    expect(mig.status).toBe(0);
+
+    rmSync(join(tmp, "bun-sqlx.config.ts"), { force: true });
+    writeFile("a.ts",
+      "import { sql } from \"bun-sqlx\";\n" +
+      "await sql(\"SELECT id, value FROM tmp_counters\");\n",
+    );
+    const r = prepare();
+    expect(r.code).toBe(0);
+    const dts = readFileSync(join(tmp, "bun-sqlx.d.ts"), "utf8");
+    expect(dts).toContain('"value": number');
+  });
+
   test("scanner recognizes sql.transaction callback param as sql-alias", () => {
     writeFile("queries/by_id.sql", "SELECT id, name FROM tmp_users WHERE id = $1\n");
     writeFile("a.ts",

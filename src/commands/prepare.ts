@@ -8,6 +8,7 @@ import { Cache, fingerprint, type CacheEntry } from "../cache";
 import { emitDts } from "../codegen";
 import { loadConfig, lookupJsonbType, type BunSqlxConfig } from "../config";
 import { buildParamMap, type ParamMap } from "../pg/param-map";
+import { mergeExtensionTypes } from "../pg/extensions";
 
 const JSON_OIDS = new Set([114, 3802]);
 const JSON_ARRAY_OIDS = new Set([199, 3807]);
@@ -22,6 +23,8 @@ function resolveTs(oid: number, customLookup: (o: number) => CustomTypeInfo | un
   if (c) {
     if (c.kind === "enum") return enumUnion(c.values);
     if (c.kind === "enumArray") return `(${enumUnion(c.element.values)})[]`;
+    if (c.kind === "scalar") return c.tsType;
+    if (c.kind === "scalarArray") return `(${c.element.tsType})[]`;
   }
   return oidToTs(oid).ts;
 }
@@ -107,6 +110,7 @@ export async function openSession(opts: PrepareOptions): Promise<PrepareSession>
   const client = new PgClient(cfg);
   await client.connect();
   const schema = new SchemaCache(client);
+  schema.setTypeRegistry(mergeExtensionTypes(userCfg.customTypes));
   return { client, schema, userCfg };
 }
 
