@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/ONREZA/bun-sqlx/compare/v0.3.0...v0.4.0) (2026-05-19)
+
+
+### Features
+
+* parameter nullability, one/optional helpers, built declarations ([793e07c](https://github.com/ONREZA/bun-sqlx/commit/793e07c1e9e06683c22c24539bbca4672ff49af4))
+
+
+### Documentation
+
+* parameter nullability, sql.one/optional, dts rename ([3fd9a71](https://github.com/ONREZA/bun-sqlx/commit/3fd9a71b6af198fee9ff941aeb9cb50ef6325f75))
+
 ## [0.3.0](https://github.com/ONREZA/bun-sqlx/compare/v0.2.0...v0.3.0) (2026-05-19)
 
 
