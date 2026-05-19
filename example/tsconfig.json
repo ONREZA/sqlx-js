@@ -16,5 +16,5 @@
       "bun-sqlx": ["../src/index.ts"]
     }
   },
-  "include": ["app.ts", "v2_nullability.ts", "v3_enums.ts", "v4_jsonb.ts", "v5_narrowing.ts", "v6_input_jsonb.ts", "v7_files.ts", "v7_run.ts", "v8_transactions.ts", "v8_run.ts", "json-types.d.ts", "bun-sqlx.d.ts"]
+  "include": ["app.ts", "v2_nullability.ts", "v3_enums.ts", "v4_jsonb.ts", "v5_narrowing.ts", "v6_input_jsonb.ts", "v7_files.ts", "v7_run.ts", "v8_transactions.ts", "v8_run.ts", "json-types.d.ts", "bun-sqlx-env.d.ts"]
 }

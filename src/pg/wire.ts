@@ -322,10 +322,10 @@ export class PgClient {
     if (m1.type !== "R" || m1.code !== 11) throw new Error(`SCRAM: expected R/11, got ${stringifyMessage(m1)}`);
     const serverFirst = new TextDecoder().decode(m1.payload);
     const sf = parseScramKv(serverFirst);
-    const combinedNonce = sf.r;
+    const combinedNonce = scramField(sf, "r");
     if (!combinedNonce.startsWith(clientNonce)) throw new Error("SCRAM: server nonce mismatch");
-    const salt = Buffer.from(sf.s, "base64");
-    const iterations = parseInt(sf.i, 10);
+    const salt = Buffer.from(scramField(sf, "s"), "base64");
+    const iterations = parseInt(scramField(sf, "i"), 10);
 
     const saltedPassword = pbkdf2Sync(this.cfg.password, salt, iterations, 32, "sha256");
     const clientKey = createHmac("sha256", saltedPassword).update("Client Key").digest();
@@ -442,6 +442,12 @@ function parseScramKv(s: string): Record<string, string> {
     out[part.slice(0, eq)] = part.slice(eq + 1);
   }
   return out;
+}
+
+function scramField(kv: Record<string, string>, key: string): string {
+  const v = kv[key];
+  if (v === undefined) throw new Error(`SCRAM: missing field "${key}"`);
+  return v;
 }
 
 function stringifyMessage(m: ServerMessage): string {

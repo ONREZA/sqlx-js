@@ -8,12 +8,17 @@ export type { BunSqlxConfig } from "./config";
 type ParamsOf<T> = T extends { params: infer P extends readonly unknown[] } ? P : never[];
 type RowOf<T> = T extends { row: infer R } ? R : never;
 
+export type TypedFile = {
+  <P extends keyof KnownFileQueries>(path: P, ...params: ParamsOf<KnownFileQueries[P]>): Promise<RowOf<KnownFileQueries[P]>[]>;
+  one: <P extends keyof KnownFileQueries>(path: P, ...params: ParamsOf<KnownFileQueries[P]>) => Promise<RowOf<KnownFileQueries[P]>>;
+  optional: <P extends keyof KnownFileQueries>(path: P, ...params: ParamsOf<KnownFileQueries[P]>) => Promise<RowOf<KnownFileQueries[P]> | null>;
+};
+
 export type TypedSql = {
   <Q extends keyof KnownQueries>(query: Q, ...params: ParamsOf<KnownQueries[Q]>): Promise<RowOf<KnownQueries[Q]>[]>;
-  file: <P extends keyof KnownFileQueries>(
-    path: P,
-    ...params: ParamsOf<KnownFileQueries[P]>
-  ) => Promise<RowOf<KnownFileQueries[P]>[]>;
+  one: <Q extends keyof KnownQueries>(query: Q, ...params: ParamsOf<KnownQueries[Q]>) => Promise<RowOf<KnownQueries[Q]>>;
+  optional: <Q extends keyof KnownQueries>(query: Q, ...params: ParamsOf<KnownQueries[Q]>) => Promise<RowOf<KnownQueries[Q]> | null>;
+  file: TypedFile;
 };
 
 export type Typed = TypedSql & {
@@ -21,7 +26,9 @@ export type Typed = TypedSql & {
 };
 
 export const sql: Typed = rt.sql as unknown as Typed;
-export const unsafe = rt.unsafe;
+
+export type Unsafe = (query: string, ...params: unknown[]) => Promise<unknown[]>;
+export const unsafe: Unsafe = rt.unsafe as unknown as Unsafe;
 export const getClient = rt.getClient;
 export const setClient = rt.setClient;
 export const close = rt.close;

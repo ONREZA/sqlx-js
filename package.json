@@ -5,9 +5,13 @@
   "license": "MIT",
   "type": "module",
   "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
   },
   "bin": {
     "bun-sqlx": "./bin/bun-sqlx.ts"
@@ -15,6 +19,7 @@
   "files": [
     "src",
     "bin",
+    "dist",
     "README.md",
     "ROADMAP.md",
     "LICENSE"
@@ -46,7 +51,8 @@
     "test:typecheck": "tsc --noEmit",
     "test:example": "bunx tsc -p example --noEmit",
     "sqlx:prepare": "bun bin/bun-sqlx.ts prepare",
-    "sqlx:migrate": "bun bin/bun-sqlx.ts migrate"
+    "sqlx:migrate": "bun bin/bun-sqlx.ts migrate",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json"
   },
   "peerDependencies": {
     "typescript": ">=5.4"

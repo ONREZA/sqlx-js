@@ -8,6 +8,10 @@
     "string",
     "string"
   ],
+  "paramNullable": [
+    false,
+    false
+  ],
   "columns": [
     {
       "name": "id",

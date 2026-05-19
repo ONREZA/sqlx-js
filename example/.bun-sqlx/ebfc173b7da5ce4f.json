@@ -8,6 +8,10 @@
     "\"admin\" | \"editor\" | \"viewer\"",
     "number"
   ],
+  "paramNullable": [
+    false,
+    false
+  ],
   "columns": [
     {
       "name": "id",

@@ -4,7 +4,7 @@
 declare module "bun-sqlx" {
   interface KnownQueries {
     "INSERT INTO posts (user_id, title) VALUES ($1, $2) RETURNING id AS \"id!\"": { params: [bigint, string]; row: { "id": bigint } };
-    "INSERT INTO users (name, email, age) VALUES ($1, $2, $3) RETURNING id AS \"id!\", created_at AS \"created_at!\"": { params: [string, string, number]; row: { "id": bigint; "created_at": Date } };
+    "INSERT INTO users (name, email, age) VALUES ($1, $2, $3) RETURNING id AS \"id!\", created_at AS \"created_at!\"": { params: [string, string, number | null]; row: { "id": bigint; "created_at": Date } };
     "INSERT INTO users (name, email, role) VALUES ($1, $2, $3) RETURNING id AS \"id!\"": { params: [string, string, "admin" | "editor" | "viewer"]; row: { "id": bigint } };
     "INSERT INTO users (name, email, role) VALUES ($1, $2, $3) RETURNING id AS \"id!\", role AS \"role!\"": { params: [string, string, "admin" | "editor" | "viewer"]; row: { "id": bigint; "role": "admin" | "editor" | "viewer" } };
     "INSERT INTO users (name, email, settings) VALUES ($1, $2, $3) RETURNING id AS \"id!\"": { params: [string, string, BunSqlxJson.UserSettings]; row: { "id": bigint } };

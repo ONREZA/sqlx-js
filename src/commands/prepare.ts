@@ -7,7 +7,7 @@ import { scanProject, type QueryCallSite } from "../scan/scanner";
 import { Cache, fingerprint, type CacheEntry } from "../cache";
 import { emitDts } from "../codegen";
 import { loadConfig, lookupJsonbType, type BunSqlxConfig } from "../config";
-import { buildParamMap, type ParamMap } from "../pg/param-map";
+import { buildParamMap, type ParamMap, type ParamMapResult } from "../pg/param-map";
 import { mergeExtensionTypes } from "../pg/extensions";
 
 const JSON_OIDS = new Set([114, 3802]);
@@ -66,6 +66,24 @@ function resolveParamTs(
     }
   }
   return resolveTs(paramOid, (oid) => schema.customType(oid));
+}
+
+function resolveParamNullable(
+  paramIndex: number,
+  pm: ParamMapResult,
+  schema: SchemaCache,
+): boolean {
+  if (pm.forceNullable.has(paramIndex)) return true;
+  if (pm.dmlBound.has(paramIndex)) {
+    const t = pm.targets.get(paramIndex);
+    if (!t) return false;
+    const oid = schema.resolveTable(t.schema, t.table);
+    if (oid === undefined) return false;
+    const col = schema.columnsOf(oid)?.get(t.column);
+    if (!col) return false;
+    return !col.notNull;
+  }
+  return false;
 }
 
 const ALIAS_OVERRIDE = /^(.+?)([!?])$/;
@@ -180,7 +198,7 @@ export async function prepareOnce(
   await schema.loadTableNamesByOid(allTableOids);
 
   const analyses = new Map<string, Awaited<ReturnType<typeof analyzeQuery>>>();
-  const paramMaps = new Map<string, ParamMap>();
+  const paramMaps = new Map<string, ParamMapResult>();
   const failedFps = new Set<string>();
   for (const r of raw) {
     const site = r.sites[0]!;
@@ -203,6 +221,27 @@ export async function prepareOnce(
     }
   }
 
+  const dmlTablesToLoad = new Set<string>();
+  for (const pm of paramMaps.values()) {
+    for (const idx of pm.dmlBound) {
+      const t = pm.targets.get(idx);
+      if (t) dmlTablesToLoad.add(`${t.schema ?? "public"}.${t.table}`);
+    }
+  }
+  if (dmlTablesToLoad.size > 0) {
+    const names = [...dmlTablesToLoad].map((k) => {
+      const [schema, name] = k.split(".");
+      return { schema, name: name! };
+    });
+    await schema.loadTableNames(names);
+    const oids: number[] = [];
+    for (const n of names) {
+      const oid = schema.resolveTable(n.schema, n.name);
+      if (oid !== undefined) oids.push(oid);
+    }
+    await schema.loadColumnsForTables(oids);
+  }
+
   const unknownOids = new Set<number>();
   for (const r of raw) {
     for (const o of r.paramOids) if (!isBuiltinOid(o)) unknownOids.add(o);
@@ -214,7 +253,11 @@ export async function prepareOnce(
   for (const r of raw) {
     if (failedFps.has(r.fp)) continue;
     const analysis = analyses.get(r.fp)!;
-    const paramMap = paramMaps.get(r.fp) ?? new Map();
+    const pm: ParamMapResult = paramMaps.get(r.fp) ?? {
+      targets: new Map(),
+      forceNullable: new Set(),
+      dmlBound: new Set(),
+    };
     const fileSites = r.sites.filter((s) => s.kind === "file");
     const hasInline = r.sites.some((s) => s.kind !== "file");
     const filePaths = fileSites.length > 0
@@ -223,7 +266,8 @@ export async function prepareOnce(
     const entry: CacheEntry = {
       query: r.query,
       paramOids: r.paramOids,
-      paramTsTypes: r.paramOids.map((o, idx) => resolveParamTs(idx + 1, o, paramMap, schema, userCfg)),
+      paramTsTypes: r.paramOids.map((o, idx) => resolveParamTs(idx + 1, o, pm.targets, schema, userCfg)),
+      paramNullable: r.paramOids.map((_o, idx) => resolveParamNullable(idx + 1, pm, schema)),
       columns: r.fields.map((f, i) => {
         const parsed = parseColumnOverride(f.name);
         return {

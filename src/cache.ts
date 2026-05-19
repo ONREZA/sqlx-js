@@ -6,6 +6,7 @@ export type CacheEntry = {
   query: string;
   paramOids: number[];
   paramTsTypes: string[];
+  paramNullable?: boolean[];
   columns: {
     name: string;
     typeOid: number;

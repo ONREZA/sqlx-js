@@ -97,7 +97,7 @@ if (!haveDocker) {
     const r = prepare();
     expect(r.code).toBe(0);
     expect(r.stdout).toMatch(/a\.ts:2:11/);
-    const dts = readFileSync(join(tmp, "bun-sqlx.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
     expect(dts).toContain("interface KnownQueries");
     expect(dts).toContain("SELECT id, name FROM tmp_users WHERE id = $1");
     expect(readdirSync(join(tmp, ".bun-sqlx")).filter((f) => f.endsWith(".json")).length).toBeGreaterThan(0);
@@ -153,7 +153,7 @@ if (!haveDocker) {
     );
     const r = prepare();
     expect(r.code).toBe(0);
-    const dts = readFileSync(join(tmp, "bun-sqlx.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
     expect(dts).toContain("interface KnownFileQueries");
     expect(dts).toContain('"queries/by_id.sql":');
   });
@@ -192,7 +192,7 @@ if (!haveDocker) {
     );
     const r = prepare();
     expect(r.code).toBe(0);
-    const dts = readFileSync(join(tmp, "bun-sqlx.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
     expect(dts).toContain('"embedding": number[] | null');
     expect(dts).toContain('"tags": Record<string, string | null> | null');
     expect(dts).toContain('"slug": string');
@@ -211,7 +211,7 @@ if (!haveDocker) {
     );
     const r = prepare();
     expect(r.code).toBe(0);
-    const dts = readFileSync(join(tmp, "bun-sqlx.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
     expect(dts).toContain('"embedding": Float32Array | null');
     rmSync(join(tmp, "bun-sqlx.config.ts"), { force: true });
   });
@@ -237,8 +237,61 @@ if (!haveDocker) {
     );
     const r = prepare();
     expect(r.code).toBe(0);
-    const dts = readFileSync(join(tmp, "bun-sqlx.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
     expect(dts).toContain('"value": number');
+  });
+
+  test("COALESCE($N, col) makes the param nullable in emitted .d.ts", () => {
+    writeFile("a.ts",
+      "import { sql } from \"bun-sqlx\";\n" +
+      "await sql(\"UPDATE tmp_users SET name = COALESCE($1, name) WHERE id = $2\", null, 1);\n",
+    );
+    const r = prepare();
+    expect(r.code).toBe(0);
+    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    expect(dts).toMatch(/COALESCE\(\$1, name\).*params: \[string \| null, bigint\]/);
+  });
+
+  test("INSERT into nullable column emits nullable param type", () => {
+    writeFile("migrations/0004_bio.up.sql",
+      "ALTER TABLE tmp_users ADD COLUMN IF NOT EXISTS bio TEXT;\n",
+    );
+    writeFile("migrations/0004_bio.down.sql",
+      "ALTER TABLE tmp_users DROP COLUMN IF EXISTS bio;\n",
+    );
+    const mig = migrate();
+    expect(mig.code).toBe(0);
+
+    writeFile("a.ts",
+      "import { sql } from \"bun-sqlx\";\n" +
+      "await sql(\"INSERT INTO tmp_users (name, email, bio) VALUES ($1, $2, $3)\", \"n\", \"e\", null);\n",
+    );
+    const r = prepare();
+    expect(r.code).toBe(0);
+    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    expect(dts).toMatch(/INSERT INTO tmp_users.*params: \[string, string, string \| null\]/);
+  });
+
+  test("$N IS NULL OR col = $N pattern makes the param nullable", () => {
+    writeFile("a.ts",
+      "import { sql } from \"bun-sqlx\";\n" +
+      "await sql(\"SELECT id FROM tmp_users WHERE $1::text IS NULL OR name = $1\", null);\n",
+    );
+    const r = prepare();
+    expect(r.code).toBe(0);
+    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    expect(dts).toMatch(/IS NULL OR name = \$1.*params: \[string \| null\]/);
+  });
+
+  test("WHERE col = $N stays non-null even when column is nullable", () => {
+    writeFile("a.ts",
+      "import { sql } from \"bun-sqlx\";\n" +
+      "await sql(\"SELECT id FROM tmp_users WHERE bio = $1\", \"any\");\n",
+    );
+    const r = prepare();
+    expect(r.code).toBe(0);
+    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    expect(dts).toMatch(/WHERE bio = \$1.*params: \[string\]/);
   });
 
   test("scanner recognizes sql.transaction callback param as sql-alias", () => {
@@ -251,7 +304,7 @@ if (!haveDocker) {
     const r = prepare();
     expect(r.code).toBe(0);
     expect(r.stdout).toMatch(/a\.ts:3:12/);
-    const dts = readFileSync(join(tmp, "bun-sqlx.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
     expect(dts).toContain("SELECT id FROM tmp_users WHERE id = $1");
   });
 }

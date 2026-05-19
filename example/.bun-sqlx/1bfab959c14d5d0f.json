@@ -2,6 +2,7 @@
   "query": "SELECT COUNT(*) AS n FROM users",
   "paramOids": [],
   "paramTsTypes": [],
+  "paramNullable": [],
   "columns": [
     {
       "name": "n",

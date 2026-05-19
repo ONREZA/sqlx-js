@@ -8,6 +8,10 @@
     "bigint",
     "string"
   ],
+  "paramNullable": [
+    false,
+    false
+  ],
   "columns": [
     {
       "name": "id",

@@ -3,7 +3,11 @@ import { dirname } from "node:path";
 import type { CacheEntry } from "./cache";
 
 function entrySignature(e: CacheEntry): { params: string; row: string } {
-  const params = e.paramTsTypes.length === 0 ? "[]" : `[${e.paramTsTypes.join(", ")}]`;
+  const paramTypes = e.paramTsTypes.map((t, i) => {
+    const nullable = e.paramNullable?.[i] === true;
+    return nullable ? `${t} | null` : t;
+  });
+  const params = paramTypes.length === 0 ? "[]" : `[${paramTypes.join(", ")}]`;
   if (!e.hasResultSet) return { params, row: "never" };
   const cols = e.columns.map((c) => {
     const nullable = c.forceNonNull ? false : c.forceNullable ? true : c.nullable;

@@ -10,6 +10,11 @@
     "string",
     "number"
   ],
+  "paramNullable": [
+    false,
+    false,
+    true
+  ],
   "columns": [
     {
       "name": "id",

@@ -2,9 +2,9 @@ import { SQL } from "bun";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { PgClient, parseDatabaseUrl } from "./pg/wire";
-import { applyPending } from "./commands/migrate";
+import { applyPending, MIGRATE_LOCK_KEY_VALUE } from "./commands/migrate";
 
-const MIGRATE_LOCK_KEY = 18750938867203960;
+const MIGRATE_LOCK_KEY = MIGRATE_LOCK_KEY_VALUE;
 
 let defaultClient: SQL | null = null;
 
@@ -29,6 +29,8 @@ export async function close(): Promise<void> {
 }
 
 type AnyFn = (...args: unknown[]) => Promise<unknown[]>;
+type AnyOneFn = (...args: unknown[]) => Promise<unknown>;
+type AnyOptionalFn = (...args: unknown[]) => Promise<unknown | null>;
 
 const SUFFIX = /[!?]$/;
 
@@ -57,6 +59,19 @@ async function runQuery(client: SQL, query: string, params: unknown[]): Promise<
   return renameRows(rows);
 }
 
+async function runOne(client: SQL, query: string, params: unknown[]): Promise<unknown> {
+  const rows = await runQuery(client, query, params);
+  if (rows.length === 1) return rows[0];
+  throw new Error(`bun-sqlx.one: expected exactly 1 row, got ${rows.length}`);
+}
+
+async function runOptional(client: SQL, query: string, params: unknown[]): Promise<unknown | null> {
+  const rows = await runQuery(client, query, params);
+  if (rows.length === 0) return null;
+  if (rows.length === 1) return rows[0];
+  throw new Error(`bun-sqlx.optional: expected 0 or 1 row, got ${rows.length}`);
+}
+
 const sqlFileCache = new Map<string, string>();
 function loadSqlFile(path: string): string {
   let s = sqlFileCache.get(path);
@@ -70,15 +85,29 @@ export function clearSqlFileCache(): void {
   sqlFileCache.clear();
 }
 
-type SqlCallable = AnyFn & { file: AnyFn };
+type FileCallable = AnyFn & { one: AnyOneFn; optional: AnyOptionalFn };
+type SqlCallable = AnyFn & { file: FileCallable; one: AnyOneFn; optional: AnyOptionalFn };
 
 function makeBoundCallable(client: SQL): SqlCallable {
   const fn: AnyFn = (async (query: string, ...params: unknown[]) => {
     return runQuery(client, query, params);
   }) as AnyFn;
-  (fn as SqlCallable).file = (async (path: string, ...params: unknown[]) => {
+  const file: AnyFn = (async (path: string, ...params: unknown[]) => {
     return runQuery(client, loadSqlFile(path), params);
   }) as AnyFn;
+  (file as FileCallable).one = (async (path: string, ...params: unknown[]) => {
+    return runOne(client, loadSqlFile(path), params);
+  }) as AnyOneFn;
+  (file as FileCallable).optional = (async (path: string, ...params: unknown[]) => {
+    return runOptional(client, loadSqlFile(path), params);
+  }) as AnyOptionalFn;
+  (fn as SqlCallable).file = file as FileCallable;
+  (fn as SqlCallable).one = (async (query: string, ...params: unknown[]) => {
+    return runOne(client, query, params);
+  }) as AnyOneFn;
+  (fn as SqlCallable).optional = (async (query: string, ...params: unknown[]) => {
+    return runOptional(client, query, params);
+  }) as AnyOptionalFn;
   return fn as SqlCallable;
 }
 
@@ -90,9 +119,23 @@ const root: SqlRoot = (async (query: string, ...params: unknown[]) => {
   return runQuery(getClient(), query, params);
 }) as SqlRoot;
 
-root.file = (async (path: string, ...params: unknown[]) => {
+const rootFile: AnyFn = (async (path: string, ...params: unknown[]) => {
   return runQuery(getClient(), loadSqlFile(path), params);
 }) as AnyFn;
+(rootFile as FileCallable).one = (async (path: string, ...params: unknown[]) => {
+  return runOne(getClient(), loadSqlFile(path), params);
+}) as AnyOneFn;
+(rootFile as FileCallable).optional = (async (path: string, ...params: unknown[]) => {
+  return runOptional(getClient(), loadSqlFile(path), params);
+}) as AnyOptionalFn;
+root.file = rootFile as FileCallable;
+
+root.one = (async (query: string, ...params: unknown[]) => {
+  return runOne(getClient(), query, params);
+}) as AnyOneFn;
+root.optional = (async (query: string, ...params: unknown[]) => {
+  return runOptional(getClient(), query, params);
+}) as AnyOptionalFn;
 
 root.transaction = async <R>(fn: (tx: SqlCallable) => Promise<R>): Promise<R> => {
   const c = getClient();

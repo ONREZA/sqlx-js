@@ -17,6 +17,8 @@ type MigrationFile = {
   upHash: string;
 };
 
+export const MIGRATE_LOCK_KEY_VALUE = 18750938867203960;
+
 const FILE_RE = /^(\d+)_(.+)\.up\.sql$/;
 
 function readMigrations(dir: string): MigrationFile[] {
@@ -108,24 +110,35 @@ export async function applyPending(
   return counts;
 }
 
+const MIGRATE_LOCK_KEY = MIGRATE_LOCK_KEY_VALUE;
+
 export async function migrateRun(opts: MigrateOptions): Promise<void> {
   const cfg = parseDatabaseUrl(opts.databaseUrl);
   const c = new PgClient(cfg);
   await c.connect();
   let exitCode = 0;
-  await applyPending(c, opts.migrationsDir, (e) => {
-    if (e.kind === "applied") console.log(`applying ${e.version}_${e.name}…\n  ✓ applied`);
-    else if (e.kind === "tampered") {
-      console.error(`migration ${e.version}_${e.name} was tampered with (hash mismatch)`);
-      console.error(`  applied: ${e.applied.slice(0, 16)}…`);
-      console.error(`  current: ${e.current.slice(0, 16)}…`);
-      exitCode = 1;
-    } else {
-      console.error(`applying ${e.version}_${e.name}…\n  ✗ ${e.error}`);
-      exitCode = 1;
+  let locked = false;
+  try {
+    await c.simpleQuery(`SELECT pg_advisory_lock(${MIGRATE_LOCK_KEY})`);
+    locked = true;
+    await applyPending(c, opts.migrationsDir, (e) => {
+      if (e.kind === "applied") console.log(`applying ${e.version}_${e.name}…\n  ✓ applied`);
+      else if (e.kind === "tampered") {
+        console.error(`migration ${e.version}_${e.name} was tampered with (hash mismatch)`);
+        console.error(`  applied: ${e.applied.slice(0, 16)}…`);
+        console.error(`  current: ${e.current.slice(0, 16)}…`);
+        exitCode = 1;
+      } else {
+        console.error(`applying ${e.version}_${e.name}…\n  ✗ ${e.error}`);
+        exitCode = 1;
+      }
+    });
+  } finally {
+    if (locked) {
+      try { await c.simpleQuery(`SELECT pg_advisory_unlock(${MIGRATE_LOCK_KEY})`); } catch {}
     }
-  });
-  await c.end();
+    await c.end();
+  }
   if (exitCode !== 0) process.exit(exitCode);
 }
 

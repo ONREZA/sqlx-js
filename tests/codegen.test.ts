@@ -11,7 +11,7 @@ afterAll(() => {
 });
 
 function write(entries: CacheEntry[]): string {
-  const out = join(tmp, "bun-sqlx.d.ts");
+  const out = join(tmp, "bun-sqlx-env.d.ts");
   emitDts(out, entries);
   return readFileSync(out, "utf8");
 }
@@ -153,6 +153,20 @@ test("KnownFileQueries deduplicates paths across entries", () => {
   ]);
   const matches = dts.match(/"a\.sql":/g) ?? [];
   expect(matches).toHaveLength(1);
+});
+
+test("paramNullable adds | null to nullable params", () => {
+  const dts = write([
+    {
+      query: "INSERT INTO users (name, age) VALUES ($1, $2)",
+      paramOids: [25, 23],
+      paramTsTypes: ["string", "number"],
+      paramNullable: [false, true],
+      hasResultSet: false,
+      columns: [],
+    },
+  ]);
+  expect(dts).toContain("params: [string, number | null]");
 });
 
 test("force flags take precedence over schema-derived nullability", () => {

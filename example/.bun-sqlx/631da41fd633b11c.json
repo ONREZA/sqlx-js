@@ -2,6 +2,7 @@
   "query": "SELECT 1 AS one, 'literal'::text AS msg, now() AS ts FROM users LIMIT 1",
   "paramOids": [],
   "paramTsTypes": [],
+  "paramNullable": [],
   "columns": [
     {
       "name": "one",

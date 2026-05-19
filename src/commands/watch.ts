@@ -2,7 +2,7 @@ import { watch as fsWatch } from "node:fs";
 import { basename } from "node:path";
 import { openSession, prepareOnce, type PrepareOptions } from "./prepare";
 
-const EXT_RE = /\.(ts|tsx|mts|cts)$/;
+const EXT_RE = /\.(ts|tsx|mts|cts|sql)$/;
 const SKIP_DIRS = ["node_modules", ".git", ".bun-sqlx", "dist", "build", ".next"];
 const DEBOUNCE_MS = 150;
 
@@ -56,7 +56,8 @@ export async function runWatch(opts: PrepareOptions): Promise<void> {
     if (!filename) return;
     const f = filename.toString();
     if (SKIP_DIRS.some((d) => f.startsWith(`${d}/`) || f.includes(`/${d}/`))) return;
-    if (basename(f) === "bun-sqlx.d.ts") return;
+    const base = basename(f);
+    if (base === "bun-sqlx-env.d.ts" || base === "bun-sqlx.d.ts") return;
     if (!EXT_RE.test(f)) return;
     trigger();
   });

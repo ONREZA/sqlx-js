@@ -10,6 +10,11 @@
     "string",
     "BunSqlxJson.UserSettings"
   ],
+  "paramNullable": [
+    false,
+    false,
+    false
+  ],
   "columns": [
     {
       "name": "id",

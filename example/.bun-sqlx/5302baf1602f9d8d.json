@@ -6,6 +6,9 @@
   "paramTsTypes": [
     "\"admin\" | \"editor\" | \"viewer\""
   ],
+  "paramNullable": [
+    false
+  ],
   "columns": [
     {
       "name": "id",

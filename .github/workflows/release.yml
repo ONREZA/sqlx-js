@@ -67,6 +67,9 @@ jobs:
       - name: Run unit tests
         run: bun test tests
 
+      - name: Build declarations (dist/)
+        run: bun run build
+
       - name: Verify package.json version matches tag
         run: |
           PKG_VERSION="$(node -p "require('./package.json').version")"

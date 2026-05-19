@@ -8,7 +8,7 @@ function help(): never {
   console.error(`bun-sqlx — compile-time-checked SQL for Bun + Postgres
 
 usage:
-  bun-sqlx prepare [--check | --watch] [--root <dir>] [--no-prune]
+  bun-sqlx prepare [--check | --watch] [--root <dir>] [--dts <path>] [--no-prune]
   bun-sqlx migrate run | info | revert | add <name>
 
 env:
@@ -16,6 +16,7 @@ env:
 
 flags:
   --root <dir>     scan root (default: cwd)
+  --dts <path>     declarations output (default: <root>/bun-sqlx-env.d.ts)
   --check          offline mode: validate cache vs sources, no DB
   --watch          re-prepare on file change (persistent PG connection)
   --no-prune       keep orphaned cache entries (default: remove)
@@ -36,7 +37,7 @@ const cmd = process.argv[2];
 const root = resolve(arg("--root", process.cwd())!);
 const databaseUrl = process.env.DATABASE_URL ?? "";
 const cacheDir = join(root, ".bun-sqlx");
-const dtsPath = join(root, "bun-sqlx.d.ts");
+const dtsPath = arg("--dts") ? resolve(arg("--dts")!) : join(root, "bun-sqlx-env.d.ts");
 const migrationsDir = join(root, arg("--migrations", "migrations")!);
 
 if (cmd === "prepare") {

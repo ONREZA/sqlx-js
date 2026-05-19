@@ -10,6 +10,11 @@
     "string",
     "\"admin\" | \"editor\" | \"viewer\""
   ],
+  "paramNullable": [
+    false,
+    false,
+    false
+  ],
   "columns": [
     {
       "name": "id",

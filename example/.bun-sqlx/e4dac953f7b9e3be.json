@@ -8,6 +8,10 @@
     "BunSqlxJson.UserSettings",
     "bigint"
   ],
+  "paramNullable": [
+    false,
+    false
+  ],
   "columns": [
     {
       "name": "id",
