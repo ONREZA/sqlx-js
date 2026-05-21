@@ -4,6 +4,10 @@ export interface KnownQueries {}
 export interface KnownFileQueries {}
 
 export type { BunSqlxConfig } from "./config";
+export type { SslMode, ConnConfig } from "./pg/wire";
+export { PgError, ConnectionLostError } from "./pg/wire";
+export { NoRowsError, TooManyRowsError } from "./runtime";
+export type { TransactionOptions, MigrateOptions } from "./runtime";
 
 type ParamsOf<T> = T extends { params: infer P extends readonly unknown[] } ? P : never[];
 type RowOf<T> = T extends { row: infer R } ? R : never;
@@ -22,17 +26,19 @@ export type TypedSql = {
 };
 
 export type Typed = TypedSql & {
-  transaction: <R>(fn: (tx: TypedSql) => Promise<R>) => Promise<R>;
+  transaction: {
+    <R>(fn: (tx: TypedSql) => Promise<R>): Promise<R>;
+    <R>(opts: rt.TransactionOptions, fn: (tx: TypedSql) => Promise<R>): Promise<R>;
+  };
 };
 
 export const sql: Typed = rt.sql as unknown as Typed;
 
-export type Unsafe = (query: string, ...params: unknown[]) => Promise<unknown[]>;
-export const unsafe: Unsafe = rt.unsafe as unknown as Unsafe;
+export type Unsafe = (query: string, ...params: unknown[]) => Promise<Record<string, unknown>[]>;
+export const unsafe: Unsafe = rt.unsafe as Unsafe;
 export const getClient = rt.getClient;
 export const setClient = rt.setClient;
 export const close = rt.close;
 export const migrate = rt.migrate;
 export const clearSqlFileCache = rt.clearSqlFileCache;
 export const encodePgArrayLiteral = rt.encodePgArrayLiteral;
-export type MigrateOptions = rt.MigrateOptions;

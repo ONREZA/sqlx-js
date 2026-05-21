@@ -4,6 +4,7 @@
   "description": "Compile-time-checked raw SQL for Bun + PostgreSQL. Inspired by sqlx.",
   "license": "MIT",
   "type": "module",
+  "sideEffects": false,
   "main": "./src/index.ts",
   "types": "./dist/index.d.ts",
   "exports": {

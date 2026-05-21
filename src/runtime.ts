@@ -1,10 +1,8 @@
 import { SQL } from "bun";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { PgClient, parseDatabaseUrl } from "./pg/wire";
-import { applyPending, MIGRATE_LOCK_KEY_VALUE } from "./commands/migrate";
-
-const MIGRATE_LOCK_KEY = MIGRATE_LOCK_KEY_VALUE;
+import { applyPending, acquireMigrateLock, releaseMigrateLock, DEFAULT_MIGRATE_LOCK_KEY } from "./commands/migrate";
 
 let defaultClient: SQL | null = null;
 
@@ -38,20 +36,22 @@ function renameRows(rows: unknown[]): unknown[] {
   if (rows.length === 0) return rows;
   const first = rows[0];
   if (first === null || typeof first !== "object") return rows;
-  const keys = Object.keys(first as Record<string, unknown>);
-  const renames: { from: string; to: string }[] = [];
-  for (const k of keys) {
-    if (SUFFIX.test(k)) renames.push({ from: k, to: k.slice(0, -1) });
+  const rename = new Map<string, string>();
+  for (const k of Object.keys(first as Record<string, unknown>)) {
+    if (SUFFIX.test(k)) rename.set(k, k.slice(0, -1));
   }
-  if (renames.length === 0) return rows;
+  if (rename.size === 0) return rows;
+  const out = new Array<unknown>(rows.length);
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i] as Record<string, unknown>;
-    for (const { from, to } of renames) {
-      r[to] = r[from];
-      delete r[from];
+    const copy: Record<string, unknown> = {};
+    for (const k in r) {
+      const dst = rename.get(k);
+      copy[dst ?? k] = r[k];
     }
+    out[i] = copy;
   }
-  return rows;
+  return out;
 }
 
 function isPrimitiveArrayElement(v: unknown): boolean {
@@ -95,10 +95,34 @@ export function encodePgArrayLiteral(arr: unknown[]): string {
 
 function encodeParam(p: unknown): unknown {
   if (!Array.isArray(p)) return p;
-  if (p.length === 0) return "{}";
+  if (p.length === 0) return p;
   if (!p.every(isPrimitiveArrayElement)) return p;
   return encodePgArrayLiteral(p);
 }
+
+export class NoRowsError extends Error {
+  constructor(message = "expected exactly 1 row, got 0") {
+    super(message);
+    this.name = "NoRowsError";
+  }
+}
+
+export class TooManyRowsError extends Error {
+  public actual: number;
+  constructor(actual: number, expected: "1" | "0 or 1" = "1") {
+    super(`expected ${expected} row${expected === "1" ? "" : "s"}, got ${actual}`);
+    this.name = "TooManyRowsError";
+    this.actual = actual;
+  }
+}
+
+export const _internal = {
+  renameRows,
+  encodeParam,
+  isPrimitiveArrayElement,
+  loadSqlFile,
+  buildSetTransaction,
+};
 
 async function runQuery(client: SQL, query: string, params: unknown[]): Promise<unknown[]> {
   const encoded = params.length === 0 ? params : params.map(encodeParam);
@@ -109,23 +133,33 @@ async function runQuery(client: SQL, query: string, params: unknown[]): Promise<
 async function runOne(client: SQL, query: string, params: unknown[]): Promise<unknown> {
   const rows = await runQuery(client, query, params);
   if (rows.length === 1) return rows[0];
-  throw new Error(`bun-sqlx.one: expected exactly 1 row, got ${rows.length}`);
+  if (rows.length === 0) throw new NoRowsError();
+  throw new TooManyRowsError(rows.length, "1");
 }
 
 async function runOptional(client: SQL, query: string, params: unknown[]): Promise<unknown | null> {
   const rows = await runQuery(client, query, params);
   if (rows.length === 0) return null;
   if (rows.length === 1) return rows[0];
-  throw new Error(`bun-sqlx.optional: expected 0 or 1 row, got ${rows.length}`);
+  throw new TooManyRowsError(rows.length, "0 or 1");
 }
 
-const sqlFileCache = new Map<string, string>();
+type SqlFileCacheEntry = { mtimeMs: number; size: number; content: string };
+const sqlFileCache = new Map<string, SqlFileCacheEntry>();
 function loadSqlFile(path: string): string {
-  let s = sqlFileCache.get(path);
-  if (s !== undefined) return s;
-  s = readFileSync(resolve(process.cwd(), path), "utf8");
-  sqlFileCache.set(path, s);
-  return s;
+  const full = resolve(process.cwd(), path);
+  try {
+    const st = statSync(full);
+    const cached = sqlFileCache.get(full);
+    if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+      return cached.content;
+    }
+    const content = readFileSync(full, "utf8");
+    sqlFileCache.set(full, { mtimeMs: st.mtimeMs, size: st.size, content });
+    return content;
+  } catch (err) {
+    throw new Error(`bun-sqlx.sql.file: cannot read ${path}: ${(err as Error).message}`);
+  }
 }
 
 export function clearSqlFileCache(): void {
@@ -158,8 +192,17 @@ function makeBoundCallable(client: SQL): SqlCallable {
   return fn as SqlCallable;
 }
 
+export type TransactionOptions = {
+  isolation?: "read uncommitted" | "read committed" | "repeatable read" | "serializable";
+  readOnly?: boolean;
+  deferrable?: boolean;
+};
+
 type SqlRoot = SqlCallable & {
-  transaction: <R>(fn: (tx: SqlCallable) => Promise<R>) => Promise<R>;
+  transaction: <R>(
+    fnOrOpts: TransactionOptions | ((tx: SqlCallable) => Promise<R>),
+    fn?: (tx: SqlCallable) => Promise<R>,
+  ) => Promise<R>;
 };
 
 const root: SqlRoot = (async (query: string, ...params: unknown[]) => {
@@ -184,35 +227,72 @@ root.optional = (async (query: string, ...params: unknown[]) => {
   return runOptional(getClient(), query, params);
 }) as AnyOptionalFn;
 
-root.transaction = async <R>(fn: (tx: SqlCallable) => Promise<R>): Promise<R> => {
+function buildSetTransaction(opts: TransactionOptions): string {
+  const parts: string[] = [];
+  if (opts.isolation) parts.push(`ISOLATION LEVEL ${opts.isolation.toUpperCase()}`);
+  if (opts.readOnly !== undefined) parts.push(opts.readOnly ? "READ ONLY" : "READ WRITE");
+  if (opts.deferrable !== undefined) parts.push(opts.deferrable ? "DEFERRABLE" : "NOT DEFERRABLE");
+  if (parts.length === 0) return "";
+  return `SET TRANSACTION ${parts.join(" ")}`;
+}
+
+root.transaction = (async <R>(
+  fnOrOpts: TransactionOptions | ((tx: SqlCallable) => Promise<R>),
+  maybeFn?: (tx: SqlCallable) => Promise<R>,
+): Promise<R> => {
   const c = getClient();
-  return (await c.begin(async (txClient) => {
+  let opts: TransactionOptions = {};
+  let cb: (tx: SqlCallable) => Promise<R>;
+  if (typeof fnOrOpts === "function") {
+    cb = fnOrOpts;
+  } else {
+    opts = fnOrOpts;
+    if (!maybeFn) throw new Error("bun-sqlx.transaction: callback is required");
+    cb = maybeFn;
+  }
+  const setTx = buildSetTransaction(opts);
+  return (await c.begin(async (txClient: SQL) => {
+    if (setTx) await txClient.unsafe(setTx);
     const tx = makeBoundCallable(txClient);
-    return await fn(tx);
+    return await cb(tx);
   })) as R;
-};
+}) as SqlRoot["transaction"];
 
 export const sql: SqlRoot = root;
-export const unsafe = sql;
+
+export const unsafe = (async (query: string, ...params: unknown[]): Promise<Record<string, unknown>[]> => {
+  return (await runQuery(getClient(), query, params)) as Record<string, unknown>[];
+}) as (query: string, ...params: unknown[]) => Promise<Record<string, unknown>[]>;
 
 export type MigrateOptions = {
   dir?: string;
   databaseUrl?: string;
   log?: (msg: string) => void;
+  lockKey?: number | bigint;
+  lockTimeoutMs?: number;
 };
+
+function normalizeLockKey(lockKey: number | bigint): bigint {
+  if (typeof lockKey === "bigint") return lockKey;
+  if (!Number.isSafeInteger(lockKey)) {
+    throw new Error(`bun-sqlx.migrate: lockKey must be a safe integer or bigint, got ${lockKey}`);
+  }
+  return BigInt(lockKey);
+}
 
 export async function migrate(opts: MigrateOptions = {}): Promise<void> {
   const url = opts.databaseUrl ?? process.env.DATABASE_URL;
   if (!url) throw new Error("bun-sqlx.migrate: DATABASE_URL is required");
   const dir = opts.dir ?? "migrations";
   const log = opts.log ?? ((m: string) => console.log(`[bun-sqlx] ${m}`));
+  const lockKey = normalizeLockKey(opts.lockKey ?? DEFAULT_MIGRATE_LOCK_KEY);
 
   const cfg = parseDatabaseUrl(url);
   const client = new PgClient(cfg);
   await client.connect();
   let locked = false;
   try {
-    await client.simpleQuery(`SELECT pg_advisory_lock(${MIGRATE_LOCK_KEY})`);
+    await acquireMigrateLock(client, lockKey, opts.lockTimeoutMs);
     locked = true;
     let appliedAny = false;
     const result = await applyPending(client, dir, (e) => {
@@ -230,7 +310,11 @@ export async function migrate(opts: MigrateOptions = {}): Promise<void> {
     if (!appliedAny) log(`migrate: up-to-date (${result.applied + result.failed + result.tampered === 0 ? "no pending" : ""})`);
   } finally {
     if (locked) {
-      try { await client.simpleQuery(`SELECT pg_advisory_unlock(${MIGRATE_LOCK_KEY})`); } catch {}
+      try {
+        await releaseMigrateLock(client, lockKey);
+      } catch (e) {
+        log(`migrate: failed to release advisory lock: ${(e as Error).message}`);
+      }
     }
     await client.end();
   }
