@@ -31,15 +31,20 @@ export function findSourceFiles(root: string): string[] {
   return out;
 }
 
+type ScopeState = {
+  sqlAliases: Set<string>;
+  namespaces: Set<string>;
+};
+
 type CalleeKind = "inline" | "file" | "transaction" | null;
 
 function classifyCallee(
   callee: ts.LeftHandSideExpression,
-  aliases: Set<string>,
-): { alias: string; kind: Exclude<CalleeKind, null> } | null {
+  scope: ScopeState,
+): { kind: Exclude<CalleeKind, null> } | null {
   if (ts.isIdentifier(callee)) {
-    if (!aliases.has(callee.text)) return null;
-    return { alias: callee.text, kind: "inline" };
+    if (!scope.sqlAliases.has(callee.text)) return null;
+    return { kind: "inline" };
   }
 
   if (!ts.isPropertyAccessExpression(callee)) return null;
@@ -47,20 +52,51 @@ function classifyCallee(
   const methodName = callee.name.text;
 
   if (ts.isIdentifier(callee.expression)) {
-    const aliasName = callee.expression.text;
-    if (!aliases.has(aliasName)) return null;
-    if (methodName === "transaction") return { alias: aliasName, kind: "transaction" };
-    if (methodName === "file") return { alias: aliasName, kind: "file" };
-    if (methodName === "one" || methodName === "optional") return { alias: aliasName, kind: "inline" };
+    const id = callee.expression.text;
+    if (scope.namespaces.has(id)) {
+      if (methodName === "sql") return { kind: "inline" };
+      return null;
+    }
+    if (!scope.sqlAliases.has(id)) return null;
+    if (methodName === "transaction") return { kind: "transaction" };
+    if (methodName === "file") return { kind: "file" };
+    if (methodName === "one" || methodName === "optional") return { kind: "inline" };
     return null;
   }
 
   if (ts.isPropertyAccessExpression(callee.expression)) {
     const mid = callee.expression;
-    if (!ts.isIdentifier(mid.expression) || !aliases.has(mid.expression.text)) return null;
-    if (!ts.isIdentifier(mid.name) || mid.name.text !== "file") return null;
-    if (methodName === "one" || methodName === "optional") {
-      return { alias: mid.expression.text, kind: "file" };
+    if (!ts.isIdentifier(mid.name)) return null;
+
+    // ns.sql.X(...) chains
+    if (ts.isIdentifier(mid.expression) && scope.namespaces.has(mid.expression.text)) {
+      if (mid.name.text !== "sql") return null;
+      if (methodName === "one" || methodName === "optional") return { kind: "inline" };
+      if (methodName === "file") return { kind: "file" };
+      if (methodName === "transaction") return { kind: "transaction" };
+      return null;
+    }
+
+    // sqlAlias.file.X(...) — file.one / file.optional
+    if (ts.isIdentifier(mid.expression)) {
+      const root = mid.expression.text;
+      if (!scope.sqlAliases.has(root)) return null;
+      if (mid.name.text !== "file") return null;
+      if (methodName === "one" || methodName === "optional") return { kind: "file" };
+      return null;
+    }
+
+    // ns.sql.file.X(...) chains
+    if (
+      ts.isPropertyAccessExpression(mid.expression) &&
+      ts.isIdentifier(mid.expression.expression) &&
+      ts.isIdentifier(mid.expression.name) &&
+      scope.namespaces.has(mid.expression.expression.text) &&
+      mid.expression.name.text === "sql" &&
+      mid.name.text === "file" &&
+      (methodName === "one" || methodName === "optional")
+    ) {
+      return { kind: "file" };
     }
   }
 
@@ -69,9 +105,10 @@ function classifyCallee(
 
 export function scanFile(absPath: string, root: string): QueryCallSite[] {
   const text = readFileSync(absPath, "utf8");
-  const source = ts.createSourceFile(absPath, text, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TSX);
+  const source = ts.createSourceFile(absPath, text, ts.ScriptTarget.ESNext, false, ts.ScriptKind.TSX);
 
-  const sqlAliases = new Set<string>();
+  const importedAliases = new Set<string>();
+  const importedNamespaces = new Set<string>();
   for (const stmt of source.statements) {
     if (!ts.isImportDeclaration(stmt)) continue;
     const mod = stmt.moduleSpecifier;
@@ -79,17 +116,19 @@ export function scanFile(absPath: string, root: string): QueryCallSite[] {
     if (mod.text !== "bun-sqlx") continue;
     const ic = stmt.importClause;
     if (!ic) continue;
-    const bindings = ic.namedBindings;
-    if (!bindings) continue;
-    if (ts.isNamedImports(bindings)) {
-      for (const elem of bindings.elements) {
+    const nb = ic.namedBindings;
+    if (!nb) continue;
+    if (ts.isNamespaceImport(nb)) {
+      importedNamespaces.add(nb.name.text);
+    } else if (ts.isNamedImports(nb)) {
+      for (const elem of nb.elements) {
         const orig = (elem.propertyName ?? elem.name).text;
-        if (orig === "sql") sqlAliases.add(elem.name.text);
+        if (orig === "sql") importedAliases.add(elem.name.text);
       }
     }
   }
 
-  if (sqlAliases.size === 0) return [];
+  if (importedAliases.size === 0 && importedNamespaces.size === 0) return [];
 
   const out: QueryCallSite[] = [];
   const here = (node: ts.Node) => {
@@ -146,20 +185,51 @@ export function scanFile(absPath: string, root: string): QueryCallSite[] {
     return true;
   };
 
-  const visit = (node: ts.Node, aliases: Set<string>) => {
+  const bindingDeclares = (binding: ts.BindingName, name: string): boolean => {
+    if (ts.isIdentifier(binding)) return binding.text === name;
+    for (const el of binding.elements) {
+      if (ts.isOmittedExpression(el)) continue;
+      if (bindingDeclares(el.name, name)) return true;
+    }
+    return false;
+  };
+
+  const scopeWithoutBindingShadows = (scope: ScopeState, bindings: readonly ts.BindingName[]): ScopeState => {
+    let changed = false;
+    const nextSql = new Set(scope.sqlAliases);
+    const nextNs = new Set(scope.namespaces);
+    for (const binding of bindings) {
+      for (const a of scope.sqlAliases) {
+        if (bindingDeclares(binding, a)) {
+          nextSql.delete(a);
+          changed = true;
+        }
+      }
+      for (const a of scope.namespaces) {
+        if (bindingDeclares(binding, a)) {
+          nextNs.delete(a);
+          changed = true;
+        }
+      }
+    }
+    return changed ? { sqlAliases: nextSql, namespaces: nextNs } : scope;
+  };
+
+  const visit = (node: ts.Node, scope: ScopeState) => {
     if (ts.isCallExpression(node)) {
-      const classified = classifyCallee(node.expression, aliases);
+      const classified = classifyCallee(node.expression, scope);
       if (classified) {
         if (classified.kind === "transaction") {
-          const fn = node.arguments[0];
+          const fn = node.arguments[node.arguments.length - 1];
           if (fn && (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn))) {
             const param = fn.parameters[0];
+            const shadowed = param ? scopeWithoutBindingShadows(scope, [param.name]) : scope;
+            const innerSql = new Set(shadowed.sqlAliases);
             if (param && ts.isIdentifier(param.name)) {
-              const inner = new Set(aliases);
-              inner.add(param.name.text);
-              visit(fn.body, inner);
-              return;
+              innerSql.add(param.name.text);
             }
+            visit(fn.body, { sqlAliases: innerSql, namespaces: shadowed.namespaces });
+            return;
           }
         } else if (classified.kind === "file") {
           const first = node.arguments[0];
@@ -170,9 +240,48 @@ export function scanFile(absPath: string, root: string): QueryCallSite[] {
         }
       }
     }
-    ts.forEachChild(node, (child) => visit(child, aliases));
+    if (ts.isBlock(node) || ts.isSourceFile(node) || ts.isModuleBlock(node)) {
+      let current = scope;
+      const stmts = (node as { statements: ts.NodeArray<ts.Statement> }).statements;
+      for (const stmt of stmts) {
+        if (ts.isVariableStatement(stmt)) {
+          current = scopeWithoutBindingShadows(current, stmt.declarationList.declarations.map((d) => d.name));
+        } else if (ts.isFunctionDeclaration(stmt) && stmt.name) {
+          current = scopeWithoutBindingShadows(current, [stmt.name]);
+        }
+        visit(stmt, current);
+      }
+      return;
+    }
+    if (ts.isCatchClause(node) && node.variableDeclaration?.name) {
+      const next = scopeWithoutBindingShadows(scope, [node.variableDeclaration.name]);
+      if (next !== scope) {
+        visit(node.block, next);
+        return;
+      }
+    }
+    if (
+      (ts.isFunctionDeclaration(node) ||
+        ts.isFunctionExpression(node) ||
+        ts.isArrowFunction(node) ||
+        ts.isMethodDeclaration(node) ||
+        ts.isConstructorDeclaration(node) ||
+        ts.isGetAccessorDeclaration(node) ||
+        ts.isSetAccessorDeclaration(node)) &&
+      node.body
+    ) {
+      const bindings = node.parameters.map((p) => p.name);
+      if (ts.isFunctionExpression(node) && node.name) bindings.push(node.name);
+      const next = scopeWithoutBindingShadows(scope, bindings);
+      for (const param of node.parameters) {
+        if (param.initializer) visit(param.initializer, next);
+      }
+      visit(node.body, next);
+      return;
+    }
+    ts.forEachChild(node, (child) => visit(child, scope));
   };
-  visit(source, sqlAliases);
+  visit(source, { sqlAliases: importedAliases, namespaces: importedNamespaces });
   return out;
 }
 

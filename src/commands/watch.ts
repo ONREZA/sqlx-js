@@ -54,8 +54,9 @@ export async function runWatch(opts: PrepareOptions): Promise<void> {
 
   const watcher = fsWatch(opts.root, { recursive: true }, (_event, filename) => {
     if (!filename) return;
-    const f = filename.toString();
-    if (SKIP_DIRS.some((d) => f.startsWith(`${d}/`) || f.includes(`/${d}/`))) return;
+    const raw = filename.toString();
+    const f = raw.replace(/\\/g, "/");
+    if (SKIP_DIRS.some((d) => f === d || f.startsWith(`${d}/`) || f.includes(`/${d}/`))) return;
     const base = basename(f);
     if (base === "bun-sqlx-env.d.ts" || base === "bun-sqlx.d.ts") return;
     if (!EXT_RE.test(f)) return;
