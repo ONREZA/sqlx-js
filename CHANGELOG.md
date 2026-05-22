@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/ONREZA/bun-sqlx/compare/v0.5.0...v0.6.0) (2026-05-22)
+
+
+### Features
+
+* add schema snapshots and shadow validation ([0c642c2](https://github.com/ONREZA/bun-sqlx/commit/0c642c2379c5f1073cd4c300f0a0aa5bf0b9af30))
+
 ## [0.5.0](https://github.com/ONREZA/bun-sqlx/compare/v0.4.1...v0.5.0) (2026-05-21)
 
 
