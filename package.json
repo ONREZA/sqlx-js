@@ -1,6 +1,6 @@
 {
   "name": "bun-sqlx",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Compile-time-checked raw SQL for Bun + PostgreSQL. Inspired by sqlx.",
   "license": "MIT",
   "type": "module",

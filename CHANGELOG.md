@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/ONREZA/bun-sqlx/compare/v0.6.0...v0.7.0) (2026-05-23)
+
+
+### Features
+
+* improve DML returning and nullability inference ([272755d](https://github.com/ONREZA/bun-sqlx/commit/272755d8eb6f68b63abed8e8ebd8d42755b64e18))
+
 ## [0.6.0](https://github.com/ONREZA/bun-sqlx/compare/v0.5.0...v0.6.0) (2026-05-22)
 
 
