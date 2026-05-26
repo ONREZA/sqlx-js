@@ -1,3 +1,58 @@
 # Changelog
 
+## 0.1.0 (2026-05-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* cache JSON written by prior versions is rejected on read; users must re-run \`bun-sqlx prepare\` to regenerate.
+
+### Features
+
+* add schema snapshots and shadow validation ([0c642c2](https://github.com/ONREZA/sqlx-js/commit/0c642c2379c5f1073cd4c300f0a0aa5bf0b9af30))
+* add sql.file, sql.transaction, source-mapped errors, and cache pruning ([a994494](https://github.com/ONREZA/sqlx-js/commit/a994494f4c085b3fce6fd85ce63e11b70ecc7cf0))
+* cache override discriminator and degraded analysis surfacing ([5180fd9](https://github.com/ONREZA/sqlx-js/commit/5180fd952cae8b10adf18231dd064ef5d87cbb7e))
+* harden wire protocol, runtime, and migrate; expose ConnectionLostError ([0c13f05](https://github.com/ONREZA/sqlx-js/commit/0c13f05746b8fd19452c63407b9b2a183b6adcdb))
+* improve DML returning and nullability inference ([272755d](https://github.com/ONREZA/sqlx-js/commit/272755d8eb6f68b63abed8e8ebd8d42755b64e18))
+* initial public release ([b629ed6](https://github.com/ONREZA/sqlx-js/commit/b629ed69cdb37e706993712a69fbc93950a6928f))
+* migrate package to sqlx-js ([9a822f3](https://github.com/ONREZA/sqlx-js/commit/9a822f34ec1a671fa6d469d87b54b3559cded83b))
+* parameter nullability, one/optional helpers, built declarations ([793e07c](https://github.com/ONREZA/sqlx-js/commit/793e07c1e9e06683c22c24539bbca4672ff49af4))
+* typed Postgres extension types, domains, and wider OID coverage ([f4b4355](https://github.com/ONREZA/sqlx-js/commit/f4b43551f07ed1f483b82a8aac29517eea487038))
+
+
+### Bug Fixes
+
+* add repository url and reset release state ([eacb86f](https://github.com/ONREZA/sqlx-js/commit/eacb86f261081cf1236b3368e086b6ff22277e8b))
+* drain PG wire protocol after ErrorResponse to keep connection healthy ([1e9cd88](https://github.com/ONREZA/sqlx-js/commit/1e9cd8882726cdbd5909466bcaecbe67d4d57e05))
+* scan sql.one/optional chains and encode primitive arrays as PG literals ([eb5e213](https://github.com/ONREZA/sqlx-js/commit/eb5e21364093102e951b9b37b10c4e977c14f2ed))
+* **scanner,watch:** track sql shadowing and normalize watcher paths ([acd8c5a](https://github.com/ONREZA/sqlx-js/commit/acd8c5acc468575b4c1c2902fd12320d197f6a6b))
+
+
+### Documentation
+
+* document extension type registry, customTypes config, and domains ([c6225f6](https://github.com/ONREZA/sqlx-js/commit/c6225f6a52f6a1269b2af9d9b0c5a034a9eaff58))
+* document sql.file, sql.transaction, error reporting and prune flag ([640b440](https://github.com/ONREZA/sqlx-js/commit/640b44043d5dec592a496fa3b68c7c3daafc1132))
+* parameter nullability, sql.one/optional, dts rename ([3fd9a71](https://github.com/ONREZA/sqlx-js/commit/3fd9a71b6af198fee9ff941aeb9cb50ef6325f75))
+* scanner coverage for one/optional chains, array param encoding ([ea51003](https://github.com/ONREZA/sqlx-js/commit/ea51003a9cfdd4f91a59d04c8def30f633b7d5c8))
+
+
+### Tests
+
+* add integration suite covering prepare errors, file queries, and tx scope ([1682711](https://github.com/ONREZA/sqlx-js/commit/1682711b606b50225a8c4992a395a10c6a4dcf05))
+* run integration suite in an isolated Postgres container ([f1aa36b](https://github.com/ONREZA/sqlx-js/commit/f1aa36bb0b7792dd8e2714f0bf013b6c49f38999))
+
+
+### CI
+
+* chain publish into release workflow ([42c2e36](https://github.com/ONREZA/sqlx-js/commit/42c2e3618ffb7688dedf4c33bd7d659582ce898d))
+* consolidate manual publish into release workflow ([924224a](https://github.com/ONREZA/sqlx-js/commit/924224a9cc0fa65f1b99d877162d6d8c196f6e0b))
+* pin Action SHAs, add Dependabot, prevent release shell-injection ([05a743c](https://github.com/ONREZA/sqlx-js/commit/05a743cfe73ddc206504c40bc73e9647756a0585))
+
+
+### Chores
+
+* pin initial release to 0.1.0 ([41378a0](https://github.com/ONREZA/sqlx-js/commit/41378a0ce38f4df09e5a12a800a8e443ce923009))
+
+## Changelog
+
 No releases yet.
