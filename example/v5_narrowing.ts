@@ -1,4 +1,4 @@
-import { sql } from "bun-sqlx";
+import { sql } from "@onreza/sqlx-js";
 
 const explicit = await sql(
   `SELECT id, bio FROM users WHERE bio IS NOT NULL AND id = $1`,

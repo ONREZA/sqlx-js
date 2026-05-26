@@ -15,7 +15,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: bun_sqlx_test
+          POSTGRES_DB: sqlx_js_test
         ports:
           - 5432:5432
         options: >-
@@ -25,7 +25,7 @@ jobs:
           --health-retries 10
 
     env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/bun_sqlx_test
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_test
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -33,6 +33,10 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: latest
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -44,13 +48,25 @@ jobs:
         run: bun test tests
 
       - name: Migrate example schema
-        run: bun bin/bun-sqlx.ts migrate run --root example
+        run: bun bin/sqlx-js.ts migrate run --root example
 
       - name: Prepare example
-        run: bun bin/bun-sqlx.ts prepare --root example
+        run: bun bin/sqlx-js.ts prepare --root example
 
       - name: Verify offline cache matches sources
-        run: bun bin/bun-sqlx.ts prepare --check --root example
+        run: bun bin/sqlx-js.ts prepare --check --root example
 
       - name: Type-check example
         run: bunx tsc -p example
+
+      - name: Build package
+        run: bun run build
+
+      - name: Verify built package entrypoints
+        run: |
+          node -e 'await import("@onreza/sqlx-js"); console.log("node root import ok")'
+          bun -e 'await import("@onreza/sqlx-js/bun"); console.log("bun adapter import ok")'
+          node dist/bin/sqlx-js.js --version
+
+      - name: Verify npm package contents
+        run: npm pack --dry-run

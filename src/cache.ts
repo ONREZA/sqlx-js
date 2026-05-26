@@ -38,26 +38,26 @@ function parseEntryJson(path: string): unknown {
   try {
     text = readFileSync(path, "utf8");
   } catch (err) {
-    throw new Error(`bun-sqlx: cannot read cache entry ${path}: ${(err as Error).message}`);
+    throw new Error(`sqlx-js: cannot read cache entry ${path}: ${(err as Error).message}`);
   }
   try {
     return JSON.parse(text);
   } catch (err) {
-    throw new Error(`bun-sqlx: cache entry ${path} is not valid JSON: ${(err as Error).message}`);
+    throw new Error(`sqlx-js: cache entry ${path} is not valid JSON: ${(err as Error).message}`);
   }
 }
 
 function assertEntryShape(fp: string, raw: unknown): CacheEntry {
   if (!raw || typeof raw !== "object" || !Array.isArray((raw as { columns?: unknown }).columns)) {
-    throw new Error(`bun-sqlx: cache entry ${fp}.json is malformed`);
+    throw new Error(`sqlx-js: cache entry ${fp}.json is malformed`);
   }
   const cols = (raw as { columns: unknown[] }).columns;
   if (cols.length > 0) {
     const c = cols[0] as Record<string, unknown>;
     if ("forceNonNull" in c || "forceNullable" in c) {
       throw new Error(
-        `bun-sqlx: cache entry ${fp}.json uses an older schema ` +
-        `(columns.forceNonNull/forceNullable). Re-run \`bun-sqlx prepare\` to regenerate.`,
+        `sqlx-js: cache entry ${fp}.json uses an older schema ` +
+        `(columns.forceNonNull/forceNullable). Re-run \`sqlx-js prepare\` to regenerate.`,
       );
     }
   }

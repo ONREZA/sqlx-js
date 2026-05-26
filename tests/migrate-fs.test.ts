@@ -11,7 +11,7 @@ afterAll(() => {
 });
 
 function newDir(): string {
-  const d = mkdtempSync(join(tmpdir(), "bun-sqlx-mig-"));
+  const d = mkdtempSync(join(tmpdir(), "sqlx-js-mig-"));
   dirs.push(d);
   return d;
 }

@@ -1,4 +1,4 @@
-import { sql, close } from "bun-sqlx";
+import { sql, close } from "@onreza/sqlx-js";
 
 async function main() {
   const insert = await sql(

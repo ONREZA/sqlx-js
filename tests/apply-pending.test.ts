@@ -10,7 +10,7 @@ const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
 
 function newDir(): string {
-  const d = mkdtempSync(join(tmpdir(), "bun-sqlx-apply-"));
+  const d = mkdtempSync(join(tmpdir(), "sqlx-js-apply-"));
   dirs.push(d);
   return d;
 }
@@ -64,7 +64,7 @@ class MockClient {
 
   async execParamsText(sql: string, params: (string | null)[]): Promise<any> {
     this.calls.push("execParamsText");
-    if (/INSERT INTO _bun_sqlx_migrations/i.test(sql)) {
+    if (/INSERT INTO _sqlx_js_migrations/i.test(sql)) {
       const [version, name, h] = params;
       this.txInserts.push({ version: Number(version), name: name!, hash: h! });
       return { rows: [], fields: [], tag: "INSERT 0 1" };

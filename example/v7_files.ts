@@ -1,4 +1,4 @@
-import { sql } from "bun-sqlx";
+import { sql } from "@onreza/sqlx-js";
 
 export async function topAdmins() {
   const rows = await sql.file("queries/get_users_by_role.sql", "admin", 5);

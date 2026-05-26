@@ -6,7 +6,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 
 const repoRoot = resolve(import.meta.dir, "..");
 const tmp = join(repoRoot, "tests/.tmp-integration");
-const IMAGE = process.env.BUN_SQLX_PG_IMAGE ?? "pgvector/pgvector:pg17";
+const IMAGE = process.env.SQLX_JS_PG_IMAGE ?? "pgvector/pgvector:pg17";
 
 function dockerAvailable(): boolean {
   const r = spawnSync("docker", ["info"], { encoding: "utf8" });
@@ -30,7 +30,7 @@ if (!haveDocker) {
   function prepare(args: string[] = []): { code: number; stdout: string; stderr: string } {
     const r = spawnSync(
       "bun",
-      [join(repoRoot, "bin/bun-sqlx.ts"), "prepare", "--root", tmp, ...args],
+      [join(repoRoot, "bin/sqlx-js.ts"), "prepare", "--root", tmp, ...args],
       { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
     );
     return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
@@ -39,7 +39,7 @@ if (!haveDocker) {
   function migrate(): { code: number; stdout: string; stderr: string } {
     const r = spawnSync(
       "bun",
-      [join(repoRoot, "bin/bun-sqlx.ts"), "migrate", "run", "--root", tmp],
+      [join(repoRoot, "bin/sqlx-js.ts"), "migrate", "run", "--root", tmp],
       { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
     );
     return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
@@ -48,7 +48,7 @@ if (!haveDocker) {
   function schema(args: string[] = []): { code: number; stdout: string; stderr: string } {
     const r = spawnSync(
       "bun",
-      [join(repoRoot, "bin/bun-sqlx.ts"), "schema", ...args, "--root", tmp],
+      [join(repoRoot, "bin/sqlx-js.ts"), "schema", ...args, "--root", tmp],
       { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
     );
     return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
@@ -88,11 +88,11 @@ if (!haveDocker) {
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer(IMAGE)
-      .withDatabase("bun_sqlx_it")
+      .withDatabase("sqlx_js_it")
       .withUsername("postgres")
       .withPassword("postgres")
       .start();
-    dbUrl = `postgres://postgres:postgres@${container.getHost()}:${container.getMappedPort(5432)}/bun_sqlx_it`;
+    dbUrl = `postgres://postgres:postgres@${container.getHost()}:${container.getMappedPort(5432)}/sqlx_js_it`;
 
     resetWorkspace();
     const r = migrate();
@@ -106,7 +106,7 @@ if (!haveDocker) {
 
   test("prepare emits file:line:column on PG describe error", () => {
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT * FROM totally_made_up_relation\");\n",
     );
     const r = prepare();
@@ -118,21 +118,21 @@ if (!haveDocker) {
 
   test("prepare succeeds for a valid query and emits .d.ts and cache", () => {
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT id, name FROM tmp_users WHERE id = $1\", 1);\n",
     );
     const r = prepare();
     expect(r.code).toBe(0);
     expect(r.stdout).toMatch(/a\.ts:2:11/);
-    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain("interface KnownQueries");
     expect(dts).toContain("SELECT id, name FROM tmp_users WHERE id = $1");
-    expect(readdirSync(join(tmp, ".bun-sqlx")).filter((f) => f.endsWith(".json")).length).toBeGreaterThan(0);
+    expect(readdirSync(join(tmp, ".sqlx-js")).filter((f) => f.endsWith(".json")).length).toBeGreaterThan(0);
   });
 
   test("prepare --shadow-url applies migrations before preparing", () => {
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT id, name FROM tmp_users WHERE id = $1\", 1);\n",
     );
     const r = prepare(["--shadow-url", dbUrl]);
@@ -143,62 +143,62 @@ if (!haveDocker) {
 
   test("prepare prunes orphaned cache entries by default", () => {
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT id FROM tmp_users\");\n",
     );
     let r = prepare();
     expect(r.code).toBe(0);
-    const firstFiles = readdirSync(join(tmp, ".bun-sqlx")).filter((f) => f.endsWith(".json"));
+    const firstFiles = readdirSync(join(tmp, ".sqlx-js")).filter((f) => f.endsWith(".json"));
     expect(firstFiles.length).toBe(1);
 
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT name FROM tmp_users\");\n",
     );
     r = prepare();
     expect(r.code).toBe(0);
     expect(r.stdout).toMatch(/pruned 1 orphaned/);
-    const second = readdirSync(join(tmp, ".bun-sqlx")).filter((f) => f.endsWith(".json"));
+    const second = readdirSync(join(tmp, ".sqlx-js")).filter((f) => f.endsWith(".json"));
     expect(second.length).toBe(1);
     expect(second[0]).not.toBe(firstFiles[0]);
   });
 
   test("prepare --no-prune retains orphaned cache entries", () => {
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT id FROM tmp_users\");\n",
     );
     let r = prepare();
     expect(r.code).toBe(0);
-    const first = readdirSync(join(tmp, ".bun-sqlx")).filter((f) => f.endsWith(".json"));
+    const first = readdirSync(join(tmp, ".sqlx-js")).filter((f) => f.endsWith(".json"));
 
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT name FROM tmp_users\");\n",
     );
     r = prepare(["--no-prune"]);
     expect(r.code).toBe(0);
     expect(r.stdout).not.toMatch(/pruned/);
-    const second = readdirSync(join(tmp, ".bun-sqlx")).filter((f) => f.endsWith(".json"));
+    const second = readdirSync(join(tmp, ".sqlx-js")).filter((f) => f.endsWith(".json"));
     expect(second.length).toBe(first.length + 1);
   });
 
   test("sql.file produces KnownFileQueries entry keyed by path", () => {
     writeFile("queries/by_id.sql", "SELECT id, name FROM tmp_users WHERE id = $1\n");
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql.file(\"./queries/by_id.sql\", 1);\n",
     );
     const r = prepare();
     expect(r.code).toBe(0);
-    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain("interface KnownFileQueries");
     expect(dts).toContain('"queries/by_id.sql":');
   });
 
   test("sql.file with missing path errors at scan time with file:line:column", () => {
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql.file(\"./nope.sql\");\n",
     );
     const r = prepare();
@@ -230,7 +230,7 @@ if (!haveDocker) {
 
     const dump = schema(["dump"]);
     expect(dump.code).toBe(0);
-    const raw = readFileSync(join(tmp, ".bun-sqlx/schema/schema.json"), "utf8");
+    const raw = readFileSync(join(tmp, ".sqlx-js/schema/schema.json"), "utf8");
     const snapshot = JSON.parse(raw) as {
       relations: { schema: string; name: string; constraints: { kind: string; references?: { table: string } }[]; indexes: { name: string }[] }[];
       functions: { name: string; volatility: string; strict: boolean }[];
@@ -243,7 +243,7 @@ if (!haveDocker) {
     expect(rel!.indexes.some((i) => i.name === "tmp_contract_posts_user_id_idx")).toBe(true);
     expect(snapshot.functions.some((f) => f.name === "tmp_contract_slug" && f.volatility === "immutable" && f.strict)).toBe(true);
 
-    const manifest = readFileSync(join(tmp, ".bun-sqlx/schema/schema.md"), "utf8");
+    const manifest = readFileSync(join(tmp, ".sqlx-js/schema/schema.md"), "utf8");
     expect(manifest).toContain("tmp_contract_posts");
     expect(manifest).toContain("tmp_contract_slug(value text) -> text");
 
@@ -271,12 +271,12 @@ if (!haveDocker) {
     expect(mig.code).toBe(0);
 
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT id, embedding, tags, slug, path FROM tmp_ext WHERE id = $1\", 1);\n",
     );
     const r = prepare();
     expect(r.code).toBe(0);
-    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain('"embedding": number[] | null');
     expect(dts).toContain('"tags": Record<string, string | null> | null');
     expect(dts).toContain('"slug": string');
@@ -284,20 +284,20 @@ if (!haveDocker) {
   });
 
   test("user customTypes override built-in defaults", () => {
-    writeFile("bun-sqlx.config.ts",
-      "import type { BunSqlxConfig } from \"bun-sqlx\";\n" +
-      "const c: BunSqlxConfig = { customTypes: { vector: \"Float32Array\" } };\n" +
+    writeFile("sqlx-js.config.ts",
+      "import type { SqlxJsConfig } from \"@onreza/sqlx-js\";\n" +
+      "const c: SqlxJsConfig = { customTypes: { vector: \"Float32Array\" } };\n" +
       "export default c;\n",
     );
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT id, embedding FROM tmp_ext WHERE id = $1\", 1);\n",
     );
     const r = prepare();
     expect(r.code).toBe(0);
-    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain('"embedding": Float32Array | null');
-    rmSync(join(tmp, "bun-sqlx.config.ts"), { force: true });
+    rmSync(join(tmp, "sqlx-js.config.ts"), { force: true });
   });
 
   test("domain types resolve to their base TS type", () => {
@@ -316,23 +316,23 @@ if (!haveDocker) {
     expect(mig.code).toBe(0);
 
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT id, value FROM tmp_counters\");\n",
     );
     const r = prepare();
     expect(r.code).toBe(0);
-    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain('"value": number');
   });
 
   test("COALESCE($N, col) makes the param nullable in emitted .d.ts", () => {
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"UPDATE tmp_users SET name = COALESCE($1, name) WHERE id = $2\", null, 1);\n",
     );
     const r = prepare();
     expect(r.code).toBe(0);
-    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toMatch(/COALESCE\(\$1, name\).*params: \[string \| null, bigint\]/);
   });
 
@@ -347,72 +347,72 @@ if (!haveDocker) {
     expect(mig.code).toBe(0);
 
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"INSERT INTO tmp_users (name, email, bio) VALUES ($1, $2, $3)\", \"n\", \"e\", null);\n",
     );
     const r = prepare();
     expect(r.code).toBe(0);
-    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toMatch(/INSERT INTO tmp_users.*params: \[string, string, string \| null\]/);
   });
 
   test("$N IS NULL OR col = $N pattern makes the param nullable", () => {
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT id FROM tmp_users WHERE $1::text IS NULL OR name = $1\", null);\n",
     );
     const r = prepare();
     expect(r.code).toBe(0);
-    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toMatch(/IS NULL OR name = \$1.*params: \[string \| null\]/);
   });
 
   test("WHERE col = $N stays non-null even when column is nullable", () => {
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT id FROM tmp_users WHERE bio = $1\", \"any\");\n",
     );
     const r = prepare();
     expect(r.code).toBe(0);
-    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toMatch(/WHERE bio = \$1.*params: \[string\]/);
   });
 
   test("prepare emits non-null row types for equality chains and INNER JOIN ON", () => {
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT u.external_id, p.user_external_id FROM tmp_join_users u JOIN tmp_join_posts p ON p.user_external_id = u.external_id\");\n" +
       "await sql(\"SELECT a FROM tmp_narrow_values WHERE a IS NOT DISTINCT FROM b AND b IS NOT NULL\");\n",
     );
     const r = prepare();
     expect(r.code).toBe(0);
-    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain('"external_id": string; "user_external_id": string');
     expect(dts).toContain('"a": string');
   });
 
   test("prepare keeps outer-join rows nullable and sees DML RETURNING source scope", () => {
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT p.user_external_id FROM tmp_join_users u LEFT JOIN tmp_join_posts p ON p.user_external_id = u.external_id\");\n" +
       "await sql(\"DELETE FROM tmp_join_users u USING tmp_join_posts p WHERE p.user_external_id = u.external_id RETURNING p.title\");\n",
     );
     const r = prepare();
     expect(r.code).toBe(0);
-    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain('"user_external_id": string | null');
     expect(dts).toContain('"title": string');
   });
 
   test("sql.one and sql.optional reach KnownQueries via the scanner", () => {
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql.one(\"SELECT id FROM tmp_users WHERE id = $1\", 1);\n" +
       "await sql.optional(\"SELECT id FROM tmp_users WHERE email = $1\", \"x\");\n",
     );
     const r = prepare();
     expect(r.code).toBe(0);
-    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain("SELECT id FROM tmp_users WHERE id = $1");
     expect(dts).toContain("SELECT id FROM tmp_users WHERE email = $1");
   });
@@ -421,22 +421,21 @@ if (!haveDocker) {
     writeFile("queries/by_id.sql", "SELECT id, name FROM tmp_users WHERE id = $1\n");
     writeFile("queries/by_email.sql", "SELECT id FROM tmp_users WHERE email = $1\n");
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql.file.one(\"./queries/by_id.sql\", 1);\n" +
       "await sql.file.optional(\"./queries/by_email.sql\", \"x\");\n",
     );
     const r = prepare();
     expect(r.code).toBe(0);
-    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain('"queries/by_id.sql":');
     expect(dts).toContain('"queries/by_email.sql":');
   });
 
   test("text[] param roundtrips via PG array literal encoding", async () => {
-    const { SQL } = await import("bun");
-    const { setClient, sql, close } = await import("../src/index");
-    const client = new SQL({ url: dbUrl, bigint: true });
-    setClient(client);
+    const { sql, close } = await import("../src/index");
+    const prev = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = dbUrl;
     try {
       const rows = await sql("SELECT $1::text[] AS xs", ["alpha", "beta,gamma", "with \"quote\""]);
       expect((rows[0] as { xs: string[] }).xs).toEqual(["alpha", "beta,gamma", "with \"quote\""]);
@@ -446,12 +445,36 @@ if (!haveDocker) {
       expect((withNull[0] as { xs: (string | null)[] }).xs).toEqual(["a", null, "b"]);
     } finally {
       await close();
+      if (prev === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = prev;
+    }
+  });
+
+  test("bytea[] uses the native Postgres.js bytea codec", async () => {
+    const { sql, close } = await import("../src/index");
+    const prev = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = dbUrl;
+    try {
+      const literalRows = await sql("SELECT ARRAY[decode('dead', 'hex'), decode('beef', 'hex')]::bytea[] AS xs");
+      const literal = (literalRows[0] as { xs: Uint8Array[] }).xs;
+      expect(literal.map((x) => Array.from(x))).toEqual([[0xde, 0xad], [0xbe, 0xef]]);
+
+      const paramRows = await sql("SELECT $1::bytea[] AS xs", [
+        new Uint8Array([0xde, 0xad]),
+        new Uint8Array([0xbe, 0xef]),
+      ]);
+      const param = (paramRows[0] as { xs: Uint8Array[] }).xs;
+      expect(param.map((x) => Array.from(x))).toEqual([[0xde, 0xad], [0xbe, 0xef]]);
+    } finally {
+      await close();
+      if (prev === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = prev;
     }
   });
 
   test("scanner recognizes sql.transaction callback param as sql-alias", () => {
     writeFile("a.ts",
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql.transaction(async (tx) => {\n" +
       "  await tx(\"SELECT id FROM tmp_users WHERE id = $1\", 1);\n" +
       "});\n",
@@ -459,7 +482,7 @@ if (!haveDocker) {
     const r = prepare();
     expect(r.code).toBe(0);
     expect(r.stdout).toMatch(/a\.ts:3:12/);
-    const dts = readFileSync(join(tmp, "bun-sqlx-env.d.ts"), "utf8");
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain("SELECT id FROM tmp_users WHERE id = $1");
   });
 }

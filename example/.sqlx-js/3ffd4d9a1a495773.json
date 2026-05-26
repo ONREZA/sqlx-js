@@ -1,0 +1,28 @@
+{
+  "query": "SELECT id, bio FROM users WHERE bio IS NOT NULL AND id = $1",
+  "paramOids": [
+    20
+  ],
+  "paramTsTypes": [
+    "bigint"
+  ],
+  "paramNullable": [
+    false
+  ],
+  "columns": [
+    {
+      "name": "id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false
+    },
+    {
+      "name": "bio",
+      "typeOid": 25,
+      "tsType": "string",
+      "nullable": false
+    }
+  ],
+  "hasResultSet": true,
+  "hasInline": true
+}

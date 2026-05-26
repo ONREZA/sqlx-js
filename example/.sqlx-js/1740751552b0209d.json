@@ -1,0 +1,36 @@
+{
+  "query": "INSERT INTO users (name, email, role) VALUES ($1, $2, $3) RETURNING id AS \"id!\", role AS \"role!\"",
+  "paramOids": [
+    25,
+    25,
+    16421
+  ],
+  "paramTsTypes": [
+    "string",
+    "string",
+    "\"admin\" | \"editor\" | \"viewer\""
+  ],
+  "paramNullable": [
+    false,
+    false,
+    false
+  ],
+  "columns": [
+    {
+      "name": "id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false,
+      "override": "non-null"
+    },
+    {
+      "name": "role",
+      "typeOid": 16421,
+      "tsType": "\"admin\" | \"editor\" | \"viewer\"",
+      "nullable": false,
+      "override": "non-null"
+    }
+  ],
+  "hasResultSet": true,
+  "hasInline": true
+}

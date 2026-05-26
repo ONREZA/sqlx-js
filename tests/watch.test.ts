@@ -14,8 +14,8 @@ function opts(beforePrepare?: WatchOptions["beforePrepare"]): WatchOptions {
   return {
     root: ".",
     databaseUrl: "postgres://example",
-    cacheDir: ".bun-sqlx",
-    dtsPath: "bun-sqlx-env.d.ts",
+    cacheDir: ".sqlx-js",
+    dtsPath: "sqlx-js-env.d.ts",
     check: false,
     beforePrepare,
   };

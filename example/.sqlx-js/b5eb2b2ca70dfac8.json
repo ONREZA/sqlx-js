@@ -1,0 +1,17 @@
+{
+  "query": "SELECT COUNT(*) AS \"n!\" FROM users",
+  "paramOids": [],
+  "paramTsTypes": [],
+  "paramNullable": [],
+  "columns": [
+    {
+      "name": "n",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false,
+      "override": "non-null"
+    }
+  ],
+  "hasResultSet": true,
+  "hasInline": true
+}

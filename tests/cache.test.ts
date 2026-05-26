@@ -100,7 +100,7 @@ test("Cache.read rejects legacy schema (forceNonNull) with actionable message", 
   );
   const c = new Cache(dir);
   expect(() => c.read(fp)).toThrow(/older schema/);
-  expect(() => c.read(fp)).toThrow(/bun-sqlx prepare/);
+  expect(() => c.read(fp)).toThrow(/sqlx-js prepare/);
   rmSync(dir, { recursive: true, force: true });
 });
 

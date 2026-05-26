@@ -1,0 +1,26 @@
+{
+  "query": "INSERT INTO posts (user_id, title) VALUES ($1, $2) RETURNING id AS \"id!\"",
+  "paramOids": [
+    20,
+    25
+  ],
+  "paramTsTypes": [
+    "bigint",
+    "string"
+  ],
+  "paramNullable": [
+    false,
+    false
+  ],
+  "columns": [
+    {
+      "name": "id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false,
+      "override": "non-null"
+    }
+  ],
+  "hasResultSet": true,
+  "hasInline": true
+}

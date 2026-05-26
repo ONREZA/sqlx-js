@@ -1,4 +1,4 @@
-import { sql } from "bun-sqlx";
+import { sql } from "@onreza/sqlx-js";
 
 const insertResult = await sql(
   `INSERT INTO users (name, email, settings) VALUES ($1, $2, $3) RETURNING id AS "id!"`,
@@ -15,7 +15,7 @@ const updated = await sql(
 
 const found = await sql(
   `SELECT id, settings FROM users WHERE settings = $1 LIMIT 1`,
-  { theme: "light", lang: "en" } as BunSqlxJson.UserSettings,
+  { theme: "light", lang: "en" } as SqlxJsJson.UserSettings,
 );
 
 console.log(insertResult, updated, found);

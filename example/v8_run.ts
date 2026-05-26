@@ -1,4 +1,4 @@
-import { sql, close } from "bun-sqlx";
+import { sql, close } from "@onreza/sqlx-js";
 import { createUserWithFirstPost } from "./v8_transactions";
 
 const { userId, postId } = await createUserWithFirstPost(

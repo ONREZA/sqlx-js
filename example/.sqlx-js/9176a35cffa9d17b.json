@@ -1,0 +1,46 @@
+{
+  "query": "SELECT id, name, email, age, bio FROM users WHERE id = $1",
+  "paramOids": [
+    20
+  ],
+  "paramTsTypes": [
+    "bigint"
+  ],
+  "paramNullable": [
+    false
+  ],
+  "columns": [
+    {
+      "name": "id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false
+    },
+    {
+      "name": "name",
+      "typeOid": 25,
+      "tsType": "string",
+      "nullable": false
+    },
+    {
+      "name": "email",
+      "typeOid": 25,
+      "tsType": "string",
+      "nullable": false
+    },
+    {
+      "name": "age",
+      "typeOid": 23,
+      "tsType": "number",
+      "nullable": true
+    },
+    {
+      "name": "bio",
+      "typeOid": 25,
+      "tsType": "string",
+      "nullable": true
+    }
+  ],
+  "hasResultSet": true,
+  "hasInline": true
+}

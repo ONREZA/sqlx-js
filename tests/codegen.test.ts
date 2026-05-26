@@ -11,7 +11,7 @@ afterAll(() => {
 });
 
 function write(entries: CacheEntry[]): string {
-  const out = join(tmp, "bun-sqlx-env.d.ts");
+  const out = join(tmp, "sqlx-js-env.d.ts");
   emitDts(out, entries);
   return readFileSync(out, "utf8");
 }
@@ -151,7 +151,11 @@ test("KnownFileQueries deduplicates paths across entries", () => {
       columns: [],
     },
   ]);
-  const matches = dts.match(/"a\.sql":/g) ?? [];
+  const rootBlock = dts.slice(
+    dts.indexOf('declare module "@onreza/sqlx-js"'),
+    dts.indexOf('declare module "@onreza/sqlx-js/bun"'),
+  );
+  const matches = rootBlock.match(/"a\.sql":/g) ?? [];
   expect(matches).toHaveLength(1);
 });
 

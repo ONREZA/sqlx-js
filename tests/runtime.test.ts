@@ -108,7 +108,7 @@ describe("typed errors", () => {
 
 describe("loadSqlFile + mtime cache", () => {
   test("reads file and re-reads on mtime change", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "bun-sqlx-runtime-"));
+    const dir = mkdtempSync(join(tmpdir(), "sqlx-js-runtime-"));
     const path = join(dir, "q.sql");
     writeFileSync(path, "SELECT 1");
     clearSqlFileCache();
@@ -122,14 +122,14 @@ describe("loadSqlFile + mtime cache", () => {
   });
 
   test("missing file throws with path context", () => {
-    expect(() => _internal.loadSqlFile("/tmp/bun-sqlx-does-not-exist.sql"))
-      .toThrow(/bun-sqlx\.sql\.file: cannot read \/tmp\/bun-sqlx-does-not-exist\.sql/);
+    expect(() => _internal.loadSqlFile("/tmp/sqlx-js-does-not-exist.sql"))
+      .toThrow(/sqlx-js\.sql\.file: cannot read \/tmp\/sqlx-js-does-not-exist\.sql/);
   });
 });
 
 describe("id", () => {
   test("quotes only identifiers present in the schema snapshot", () => {
-    const dir = mkdtempSync(join(tmpdir(), "bun-sqlx-id-"));
+    const dir = mkdtempSync(join(tmpdir(), "sqlx-js-id-"));
     const path = join(dir, "schema.json");
     writeFileSync(path, JSON.stringify({
       version: 1,
@@ -160,8 +160,8 @@ describe("id", () => {
       types: [],
       functions: [],
     }));
-    const prev = process.env.BUN_SQLX_SCHEMA_PATH;
-    process.env.BUN_SQLX_SCHEMA_PATH = path;
+    const prev = process.env.SQLX_JS_SCHEMA_PATH;
+    process.env.SQLX_JS_SCHEMA_PATH = path;
     _internal.clearIdentifierCache();
     try {
       expect(id("users")).toBe('"users"');
@@ -173,8 +173,8 @@ describe("id", () => {
       expect(() => id("users; DROP TABLE users")).toThrow(/not present/);
       expect(() => id("public", "users", "missing")).toThrow(/not present/);
     } finally {
-      if (prev === undefined) delete process.env.BUN_SQLX_SCHEMA_PATH;
-      else process.env.BUN_SQLX_SCHEMA_PATH = prev;
+      if (prev === undefined) delete process.env.SQLX_JS_SCHEMA_PATH;
+      else process.env.SQLX_JS_SCHEMA_PATH = prev;
       _internal.clearIdentifierCache();
     }
   });

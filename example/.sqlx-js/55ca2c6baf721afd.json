@@ -1,0 +1,40 @@
+{
+  "query": "SELECT id, title, meta, attachments FROM posts WHERE id = $1",
+  "paramOids": [
+    20
+  ],
+  "paramTsTypes": [
+    "bigint"
+  ],
+  "paramNullable": [
+    false
+  ],
+  "columns": [
+    {
+      "name": "id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false
+    },
+    {
+      "name": "title",
+      "typeOid": 25,
+      "tsType": "string",
+      "nullable": false
+    },
+    {
+      "name": "meta",
+      "typeOid": 3802,
+      "tsType": "SqlxJsJson.PostMeta",
+      "nullable": true
+    },
+    {
+      "name": "attachments",
+      "typeOid": 3807,
+      "tsType": "(SqlxJsJson.Attachment)[]",
+      "nullable": false
+    }
+  ],
+  "hasResultSet": true,
+  "hasInline": true
+}

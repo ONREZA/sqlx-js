@@ -1,4 +1,4 @@
-import { sql } from "bun-sqlx";
+import { sql } from "@onreza/sqlx-js";
 
 export async function createUserWithFirstPost(name: string, email: string, title: string) {
   return await sql.transaction(async (tx) => {

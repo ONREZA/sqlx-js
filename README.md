@@ -1,11 +1,13 @@
-# bun-sqlx
+# sqlx-js
 
-Compile-time-checked raw SQL for Bun + PostgreSQL. Inspired by Rust's [sqlx](https://github.com/launchbadge/sqlx).
+Compile-time-checked raw SQL for TypeScript + PostgreSQL. Inspired by Rust's [sqlx](https://github.com/launchbadge/sqlx).
 
 You write plain SQL strings. A `prepare` step validates them against your database via the PostgreSQL wire protocol and generates a TypeScript declaration file. Wrong column names, mismatched parameter types, stale queries after a migration — all become compile errors.
 
+The default runtime adapter uses [Postgres.js](https://github.com/porsager/postgres). A `Bun.SQL` adapter is still available as `@onreza/sqlx-js/bun` for compatibility, but it is not the recommended production adapter; Bun.SQL has had production-affecting connection-state regressions such as [oven-sh/bun#16691](https://github.com/oven-sh/bun/issues/16691), fixed by [oven-sh/bun#17272](https://github.com/oven-sh/bun/pull/17272). Validate the exact Bun version and workload before using that adapter in production.
+
 ```ts
-import { sql } from "bun-sqlx";
+import { sql } from "@onreza/sqlx-js";
 
 const rows = await sql(
   `SELECT id, name, role FROM users WHERE id = $1`,
@@ -22,7 +24,7 @@ const rows = await sql(
 - **Precise nullability inference** through `libpg-query`: `JOIN` direction (LEFT/RIGHT/FULL), inner `JOIN ... ON` predicates, DML `RETURNING`, `COALESCE`, `CASE`, `COUNT`, expression propagation. Parameters become `T | null` when wrapped in `COALESCE`/`NULLIF`/`IS [NOT] NULL`/`IS [NOT] DISTINCT FROM`, or when bound to a nullable column in `INSERT`/`UPDATE`.
 - **WHERE narrowing**: `IS NOT NULL`, equality chains, `IN`, `LIKE`, `BETWEEN` make columns non-null. Tracks `AND`/`OR` semantics.
 - **PostgreSQL enums** generated as TypeScript literal unions (read + write side).
-- **Schema-aware `jsonb`** via a `BunSqlxJson` global namespace and a config-driven column → type mapping. Works for both result columns and `INSERT`/`UPDATE`/`WHERE` parameters.
+- **Schema-aware `jsonb`** via a `SqlxJsJson` global namespace and a config-driven column → type mapping. Works for both result columns and `INSERT`/`UPDATE`/`WHERE` parameters.
 - **Extension types out of the box**: `pgvector` (`vector`, `halfvec`, `sparsevec`), `hstore`, `citext`, `ltree`/`lquery`/`ltxtquery`. Add your own through `customTypes` config.
 - **Domains** resolve to their base TypeScript type (`CREATE DOMAIN email AS text` → `string`), including domains over extension types or other domains.
 - **Wide built-in type coverage**: numeric, text, date/time, UUID, json/jsonb, network (inet/cidr/macaddr/macaddr8), bit strings, ranges/multiranges, geometric, money, tsvector/tsquery, xml — and the matching array variants.
@@ -37,14 +39,19 @@ const rows = await sql(
 - **Schema snapshot + LLM manifest** via `schema dump` / `schema check`: tables, columns, constraints, indexes, types, and function/procedure metadata are introspected from PostgreSQL.
 - **Shadow database validation** via `--shadow-url` / `SHADOW_DATABASE_URL`: apply migrations to a throwaway DB, then prepare or introspect against it.
 - **Safe identifier quoting** via `sql.id(...)`, backed by the committed schema snapshot whitelist.
+- **Tree-shakeable runtime adapters**: `@onreza/sqlx-js` imports Postgres.js; `@onreza/sqlx-js/bun` imports `Bun.SQL` only when explicitly used.
 - **Watch mode**: ~15ms incremental re-prepare on file change.
 - **Cache pruning** removes orphaned entries automatically (toggleable with `--no-prune`).
 
 ## Install
 
 ```bash
-bun add bun-sqlx
+npm install @onreza/sqlx-js
+# or
+bun add @onreza/sqlx-js
 ```
+
+The package installs a `sqlx-js` binary. The CLI examples below use `npx @onreza/sqlx-js`; `bunx @onreza/sqlx-js ...` works the same if your project uses Bun.
 
 ## Setup
 
@@ -62,7 +69,7 @@ Supported `sslmode` values: `disable`, `prefer` (default — try TLS, fall back 
 ### 2. Create a migration
 
 ```bash
-bunx bun-sqlx migrate add init
+npx @onreza/sqlx-js migrate add init
 ```
 
 Edit the created file (`migrations/0001_init.up.sql`):
@@ -80,14 +87,14 @@ CREATE TABLE users (
 Apply:
 
 ```bash
-bunx bun-sqlx migrate run
+npx @onreza/sqlx-js migrate run
 ```
 
 ### 3. Write your first query
 
 ```ts
 // app.ts
-import { sql } from "bun-sqlx";
+import { sql } from "@onreza/sqlx-js";
 
 const users = await sql(
   `SELECT id, name FROM users WHERE id = $1`,
@@ -98,15 +105,15 @@ const users = await sql(
 ### 4. Prepare types
 
 ```bash
-bunx bun-sqlx prepare
+npx @onreza/sqlx-js prepare
 ```
 
-This generates `bun-sqlx-env.d.ts` next to your code. Add it to your `tsconfig.json` `include` if it isn't picked up automatically. (Pre-`0.4.0` releases produced `bun-sqlx.d.ts`; delete the old file after upgrading. The new name avoids colliding with the package itself when `baseUrl: "."` is set.) Use `--dts <path>` to override the destination.
+This generates `sqlx-js-env.d.ts` next to your code. Add it to your `tsconfig.json` `include` if it isn't picked up automatically. Use `--dts <path>` to override the destination.
 
 ### 5. Dev loop with watch
 
 ```bash
-bunx bun-sqlx prepare --watch
+npx @onreza/sqlx-js prepare --watch
 ```
 
 Save a `.ts` file, types regenerate in milliseconds, your editor picks up changes.
@@ -132,7 +139,7 @@ Load SQL from an external file. The path is resolved against the source file at 
 // queries/top_admins.sql
 // SELECT id AS "id!", name AS "name!" FROM users WHERE role = $1 ORDER BY id LIMIT $2::int
 
-import { sql } from "bun-sqlx";
+import { sql } from "@onreza/sqlx-js";
 
 const admins = await sql.file("queries/top_admins.sql", "admin", 5);
 //                                                       ^ string  ^ number
@@ -164,9 +171,9 @@ await sql("SELECT $1::text[] AS tags", ["alpha", "beta,gamma", "with \"quote\""]
 // → $1 sent as {alpha,"beta,gamma","with \"quote\""}
 ```
 
-Encoding only kicks in when every element is a primitive (`string` / `number` / `bigint` / `boolean` / `null`). Arrays containing objects pass through unchanged — that's the path for `jsonb` columns whose value is a JSON array (`attachments: BunSqlxJson.Attachment[]`). If you need to store a primitive JS array as `jsonb` (rare), pass `JSON.stringify(arr)` explicitly. `encodePgArrayLiteral(arr)` is exported if you need the literal yourself for `unsafe(...)`.
+Encoding only kicks in when every element is a primitive (`string` / `number` / `bigint` / `boolean` / `null`). Arrays containing objects pass through unchanged — that's the path for `jsonb` columns whose value is a JSON array (`attachments: SqlxJsJson.Attachment[]`). If you need to store a primitive JS array as `jsonb` (rare), pass `JSON.stringify(arr)` explicitly. `encodePgArrayLiteral(arr)` is exported if you need the literal yourself for `unsafe(...)`.
 
-Empty arrays (`[]`) are passed straight through to `Bun.SQL` — the driver binds them as an empty PG array. If you need the literal `"{}"` instead (e.g. when concatenating into raw SQL), call `encodePgArrayLiteral([])`.
+Empty arrays (`[]`) are passed straight through to the active driver. If you need the literal `"{}"` instead (e.g. when concatenating into raw SQL), call `encodePgArrayLiteral([])`.
 
 ### Parameter nullability
 
@@ -182,7 +189,7 @@ Empty arrays (`[]`) are passed straight through to `Bun.SQL` — the driver bind
 Wrap a function body in a database transaction. The callback receives a scoped `tx` that has the same typed `()` and `.file()` surface, but routes through the transaction's dedicated connection. The scanner recognises the callback parameter name and validates inner queries against `KnownQueries`.
 
 ```ts
-import { sql } from "bun-sqlx";
+import { sql } from "@onreza/sqlx-js";
 
 const { userId, postId } = await sql.transaction(async (tx) => {
   const u = await tx(
@@ -208,20 +215,20 @@ Same runtime as `sql` but without type-checking. For dynamic SQL where compile-t
 Quote a dynamic identifier only if it exists in the generated schema snapshot. This is for the narrow cases where a table, column, function, type, index, or constraint name must be chosen dynamically.
 
 ```ts
-import { unsafe, sql } from "bun-sqlx";
+import { unsafe, sql } from "@onreza/sqlx-js";
 
 const orderBy = sql.id("users", "created_at");
 await unsafe(`SELECT id, email FROM ${sql.id("users")} ORDER BY ${orderBy} DESC`);
 ```
 
-The default snapshot path is `.bun-sqlx/schema/schema.json`. Override it at runtime with `BUN_SQLX_SCHEMA_PATH`. Pass schema-qualified identifiers as separate segments: `sql.id("public", "users")`, not `sql.id("public.users")`.
+The default snapshot path is `.sqlx-js/schema/schema.json`. Override it at runtime with `SQLX_JS_SCHEMA_PATH`. Pass schema-qualified identifiers as separate segments: `sql.id("public", "users")`, not `sql.id("public.users")`.
 
 ### `migrate(options)`
 
 Apply pending migrations from application startup with a PostgreSQL advisory lock. Safe to call from multiple replicas.
 
 ```ts
-import { migrate } from "bun-sqlx";
+import { migrate } from "@onreza/sqlx-js";
 
 await migrate({ dir: "./migrations" });
 ```
@@ -242,7 +249,23 @@ When `lockTimeoutMs` is set, acquisition uses `pg_try_advisory_lock` in a pollin
 
 ### `getClient()` / `setClient()` / `close()`
 
-Low-level access to the underlying `Bun.SQL` instance, in case you need to manage the connection directly.
+Low-level access to the underlying Postgres.js client, in case you need to manage the connection directly.
+Use `createClient(...)` when replacing the default client; it preserves the built-in `bigint` and PostgreSQL array parsers expected by generated types.
+
+```ts
+import { createClient, setClient } from "@onreza/sqlx-js";
+
+setClient(createClient(process.env.DATABASE_URL));
+```
+
+For the compatibility adapter, import from `@onreza/sqlx-js/bun`:
+
+```ts
+import { SQL } from "bun";
+import { setClient } from "@onreza/sqlx-js/bun";
+
+setClient(new SQL({ url: process.env.DATABASE_URL!, bigint: true }));
+```
 
 ### `clearSqlFileCache()`
 
@@ -251,7 +274,7 @@ Drops the in-memory cache used by `sql.file(...)`. The cache invalidates automat
 ### Typed errors
 
 ```ts
-import { NoRowsError, TooManyRowsError, PgError } from "bun-sqlx";
+import { NoRowsError, TooManyRowsError, PgError } from "@onreza/sqlx-js";
 
 try {
   const u = await sql.one(`SELECT id FROM users WHERE id = $1`, 99);
@@ -279,15 +302,15 @@ Options: `{ isolation?: "read uncommitted" | "read committed" | "repeatable read
 
 ### Namespace imports
 
-In addition to `import { sql } from "bun-sqlx"`, the scanner now recognises `import * as ns from "bun-sqlx"` and validates `ns.sql(...)`, `ns.sql.one(...)`, `ns.sql.file(...)`, and `ns.sql.transaction(...)` exactly like the named-import form. Local re-declarations (`const sql = ...`, `const { sql } = ...`) correctly shadow the alias inside their scope.
+In addition to `import { sql } from "@onreza/sqlx-js"`, the scanner recognises `import * as ns from "@onreza/sqlx-js"` and the same forms from `@onreza/sqlx-js/bun`. It validates `ns.sql(...)`, `ns.sql.one(...)`, `ns.sql.file(...)`, and `ns.sql.transaction(...)` exactly like the named-import form. Local re-declarations (`const sql = ...`, `const { sql } = ...`) correctly shadow the alias inside their scope.
 
 ## CLI
 
 ```
-bun-sqlx prepare [--check | --watch] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
-bun-sqlx migrate run [--lock-timeout <ms>] | info | revert | add <name> [--migrations <dir>]
-bun-sqlx schema dump | check [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
-bun-sqlx --version | --help
+sqlx-js prepare [--check | --watch] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
+sqlx-js migrate run [--lock-timeout <ms>] | info | revert | add <name> [--migrations <dir>]
+sqlx-js schema dump | check [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
+sqlx-js --version | --help
 ```
 
 | Flag                  | Meaning                                                                              |
@@ -295,13 +318,13 @@ bun-sqlx --version | --help
 | `--check`             | Offline: verify cache matches sources, no database required.                         |
 | `--watch`             | Persistent connection, re-prepare on file change.                                    |
 | `--root <dir>`        | Source/cache/migrations root (default: cwd).                                         |
-| `--dts <path>`        | Declarations output (default: `<root>/bun-sqlx-env.d.ts`).                           |
+| `--dts <path>`        | Declarations output (default: `<root>/sqlx-js-env.d.ts`).                           |
 | `--no-prune`          | Keep orphaned cache entries instead of removing them.                                |
 | `--migrations <dir>`  | Migrations directory (default: `<root>/migrations`).                                 |
 | `--lock-timeout <ms>` | Advisory-lock acquisition timeout for `migrate run` / `migrate revert`.              |
 | `--shadow-url <url>`  | Apply migrations to this database, then prepare/introspect against it.               |
-| `--schema <path>`     | Schema snapshot path (default: `<root>/.bun-sqlx/schema/schema.json`).               |
-| `--manifest <path>`   | LLM schema manifest path (default: `<root>/.bun-sqlx/schema/schema.md`).             |
+| `--schema <path>`     | Schema snapshot path (default: `<root>/.sqlx-js/schema/schema.json`).               |
+| `--manifest <path>`   | LLM schema manifest path (default: `<root>/.sqlx-js/schema/schema.md`).             |
 | `--no-manifest`       | Skip writing the LLM schema manifest during `schema dump`.                           |
 
 All flags accept both `--flag value` and `--flag=value` forms.
@@ -312,8 +335,8 @@ All flags accept both `--flag value` and `--flag=value` forms.
 
 `schema dump` introspects PostgreSQL and writes two generated files:
 
-- `.bun-sqlx/schema/schema.json` — machine-readable contract for runtime identifier whitelisting and CI drift checks.
-- `.bun-sqlx/schema/schema.md` — compact LLM-facing manifest with tables, columns, constraints, indexes, types, and functions.
+- `.sqlx-js/schema/schema.json` — machine-readable contract for runtime identifier whitelisting and CI drift checks.
+- `.sqlx-js/schema/schema.md` — compact LLM-facing manifest with tables, columns, constraints, indexes, types, and functions.
 
 `schema check` re-introspects the database and fails if the committed snapshot is stale. With `--shadow-url`, both `prepare` and `schema dump/check` first apply pending migrations to the shadow database, then use that database as the source of truth. In watch mode, pending shadow migrations are checked before every re-prepare; when a migration is applied, the prepare session is reopened so schema metadata is not reused across DDL changes.
 
@@ -330,16 +353,16 @@ Phases reported separately: `describe failed`, `analyze failed`, `paramMap faile
 
 ## Configuration
 
-`bun-sqlx.config.ts` at the project root is optional.
+`sqlx-js.config.ts` at the project root is optional.
 
 ```ts
-import type { BunSqlxConfig } from "bun-sqlx";
+import type { SqlxJsConfig } from "@onreza/sqlx-js";
 
-const config: BunSqlxConfig = {
+const config: SqlxJsConfig = {
   jsonbTypes: {
-    "users.settings":     "BunSqlxJson.UserSettings",
-    "posts.meta":         "BunSqlxJson.PostMeta",
-    "posts.attachments":  "BunSqlxJson.Attachment",
+    "users.settings":     "SqlxJsJson.UserSettings",
+    "posts.meta":         "SqlxJsJson.PostMeta",
+    "posts.attachments":  "SqlxJsJson.Attachment",
   },
 };
 
@@ -351,7 +374,7 @@ Declare the referenced types anywhere in your project (`.d.ts` file is conventio
 ```ts
 // json-types.d.ts
 declare global {
-  namespace BunSqlxJson {
+  namespace SqlxJsJson {
     type UserSettings = {
       theme: "light" | "dark";
       lang: string;
@@ -368,7 +391,7 @@ After re-running `prepare`, every `jsonb` column or parameter declared in `jsonb
 
 ### Extension types and `customTypes`
 
-bun-sqlx ships with a built-in registry that resolves popular PostgreSQL extension types automatically:
+sqlx-js ships with a built-in registry that resolves popular PostgreSQL extension types automatically:
 
 | `pg_type.typname` | TS type                            | Source extension |
 |-------------------|------------------------------------|-------------------|
@@ -381,12 +404,12 @@ bun-sqlx ships with a built-in registry that resolves popular PostgreSQL extensi
 | `lquery`          | `string`                           | ltree             |
 | `ltxtquery`       | `string`                           | ltree             |
 
-Add or override mappings via `customTypes` in `bun-sqlx.config.ts`. Keys are `pg_type.typname` values (the bare type name; namespacing isn't required):
+Add or override mappings via `customTypes` in `sqlx-js.config.ts`. Keys are `pg_type.typname` values (the bare type name; namespacing isn't required):
 
 ```ts
-import type { BunSqlxConfig } from "bun-sqlx";
+import type { SqlxJsConfig } from "@onreza/sqlx-js";
 
-const config: BunSqlxConfig = {
+const config: SqlxJsConfig = {
   customTypes: {
     vector: "Float32Array",         // override pgvector default
     geometry: "GeoJSON.Geometry",   // postgis (not built-in by design)
@@ -418,14 +441,15 @@ The runtime strips the `!`/`?` suffix from column keys so the row shape stays cl
 
 ## CI workflow
 
-Commit the generated `bun-sqlx.d.ts` and the `.bun-sqlx/` cache directory to your repo. In CI:
+Commit the generated `sqlx-js-env.d.ts` and the `.sqlx-js/` cache directory to your repo. In CI:
 
 ```yaml
 - run: bun install
-- run: bun-sqlx prepare --check   # fails if any query is missing from cache
-- run: bun-sqlx schema check      # fails if the committed schema snapshot is stale
+- run: sqlx-js prepare --check   # fails if any query is missing from cache
+- run: sqlx-js schema check      # fails if the committed schema snapshot is stale
 - run: tsc --noEmit               # fails if types are stale
 - run: bun test
+- run: bun run build              # emits publishable JS + declarations under dist/
 ```
 
 The `prepare --check` step runs without a database — your offline cache is the source of truth. `schema check` intentionally uses a live or shadow database because it verifies the committed schema contract against PostgreSQL.
@@ -439,11 +463,11 @@ bun install                  # installs lefthook + wires git hooks
 cargo install cocogitto      # or: brew install cocogitto
 ```
 
-Releases are automated via `release-please`: pushes to `main` accumulate into a release PR that bumps `package.json`, writes `CHANGELOG.md`, and on merge tags the commit. The tag push fires the npm publish workflow.
+Releases are automated via `release-please`: pushes to `main` accumulate into a release PR that bumps `package.json`, writes `CHANGELOG.md`, and on merge tags the commit. The tag push fires the npm publish workflow, which builds `dist/`, smoke-tests the package entrypoints, checks the tarball contents, and publishes to npm.
 
 ## Limitations
 
-`bun-sqlx` is a young library. Known gaps:
+`sqlx-js` is a young library. Known gaps:
 
 - PostgreSQL only (no MySQL or SQLite).
 - `INSERT INTO t VALUES (...)` without an explicit column list isn't parameter-mapped.
@@ -452,7 +476,8 @@ Releases are automated via `release-please`: pushes to `main` accumulate into a 
 - Composite types resolve to `unknown`. Domains and array types of registered types resolve correctly.
 - Column names whose **real** name (not an alias) ends with `!` or `?` are not supported — the runtime strips those suffixes assuming an override. Use `AS "alias"` if you have such a column.
 - Migrations run inside `BEGIN/COMMIT`. DDL that disallows transactions (`CREATE INDEX CONCURRENTLY`, `VACUUM`, `REINDEX CONCURRENTLY`, …) will fail; split such operations into separate migrations executed outside the runner.
-- `parseDatabaseUrl` parses `sslmode`, `application_name`, and `connect_timeout` for the **internal** wire client (used by `migrate run`, `prepare`, and the runtime `migrate()` helper). The runtime `sql()` path delegates to `Bun.SQL`, which has its own TLS / connection-handling logic.
+- `parseDatabaseUrl` parses `sslmode`, `application_name`, and `connect_timeout` for the **internal** wire client (used by `migrate run`, `prepare`, and the runtime `migrate()` helper). The default runtime `sql()` path delegates connection handling to Postgres.js.
+- The `@onreza/sqlx-js/bun` adapter delegates runtime queries to `Bun.SQL`; it is kept for compatibility and is not recommended as the production adapter without workload-specific validation.
 - `connect_timeout` covers the TCP-connect phase only; TLS handshake and SCRAM authentication have no timeout.
 - `sql.file(path)` path is matched literally between scan time and runtime — they must agree on the working directory. Document a convention for your team (e.g. always run from the repo root).
 
@@ -462,7 +487,7 @@ See [ROADMAP.md](./ROADMAP.md) for what's planned.
 
 ### Cache schema change (pre-1.0)
 
-The `.bun-sqlx/<fingerprint>.json` entries dropped `forceNonNull`/`forceNullable` in favour of a single `override?: "non-null" | "nullable"` field. Cache files from the previous schema are rejected with a clear error pointing at the offending file. Delete `.bun-sqlx/` and re-run `bun-sqlx prepare` against your database — there's no data loss, the cache is regenerated.
+The `.sqlx-js/<fingerprint>.json` entries dropped `forceNonNull`/`forceNullable` in favour of a single `override?: "non-null" | "nullable"` field. Cache files from the previous schema are rejected with a clear error pointing at the offending file. Delete `.sqlx-js/` and re-run `sqlx-js prepare` against your database — there's no data loss, the cache is regenerated.
 
 CI (`prepare --check`) will also fail loudly until the cache is regenerated; this is intentional so a stale schema can't silently emit incorrect `.d.ts`.
 

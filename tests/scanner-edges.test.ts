@@ -22,7 +22,7 @@ function setup(files: Record<string, string>) {
 test("namespace import: bs.sql(...) is detected", () => {
   setup({
     "a.ts":
-      "import * as bs from \"bun-sqlx\";\n" +
+      "import * as bs from \"@onreza/sqlx-js\";\n" +
       "await bs.sql(\"SELECT 1\");\n" +
       "await bs.sql.one(\"SELECT 2\");\n" +
       "await bs.sql.optional(\"SELECT 3\");\n",
@@ -35,7 +35,7 @@ test("namespace import: bs.sql(...) is detected", () => {
 test("namespace import: bs.sql.file(...) / bs.sql.file.one(...)", () => {
   setup({
     "a.ts":
-      "import * as bs from \"bun-sqlx\";\n" +
+      "import * as bs from \"@onreza/sqlx-js\";\n" +
       "await bs.sql.file(\"./q.sql\");\n" +
       "await bs.sql.file.one(\"./q.sql\");\n",
     "q.sql": "SELECT 1\n",
@@ -51,7 +51,7 @@ test("namespace import: bs.sql.file(...) / bs.sql.file.one(...)", () => {
 test("namespace import: bs.sql.transaction(tx => tx(...))", () => {
   setup({
     "a.ts":
-      "import * as bs from \"bun-sqlx\";\n" +
+      "import * as bs from \"@onreza/sqlx-js\";\n" +
       "await bs.sql.transaction(async (tx) => {\n" +
       "  await tx(\"SELECT inside\");\n" +
       "});\n",
@@ -64,7 +64,7 @@ test("namespace import: bs.sql.transaction(tx => tx(...))", () => {
 test("alias shadowing: local `const sql = ...` removes alias inside the block", () => {
   setup({
     "a.ts":
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "function inner() {\n" +
       "  const sql = (..._args: any[]) => Promise.resolve([]);\n" +
       "  return sql(\"SHOULD NOT BE SCANNED\");\n" +
@@ -79,7 +79,7 @@ test("alias shadowing: local `const sql = ...` removes alias inside the block", 
 test("transaction with destructuring parameter does not crash", () => {
   setup({
     "a.ts":
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql.transaction(async ({ x }: any) => {\n" +
       "  return x;\n" +
       "});\n",
@@ -92,7 +92,7 @@ test("transaction with destructuring parameter does not crash", () => {
 test("transaction tx renamed via shadowing inside callback", () => {
   setup({
     "a.ts":
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql.transaction(async (tx) => {\n" +
       "  const tx2 = tx;\n" +
       "  await tx(\"SELECT real\");\n" +
@@ -107,7 +107,7 @@ test("transaction tx renamed via shadowing inside callback", () => {
 test("destructured `{ sql }` re-binding shadows imported alias", () => {
   setup({
     "a.ts":
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "function inner(obj: { sql: (...x: any[]) => Promise<any> }) {\n" +
       "  const { sql } = obj;\n" +
       "  return sql(\"SHOULD NOT BE SCANNED\");\n" +
@@ -122,7 +122,7 @@ test("destructured `{ sql }` re-binding shadows imported alias", () => {
 test("FunctionDeclaration with the same name as sql alias shadows the import", () => {
   setup({
     "a.ts":
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "function sql(_q: string) { return Promise.resolve([]); }\n" +
       "await sql(\"SHOULD NOT BE SCANNED\");\n",
   });
@@ -133,7 +133,7 @@ test("FunctionDeclaration with the same name as sql alias shadows the import", (
 test("catch (sql) shadows the import inside the catch block", () => {
   setup({
     "a.ts":
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "try {\n" +
       "  await sql(\"SELECT outside\");\n" +
       "} catch (sql) {\n" +
@@ -147,7 +147,7 @@ test("catch (sql) shadows the import inside the catch block", () => {
 test("namespace import: namespace identifier shadowed locally", () => {
   setup({
     "a.ts":
-      "import * as bs from \"bun-sqlx\";\n" +
+      "import * as bs from \"@onreza/sqlx-js\";\n" +
       "await bs.sql(\"SELECT outer\");\n" +
       "function inner() {\n" +
       "  const bs = { sql: (..._x: any[]) => Promise.resolve([]) };\n" +
@@ -162,7 +162,7 @@ test("namespace import: namespace identifier shadowed locally", () => {
 test("namespace import: function parameter shadows namespace inside body", () => {
   setup({
     "a.ts":
-      "import * as bs from \"bun-sqlx\";\n" +
+      "import * as bs from \"@onreza/sqlx-js\";\n" +
       "function inner(bs: { sql: (..._x: any[]) => Promise<any> }) {\n" +
       "  return bs.sql(\"SHOULD NOT BE SCANNED\");\n" +
       "}\n" +
@@ -176,7 +176,7 @@ test("namespace import: function parameter shadows namespace inside body", () =>
 test("alias import: function parameter shadows sql alias inside body", () => {
   setup({
     "a.ts":
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "const inner = (sql: (..._x: any[]) => Promise<any>) => sql(\"SHOULD NOT BE SCANNED\");\n" +
       "await sql(\"SELECT outer\");\n" +
       "void inner;\n",
@@ -188,7 +188,7 @@ test("alias import: function parameter shadows sql alias inside body", () => {
 test(".tsx file: sql() inside JSX is discovered", () => {
   setup({
     "page.tsx":
-      "import { sql } from \"bun-sqlx\";\n" +
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
       "async function Page() {\n" +
       "  const rows = await sql(\"SELECT 1 FROM jsx_users\");\n" +
       "  return <div>{rows.length}</div>;\n" +

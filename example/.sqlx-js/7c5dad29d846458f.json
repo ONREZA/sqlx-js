@@ -1,0 +1,28 @@
+{
+  "query": "SELECT u.id AS uid, p.id AS pid FROM users u FULL OUTER JOIN posts p ON p.user_id = u.id WHERE u.id = $1 OR p.id = $1",
+  "paramOids": [
+    20
+  ],
+  "paramTsTypes": [
+    "bigint"
+  ],
+  "paramNullable": [
+    false
+  ],
+  "columns": [
+    {
+      "name": "uid",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": true
+    },
+    {
+      "name": "pid",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": true
+    }
+  ],
+  "hasResultSet": true,
+  "hasInline": true
+}

@@ -1,4 +1,4 @@
-import { sql } from "bun-sqlx";
+import { sql } from "@onreza/sqlx-js";
 
 const usersWithRole = await sql(`SELECT id, name, role FROM users WHERE id = $1`, 1n);
 

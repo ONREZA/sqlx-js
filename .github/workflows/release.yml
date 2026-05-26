@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to publish manually (e.g. v0.1.0). Leave empty for normal release-please flow."
+        description: "Tag to publish manually (e.g. v0.0.0). Leave empty for normal release-please flow."
         required: false
         type: string
 
@@ -47,7 +47,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: bun_sqlx_test
+          POSTGRES_DB: sqlx_js_test
         ports:
           - 5432:5432
         options: >-
@@ -57,7 +57,7 @@ jobs:
           --health-retries 10
 
     env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/bun_sqlx_test
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_test
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -87,19 +87,28 @@ jobs:
         run: bun test tests
 
       - name: Migrate example schema
-        run: bun bin/bun-sqlx.ts migrate run --root example
+        run: bun bin/sqlx-js.ts migrate run --root example
 
       - name: Prepare example
-        run: bun bin/bun-sqlx.ts prepare --root example
+        run: bun bin/sqlx-js.ts prepare --root example
 
       - name: Verify offline cache matches sources
-        run: bun bin/bun-sqlx.ts prepare --check --root example
+        run: bun bin/sqlx-js.ts prepare --check --root example
 
       - name: Type-check example
         run: bunx tsc -p example
 
-      - name: Build declarations (dist/)
+      - name: Build package
         run: bun run build
+
+      - name: Verify built package entrypoints
+        run: |
+          node -e 'await import("@onreza/sqlx-js"); console.log("node root import ok")'
+          bun -e 'await import("@onreza/sqlx-js/bun"); console.log("bun adapter import ok")'
+          node dist/bin/sqlx-js.js --version
+
+      - name: Verify npm package contents
+        run: npm pack --dry-run
 
       - name: Verify package.json version matches tag
         env:
@@ -113,4 +122,6 @@ jobs:
           fi
 
       - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public --tag latest

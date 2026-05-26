@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { encodePgArrayLiteral } from "../src/runtime";
+import { encodePgArrayLiteral, parsePgArrayLiteral } from "../src/runtime";
 
 test("encodes simple string array", () => {
   expect(encodePgArrayLiteral(["a", "b", "c"])).toBe("{a,b,c}");
@@ -48,4 +48,8 @@ test("empty array → empty literal", () => {
 test("non-finite numbers are quoted", () => {
   expect(encodePgArrayLiteral([Infinity])).toBe('{"Infinity"}');
   expect(encodePgArrayLiteral([NaN])).toBe('{"NaN"}');
+});
+
+test("parses NULL elements distinctly from quoted NULL strings", () => {
+  expect(parsePgArrayLiteral('{a,NULL,"NULL","with \\"quote\\""}')).toEqual(["a", null, "NULL", 'with "quote"']);
 });

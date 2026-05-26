@@ -1,5 +1,5 @@
 declare global {
-  namespace BunSqlxJson {
+  namespace SqlxJsJson {
     type UserSettings = {
       theme: "light" | "dark";
       lang: string;

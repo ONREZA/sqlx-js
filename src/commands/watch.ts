@@ -3,7 +3,7 @@ import { basename } from "node:path";
 import { openSession, prepareOnce, type PrepareOptions, type PrepareSession } from "./prepare";
 
 const EXT_RE = /\.(ts|tsx|mts|cts|sql)$/;
-const SKIP_DIRS = ["node_modules", ".git", ".bun-sqlx", "dist", "build", ".next"];
+const SKIP_DIRS = ["node_modules", ".git", ".sqlx-js", "dist", "build", ".next"];
 const DEBOUNCE_MS = 150;
 
 export type WatchPrepareHookResult = {
@@ -97,7 +97,7 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
     const f = raw.replace(/\\/g, "/");
     if (SKIP_DIRS.some((d) => f === d || f.startsWith(`${d}/`) || f.includes(`/${d}/`))) return;
     const base = basename(f);
-    if (base === "bun-sqlx-env.d.ts" || base === "bun-sqlx.d.ts") return;
+    if (base === "sqlx-js-env.d.ts" || base === "sqlx-js.d.ts") return;
     if (!EXT_RE.test(f)) return;
     trigger();
   });

@@ -273,7 +273,7 @@ async function openPlainSocket(host: string, port: number, timeoutMs: number): P
     const sock = netConnect({ host, port });
     const t = setTimeout(() => {
       sock.destroy();
-      reject(new Error(`bun-sqlx: TCP connect timeout to ${host}:${port} after ${timeoutMs}ms`));
+      reject(new Error(`sqlx-js: TCP connect timeout to ${host}:${port} after ${timeoutMs}ms`));
     }, timeoutMs);
     sock.once("connect", () => {
       clearTimeout(t);
@@ -331,12 +331,12 @@ async function performSslHandshake(
   if (reply === "N".charCodeAt(0)) {
     if (isTlsRequired(mode)) {
       sock.destroy();
-      throw new Error(`bun-sqlx: server rejected SSL but sslmode=${mode} requires it`);
+      throw new Error(`sqlx-js: server rejected SSL but sslmode=${mode} requires it`);
     }
     return { sock, tls: false };
   }
   sock.destroy();
-  throw new Error(`bun-sqlx: unexpected SSL handshake reply byte 0x${reply.toString(16)}`);
+  throw new Error(`sqlx-js: unexpected SSL handshake reply byte 0x${reply.toString(16)}`);
 }
 
 // PgClient is NOT concurrent-safe: every describe/simpleQuery/execParamsText expects
@@ -702,7 +702,7 @@ export class PgError extends Error {
 
 export class ConnectionLostError extends Error {
   constructor(public readonly cause: Error) {
-    super(`bun-sqlx: connection lost: ${cause.message}`);
+    super(`sqlx-js: connection lost: ${cause.message}`);
     this.name = "ConnectionLostError";
   }
 }

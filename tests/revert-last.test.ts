@@ -8,7 +8,7 @@ import type { PgClient } from "../src/pg/wire";
 
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
-const newDir = () => { const d = mkdtempSync(join(tmpdir(), "bun-sqlx-revert-")); dirs.push(d); return d; };
+const newDir = () => { const d = mkdtempSync(join(tmpdir(), "sqlx-js-revert-")); dirs.push(d); return d; };
 
 const utf8 = (s: string) => new TextEncoder().encode(s);
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -43,7 +43,7 @@ class MockClient {
 
   async execParamsText(sql: string, params: (string | null)[]): Promise<any> {
     this.calls.push("execParamsText");
-    if (/DELETE FROM _bun_sqlx_migrations/i.test(sql)) {
+    if (/DELETE FROM _sqlx_js_migrations/i.test(sql)) {
       const v = Number(params[0]);
       this.applied = this.applied.filter((r) => r.version !== v);
     }

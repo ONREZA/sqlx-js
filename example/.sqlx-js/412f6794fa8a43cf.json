@@ -1,0 +1,34 @@
+{
+  "query": "SELECT id, name, role FROM users WHERE id = $1",
+  "paramOids": [
+    20
+  ],
+  "paramTsTypes": [
+    "bigint"
+  ],
+  "paramNullable": [
+    false
+  ],
+  "columns": [
+    {
+      "name": "id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false
+    },
+    {
+      "name": "name",
+      "typeOid": 25,
+      "tsType": "string",
+      "nullable": false
+    },
+    {
+      "name": "role",
+      "typeOid": 16421,
+      "tsType": "\"admin\" | \"editor\" | \"viewer\"",
+      "nullable": false
+    }
+  ],
+  "hasResultSet": true,
+  "hasInline": true
+}

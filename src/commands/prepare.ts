@@ -6,7 +6,7 @@ import { isBuiltinOid, oidToTs } from "../pg/oids";
 import { scanProject, type QueryCallSite } from "../scan/scanner";
 import { Cache, fingerprint, effectiveNullable, type CacheEntry } from "../cache";
 import { emitDts } from "../codegen";
-import { loadConfig, lookupJsonbType, type BunSqlxConfig } from "../config";
+import { loadConfig, lookupJsonbType, type SqlxJsConfig } from "../config";
 import { buildParamMap, type ParamMap, type ParamMapResult } from "../pg/param-map";
 import { mergeExtensionTypes } from "../pg/extensions";
 
@@ -32,7 +32,7 @@ function resolveTs(oid: number, customLookup: (o: number) => CustomTypeInfo | un
 function resolveColumnTs(
   f: FieldDescription,
   schema: SchemaCache,
-  cfg: BunSqlxConfig,
+  cfg: SqlxJsConfig,
 ): string {
   if (f.tableOid !== 0 && f.columnAttr !== 0) {
     const tbl = schema.tableNameByOid(f.tableOid);
@@ -56,7 +56,7 @@ function resolveParamTs(
   paramOid: number,
   paramMap: ParamMap,
   schema: SchemaCache,
-  cfg: BunSqlxConfig,
+  cfg: SqlxJsConfig,
 ): string {
   if (JSON_OIDS.has(paramOid) || JSON_ARRAY_OIDS.has(paramOid)) {
     const target = paramMap.get(paramIndex);
@@ -121,7 +121,7 @@ function snippet(query: string, max = 80): string {
 export type PrepareSession = {
   client: PgClient;
   schema: SchemaCache;
-  userCfg: BunSqlxConfig;
+  userCfg: SqlxJsConfig;
 };
 
 export async function openSession(opts: PrepareOptions): Promise<PrepareSession> {
@@ -324,7 +324,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
       }
     }
     if (stale > 0) {
-      console.error(`\nbun-sqlx prepare --check: ${stale} stale/missing entries. Run \`bun-sqlx prepare\` against a live DB.`);
+      console.error(`\nsqlx-js prepare --check: ${stale} stale/missing entries. Run \`sqlx-js prepare\` against a live DB.`);
       process.exit(1);
     }
     const entries = [...unique.values()].map((u) => cache.read(u.fp)!).filter(Boolean);

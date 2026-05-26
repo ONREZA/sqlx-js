@@ -32,7 +32,7 @@ function readMigrations(dir: string): MigrationFile[] {
     const name = m[2]!;
     if (!SAFE_NAME_RE.test(name)) {
       throw new Error(
-        `bun-sqlx.migrate: unsafe migration filename ${f} — name must match /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/`,
+        `sqlx-js.migrate: unsafe migration filename ${f} — name must match /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/`,
       );
     }
     const upPath = join(dir, f);
@@ -52,7 +52,7 @@ function readMigrations(dir: string): MigrationFile[] {
 
 export async function ensureTable(c: PgClient): Promise<void> {
   await c.simpleQuery(`
-    CREATE TABLE IF NOT EXISTS _bun_sqlx_migrations (
+    CREATE TABLE IF NOT EXISTS _sqlx_js_migrations (
       version BIGINT PRIMARY KEY,
       name TEXT NOT NULL,
       up_hash TEXT NOT NULL,
@@ -62,7 +62,7 @@ export async function ensureTable(c: PgClient): Promise<void> {
 }
 
 export async function listApplied(c: PgClient): Promise<Map<number, { name: string; hash: string }>> {
-  const r = await c.simpleQuery("SELECT version, name, up_hash FROM _bun_sqlx_migrations ORDER BY version");
+  const r = await c.simpleQuery("SELECT version, name, up_hash FROM _sqlx_js_migrations ORDER BY version");
   const out = new Map<number, { name: string; hash: string }>();
   for (const row of r.rows) {
     out.set(Number(decodeText(row[0]!)), { name: decodeText(row[1]!)!, hash: decodeText(row[2]!)! });
@@ -99,7 +99,7 @@ export async function applyPending(
     try {
       await c.simpleQuery(m.upSql);
       await c.execParamsText(
-        "INSERT INTO _bun_sqlx_migrations (version, name, up_hash) VALUES ($1, $2, $3)",
+        "INSERT INTO _sqlx_js_migrations (version, name, up_hash) VALUES ($1, $2, $3)",
         [String(m.version), m.name, m.upHash],
       );
       await c.simpleQuery("COMMIT");
@@ -122,7 +122,7 @@ export async function applyPending(
 function lockKeyToString(lockKey: number | bigint): string {
   if (typeof lockKey === "bigint") return lockKey.toString();
   if (!Number.isSafeInteger(lockKey)) {
-    throw new Error(`bun-sqlx.migrate: lockKey must be a safe integer or bigint, got ${lockKey}`);
+    throw new Error(`sqlx-js.migrate: lockKey must be a safe integer or bigint, got ${lockKey}`);
   }
   return BigInt(lockKey).toString();
 }
@@ -133,7 +133,7 @@ export async function acquireMigrateLock(
   timeoutMs?: number,
 ): Promise<void> {
   if (timeoutMs !== undefined && !Number.isFinite(timeoutMs)) {
-    throw new Error(`bun-sqlx.migrate: lockTimeoutMs must be a finite number, got ${timeoutMs}`);
+    throw new Error(`sqlx-js.migrate: lockTimeoutMs must be a finite number, got ${timeoutMs}`);
   }
   const key = lockKeyToString(lockKey);
   if (timeoutMs === undefined || timeoutMs <= 0) {
@@ -148,7 +148,7 @@ export async function acquireMigrateLock(
     if (got) return;
     const elapsed = Date.now() - start;
     if (elapsed >= timeoutMs) {
-      throw new Error(`bun-sqlx.migrate: failed to acquire advisory lock ${key} within ${timeoutMs}ms`);
+      throw new Error(`sqlx-js.migrate: failed to acquire advisory lock ${key} within ${timeoutMs}ms`);
     }
     const remaining = timeoutMs - elapsed;
     await new Promise((resolve) => setTimeout(resolve, Math.min(delay, remaining)));
@@ -193,7 +193,7 @@ export async function migrateRun(
       try {
         await releaseMigrateLock(c, lockKey);
       } catch (e) {
-        console.warn(`bun-sqlx.migrate: failed to release advisory lock: ${(e as Error).message}`);
+        console.warn(`sqlx-js.migrate: failed to release advisory lock: ${(e as Error).message}`);
       }
     }
     await c.end();
@@ -237,7 +237,7 @@ export async function revertLast(c: PgClient, migrationsDir: string): Promise<Re
   await c.simpleQuery("BEGIN");
   try {
     await c.simpleQuery(downSql);
-    await c.execParamsText("DELETE FROM _bun_sqlx_migrations WHERE version = $1", [String(last.version)]);
+    await c.execParamsText("DELETE FROM _sqlx_js_migrations WHERE version = $1", [String(last.version)]);
     await c.simpleQuery("COMMIT");
     return { kind: "reverted", version: last.version, name: last.name };
   } catch (err) {
@@ -281,7 +281,7 @@ export async function migrateRevert(
       try {
         await releaseMigrateLock(c, lockKey);
       } catch (e) {
-        console.warn(`bun-sqlx.migrate: failed to release advisory lock: ${(e as Error).message}`);
+        console.warn(`sqlx-js.migrate: failed to release advisory lock: ${(e as Error).message}`);
       }
     }
     await c.end();
@@ -294,7 +294,7 @@ export function migrateAdd(opts: MigrateOptions & { name: string }): void {
   const existing = readMigrations(opts.migrationsDir);
   const nextVersion = (existing[existing.length - 1]?.version ?? 0) + 1;
   const safe = opts.name.replace(/[^a-zA-Z0-9_-]+/g, "_").replace(/^[^a-zA-Z0-9]+/, "");
-  if (!safe) throw new Error(`bun-sqlx.migrate: invalid migration name "${opts.name}"`);
+  if (!safe) throw new Error(`sqlx-js.migrate: invalid migration name "${opts.name}"`);
   const padded = String(nextVersion).padStart(4, "0");
   const upFname = `${padded}_${safe}.up.sql`;
   const downFname = `${padded}_${safe}.down.sql`;

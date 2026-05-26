@@ -3,11 +3,12 @@
   "compilerOptions": {
     "noEmit": false,
     "declaration": true,
-    "emitDeclarationOnly": true,
+    "emitDeclarationOnly": false,
     "outDir": "./dist",
-    "rootDir": "./src",
+    "rootDir": ".",
+    "allowImportingTsExtensions": false,
     "noUncheckedIndexedAccess": true
   },
-  "include": ["src"],
-  "exclude": ["tests", "example", "bin"]
+  "include": ["src", "bin"],
+  "exclude": ["tests", "example"]
 }

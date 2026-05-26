@@ -1,30 +1,14 @@
-import { SQL } from "bun";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { PgClient, parseDatabaseUrl } from "./pg/wire";
 import { applyPending, acquireMigrateLock, releaseMigrateLock, DEFAULT_MIGRATE_LOCK_KEY } from "./commands/migrate";
 
-let defaultClient: SQL | null = null;
-
-export function getClient(): SQL {
-  if (!defaultClient) {
-    const url = process.env.DATABASE_URL;
-    if (!url) throw new Error("bun-sqlx: DATABASE_URL is not set");
-    defaultClient = new SQL({ url, bigint: true });
-  }
-  return defaultClient;
-}
-
-export function setClient(client: SQL): void {
-  defaultClient = client;
-}
-
-export async function close(): Promise<void> {
-  if (defaultClient) {
-    await defaultClient.close();
-    defaultClient = null;
-  }
-}
+export type RuntimeClient = {
+  query: (query: string, params: unknown[]) => Promise<unknown[]>;
+  transformParam?: (param: unknown) => unknown;
+  transaction: <R>(fn: (client: RuntimeClient) => Promise<R>) => Promise<R>;
+  close: () => Promise<void>;
+};
 
 type AnyFn = (...args: unknown[]) => Promise<unknown[]>;
 type AnyOneFn = (...args: unknown[]) => Promise<unknown>;
@@ -94,7 +78,68 @@ export function encodePgArrayLiteral(arr: unknown[]): string {
   return "{" + parts.join(",") + "}";
 }
 
-function encodeParam(p: unknown): unknown {
+type PgArrayValue<T> = T | null | PgArrayValue<T>[];
+
+export function parsePgArrayLiteral<T = string>(
+  input: string,
+  parseElement: (value: string) => T = (value) => value as T,
+): PgArrayValue<T>[] {
+  let i = 0;
+
+  const parseQuoted = (): T => {
+    i++;
+    let out = "";
+    while (i < input.length) {
+      const ch = input[i++]!;
+      if (ch === '"') return parseElement(out);
+      if (ch === "\\") {
+        if (i < input.length) out += input[i++]!;
+      } else {
+        out += ch;
+      }
+    }
+    throw new Error("sqlx-js: malformed PostgreSQL array literal");
+  };
+
+  const parseUnquoted = (): T | null => {
+    const start = i;
+    while (i < input.length && input[i] !== "," && input[i] !== "}") i++;
+    const raw = input.slice(start, i);
+    return raw === "NULL" ? null : parseElement(raw);
+  };
+
+  const parseArray = (): PgArrayValue<T>[] => {
+    if (input[i] !== "{") throw new Error("sqlx-js: malformed PostgreSQL array literal");
+    i++;
+    const out: PgArrayValue<T>[] = [];
+    while (i < input.length) {
+      if (input[i] === "}") {
+        i++;
+        return out;
+      }
+      const value = input[i] === "{"
+        ? parseArray()
+        : input[i] === '"'
+          ? parseQuoted()
+          : parseUnquoted();
+      out.push(value);
+      if (input[i] === ",") {
+        i++;
+        continue;
+      }
+      if (input[i] === "}") continue;
+      if (i >= input.length) break;
+      throw new Error("sqlx-js: malformed PostgreSQL array literal");
+    }
+    throw new Error("sqlx-js: malformed PostgreSQL array literal");
+  };
+
+  const parsed = parseArray();
+  if (i !== input.length) throw new Error("sqlx-js: malformed PostgreSQL array literal");
+  return parsed;
+}
+
+export function encodeParam(p: unknown): unknown {
   if (!Array.isArray(p)) return p;
   if (p.length === 0) return p;
   if (!p.every(isPrimitiveArrayElement)) return p;
@@ -121,25 +166,28 @@ export const _internal = {
   renameRows,
   encodeParam,
   isPrimitiveArrayElement,
+  parsePgArrayLiteral,
   loadSqlFile,
   buildSetTransaction,
   clearIdentifierCache,
 };
 
-async function runQuery(client: SQL, query: string, params: unknown[]): Promise<unknown[]> {
-  const encoded = params.length === 0 ? params : params.map(encodeParam);
-  const rows = await client.unsafe(query, encoded);
+async function runQuery(client: RuntimeClient, query: string, params: unknown[]): Promise<unknown[]> {
+  const encoded = params.length === 0
+    ? params
+    : params.map((p) => client.transformParam ? client.transformParam(p) : encodeParam(p));
+  const rows = await client.query(query, encoded);
   return renameRows(rows);
 }
 
-async function runOne(client: SQL, query: string, params: unknown[]): Promise<unknown> {
+async function runOne(client: RuntimeClient, query: string, params: unknown[]): Promise<unknown> {
   const rows = await runQuery(client, query, params);
   if (rows.length === 1) return rows[0];
   if (rows.length === 0) throw new NoRowsError();
   throw new TooManyRowsError(rows.length, "1");
 }
 
-async function runOptional(client: SQL, query: string, params: unknown[]): Promise<unknown | null> {
+async function runOptional(client: RuntimeClient, query: string, params: unknown[]): Promise<unknown | null> {
   const rows = await runQuery(client, query, params);
   if (rows.length === 0) return null;
   if (rows.length === 1) return rows[0];
@@ -160,7 +208,7 @@ function loadSqlFile(path: string): string {
     sqlFileCache.set(full, { mtimeMs: st.mtimeMs, size: st.size, content });
     return content;
   } catch (err) {
-    throw new Error(`bun-sqlx.sql.file: cannot read ${path}: ${(err as Error).message}`);
+    throw new Error(`sqlx-js.sql.file: cannot read ${path}: ${(err as Error).message}`);
   }
 }
 
@@ -187,9 +235,9 @@ function clearIdentifierCache(): void {
 }
 
 function identifierSnapshotPath(): string {
-  return process.env.BUN_SQLX_SCHEMA_PATH
-    ? resolve(process.cwd(), process.env.BUN_SQLX_SCHEMA_PATH)
-    : resolve(process.cwd(), ".bun-sqlx/schema/schema.json");
+  return process.env.SQLX_JS_SCHEMA_PATH
+    ? resolve(process.cwd(), process.env.SQLX_JS_SCHEMA_PATH)
+    : resolve(process.cwd(), ".sqlx-js/schema/schema.json");
 }
 
 function addPath(whitelist: IdentifierWhitelist, parts: string[]): void {
@@ -261,7 +309,7 @@ function buildIdentifierWhitelist(snapshot: unknown): IdentifierWhitelist {
 function loadIdentifierWhitelist(): IdentifierWhitelist {
   const path = identifierSnapshotPath();
   if (!existsSync(path)) {
-    throw new Error(`bun-sqlx.id: schema snapshot not found at ${path}. Run \`bun-sqlx schema dump\`.`);
+    throw new Error(`sqlx-js.id: schema snapshot not found at ${path}. Run \`sqlx-js schema dump\`.`);
   }
   const st = statSync(path);
   if (identifierCache && identifierCache.path === path && identifierCache.mtimeMs === st.mtimeMs && identifierCache.size === st.size) {
@@ -274,20 +322,20 @@ function loadIdentifierWhitelist(): IdentifierWhitelist {
 }
 
 function quoteIdentifier(part: string): string {
-  if (part.length === 0) throw new Error("bun-sqlx.id: identifier segment must not be empty");
-  if (part.includes("\0")) throw new Error("bun-sqlx.id: identifier segment must not contain NUL");
+  if (part.length === 0) throw new Error("sqlx-js.id: identifier segment must not be empty");
+  if (part.includes("\0")) throw new Error("sqlx-js.id: identifier segment must not contain NUL");
   return `"${part.replace(/"/g, '""')}"`;
 }
 
 export function id(...parts: string[]): string {
-  if (parts.length === 0) throw new Error("bun-sqlx.id: at least one identifier segment is required");
-  if (parts.length > 3) throw new Error("bun-sqlx.id: expected 1 to 3 identifier segments");
+  if (parts.length === 0) throw new Error("sqlx-js.id: at least one identifier segment is required");
+  if (parts.length > 3) throw new Error("sqlx-js.id: expected 1 to 3 identifier segments");
   const whitelist = loadIdentifierWhitelist();
   const ok = parts.length === 1
     ? whitelist.names.has(parts[0]!)
     : whitelist.paths.has(parts.join("\0"));
   if (!ok) {
-    throw new Error(`bun-sqlx.id: identifier is not present in schema snapshot: ${parts.join(".")}`);
+    throw new Error(`sqlx-js.id: identifier is not present in schema snapshot: ${parts.join(".")}`);
   }
   return parts.map(quoteIdentifier).join(".");
 }
@@ -295,7 +343,7 @@ export function id(...parts: string[]): string {
 type FileCallable = AnyFn & { one: AnyOneFn; optional: AnyOptionalFn };
 type SqlCallable = AnyFn & { file: FileCallable; one: AnyOneFn; optional: AnyOptionalFn; id: IdentifierFn };
 
-function makeBoundCallable(client: SQL): SqlCallable {
+function makeBoundCallable(client: RuntimeClient): SqlCallable {
   const fn: AnyFn = (async (query: string, ...params: unknown[]) => {
     return runQuery(client, query, params);
   }) as AnyFn;
@@ -325,35 +373,12 @@ export type TransactionOptions = {
   deferrable?: boolean;
 };
 
-type SqlRoot = SqlCallable & {
+export type SqlRoot = SqlCallable & {
   transaction: <R>(
     fnOrOpts: TransactionOptions | ((tx: SqlCallable) => Promise<R>),
     fn?: (tx: SqlCallable) => Promise<R>,
   ) => Promise<R>;
 };
-
-const root: SqlRoot = (async (query: string, ...params: unknown[]) => {
-  return runQuery(getClient(), query, params);
-}) as SqlRoot;
-
-const rootFile: AnyFn = (async (path: string, ...params: unknown[]) => {
-  return runQuery(getClient(), loadSqlFile(path), params);
-}) as AnyFn;
-(rootFile as FileCallable).one = (async (path: string, ...params: unknown[]) => {
-  return runOne(getClient(), loadSqlFile(path), params);
-}) as AnyOneFn;
-(rootFile as FileCallable).optional = (async (path: string, ...params: unknown[]) => {
-  return runOptional(getClient(), loadSqlFile(path), params);
-}) as AnyOptionalFn;
-root.file = rootFile as FileCallable;
-
-root.one = (async (query: string, ...params: unknown[]) => {
-  return runOne(getClient(), query, params);
-}) as AnyOneFn;
-root.optional = (async (query: string, ...params: unknown[]) => {
-  return runOptional(getClient(), query, params);
-}) as AnyOptionalFn;
-root.id = id;
 
 function buildSetTransaction(opts: TransactionOptions): string {
   const parts: string[] = [];
@@ -364,33 +389,63 @@ function buildSetTransaction(opts: TransactionOptions): string {
   return `SET TRANSACTION ${parts.join(" ")}`;
 }
 
-root.transaction = (async <R>(
-  fnOrOpts: TransactionOptions | ((tx: SqlCallable) => Promise<R>),
-  maybeFn?: (tx: SqlCallable) => Promise<R>,
-): Promise<R> => {
-  const c = getClient();
-  let opts: TransactionOptions = {};
-  let cb: (tx: SqlCallable) => Promise<R>;
-  if (typeof fnOrOpts === "function") {
-    cb = fnOrOpts;
-  } else {
-    opts = fnOrOpts;
-    if (!maybeFn) throw new Error("bun-sqlx.transaction: callback is required");
-    cb = maybeFn;
-  }
-  const setTx = buildSetTransaction(opts);
-  return (await c.begin(async (txClient: SQL) => {
-    if (setTx) await txClient.unsafe(setTx);
-    const tx = makeBoundCallable(txClient);
-    return await cb(tx);
-  })) as R;
-}) as SqlRoot["transaction"];
+export type RuntimeApi = {
+  sql: SqlRoot;
+  unsafe: (query: string, ...params: unknown[]) => Promise<Record<string, unknown>[]>;
+};
 
-export const sql: SqlRoot = root;
+export function createSqlRuntime(getClient: () => RuntimeClient): RuntimeApi {
+  const root: SqlRoot = (async (query: string, ...params: unknown[]) => {
+    return runQuery(getClient(), query, params);
+  }) as SqlRoot;
 
-export const unsafe = (async (query: string, ...params: unknown[]): Promise<Record<string, unknown>[]> => {
-  return (await runQuery(getClient(), query, params)) as Record<string, unknown>[];
-}) as (query: string, ...params: unknown[]) => Promise<Record<string, unknown>[]>;
+  const rootFile: AnyFn = (async (path: string, ...params: unknown[]) => {
+    return runQuery(getClient(), loadSqlFile(path), params);
+  }) as AnyFn;
+  (rootFile as FileCallable).one = (async (path: string, ...params: unknown[]) => {
+    return runOne(getClient(), loadSqlFile(path), params);
+  }) as AnyOneFn;
+  (rootFile as FileCallable).optional = (async (path: string, ...params: unknown[]) => {
+    return runOptional(getClient(), loadSqlFile(path), params);
+  }) as AnyOptionalFn;
+  root.file = rootFile as FileCallable;
+
+  root.one = (async (query: string, ...params: unknown[]) => {
+    return runOne(getClient(), query, params);
+  }) as AnyOneFn;
+  root.optional = (async (query: string, ...params: unknown[]) => {
+    return runOptional(getClient(), query, params);
+  }) as AnyOptionalFn;
+  root.id = id;
+
+  root.transaction = (async <R>(
+    fnOrOpts: TransactionOptions | ((tx: SqlCallable) => Promise<R>),
+    maybeFn?: (tx: SqlCallable) => Promise<R>,
+  ): Promise<R> => {
+    const c = getClient();
+    let opts: TransactionOptions = {};
+    let cb: (tx: SqlCallable) => Promise<R>;
+    if (typeof fnOrOpts === "function") {
+      cb = fnOrOpts;
+    } else {
+      opts = fnOrOpts;
+      if (!maybeFn) throw new Error("sqlx-js.transaction: callback is required");
+      cb = maybeFn;
+    }
+    const setTx = buildSetTransaction(opts);
+    return await c.transaction(async (txClient) => {
+      if (setTx) await txClient.query(setTx, []);
+      const tx = makeBoundCallable(txClient);
+      return await cb(tx);
+    });
+  }) as SqlRoot["transaction"];
+
+  const unsafe = (async (query: string, ...params: unknown[]): Promise<Record<string, unknown>[]> => {
+    return (await runQuery(getClient(), query, params)) as Record<string, unknown>[];
+  }) as (query: string, ...params: unknown[]) => Promise<Record<string, unknown>[]>;
+
+  return { sql: root, unsafe };
+}
 
 export type MigrateOptions = {
   dir?: string;
@@ -403,16 +458,16 @@ export type MigrateOptions = {
 function normalizeLockKey(lockKey: number | bigint): bigint {
   if (typeof lockKey === "bigint") return lockKey;
   if (!Number.isSafeInteger(lockKey)) {
-    throw new Error(`bun-sqlx.migrate: lockKey must be a safe integer or bigint, got ${lockKey}`);
+    throw new Error(`sqlx-js.migrate: lockKey must be a safe integer or bigint, got ${lockKey}`);
   }
   return BigInt(lockKey);
 }
 
 export async function migrate(opts: MigrateOptions = {}): Promise<void> {
   const url = opts.databaseUrl ?? process.env.DATABASE_URL;
-  if (!url) throw new Error("bun-sqlx.migrate: DATABASE_URL is required");
+  if (!url) throw new Error("sqlx-js.migrate: DATABASE_URL is required");
   const dir = opts.dir ?? "migrations";
-  const log = opts.log ?? ((m: string) => console.log(`[bun-sqlx] ${m}`));
+  const log = opts.log ?? ((m: string) => console.log(`[sqlx-js] ${m}`));
   const lockKey = normalizeLockKey(opts.lockKey ?? DEFAULT_MIGRATE_LOCK_KEY);
 
   const cfg = parseDatabaseUrl(url);
@@ -429,10 +484,10 @@ export async function migrate(opts: MigrateOptions = {}): Promise<void> {
         appliedAny = true;
       } else if (e.kind === "tampered") {
         throw new Error(
-          `bun-sqlx.migrate: ${e.version}_${e.name} hash mismatch (applied ${e.applied.slice(0, 16)}… vs current ${e.current.slice(0, 16)}…)`,
+          `sqlx-js.migrate: ${e.version}_${e.name} hash mismatch (applied ${e.applied.slice(0, 16)}… vs current ${e.current.slice(0, 16)}…)`,
         );
       } else {
-        throw new Error(`bun-sqlx.migrate: ${e.version}_${e.name} failed — ${e.error}`);
+        throw new Error(`sqlx-js.migrate: ${e.version}_${e.name} failed — ${e.error}`);
       }
     });
     if (!appliedAny) log(`migrate: up-to-date (${result.applied + result.failed + result.tampered === 0 ? "no pending" : ""})`);

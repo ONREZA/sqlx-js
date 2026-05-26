@@ -12,7 +12,8 @@ export type QueryCallSite = {
   sqlFilePath?: string;
 };
 
-const EXCLUDE_DIRS = new Set(["node_modules", ".git", ".bun-sqlx", "dist", "build", ".next"]);
+const EXCLUDE_DIRS = new Set(["node_modules", ".git", ".sqlx-js", "dist", "build", ".next"]);
+const SQLX_MODULES = new Set(["@onreza/sqlx-js", "@onreza/sqlx-js/bun"]);
 const EXT = /\.(ts|tsx|mts|cts)$/;
 
 function walk(dir: string, out: string[]): void {
@@ -113,7 +114,7 @@ export function scanFile(absPath: string, root: string): QueryCallSite[] {
     if (!ts.isImportDeclaration(stmt)) continue;
     const mod = stmt.moduleSpecifier;
     if (!ts.isStringLiteral(mod)) continue;
-    if (mod.text !== "bun-sqlx") continue;
+    if (!SQLX_MODULES.has(mod.text)) continue;
     const ic = stmt.importClause;
     if (!ic) continue;
     const nb = ic.namedBindings;
@@ -141,7 +142,7 @@ export function scanFile(absPath: string, root: string): QueryCallSite[] {
     if (!ts.isStringLiteralLike(first)) {
       const pos = here(first);
       throw new Error(
-        `bun-sqlx: ${fileRel}:${pos.line}:${pos.column} — sql() requires a string literal as first argument`,
+        `sqlx-js: ${fileRel}:${pos.line}:${pos.column} — sql() requires a string literal as first argument`,
       );
     }
     const pos = here(first);
@@ -160,7 +161,7 @@ export function scanFile(absPath: string, root: string): QueryCallSite[] {
     if (!ts.isStringLiteralLike(first)) {
       const pos = first ? here(first) : here(callee);
       throw new Error(
-        `bun-sqlx: ${fileRel}:${pos.line}:${pos.column} — sql.file() requires a string literal path`,
+        `sqlx-js: ${fileRel}:${pos.line}:${pos.column} — sql.file() requires a string literal path`,
       );
     }
     const sqlPath = first.text;
@@ -168,7 +169,7 @@ export function scanFile(absPath: string, root: string): QueryCallSite[] {
     if (!existsSync(abs)) {
       const pos = here(first);
       throw new Error(
-        `bun-sqlx: ${fileRel}:${pos.line}:${pos.column} — sql.file path not found: ${sqlPath}`,
+        `sqlx-js: ${fileRel}:${pos.line}:${pos.column} — sql.file path not found: ${sqlPath}`,
       );
     }
     const query = readFileSync(abs, "utf8");

@@ -1,0 +1,36 @@
+{
+  "query": "INSERT INTO users (name, email, age) VALUES ($1, $2, $3) RETURNING id AS \"id!\", created_at AS \"created_at!\"",
+  "paramOids": [
+    25,
+    25,
+    23
+  ],
+  "paramTsTypes": [
+    "string",
+    "string",
+    "number"
+  ],
+  "paramNullable": [
+    false,
+    false,
+    true
+  ],
+  "columns": [
+    {
+      "name": "id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false,
+      "override": "non-null"
+    },
+    {
+      "name": "created_at",
+      "typeOid": 1184,
+      "tsType": "Date",
+      "nullable": false,
+      "override": "non-null"
+    }
+  ],
+  "hasResultSet": true,
+  "hasInline": true
+}

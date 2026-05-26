@@ -33,10 +33,10 @@ export async function applyShadowMigrations(
         log(`shadow: applied ${String(e.version).padStart(4, "0")}_${e.name}`);
       } else if (e.kind === "tampered") {
         throw new Error(
-          `bun-sqlx shadow: ${e.version}_${e.name} hash mismatch (applied ${e.applied.slice(0, 16)} vs current ${e.current.slice(0, 16)})`,
+          `sqlx-js shadow: ${e.version}_${e.name} hash mismatch (applied ${e.applied.slice(0, 16)} vs current ${e.current.slice(0, 16)})`,
         );
       } else {
-        throw new Error(`bun-sqlx shadow: ${e.version}_${e.name} failed — ${e.error}`);
+        throw new Error(`sqlx-js shadow: ${e.version}_${e.name} failed — ${e.error}`);
       }
     });
     if (applied === 0 && result.tampered === 0 && result.failed === 0) log("shadow: migrations up-to-date");
@@ -73,7 +73,7 @@ export async function runSchemaDump(opts: SchemaCommandOptions): Promise<void> {
 export async function runSchemaCheck(opts: SchemaCommandOptions): Promise<void> {
   if (!schemaSnapshotExists(opts.snapshotPath)) {
     console.error(`schema: missing snapshot ${opts.snapshotPath}`);
-    console.error("schema: run `bun-sqlx schema dump` against a live database");
+    console.error("schema: run `sqlx-js schema dump` against a live database");
     process.exit(1);
   }
   await prepareShadowIfNeeded(opts);
@@ -81,7 +81,7 @@ export async function runSchemaCheck(opts: SchemaCommandOptions): Promise<void> 
   const actual = await introspectDatabase(effectiveDatabaseUrl(opts));
   if (!schemaSnapshotEqual(expected, actual)) {
     console.error(`schema: snapshot is stale: ${opts.snapshotPath}`);
-    console.error("schema: run `bun-sqlx schema dump` and commit the updated snapshot");
+    console.error("schema: run `sqlx-js schema dump` and commit the updated snapshot");
     process.exit(1);
   }
   console.log(`schema: ok — ${actual.relations.length} relation(s), ${actual.types.length} type(s), ${actual.functions.length} function(s)`);

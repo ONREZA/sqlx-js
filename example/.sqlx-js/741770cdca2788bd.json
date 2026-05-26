@@ -1,0 +1,52 @@
+{
+  "query": "SELECT p.id, p.title, p.status, p.tags, p.history, u.role AS author_role FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = $1",
+  "paramOids": [
+    20
+  ],
+  "paramTsTypes": [
+    "bigint"
+  ],
+  "paramNullable": [
+    false
+  ],
+  "columns": [
+    {
+      "name": "id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false
+    },
+    {
+      "name": "title",
+      "typeOid": 25,
+      "tsType": "string",
+      "nullable": false
+    },
+    {
+      "name": "status",
+      "typeOid": 16429,
+      "tsType": "\"draft\" | \"published\" | \"archived\"",
+      "nullable": false
+    },
+    {
+      "name": "tags",
+      "typeOid": 1009,
+      "tsType": "(string)[]",
+      "nullable": false
+    },
+    {
+      "name": "history",
+      "typeOid": 16420,
+      "tsType": "(\"admin\" | \"editor\" | \"viewer\")[]",
+      "nullable": false
+    },
+    {
+      "name": "author_role",
+      "typeOid": 16421,
+      "tsType": "\"admin\" | \"editor\" | \"viewer\"",
+      "nullable": false
+    }
+  ],
+  "hasResultSet": true,
+  "hasInline": true
+}

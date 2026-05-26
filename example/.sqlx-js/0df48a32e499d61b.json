@@ -1,0 +1,23 @@
+{
+  "query": "SELECT COUNT(*) AS \"n!\" FROM users WHERE age >= $1",
+  "paramOids": [
+    23
+  ],
+  "paramTsTypes": [
+    "number"
+  ],
+  "paramNullable": [
+    false
+  ],
+  "columns": [
+    {
+      "name": "n",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false,
+      "override": "non-null"
+    }
+  ],
+  "hasResultSet": true,
+  "hasInline": true
+}

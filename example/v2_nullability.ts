@@ -1,4 +1,4 @@
-import { sql } from "bun-sqlx";
+import { sql } from "@onreza/sqlx-js";
 
 const basic = await sql(`SELECT id, name, email, age, bio FROM users WHERE id = $1`, 1n);
 

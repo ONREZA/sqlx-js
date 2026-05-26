@@ -129,6 +129,14 @@ export function isBuiltinOid(oid: number): boolean {
   return SCALAR[oid] !== undefined || ARRAY[oid] !== undefined;
 }
 
+export function builtinArrayOids(): number[] {
+  return Object.keys(ARRAY).map(Number);
+}
+
+export function arrayElementOid(oid: number): number | undefined {
+  return ARRAY[oid];
+}
+
 export type ResolveTs = (oid: number) => string;
 
 export function makeResolver(custom: (oid: number) => string | undefined): ResolveTs {

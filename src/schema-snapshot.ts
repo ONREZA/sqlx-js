@@ -524,7 +524,7 @@ export function schemaSnapshotEqual(a: SchemaSnapshot, b: SchemaSnapshot): boole
 
 export function renderSchemaManifest(snapshot: SchemaSnapshot): string {
   const lines: string[] = [];
-  lines.push("# bun-sqlx schema manifest");
+  lines.push("# sqlx-js schema manifest");
   lines.push("");
   lines.push("Generated from PostgreSQL introspection. Do not edit by hand.");
   lines.push("");
