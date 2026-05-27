@@ -6,6 +6,8 @@ Items already shipped live in the [README](./README.md) feature list; this file 
 
 | Feature | ROI | Notes |
 |---------|-----|-------|
+| Migration lifecycle improvements | 8 | Squash baseline MVP, `migrate run --dry-run`, read-only `migrate info`, archive/restore helpers, JSON operator output, filesystem-only `migrate check`, and shadow-based `migrate revert --dry-run` exist; continue with safer migration lifecycle guardrails. This is the foundation for reliable external migration import. |
+| Prisma migration assistant | 7 | Import Prisma Migrate SQL history and Prisma TypedSQL/raw SQL into `sqlx-js`; classify Prisma Client CRUD/nested-write sites as assisted/manual instead of promising a fully automatic ORM rewrite. |
 | Composite & domain types | 6 | Resolve PG `CREATE TYPE foo AS (...)` and `CREATE DOMAIN` via `pg_type` recursion. Domain → base type's TS (`email DOMAIN AS text` → `string`). Composite → struct literal type. Currently both fall through to `unknown`. |
 | Self-join precision (unqualified ColumnRef) | 4 | `SELECT name FROM users u1 JOIN users u2 ON ...` with unqualified `name` can't be attributed to a specific alias. PG would reject ambiguous unqualified refs anyway, but explicit aliasing currently has no narrowing benefit in self-joins. |
 | `INSERT INTO t VALUES (...)` without column list | 3 | Map params by `pg_attribute attnum` ordering. Rare in practice — most teams use explicit column lists. |
@@ -17,7 +19,6 @@ Items already shipped live in the [README](./README.md) feature list; this file 
 | `EXPLAIN`-based performance hints | 6 | `prepare` could optionally run `EXPLAIN` per query and surface seq-scan / missing-index warnings. Independent feature; pairs well with CI. |
 | `NOT (col IS NULL)` narrowing | 2 | Symmetric inversion in WHERE walker. Niche pattern. |
 | Multi-statement queries | 2 | One SQL string with multiple statements separated by `;`. PG's `Parse` is single-statement; this would require client-side splitting. |
-| Migration `down` reversal dry-run | 3 | Apply `down`, diff schema, compare to pre-`up` snapshot. Useful for catching irreversible migrations. |
 | Stored procedure / function typing | 3 | `CALL proc(...)` and `SELECT func(...)` with parameter and return-type binding from `pg_proc`. |
 | Streaming / cursor / COPY typing | 3 | Surface Postgres.js cursor / COPY APIs with proper row types. |
 

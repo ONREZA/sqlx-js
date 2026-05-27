@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { revertLast } from "../src/commands/migrate";
+import { checkLastDownMigration, revertLast } from "../src/commands/migrate";
 import type { PgClient } from "../src/pg/wire";
 
 const dirs: string[] = [];
@@ -17,13 +17,21 @@ type AppliedRow = { version: number; name: string; hash: string };
 
 class MockClient {
   applied: AppliedRow[] = [];
+  migrationTableExists = false;
   failOnDownSql: string | null = null;
   failOnRollback = false;
   calls: string[] = [];
 
   async simpleQuery(sql: string): Promise<any> {
     this.calls.push(sql.trim().split(/\s+/)[0]!);
-    if (/CREATE TABLE/i.test(sql)) return { rows: [], fields: [], tag: "OK" };
+    if (/to_regclass\('_sqlx_js_migrations'\)/i.test(sql)) {
+      const rows = this.migrationTableExists ? [[utf8("app"), utf8("_sqlx_js_migrations")]] : [];
+      return { rows, fields: [], tag: "SELECT" };
+    }
+    if (/CREATE TABLE/i.test(sql)) {
+      this.migrationTableExists = true;
+      return { rows: [], fields: [], tag: "OK" };
+    }
     if (/^SELECT version, name, up_hash/i.test(sql.trim())) {
       const rows = this.applied
         .slice().sort((a, b) => a.version - b.version)
@@ -43,7 +51,7 @@ class MockClient {
 
   async execParamsText(sql: string, params: (string | null)[]): Promise<any> {
     this.calls.push("execParamsText");
-    if (/DELETE FROM _sqlx_js_migrations/i.test(sql)) {
+    if (/DELETE FROM .*_sqlx_js_migrations/i.test(sql)) {
       const v = Number(params[0]);
       this.applied = this.applied.filter((r) => r.version !== v);
     }
@@ -117,5 +125,29 @@ describe("revertLast", () => {
     if (r.kind !== "failed") throw new Error("unreachable");
     expect(r.error).toContain("rollback also failed");
     expect(r.error).toContain("rollback boom");
+  });
+});
+
+describe("checkLastDownMigration", () => {
+  test("noop when no migration files exist", async () => {
+    const d = newDir();
+    const m = new MockClient();
+
+    const r = await checkLastDownMigration(asClient(m), d);
+
+    expect(r).toEqual({ kind: "noop" });
+    expect(m.calls).not.toContain("BEGIN");
+  });
+
+  test("no-down when latest migration lacks .down.sql", async () => {
+    const d = newDir();
+    writeMig(d, 1, "base", "CREATE TABLE t (id int)", "DROP TABLE t");
+    writeMig(d, 2, "latest", "ALTER TABLE t ADD COLUMN name text");
+    const m = new MockClient();
+
+    const r = await checkLastDownMigration(asClient(m), d);
+
+    expect(r).toEqual({ kind: "no-down", version: 2, name: "latest" });
+    expect(m.calls).not.toContain("BEGIN");
   });
 });

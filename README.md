@@ -34,10 +34,11 @@ const rows = await sql(
 - **Typed transactions** via `sql.transaction(async tx => …)` — the `tx` callback parameter is recognized by the scanner, so queries inside the block keep full type checking.
 - **Sourcemap-accurate error reporting**: every prepare failure points to `file:line:column` of the originating `sql(...)` call site, with PG error code, position, and hint.
 - **Linear migrations** with hash tampering detection.
+- **Migration squash baselines** via `migrate squash`: generate a schema-only baseline from a shadow database, then hash-adopt it on already-migrated databases.
 - **Runtime `migrate()`** with PostgreSQL advisory lock, safe for multi-replica startup.
 - **Offline cache** committed to your repo. CI verifies via `prepare --check` without a database.
 - **Schema snapshot + LLM manifest** via `schema dump` / `schema check`: tables, columns, constraints, indexes, types, and function/procedure metadata are introspected from PostgreSQL.
-- **Shadow database validation** via `--shadow-url` / `SHADOW_DATABASE_URL`: apply migrations to a throwaway DB, then prepare or introspect against it.
+- **Shadow database validation** via `migrate dev` / `migrate verify`: auto-create a disposable shadow DB, apply migrations, validate SQL, and drop it afterwards.
 - **Safe identifier quoting** via `sql.id(...)`, backed by the committed schema snapshot whitelist.
 - **Tree-shakeable runtime adapters**: `@onreza/sqlx-js` imports Postgres.js; `@onreza/sqlx-js/bun` imports `Bun.SQL` only when explicitly used.
 - **Watch mode**: ~15ms incremental re-prepare on file change.
@@ -84,11 +85,21 @@ CREATE TABLE users (
 );
 ```
 
-Apply:
+During local development, validate the migration and regenerate query artifacts against a disposable shadow database:
+
+```bash
+npx @onreza/sqlx-js migrate dev
+```
+
+`migrate dev` does not touch your application database. It creates a temporary shadow database using `DATABASE_URL` credentials, applies migrations from scratch, validates that the latest non-squash `.down.sql` restores the schema, prepares SQL queries against the resulting schema, writes `.sqlx-js/` and `sqlx-js-env.d.ts`, then drops the shadow database.
+
+When you want to update your local application database, run:
 
 ```bash
 npx @onreza/sqlx-js migrate run
 ```
+
+If you need to change the latest migration after applying it locally, run `migrate revert`, edit the migration, then run `migrate run` again. Once a migration has been shared or merged, treat it as immutable and add a new migration instead.
 
 ### 3. Write your first query
 
@@ -308,7 +319,7 @@ In addition to `import { sql } from "@onreza/sqlx-js"`, the scanner recognises `
 
 ```
 sqlx-js prepare [--check | --watch] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
-sqlx-js migrate run [--lock-timeout <ms>] | info | revert | add <name> [--migrations <dir>]
+sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] | verify [--shadow-admin-url <url> | --shadow-url <url>] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] | archive list | archive restore <name> [--force] [--migrations <dir>]
 sqlx-js schema dump | check [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
 sqlx-js --version | --help
 ```
@@ -321,15 +332,75 @@ sqlx-js --version | --help
 | `--dts <path>`        | Declarations output (default: `<root>/sqlx-js-env.d.ts`).                           |
 | `--no-prune`          | Keep orphaned cache entries instead of removing them.                                |
 | `--migrations <dir>`  | Migrations directory (default: `<root>/migrations`).                                 |
+| `--dry-run`           | For `migrate run` / `migrate revert`: validate without applying to the target DB.   |
+| `--json`              | Machine-readable output for `migrate info/check` and migration dry-runs.            |
+| `--force`             | For `migrate archive restore`: allow overwriting existing migration files.           |
 | `--lock-timeout <ms>` | Advisory-lock acquisition timeout for `migrate run` / `migrate revert`.              |
-| `--shadow-url <url>`  | Apply migrations to this database, then prepare/introspect against it.               |
+| `--shadow-url <url>`  | Use an existing disposable shadow DB instead of auto-creating one.                   |
+| `--shadow-admin-url <url>` | Admin/maintenance DB URL used to auto-create shadow DBs.                       |
+| `--replace`           | For `migrate squash`: archive replaced migration files after writing the baseline.   |
+| `--pg-dump <path>`    | For `migrate squash`: `pg_dump` executable path (default: `pg_dump`).                |
 | `--schema <path>`     | Schema snapshot path (default: `<root>/.sqlx-js/schema/schema.json`).               |
 | `--manifest <path>`   | LLM schema manifest path (default: `<root>/.sqlx-js/schema/schema.md`).             |
 | `--no-manifest`       | Skip writing the LLM schema manifest during `schema dump`.                           |
 
 All flags accept both `--flag value` and `--flag=value` forms.
 
-`DATABASE_URL` must be set for any command that touches the database, unless `--shadow-url` or `SHADOW_DATABASE_URL` is provided for that command. Supported URL search params: `sslmode`, `application_name`, `connect_timeout`.
+`DATABASE_URL` must be set for any command that touches the application database or auto-creates a shadow database. `SHADOW_ADMIN_DATABASE_URL` can point at a maintenance/admin database when the application user cannot `CREATE DATABASE`; `SHADOW_DATABASE_URL` can point at a pre-created disposable shadow database. Supported URL search params: `sslmode`, `application_name`, `connect_timeout`.
+
+### Development and deployment flows
+
+Use `migrate dev` while developing migrations and SQL:
+
+```bash
+sqlx-js migrate add add_users
+# edit migrations/000N_add_users.up.sql and .down.sql
+sqlx-js migrate dev
+```
+
+`migrate dev` creates a disposable shadow database, applies all migrations from scratch, validates that the latest non-squash `.down.sql` restores the schema, prepares project SQL against the shadow schema, writes `.sqlx-js/` plus `sqlx-js-env.d.ts`, and drops the shadow database. This means you can keep editing a local WIP migration before it is merged. You do not need to drop your application database or create a new migration for every local edit.
+
+Use `migrate verify` in PR/CI before merge:
+
+```bash
+sqlx-js migrate verify
+sqlx-js prepare --check
+tsc --noEmit
+```
+
+`migrate verify` runs the same shadow-database migration/down/SQL validation as `migrate dev`, but writes prepare output to temporary files instead of modifying `.sqlx-js/` or `sqlx-js-env.d.ts`.
+
+Use `migrate run` in production/staging:
+
+```bash
+sqlx-js migrate run --dry-run --json
+sqlx-js migrate run --lock-timeout 30000
+sqlx-js migrate info --json
+```
+
+Production migration users do not need `CREATEDB`; they only need permissions to apply migrations to the target database. Shadow databases are for development and CI validation before deployment.
+
+By default, `migrate dev`, `migrate verify`, `migrate revert --dry-run`, and `migrate squash` derive a temporary database name from `DATABASE_URL`, connect to the `postgres` maintenance database with the same credentials, run `CREATE DATABASE ... OWNER <database-url-user>`, then `DROP DATABASE` after validation. If the application user cannot create databases, pass `--shadow-admin-url postgres://admin:.../postgres`; the generated shadow database is still owned by the application user from `DATABASE_URL`. In managed environments where databases must be pre-created, pass `--shadow-url` or set `SHADOW_DATABASE_URL`; that database is treated as disposable and its user schemas are cleared before development/verify/squash validation.
+
+### Migration squash baselines
+
+`migrate squash <name>` applies all migrations to a disposable shadow database, dumps the resulting schema with `pg_dump --schema-only`, and writes one baseline migration containing `sqlx-js` replacement metadata.
+
+```bash
+sqlx-js migrate squash baseline --replace
+```
+
+On an empty database, the baseline runs as ordinary schema SQL. On an already-migrated database, `migrate run` verifies that every replaced migration row exists in `_sqlx_js_migrations` with the exact recorded hash, then atomically replaces those rows with the baseline row without executing the baseline DDL. Partial or hash-mismatched history fails closed before any pending replaced migration is applied.
+
+`--replace` moves the old `.up.sql` / `.down.sql` files into `migrations/.archive/<version>_<name>/` after the baseline is written. Omit it if you want to review the generated baseline first; while old files remain, a fresh database replays them and then adopts the baseline row. Repeated squash baselines replace the effective history, so migrations already covered by an earlier squash are not listed again. Squash baselines intentionally do not generate a `.down.sql`; automatic reversal of a full schema baseline is not safe enough to guess.
+
+`migrate check` is filesystem-only: it validates migration filenames, duplicate versions, orphan `.down.sql` files, squash metadata, and replacement hashes where the replaced files are still present. It does not need `DATABASE_URL`.
+
+`migrate info` is read-only: it reports the resolved history table, status summary, and per-file state without creating `_sqlx_js_migrations` on databases that have not been migrated yet. Use `migrate check --json`, `migrate info --json`, or `migrate run --dry-run --json` for CI/operator tooling that needs stable structured output.
+
+`migrate revert --dry-run` validates the latest migration's `.down.sql` in a transaction on a shadow database. It applies all earlier `.up.sql` files, snapshots the schema, applies the latest `.up.sql`, applies its `.down.sql`, then fails if the final schema differs from the pre-`up` snapshot. The transaction is rolled back, so an explicit `--shadow-url` database is not changed by a successful or failed dry-run. Add `--json` for structured output.
+
+`migrate archive list` shows archives created by `migrate squash --replace`. `migrate archive restore <name>` moves archived `.up.sql` / `.down.sql` files back into `migrations/` and refuses to overwrite current files unless `--force` is passed.
 
 ### Schema snapshot and manifest
 
@@ -445,14 +516,15 @@ Commit the generated `sqlx-js-env.d.ts` and the `.sqlx-js/` cache directory to y
 
 ```yaml
 - run: bun install
-- run: sqlx-js prepare --check   # fails if any query is missing from cache
+- run: sqlx-js migrate verify    # builds schema from migrations in a disposable shadow DB
+- run: sqlx-js prepare --check   # fails if any query is missing from the committed cache
 - run: sqlx-js schema check      # fails if the committed schema snapshot is stale
 - run: tsc --noEmit               # fails if types are stale
 - run: bun test
 - run: bun run build              # emits publishable JS + declarations under dist/
 ```
 
-The `prepare --check` step runs without a database — your offline cache is the source of truth. `schema check` intentionally uses a live or shadow database because it verifies the committed schema contract against PostgreSQL.
+The `migrate verify` step needs `DATABASE_URL` credentials that can either create a temporary database or use `--shadow-admin-url` / `--shadow-url`. It does not write `.sqlx-js/` or `sqlx-js-env.d.ts`. The `prepare --check` step then runs without a database; your committed offline cache is the source of truth. `schema check` intentionally uses a live database because it verifies the committed schema contract against PostgreSQL.
 
 ## Contributing
 

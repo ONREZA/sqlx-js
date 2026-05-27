@@ -52,7 +52,7 @@
     "migrations"
   ],
   "scripts": {
-    "prepare": "[ -d .git ] && lefthook install >/dev/null 2>&1 || true",
+    "prepare": "(test -f dist/bin/sqlx-js.js || bun run build) && ([ ! -d .git ] || lefthook install >/dev/null 2>&1 || true)",
     "test": "bun test tests",
     "test:typecheck": "tsc --noEmit",
     "test:example": "bunx tsc -p example --noEmit",

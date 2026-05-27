@@ -482,6 +482,9 @@ export async function migrate(opts: MigrateOptions = {}): Promise<void> {
       if (e.kind === "applied") {
         log(`migrate: applied ${String(e.version).padStart(4, "0")}_${e.name}`);
         appliedAny = true;
+      } else if (e.kind === "adopted") {
+        log(`migrate: adopted ${String(e.version).padStart(4, "0")}_${e.name} (${e.replaced} replaced)`);
+        appliedAny = true;
       } else if (e.kind === "tampered") {
         throw new Error(
           `sqlx-js.migrate: ${e.version}_${e.name} hash mismatch (applied ${e.applied.slice(0, 16)}… vs current ${e.current.slice(0, 16)}…)`,

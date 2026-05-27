@@ -31,6 +31,9 @@ export async function applyShadowMigrations(
       if (e.kind === "applied") {
         applied++;
         log(`shadow: applied ${String(e.version).padStart(4, "0")}_${e.name}`);
+      } else if (e.kind === "adopted") {
+        applied++;
+        log(`shadow: adopted ${String(e.version).padStart(4, "0")}_${e.name} (${e.replaced} replaced)`);
       } else if (e.kind === "tampered") {
         throw new Error(
           `sqlx-js shadow: ${e.version}_${e.name} hash mismatch (applied ${e.applied.slice(0, 16)} vs current ${e.current.slice(0, 16)})`,
