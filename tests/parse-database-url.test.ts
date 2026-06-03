@@ -51,4 +51,21 @@ describe("parseDatabaseUrl", () => {
     const cfg = parseDatabaseUrl("postgresql://u@h/db");
     expect(cfg.host).toBe("h");
   });
+
+  test("parses statement_timeout milliseconds", () => {
+    expect(parseDatabaseUrl("postgres://u@h/db?statement_timeout=5000").statementTimeoutMs).toBe(5000);
+    expect(parseDatabaseUrl("postgres://u@h/db?statement_timeout=0").statementTimeoutMs).toBe(0);
+  });
+
+  test("ignores non-numeric / negative statement_timeout", () => {
+    expect(parseDatabaseUrl("postgres://u@h/db?statement_timeout=abc").statementTimeoutMs).toBeUndefined();
+    expect(parseDatabaseUrl("postgres://u@h/db?statement_timeout=-1").statementTimeoutMs).toBeUndefined();
+  });
+
+  test("parses TLS certificate paths", () => {
+    const cfg = parseDatabaseUrl("postgres://u@h/db?sslmode=verify-full&sslrootcert=/etc/ca.pem&sslcert=/etc/client.crt&sslkey=/etc/client.key");
+    expect(cfg.sslRootCert).toBe("/etc/ca.pem");
+    expect(cfg.sslCert).toBe("/etc/client.crt");
+    expect(cfg.sslKey).toBe("/etc/client.key");
+  });
 });

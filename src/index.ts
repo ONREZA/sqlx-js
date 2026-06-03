@@ -8,8 +8,8 @@ export type { SqlxJsConfig } from "./config";
 export type { SslMode, ConnConfig } from "./pg/wire";
 export { PgError, ConnectionLostError } from "./pg/wire";
 export { NoRowsError, TooManyRowsError } from "./runtime";
-export type { TransactionOptions, MigrateOptions } from "./runtime";
-export type { PostgresClient, PostgresOptions } from "./postgres-runtime";
+export type { TransactionOptions, MigrateOptions, OnQueryEvent, OnQueryHook } from "./runtime";
+export type { PostgresClient, PostgresOptions, CreateClientOptions } from "./postgres-runtime";
 
 export type TypedFile = TypedFileFor<KnownFileQueries>;
 export type TypedSql = TypedSqlFor<KnownQueries, KnownFileQueries>;
