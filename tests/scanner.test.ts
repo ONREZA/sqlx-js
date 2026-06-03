@@ -45,18 +45,6 @@ test("respects alias import", () => {
   expect(sites[0]!.query).toBe("SELECT x");
 });
 
-test("finds sql() calls imported from sqlx-js/bun", () => {
-  setup({
-    "a.ts": `
-      import { sql } from "@onreza/sqlx-js/bun";
-      await sql("SELECT 1");
-    `,
-  });
-  const sites = scanProject(tmp);
-  expect(sites).toHaveLength(1);
-  expect(sites[0]!.query).toBe("SELECT 1");
-});
-
 test("ignores sql() not imported from sqlx-js", () => {
   setup({
     "a.ts": `

@@ -151,10 +151,7 @@ test("KnownFileQueries deduplicates paths across entries", () => {
       columns: [],
     },
   ]);
-  const rootBlock = dts.slice(
-    dts.indexOf('declare module "@onreza/sqlx-js"'),
-    dts.indexOf('declare module "@onreza/sqlx-js/bun"'),
-  );
+  const rootBlock = dts.slice(dts.indexOf('declare module "@onreza/sqlx-js"'));
   const matches = rootBlock.match(/"a\.sql":/g) ?? [];
   expect(matches).toHaveLength(1);
 });
