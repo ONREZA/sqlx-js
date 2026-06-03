@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.0](https://github.com/ONREZA/sqlx-js/compare/v0.1.0...v0.2.0) (2026-06-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* the @onreza/sqlx-js/bun entry point is removed. Import from @onreza/sqlx-js instead; it runs on Node, Bun and Deno via Postgres.js.
+
+### Features
+
+* add sqlx-js init command ([b5b4be1](https://github.com/ONREZA/sqlx-js/commit/b5b4be13b02372b085fadc64aa4ee34ce8a293b4))
+* composite types, NOT-IS-NULL narrowing and parallel prepare ([0173fe7](https://github.com/ONREZA/sqlx-js/commit/0173fe74561afea98b84dab62866b3896ba28236))
+* improve migration lifecycle ([c354e6c](https://github.com/ONREZA/sqlx-js/commit/c354e6ca7cfdfaddf490e9b8f48bd305f33c828f))
+* production-readiness (hooks, errors, timeouts, TLS, composite, init) + remove Bun.SQL adapter ([3f5a332](https://github.com/ONREZA/sqlx-js/commit/3f5a332770971fb234aa64bfea9b91375a6d8000))
+* remove the Bun.SQL adapter ([83df682](https://github.com/ONREZA/sqlx-js/commit/83df68218dd35ba26b922a593441daa767cbb6e2))
+* runtime query hooks, unified PgError, timeouts and TLS CA ([f6c2e82](https://github.com/ONREZA/sqlx-js/commit/f6c2e825820f6d2bbfb56d45e07f2045645c8635))
+
 ## 0.1.0 (2026-05-26)
 
 
