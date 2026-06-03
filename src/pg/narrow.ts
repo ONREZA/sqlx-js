@@ -81,6 +81,14 @@ function walk(node: any): NarrowInfo {
       }
       return forcedInfo(acc ?? []);
     }
+    if (op === "NOT_EXPR") {
+      const arg = args[0];
+      if (arg?.NullTest?.nulltesttype === "IS_NULL") {
+        const k = keyOfColumnRef(arg.NullTest.arg);
+        return k ? forcedInfo([k]) : emptyInfo();
+      }
+      return emptyInfo();
+    }
     return emptyInfo();
   }
 

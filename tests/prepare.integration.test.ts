@@ -5,6 +5,9 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { PgClient, parseDatabaseUrl } from "../src/pg/wire";
+import { describeAll } from "../src/commands/prepare";
+import { SchemaCache, compositeLiteral } from "../src/pg/schema";
+import { mergeExtensionTypes } from "../src/pg/extensions";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const tmp = join(repoRoot, "tests/.tmp-integration");
@@ -178,6 +181,79 @@ if (!haveDocker) {
     expect(dts).toContain("interface KnownQueries");
     expect(dts).toContain("SELECT id, name FROM tmp_users WHERE id = $1");
     expect(readdirSync(join(tmp, ".sqlx-js")).filter((f) => f.endsWith(".json")).length).toBeGreaterThan(0);
+  });
+
+  test("describeAll resolves every query across a connection pool", async () => {
+    const cfg = parseDatabaseUrl(dbUrl);
+    const session = new PgClient(cfg);
+    await session.connect();
+    try {
+      const queries = [
+        { fp: "q1", query: "SELECT id, name FROM tmp_users WHERE id = $1" },
+        { fp: "q2", query: "SELECT email FROM tmp_users" },
+        { fp: "q3", query: "SELECT title FROM tmp_join_posts" },
+        { fp: "q4", query: "SELECT external_id FROM tmp_join_users" },
+        { fp: "qbad", query: "SELECT * FROM no_such_relation_xyz" },
+      ];
+      const results = await describeAll(cfg, session, queries, 4);
+      expect(results.size).toBe(5);
+      const q1 = results.get("q1")!;
+      expect(q1.ok).toBe(true);
+      if (q1.ok) expect(q1.fields.map((f) => f.name)).toEqual(["id", "name"]);
+      const q2 = results.get("q2")!;
+      if (q2.ok) expect(q2.fields.map((f) => f.name)).toEqual(["email"]);
+      expect(results.get("qbad")!.ok).toBe(false);
+      // session connection stays usable after the pool drains
+      const after = await session.describe("SELECT 1 AS one");
+      expect(after.fields.length).toBe(1);
+    } finally {
+      await session.end();
+    }
+  });
+
+  test("describeAll degrades to the session connection when extra workers cannot connect", async () => {
+    const session = new PgClient(parseDatabaseUrl(dbUrl));
+    await session.connect();
+    try {
+      // cfg points at a non-existent database, so every extra-worker connect fails;
+      // the already-open session connection must still drain the whole queue.
+      const badCfg = parseDatabaseUrl(databaseUrlWithDatabase(dbUrl, "sqlx_js_no_such_db"));
+      const queries = [
+        { fp: "d1", query: "SELECT 1 AS a" },
+        { fp: "d2", query: "SELECT 2 AS b" },
+        { fp: "d3", query: "SELECT 3 AS c" },
+      ];
+      const results = await describeAll(badCfg, session, queries, 4);
+      expect(results.size).toBe(3);
+      expect([...results.values()].every((r) => r.ok)).toBe(true);
+    } finally {
+      await session.end();
+    }
+  });
+
+  test("composite types resolve to struct literals via SchemaCache", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery("DROP TABLE IF EXISTS tmp_comp CASCADE");
+      await setup.simpleQuery("DROP TYPE IF EXISTS tmp_addr CASCADE");
+      await setup.simpleQuery("CREATE TYPE tmp_addr AS (street text, zip int)");
+      await setup.simpleQuery("CREATE TABLE tmp_comp (id bigserial primary key, addr tmp_addr)");
+      const d = await setup.describe("SELECT addr FROM tmp_comp");
+      const addrOid = d.fields[0]!.typeOid;
+      const schema = new SchemaCache(setup);
+      schema.setTypeRegistry(mergeExtensionTypes());
+      await schema.loadCustomTypes([addrOid]);
+      const info = schema.customType(addrOid);
+      expect(info?.kind).toBe("composite");
+      if (info?.kind === "composite") {
+        expect(compositeLiteral(info)).toBe("{ street: string | null; zip: number | null }");
+      }
+    } finally {
+      await setup.simpleQuery("DROP TABLE IF EXISTS tmp_comp CASCADE").catch(() => {});
+      await setup.simpleQuery("DROP TYPE IF EXISTS tmp_addr CASCADE").catch(() => {});
+      await setup.end();
+    }
   });
 
   test("prepare --shadow-url applies migrations before preparing", () => {

@@ -12,7 +12,25 @@ export type EnumInfo = { kind: "enum"; name: string; values: string[] };
 export type EnumArrayInfo = { kind: "enumArray"; element: EnumInfo };
 export type ScalarInfo = { kind: "scalar"; name: string; tsType: string };
 export type ScalarArrayInfo = { kind: "scalarArray"; name: string; element: ScalarInfo };
-export type CustomTypeInfo = EnumInfo | EnumArrayInfo | ScalarInfo | ScalarArrayInfo;
+export type CompositeField = { name: string; tsType: string; nullable: boolean };
+export type CompositeInfo = { kind: "composite"; name: string; fields: CompositeField[] };
+export type CompositeArrayInfo = { kind: "compositeArray"; name: string; element: CompositeInfo };
+export type CustomTypeInfo =
+  | EnumInfo
+  | EnumArrayInfo
+  | ScalarInfo
+  | ScalarArrayInfo
+  | CompositeInfo
+  | CompositeArrayInfo;
+
+export function compositeLiteral(info: CompositeInfo): string {
+  if (info.fields.length === 0) return "Record<string, unknown>";
+  const parts = info.fields.map((f) => {
+    const name = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(f.name) ? f.name : JSON.stringify(f.name);
+    return `${name}: ${f.tsType}${f.nullable ? " | null" : ""}`;
+  });
+  return `{ ${parts.join("; ")} }`;
+}
 
 export class SchemaCache {
   private byOidNum = new Map<string, ColumnInfo>();
@@ -145,12 +163,13 @@ export class SchemaCache {
     for (const oid of need) this.typesProbed.add(oid);
 
     const list1 = [...new Set(need)].join(",");
-    const sql1 = `SELECT oid::int8, typname, typtype, typcategory, typelem::int8, typbasetype::int8 FROM pg_type WHERE oid IN (${list1})`;
+    const sql1 = `SELECT oid::int8, typname, typtype, typcategory, typelem::int8, typbasetype::int8, typrelid::int8 FROM pg_type WHERE oid IN (${list1})`;
     const r1 = await this.client.simpleQueryAll(sql1);
 
     const enumOids: number[] = [];
     const arrayInfos: { arrayOid: number; arrayName: string; elemOid: number }[] = [];
     const domainInfos: { oid: number; name: string; baseOid: number }[] = [];
+    const compositeInfos: { oid: number; name: string; relOid: number }[] = [];
 
     for (const row of r1.rows) {
       const oid = Number(decodeText(row[0]!));
@@ -159,6 +178,7 @@ export class SchemaCache {
       const typcategory = decodeText(row[3]!);
       const typelem = Number(decodeText(row[4]!));
       const typbasetype = Number(decodeText(row[5]!));
+      const typrelid = Number(decodeText(row[6]!));
 
       if (typtype === "e") {
         enumOids.push(oid);
@@ -169,12 +189,31 @@ export class SchemaCache {
         this.customTypes.set(oid, { kind: "scalar", name, tsType: this.typeRegistry[name]! });
       } else if (typtype === "d" && typbasetype > 0) {
         domainInfos.push({ oid, name, baseOid: typbasetype });
+      } else if (typtype === "c" && typrelid > 0) {
+        compositeInfos.push({ oid, name, relOid: typrelid });
+      }
+    }
+
+    const compositeAttrs = new Map<number, { name: string; typeOid: number; notNull: boolean }[]>();
+    if (compositeInfos.length > 0) {
+      const relList = [...new Set(compositeInfos.map((c) => c.relOid))].join(",");
+      const sqlc = `SELECT c.oid::int8, a.attname, a.atttypid::int8, a.attnotnull FROM pg_attribute a JOIN pg_type c ON c.typrelid = a.attrelid WHERE a.attrelid IN (${relList}) AND a.attnum > 0 AND NOT a.attisdropped ORDER BY c.oid, a.attnum`;
+      const rc = await this.client.simpleQueryAll(sqlc);
+      for (const row of rc.rows) {
+        const typoid = Number(decodeText(row[0]!));
+        const attname = decodeText(row[1]!)!;
+        const atttypid = Number(decodeText(row[2]!));
+        const notNull = decodeText(row[3]!) === "t";
+        const arr = compositeAttrs.get(typoid) ?? [];
+        arr.push({ name: attname, typeOid: atttypid, notNull });
+        compositeAttrs.set(typoid, arr);
       }
     }
 
     const elemsToProbe = arrayInfos.map((a) => a.elemOid).filter((o) => !this.typesProbed.has(o));
     const basesToProbe = domainInfos.map((d) => d.baseOid).filter((o) => !this.typesProbed.has(o) && !isBuiltinOid(o));
-    const recurse = [...new Set([...elemsToProbe, ...basesToProbe])];
+    const fieldsToProbe = [...compositeAttrs.values()].flat().map((f) => f.typeOid).filter((o) => !this.typesProbed.has(o) && !isBuiltinOid(o));
+    const recurse = [...new Set([...elemsToProbe, ...basesToProbe, ...fieldsToProbe])];
     if (recurse.length > 0) await this.loadCustomTypes(recurse);
 
     for (const { oid, name, baseOid } of domainInfos) {
@@ -184,12 +223,24 @@ export class SchemaCache {
       }
     }
 
+    for (const { oid, name } of compositeInfos) {
+      const attrs = compositeAttrs.get(oid) ?? [];
+      const fields: CompositeField[] = attrs.map((a) => ({
+        name: a.name,
+        tsType: this.resolveBaseTs(a.typeOid) ?? "unknown",
+        nullable: !a.notNull,
+      }));
+      this.customTypes.set(oid, { kind: "composite", name, fields });
+    }
+
     for (const { arrayOid, arrayName, elemOid } of arrayInfos) {
       const elem = this.customTypes.get(elemOid);
       if (elem && elem.kind === "enum") {
         this.customTypes.set(arrayOid, { kind: "enumArray", element: elem });
       } else if (elem && elem.kind === "scalar") {
         this.customTypes.set(arrayOid, { kind: "scalarArray", name: arrayName, element: elem });
+      } else if (elem && elem.kind === "composite") {
+        this.customTypes.set(arrayOid, { kind: "compositeArray", name: arrayName, element: elem });
       }
     }
 
@@ -221,6 +272,8 @@ export class SchemaCache {
       if (info.element.values.length === 0) return "string[]";
       return `(${info.element.values.map((v) => JSON.stringify(v)).join(" | ")})[]`;
     }
+    if (info.kind === "composite") return compositeLiteral(info);
+    if (info.kind === "compositeArray") return `(${compositeLiteral(info.element)})[]`;
     return undefined;
   }
 
