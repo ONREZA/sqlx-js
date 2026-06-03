@@ -1,0 +1,68 @@
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+const CONFIG_TEMPLATE = `import type { SqlxJsConfig } from "@onreza/sqlx-js";
+
+const config: SqlxJsConfig = {
+  // Map jsonb columns/params to TypeScript types declared in a .d.ts, e.g.
+  //   "users.settings": "SqlxJsJson.UserSettings",
+  jsonbTypes: {},
+  // Map PostgreSQL type names to TypeScript types, e.g.
+  //   geometry: "GeoJSON.Geometry",
+  customTypes: {},
+};
+
+export default config;
+`;
+
+const ENV_TEMPLATE = `# Connection string used by sqlx-js prepare/migrate and the runtime.
+DATABASE_URL=postgres://user:password@localhost:5432/your_db
+# Managed Postgres with TLS:
+# DATABASE_URL=postgres://user:password@db.example.com:5432/your_db?sslmode=verify-full
+`;
+
+export type InitOptions = {
+  root: string;
+  log?: (msg: string) => void;
+};
+
+export function runInit(opts: InitOptions): void {
+  const log = opts.log ?? console.log;
+  const created: string[] = [];
+  const skipped: string[] = [];
+
+  const ensureFile = (rel: string, content: string) => {
+    const full = join(opts.root, rel);
+    if (existsSync(full)) {
+      skipped.push(rel);
+      return;
+    }
+    mkdirSync(dirname(full), { recursive: true });
+    writeFileSync(full, content);
+    created.push(rel);
+  };
+
+  const ensureDir = (rel: string) => {
+    const full = join(opts.root, rel);
+    if (existsSync(full)) {
+      skipped.push(`${rel}/`);
+      return;
+    }
+    mkdirSync(full, { recursive: true });
+    created.push(`${rel}/`);
+  };
+
+  ensureFile("sqlx-js.config.ts", CONFIG_TEMPLATE);
+  ensureDir("migrations");
+  ensureFile(".env.example", ENV_TEMPLATE);
+
+  for (const f of created) log(`created ${f}`);
+  for (const f of skipped) log(`exists  ${f} (left unchanged)`);
+
+  log("");
+  log("Next steps:");
+  log("  1. Set DATABASE_URL (see .env.example).");
+  log("  2. Add a migration:  sqlx-js migrate add init");
+  log("  3. Make sure tsconfig.json \"include\" covers sqlx-js-env.d.ts.");
+  log("  4. Develop locally:  sqlx-js migrate dev");
+}

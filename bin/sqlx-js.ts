@@ -17,6 +17,7 @@ import {
   migrateVerify,
 } from "../src/commands/migrate";
 import { applyShadowMigrations, runSchemaCheck, runSchemaDump } from "../src/commands/schema";
+import { runInit } from "../src/commands/init";
 
 function packageVersion(): string {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -34,6 +35,7 @@ function help(): never {
   console.error(`sqlx-js — compile-time-checked SQL for TypeScript + Postgres (v${VERSION})
 
 usage:
+  sqlx-js init [--root <dir>]
   sqlx-js prepare [--check | --watch] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
   sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] | verify [--shadow-admin-url <url> | --shadow-url <url>] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] | archive list | archive restore <name> [--force]
   sqlx-js schema dump | check [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
@@ -108,7 +110,9 @@ const schemaPath = schemaArg ? resolve(schemaArg) : join(root, ".sqlx-js/schema/
 const manifestArg = arg("--manifest");
 const manifestPath = manifestArg ? resolve(manifestArg) : join(root, ".sqlx-js/schema/schema.md");
 
-if (cmd === "prepare") {
+if (cmd === "init") {
+  runInit({ root });
+} else if (cmd === "prepare") {
   if (flag("--check") && shadowUrlArg) {
     console.error("--shadow-url cannot be used with prepare --check; use live prepare or schema check --shadow-url");
     process.exit(2);

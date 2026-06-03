@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -26,6 +26,37 @@ test("CLI help prints package metadata version", () => {
   expect(r.stderr).toContain("--shadow-admin-url");
   expect(r.stderr).toContain("revert [--dry-run]");
   expect(r.stderr).toContain("archive restore");
+});
+
+test("CLI help lists the init command", () => {
+  const r = spawnSync("bun", [binPath, "--help"], { encoding: "utf8" });
+  expect(r.stderr).toContain("sqlx-js init");
+});
+
+test("CLI init scaffolds project files and is idempotent without DATABASE_URL", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-init-"));
+  try {
+    const r1 = spawnSync("bun", [binPath, "init", "--root", root], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: "" },
+    });
+    expect(r1.status).toBe(0);
+    expect(r1.stdout).toContain("created sqlx-js.config.ts");
+    expect(r1.stdout).toContain("created migrations/");
+    expect(existsSync(join(root, "sqlx-js.config.ts"))).toBe(true);
+    expect(existsSync(join(root, "migrations"))).toBe(true);
+    expect(existsSync(join(root, ".env.example"))).toBe(true);
+    expect(readFileSync(join(root, "sqlx-js.config.ts"), "utf8")).toContain("SqlxJsConfig");
+
+    const r2 = spawnSync("bun", [binPath, "init", "--root", root], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: "" },
+    });
+    expect(r2.status).toBe(0);
+    expect(r2.stdout).toContain("left unchanged");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("CLI migrate check --json does not require DATABASE_URL", () => {
