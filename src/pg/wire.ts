@@ -1,4 +1,5 @@
 import { createHash, createHmac, pbkdf2Sync, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Socket, connect as netConnect } from "node:net";
 import { TLSSocket, connect as tlsConnect } from "node:tls";
 
@@ -16,6 +17,10 @@ export type ConnConfig = {
   sslmode?: SslMode;
   applicationName?: string;
   connectTimeoutMs?: number;
+  statementTimeoutMs?: number;
+  sslRootCert?: string;
+  sslCert?: string;
+  sslKey?: string;
 };
 
 export function parseDatabaseUrl(url: string): ConnConfig {
@@ -43,6 +48,17 @@ export function parseDatabaseUrl(url: string): ConnConfig {
     const n = Number(ct);
     if (Number.isFinite(n) && n > 0) cfg.connectTimeoutMs = n * 1000;
   }
+  const st = params.get("statement_timeout");
+  if (st) {
+    const n = Number(st);
+    if (Number.isFinite(n) && n >= 0) cfg.statementTimeoutMs = n;
+  }
+  const sslRootCert = params.get("sslrootcert");
+  if (sslRootCert) cfg.sslRootCert = sslRootCert;
+  const sslCert = params.get("sslcert");
+  if (sslCert) cfg.sslCert = sslCert;
+  const sslKey = params.get("sslkey");
+  if (sslKey) cfg.sslKey = sslKey;
   return cfg;
 }
 
@@ -268,6 +284,14 @@ function isTlsRequired(mode: SslMode): boolean {
 
 type AnySocket = Socket | TLSSocket;
 
+function readCertFile(kind: string, path: string): Buffer {
+  try {
+    return readFileSync(path);
+  } catch (e) {
+    throw new Error(`sqlx-js: cannot read ${kind} at ${path}: ${(e as Error).message}`);
+  }
+}
+
 async function openPlainSocket(host: string, port: number, timeoutMs: number): Promise<Socket> {
   return new Promise<Socket>((resolve, reject) => {
     const sock = netConnect({ host, port });
@@ -319,6 +343,9 @@ async function performSslHandshake(
         servername: cfg.host,
         rejectUnauthorized: mode === "verify-full" || mode === "verify-ca",
         checkServerIdentity: mode === "verify-full" ? undefined : () => undefined,
+        ...(cfg.sslRootCert ? { ca: readCertFile("sslrootcert", cfg.sslRootCert) } : {}),
+        ...(cfg.sslCert ? { cert: readCertFile("sslcert", cfg.sslCert) } : {}),
+        ...(cfg.sslKey ? { key: readCertFile("sslkey", cfg.sslKey) } : {}),
       });
       t.once("secureConnect", () => resolve(t));
       t.once("error", (err) => {
@@ -358,9 +385,38 @@ export class PgClient {
   get usingTls(): boolean { return this.tlsEnabled; }
 
   async connect(): Promise<void> {
-    const mode: SslMode = this.cfg.sslmode ?? "prefer";
     const timeoutMs = this.cfg.connectTimeoutMs ?? 15000;
+    let aborted = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        aborted = true;
+        const err = new Error(`sqlx-js: connect timeout to ${this.cfg.host}:${this.cfg.port} after ${timeoutMs}ms (includes TLS + authentication)`);
+        this.closed = true;
+        this.closeReason ??= err;
+        this.destroySocket();
+        reject(err);
+      }, timeoutMs);
+    });
+    try {
+      await Promise.race([this.connectInner(timeoutMs, () => aborted), deadline]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private destroySocket(): void {
+    try { (this.sock as AnySocket | undefined)?.destroy(); } catch { /* ignore */ }
+  }
+
+  // Cooperative cancellation: a socket can finish connecting after the deadline
+  // has already rejected. Re-check `aborted` at each await boundary so a late
+  // connection is torn down instead of leaking.
+  private async connectInner(timeoutMs: number, aborted: () => boolean): Promise<void> {
+    const mode: SslMode = this.cfg.sslmode ?? "prefer";
     const plain = await openPlainSocket(this.cfg.host, this.cfg.port, timeoutMs);
+    this.sock = plain;
+    if (aborted()) return this.abortConnect();
     let socket: AnySocket = plain;
     if (mode !== "disable") {
       const result = await performSslHandshake(plain, this.cfg, mode);
@@ -368,11 +424,17 @@ export class PgClient {
       this.tlsEnabled = result.tls;
     }
     this.sock = socket;
+    if (aborted()) return this.abortConnect();
     this.attachHandlers();
 
     await this.startup();
     await this.authenticate();
     await this.awaitReady();
+  }
+
+  private abortConnect(): never {
+    this.destroySocket();
+    throw this.closeReason ?? new Error("sqlx-js: connect aborted");
   }
 
   private attachHandlers(): void {
@@ -430,6 +492,9 @@ export class PgClient {
     ];
     if (this.cfg.applicationName) {
       pairs.push(cstr("application_name"), cstr(this.cfg.applicationName));
+    }
+    if (this.cfg.statementTimeoutMs !== undefined) {
+      pairs.push(cstr("statement_timeout"), cstr(String(this.cfg.statementTimeoutMs)));
     }
     pairs.push(new Uint8Array([0]));
     const body = concat([writeInt32(196608), concat(pairs)]);
@@ -689,15 +754,24 @@ function stringifyMessage(m: ServerMessage): string {
 }
 
 export class PgError extends Error {
-  constructor(public fields: Record<string, string>) {
-    super(fields.M ?? "postgres error");
+  constructor(public fields: Record<string, string>, options?: { cause?: unknown }) {
+    super(fields.M ?? "postgres error", options);
     this.name = "PgError";
+    // Bun attaches own `line`/`column` properties to every Error instance, which
+    // would shadow the prototype getters below. Drop them so `.column` resolves
+    // to the PG column name, not the engine's source position.
+    delete (this as unknown as Record<string, unknown>).line;
+    delete (this as unknown as Record<string, unknown>).column;
   }
   get code(): string | undefined { return this.fields.C; }
   get position(): number | undefined { return this.fields.P ? Number(this.fields.P) : undefined; }
   get hint(): string | undefined { return this.fields.H; }
   get detail(): string | undefined { return this.fields.D; }
   get severity(): string | undefined { return this.fields.S; }
+  get schema(): string | undefined { return this.fields.s; }
+  get table(): string | undefined { return this.fields.t; }
+  get column(): string | undefined { return this.fields.c; }
+  get constraint(): string | undefined { return this.fields.n; }
 }
 
 export class ConnectionLostError extends Error {

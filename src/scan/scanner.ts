@@ -13,7 +13,7 @@ export type QueryCallSite = {
 };
 
 const EXCLUDE_DIRS = new Set(["node_modules", ".git", ".sqlx-js", "dist", "build", ".next"]);
-const SQLX_MODULES = new Set(["@onreza/sqlx-js", "@onreza/sqlx-js/bun"]);
+const SQLX_MODULES = new Set(["@onreza/sqlx-js"]);
 const EXT = /\.(ts|tsx|mts|cts)$/;
 
 function walk(dir: string, out: string[]): void {

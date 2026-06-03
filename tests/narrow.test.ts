@@ -17,6 +17,16 @@ test("IS NULL does not narrow", async () => {
   expect(isNarrowed(set, undefined, "bio")).toBe(false);
 });
 
+test("NOT (col IS NULL) narrows the column", async () => {
+  const set = narrowFromWhere(await whereOf("SELECT bio FROM users WHERE NOT (bio IS NULL)"));
+  expect(isNarrowed(set, undefined, "bio")).toBe(true);
+});
+
+test("NOT (col IS NOT NULL) does not narrow", async () => {
+  const set = narrowFromWhere(await whereOf("SELECT bio FROM users WHERE NOT (bio IS NOT NULL)"));
+  expect(isNarrowed(set, undefined, "bio")).toBe(false);
+});
+
 test("equality narrows both sides when neither is NULL literal", async () => {
   const set = narrowFromWhere(await whereOf("SELECT id FROM users WHERE bio = 'x'"));
   expect(isNarrowed(set, undefined, "bio")).toBe(true);

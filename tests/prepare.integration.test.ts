@@ -1,12 +1,21 @@
 import { test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { PgClient, parseDatabaseUrl } from "../src/pg/wire";
+import { describeAll } from "../src/commands/prepare";
+import { SchemaCache, compositeLiteral } from "../src/pg/schema";
+import { mergeExtensionTypes } from "../src/pg/extensions";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const tmp = join(repoRoot, "tests/.tmp-integration");
 const IMAGE = process.env.SQLX_JS_PG_IMAGE ?? "pgvector/pgvector:pg17";
+
+function hash(s: string): string {
+  return createHash("sha256").update(s).digest("hex");
+}
 
 function dockerAvailable(): boolean {
   const r = spawnSync("docker", ["info"], { encoding: "utf8" });
@@ -27,6 +36,20 @@ if (!haveDocker) {
     writeFileSync(full, content);
   }
 
+  function writeRootFile(root: string, rel: string, content: string) {
+    const full = join(root, rel);
+    mkdirSync(resolve(full, ".."), { recursive: true });
+    writeFileSync(full, content);
+  }
+
+  function isolatedRoot(name: string): string {
+    const root = join(tmp, name);
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(root, { recursive: true });
+    writeRootFile(root, "package.json", `{"name":"${name}","type":"module"}`);
+    return root;
+  }
+
   function prepare(args: string[] = []): { code: number; stdout: string; stderr: string } {
     const r = spawnSync(
       "bun",
@@ -43,6 +66,36 @@ if (!haveDocker) {
       { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
     );
     return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  }
+
+  function migrateCommand(args: string[], root = tmp, databaseUrl = dbUrl): { code: number; stdout: string; stderr: string } {
+    const r = spawnSync(
+      "bun",
+      [join(repoRoot, "bin/sqlx-js.ts"), "migrate", ...args, "--root", root],
+      { env: { ...process.env, DATABASE_URL: databaseUrl }, encoding: "utf8" },
+    );
+    return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  }
+
+  function databaseUrlWithDatabase(databaseUrl: string, database: string): string {
+    const url = new URL(databaseUrl);
+    url.pathname = `/${database}`;
+    return url.toString();
+  }
+
+  function quoteIdent(ident: string): string {
+    return `"${ident.replace(/"/g, '""')}"`;
+  }
+
+  async function createShadowDatabase(name: string): Promise<string> {
+    const admin = new PgClient(parseDatabaseUrl(databaseUrlWithDatabase(dbUrl, "postgres")));
+    await admin.connect();
+    try {
+      await admin.simpleQuery(`CREATE DATABASE ${quoteIdent(name)}`);
+    } finally {
+      await admin.end();
+    }
+    return databaseUrlWithDatabase(dbUrl, name);
   }
 
   function schema(args: string[] = []): { code: number; stdout: string; stderr: string } {
@@ -128,6 +181,79 @@ if (!haveDocker) {
     expect(dts).toContain("interface KnownQueries");
     expect(dts).toContain("SELECT id, name FROM tmp_users WHERE id = $1");
     expect(readdirSync(join(tmp, ".sqlx-js")).filter((f) => f.endsWith(".json")).length).toBeGreaterThan(0);
+  });
+
+  test("describeAll resolves every query across a connection pool", async () => {
+    const cfg = parseDatabaseUrl(dbUrl);
+    const session = new PgClient(cfg);
+    await session.connect();
+    try {
+      const queries = [
+        { fp: "q1", query: "SELECT id, name FROM tmp_users WHERE id = $1" },
+        { fp: "q2", query: "SELECT email FROM tmp_users" },
+        { fp: "q3", query: "SELECT title FROM tmp_join_posts" },
+        { fp: "q4", query: "SELECT external_id FROM tmp_join_users" },
+        { fp: "qbad", query: "SELECT * FROM no_such_relation_xyz" },
+      ];
+      const results = await describeAll(cfg, session, queries, 4);
+      expect(results.size).toBe(5);
+      const q1 = results.get("q1")!;
+      expect(q1.ok).toBe(true);
+      if (q1.ok) expect(q1.fields.map((f) => f.name)).toEqual(["id", "name"]);
+      const q2 = results.get("q2")!;
+      if (q2.ok) expect(q2.fields.map((f) => f.name)).toEqual(["email"]);
+      expect(results.get("qbad")!.ok).toBe(false);
+      // session connection stays usable after the pool drains
+      const after = await session.describe("SELECT 1 AS one");
+      expect(after.fields.length).toBe(1);
+    } finally {
+      await session.end();
+    }
+  });
+
+  test("describeAll degrades to the session connection when extra workers cannot connect", async () => {
+    const session = new PgClient(parseDatabaseUrl(dbUrl));
+    await session.connect();
+    try {
+      // cfg points at a non-existent database, so every extra-worker connect fails;
+      // the already-open session connection must still drain the whole queue.
+      const badCfg = parseDatabaseUrl(databaseUrlWithDatabase(dbUrl, "sqlx_js_no_such_db"));
+      const queries = [
+        { fp: "d1", query: "SELECT 1 AS a" },
+        { fp: "d2", query: "SELECT 2 AS b" },
+        { fp: "d3", query: "SELECT 3 AS c" },
+      ];
+      const results = await describeAll(badCfg, session, queries, 4);
+      expect(results.size).toBe(3);
+      expect([...results.values()].every((r) => r.ok)).toBe(true);
+    } finally {
+      await session.end();
+    }
+  });
+
+  test("composite types resolve to struct literals via SchemaCache", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery("DROP TABLE IF EXISTS tmp_comp CASCADE");
+      await setup.simpleQuery("DROP TYPE IF EXISTS tmp_addr CASCADE");
+      await setup.simpleQuery("CREATE TYPE tmp_addr AS (street text, zip int)");
+      await setup.simpleQuery("CREATE TABLE tmp_comp (id bigserial primary key, addr tmp_addr)");
+      const d = await setup.describe("SELECT addr FROM tmp_comp");
+      const addrOid = d.fields[0]!.typeOid;
+      const schema = new SchemaCache(setup);
+      schema.setTypeRegistry(mergeExtensionTypes());
+      await schema.loadCustomTypes([addrOid]);
+      const info = schema.customType(addrOid);
+      expect(info?.kind).toBe("composite");
+      if (info?.kind === "composite") {
+        expect(compositeLiteral(info)).toBe("{ street: string | null; zip: number | null }");
+      }
+    } finally {
+      await setup.simpleQuery("DROP TABLE IF EXISTS tmp_comp CASCADE").catch(() => {});
+      await setup.simpleQuery("DROP TYPE IF EXISTS tmp_addr CASCADE").catch(() => {});
+      await setup.end();
+    }
   });
 
   test("prepare --shadow-url applies migrations before preparing", () => {
@@ -250,6 +376,214 @@ if (!haveDocker) {
     const check = schema(["check"]);
     expect(check.code).toBe(0);
     expect(check.stdout).toContain("schema: ok");
+  });
+
+  test("migrate revert --dry-run validates reversible down on an automatic shadow database", () => {
+    const root = isolatedRoot("revert-dry-run-ok");
+    writeRootFile(root, "migrations/0001_base.up.sql",
+      "CREATE TABLE tmp_revert_dry_run_ok_users (\n" +
+      "  id BIGSERIAL PRIMARY KEY,\n" +
+      "  name TEXT NOT NULL\n" +
+      ");\n",
+    );
+    writeRootFile(root, "migrations/0001_base.down.sql", "DROP TABLE IF EXISTS tmp_revert_dry_run_ok_users;\n");
+    writeRootFile(root, "migrations/0002_add_email.up.sql",
+      "ALTER TABLE tmp_revert_dry_run_ok_users ADD COLUMN email TEXT;\n",
+    );
+    writeRootFile(root, "migrations/0002_add_email.down.sql",
+      "ALTER TABLE tmp_revert_dry_run_ok_users DROP COLUMN email;\n",
+    );
+
+    const r = migrateCommand(["revert", "--dry-run"], root);
+
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toContain("shadow: created");
+    expect(r.stdout).toContain("revert dry-run: 0002_add_email restores schema");
+    expect(r.stdout).toContain("shadow: dropped");
+  });
+
+  test("migrate revert --dry-run --json keeps stdout machine-readable with automatic shadow", () => {
+    const root = isolatedRoot("revert-dry-run-json");
+    writeRootFile(root, "migrations/0001_base.up.sql",
+      "CREATE TABLE tmp_revert_dry_run_json_users (id BIGSERIAL PRIMARY KEY);\n",
+    );
+    writeRootFile(root, "migrations/0001_base.down.sql",
+      "DROP TABLE IF EXISTS tmp_revert_dry_run_json_users;\n",
+    );
+
+    const r = migrateCommand(["revert", "--dry-run", "--json"], root);
+
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).not.toContain("shadow:");
+    expect(JSON.parse(r.stdout)).toEqual({
+      kind: "passed",
+      version: 1,
+      name: "base",
+    });
+  });
+
+  test("migrate revert --dry-run fails when down leaves schema drift", () => {
+    const root = isolatedRoot("revert-dry-run-bad");
+    writeRootFile(root, "migrations/0001_base.up.sql",
+      "CREATE TABLE tmp_revert_dry_run_bad_users (\n" +
+      "  id BIGSERIAL PRIMARY KEY,\n" +
+      "  name TEXT NOT NULL\n" +
+      ");\n",
+    );
+    writeRootFile(root, "migrations/0001_base.down.sql", "DROP TABLE IF EXISTS tmp_revert_dry_run_bad_users;\n");
+    writeRootFile(root, "migrations/0002_add_email.up.sql",
+      "ALTER TABLE tmp_revert_dry_run_bad_users ADD COLUMN email TEXT;\n",
+    );
+    writeRootFile(root, "migrations/0002_add_email.down.sql", "SELECT 1;\n");
+
+    const r = migrateCommand(["revert", "--dry-run"], root);
+
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("revert dry-run: 0002_add_email down did not restore schema");
+    expect(r.stderr).toContain("relations changed: public.tmp_revert_dry_run_bad_users");
+    expect(r.stdout).toContain("shadow: created");
+    expect(r.stdout).toContain("shadow: dropped");
+  });
+
+  test("migrate revert --dry-run respects squash adoption in review mode", () => {
+    const root = isolatedRoot("revert-dry-run-squash");
+    const baseSql = "CREATE TABLE tmp_revert_dry_run_squash_users (id BIGSERIAL PRIMARY KEY);\n";
+    const metadata = {
+      format: 1,
+      replaces: [{ version: 1, name: "base", upHash: hash(baseSql) }],
+    };
+    writeRootFile(root, "migrations/0001_base.up.sql", baseSql);
+    writeRootFile(root, "migrations/0001_base.down.sql", "DROP TABLE IF EXISTS tmp_revert_dry_run_squash_users;\n");
+    writeRootFile(root, "migrations/0002_baseline.up.sql",
+      `-- sqlx-js-squash: ${JSON.stringify(metadata)}\n` +
+      "CREATE TABLE tmp_revert_dry_run_squash_users (id BIGSERIAL PRIMARY KEY);\n",
+    );
+    writeRootFile(root, "migrations/0003_add_name.up.sql",
+      "ALTER TABLE tmp_revert_dry_run_squash_users ADD COLUMN name TEXT;\n",
+    );
+    writeRootFile(root, "migrations/0003_add_name.down.sql",
+      "ALTER TABLE tmp_revert_dry_run_squash_users DROP COLUMN name;\n",
+    );
+
+    const r = migrateCommand(["revert", "--dry-run"], root);
+
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toContain("shadow: created");
+    expect(r.stdout).toContain("revert dry-run: 0003_add_name restores schema");
+    expect(r.stdout).toContain("shadow: dropped");
+  });
+
+  test("migrate run resets pg_dump session state before later migrations", () => {
+    const root = isolatedRoot("migrate-session-reset");
+    writeRootFile(root, "migrations/0201_baseline.up.sql",
+      "SELECT pg_catalog.set_config('search_path', '', false);\n" +
+      "CREATE TABLE public.tmp_migrate_session_reset_users (id BIGSERIAL PRIMARY KEY);\n",
+    );
+    writeRootFile(root, "migrations/0202_add_name.up.sql",
+      "ALTER TABLE tmp_migrate_session_reset_users ADD COLUMN name TEXT;\n",
+    );
+
+    const r = migrateCommand(["run"], root);
+
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toContain("applying 201_baseline");
+    expect(r.stdout).toContain("applying 202_add_name");
+  });
+
+  test("migrate revert --dry-run isolates an already-used shadow database", async () => {
+    const root = isolatedRoot("revert-dry-run-reused-shadow");
+    writeRootFile(root, "migrations/0211_base.up.sql",
+      "CREATE TABLE tmp_revert_dry_run_reused_shadow_users (\n" +
+      "  id BIGSERIAL PRIMARY KEY,\n" +
+      "  name TEXT NOT NULL\n" +
+      ");\n",
+    );
+    writeRootFile(root, "migrations/0211_base.down.sql",
+      "DROP TABLE IF EXISTS tmp_revert_dry_run_reused_shadow_users;\n",
+    );
+    writeRootFile(root, "migrations/0212_add_email.up.sql",
+      "ALTER TABLE tmp_revert_dry_run_reused_shadow_users ADD COLUMN email TEXT;\n",
+    );
+    writeRootFile(root, "migrations/0212_add_email.down.sql",
+      "ALTER TABLE tmp_revert_dry_run_reused_shadow_users DROP COLUMN email;\n",
+    );
+
+    const shadowDatabaseUrl = await createShadowDatabase("sqlx_js_reused_shadow");
+    const applied = migrateCommand(["run"], root, shadowDatabaseUrl);
+    expect(applied.code).toBe(0);
+
+    const r = migrateCommand(["revert", "--dry-run", "--shadow-url", shadowDatabaseUrl], root);
+
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toContain("revert dry-run: 0212_add_email restores schema");
+  });
+
+  test("migrate verify auto-creates a shadow database without writing prepare artifacts", () => {
+    const root = isolatedRoot("migrate-verify-auto-shadow");
+    try {
+      writeRootFile(root, "migrations/0301_base.up.sql",
+        "CREATE TABLE tmp_migrate_verify_auto_shadow_users (\n" +
+        "  id BIGSERIAL PRIMARY KEY,\n" +
+        "  email TEXT NOT NULL\n" +
+        ");\n",
+      );
+      writeRootFile(root, "migrations/0301_base.down.sql",
+        "DROP TABLE IF EXISTS tmp_migrate_verify_auto_shadow_users;\n",
+      );
+      writeRootFile(root, "a.ts",
+        "import { sql } from \"@onreza/sqlx-js\";\n" +
+        "await sql(\"SELECT id, email FROM tmp_migrate_verify_auto_shadow_users WHERE email = $1\", \"x\");\n",
+      );
+
+      const r = migrateCommand(["verify"], root);
+
+      expect(r.code).toBe(0);
+      expect(r.stderr).toBe("");
+      expect(r.stdout).toContain("shadow: created");
+      expect(r.stdout).toContain("shadow: prepared 1 unique query");
+      expect(r.stdout).toContain("shadow: dropped");
+      expect(existsSync(join(root, "sqlx-js-env.d.ts"))).toBe(false);
+      expect(existsSync(join(root, ".sqlx-js"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("migrate dev auto-creates a shadow database and writes prepare artifacts", () => {
+    const root = isolatedRoot("migrate-dev-auto-shadow");
+    try {
+      writeRootFile(root, "migrations/0311_base.up.sql",
+        "CREATE TABLE tmp_migrate_dev_auto_shadow_users (\n" +
+        "  id BIGSERIAL PRIMARY KEY,\n" +
+        "  name TEXT NOT NULL\n" +
+        ");\n",
+      );
+      writeRootFile(root, "migrations/0311_base.down.sql",
+        "DROP TABLE IF EXISTS tmp_migrate_dev_auto_shadow_users;\n",
+      );
+      writeRootFile(root, "a.ts",
+        "import { sql } from \"@onreza/sqlx-js\";\n" +
+        "await sql(\"SELECT id, name FROM tmp_migrate_dev_auto_shadow_users WHERE id = $1\", 1);\n",
+      );
+
+      const r = migrateCommand(["dev"], root);
+
+      expect(r.code).toBe(0);
+      expect(r.stderr).toBe("");
+      expect(r.stdout).toContain("shadow: created");
+      expect(r.stdout).toContain("prepared 1 unique query");
+      expect(r.stdout).toContain("shadow: dropped");
+      const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
+      expect(dts).toContain("tmp_migrate_dev_auto_shadow_users");
+      expect(readdirSync(join(root, ".sqlx-js")).filter((f) => f.endsWith(".json")).length).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("built-in extension types resolve via the registry", () => {

@@ -43,7 +43,7 @@ export async function prepareWatchedOnce(
     state.session = null;
   }
   if (!state.session) state.session = await deps.openSession(opts);
-  return await deps.prepareOnce(opts, state.session, log, err);
+  return await deps.prepareOnce(opts, state.session, log, err, 1);
 }
 
 export async function runWatch(opts: WatchOptions): Promise<void> {

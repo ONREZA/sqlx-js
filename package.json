@@ -4,6 +4,9 @@
   "description": "Compile-time-checked raw SQL for TypeScript + PostgreSQL. Inspired by sqlx.",
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "sideEffects": false,
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
@@ -12,12 +15,6 @@
       "types": "./dist/src/index.d.ts",
       "import": "./dist/src/index.js",
       "default": "./dist/src/index.js"
-    },
-    "./bun": {
-      "types": "./dist/src/bun.d.ts",
-      "bun": "./dist/src/bun.js",
-      "import": "./dist/src/bun.js",
-      "default": "./dist/src/bun.js"
     }
   },
   "bin": {
@@ -52,7 +49,7 @@
     "migrations"
   ],
   "scripts": {
-    "prepare": "[ -d .git ] && lefthook install >/dev/null 2>&1 || true",
+    "prepare": "(test -f dist/bin/sqlx-js.js || bun run build) && ([ ! -d .git ] || lefthook install >/dev/null 2>&1 || true)",
     "test": "bun test tests",
     "test:typecheck": "tsc --noEmit",
     "test:example": "bunx tsc -p example --noEmit",

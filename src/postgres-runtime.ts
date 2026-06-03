@@ -1,13 +1,23 @@
 import postgres from "postgres";
-import { createSqlRuntime, encodeParam, encodePgArrayLiteral, parsePgArrayLiteral, type RuntimeClient } from "./runtime";
+import { createSqlRuntime, encodeParam, encodePgArrayLiteral, parsePgArrayLiteral, type OnQueryHook, type RuntimeClient } from "./runtime";
 import { arrayElementOid, builtinArrayOids } from "./pg/oids";
 
 export type PostgresClient = postgres.Sql<{ bigint: bigint }>;
 export type PostgresOptions = postgres.Options<Record<string, postgres.PostgresType>>;
+export type CreateClientOptions = PostgresOptions & {
+  onQuery?: OnQueryHook;
+  statementTimeoutMs?: number;
+};
 type PostgresQueryClient = PostgresClient | postgres.TransactionSql<{ bigint: bigint }>;
 
+const HOOKS = Symbol.for("sqlx-js.hooks");
+type AttachedHooks = { onQuery?: OnQueryHook };
+
 class PostgresRuntimeClient implements RuntimeClient {
-  constructor(public readonly client: PostgresQueryClient) {}
+  constructor(
+    public readonly client: PostgresQueryClient,
+    public readonly onQuery?: OnQueryHook,
+  ) {}
 
   async query(query: string, params: unknown[]): Promise<unknown[]> {
     return await this.client.unsafe(query, params as never[], { prepare: true }) as unknown[];
@@ -22,7 +32,7 @@ class PostgresRuntimeClient implements RuntimeClient {
   async transaction<R>(fn: (client: RuntimeClient) => Promise<R>): Promise<R> {
     if (!("begin" in this.client)) throw new Error("sqlx-js.transaction: nested transactions are not supported");
     return await this.client.begin(async (tx) => {
-      return await fn(new PostgresRuntimeClient(tx));
+      return await fn(new PostgresRuntimeClient(tx, this.onQuery));
     }) as R;
   }
 
@@ -124,9 +134,19 @@ function postgresTypes(): Record<string, postgres.PostgresType> {
   return types;
 }
 
-export function createClient(url = process.env.DATABASE_URL, options: PostgresOptions = {}): PostgresClient {
+export function createClient(url = process.env.DATABASE_URL, options: CreateClientOptions = {}): PostgresClient {
   if (!url) throw new Error("sqlx-js: DATABASE_URL is not set");
-  return postgres(url, { ...options, types: { ...postgresTypes(), ...(options.types ?? {}) } }) as PostgresClient;
+  const { onQuery, statementTimeoutMs, ...pgOptions } = options;
+  const connection = statementTimeoutMs !== undefined
+    ? { ...(pgOptions.connection ?? {}), statement_timeout: statementTimeoutMs }
+    : pgOptions.connection;
+  const client = postgres(url, {
+    ...pgOptions,
+    ...(connection ? { connection } : {}),
+    types: { ...postgresTypes(), ...(pgOptions.types ?? {}) },
+  }) as PostgresClient;
+  if (onQuery) (client as unknown as Record<symbol, unknown>)[HOOKS] = { onQuery } satisfies AttachedHooks;
+  return client;
 }
 
 function createDefaultClient(): PostgresRuntimeClient {
@@ -142,8 +162,9 @@ export function getClient(): PostgresClient {
   return getRuntimeClient().client as PostgresClient;
 }
 
-export function setClient(client: PostgresClient): void {
-  defaultClient = new PostgresRuntimeClient(client);
+export function setClient(client: PostgresClient, options?: { onQuery?: OnQueryHook }): void {
+  const attached = (client as unknown as Record<symbol, unknown>)[HOOKS] as AttachedHooks | undefined;
+  defaultClient = new PostgresRuntimeClient(client, options?.onQuery ?? attached?.onQuery);
 }
 
 export async function close(): Promise<void> {

@@ -1,6 +1,6 @@
 import { join } from "node:path";
-import { PgClient, parseDatabaseUrl, PgError, type FieldDescription } from "../pg/wire";
-import { SchemaCache, type CustomTypeInfo } from "../pg/schema";
+import { PgClient, parseDatabaseUrl, PgError, type ConnConfig, type FieldDescription } from "../pg/wire";
+import { SchemaCache, compositeLiteral, type CustomTypeInfo } from "../pg/schema";
 import { analyzeQuery } from "../pg/analyze";
 import { isBuiltinOid, oidToTs } from "../pg/oids";
 import { scanProject, type QueryCallSite } from "../scan/scanner";
@@ -25,6 +25,8 @@ function resolveTs(oid: number, customLookup: (o: number) => CustomTypeInfo | un
     if (c.kind === "enumArray") return `(${enumUnion(c.element.values)})[]`;
     if (c.kind === "scalar") return c.tsType;
     if (c.kind === "scalarArray") return `(${c.element.tsType})[]`;
+    if (c.kind === "composite") return compositeLiteral(c);
+    if (c.kind === "compositeArray") return `(${compositeLiteral(c.element)})[]`;
   }
   return oidToTs(oid).ts;
 }
@@ -134,11 +136,70 @@ export async function openSession(opts: PrepareOptions): Promise<PrepareSession>
   return { client, schema, userCfg };
 }
 
+type DescribeOutcome =
+  | { ok: true; paramOids: number[]; fields: FieldDescription[] }
+  | { ok: false; error: unknown };
+
+export function defaultPrepareConcurrency(): number {
+  const raw = process.env.SQLX_JS_PREPARE_CONCURRENCY;
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 8;
+}
+
+// describe() is sequential per PgClient (see wire.ts), so concurrency comes from
+// running several short-lived connections in parallel, each draining a shared
+// cursor. The session connection is reused as one worker; extras are closed after.
+export async function describeAll(
+  cfg: ConnConfig,
+  sessionClient: PgClient,
+  queries: { fp: string; query: string }[],
+  concurrency: number,
+): Promise<Map<string, DescribeOutcome>> {
+  const results = new Map<string, DescribeOutcome>();
+  if (queries.length === 0) return results;
+  const workerCount = Math.max(1, Math.min(concurrency, queries.length));
+  let cursor = 0;
+  const drain = async (client: PgClient) => {
+    while (true) {
+      const i = cursor++;
+      if (i >= queries.length) return;
+      const { fp, query } = queries[i]!;
+      try {
+        const d = await client.describe(query);
+        results.set(fp, { ok: true, paramOids: d.paramOids, fields: d.fields });
+      } catch (error) {
+        results.set(fp, { ok: false, error });
+      }
+    }
+  };
+  const extras: PgClient[] = [];
+  try {
+    // Open extra connections best-effort. The session connection alone is enough
+    // to drain the queue, so a connection-limited server (low max_connections,
+    // PgBouncer) degrades to fewer workers instead of failing the whole prepare.
+    for (let i = 1; i < workerCount; i++) {
+      const c = new PgClient(cfg);
+      try {
+        await c.connect();
+      } catch {
+        await c.end().catch(() => {});
+        break;
+      }
+      extras.push(c);
+    }
+    await Promise.all([sessionClient, ...extras].map((c) => drain(c)));
+  } finally {
+    await Promise.all(extras.map((c) => c.end().catch(() => {})));
+  }
+  return results;
+}
+
 export async function prepareOnce(
   opts: PrepareOptions,
   session: PrepareSession,
   log: (msg: string) => void = console.log,
   err: (msg: string) => void = console.error,
+  concurrency: number = defaultPrepareConcurrency(),
 ): Promise<{ entries: number; failures: number; pruned: number }> {
   const sites = scanProject(opts.root);
   log(`scanned: found ${sites.length} sql() call site(s)`);
@@ -164,25 +225,28 @@ export async function prepareOnce(
   let failures = 0;
   const { client, schema, userCfg } = session;
 
+  const describeList = [...unique.values()].map((u) => ({ fp: u.fp, query: u.query }));
+  const describeResults = await describeAll(parseDatabaseUrl(opts.databaseUrl), client, describeList, concurrency);
   for (const { fp, query, sites: ss } of unique.values()) {
     const site = ss[0]!;
-    try {
-      const d = await client.describe(query);
-      raw.push({ fp, query, sites: ss, paramOids: d.paramOids, fields: d.fields });
-    } catch (e) {
-      failures++;
-      if (e instanceof PgError) {
-        const extras: string[] = [];
-        if (e.position) extras.push(`pos ${e.position}`);
-        if (e.code) extras.push(`code ${e.code}`);
-        const tail = extras.length > 0 ? ` (${extras.join(", ")})` : "";
-        err(`  ✗ ${formatSite(site)} — describe failed: ${e.message}${tail}`);
-        if (e.hint) err(`      hint: ${e.hint}`);
-        err(`      query: ${snippet(query)}`);
-      } else {
-        err(`  ✗ ${formatSite(site)} — describe failed: ${(e as Error).message}`);
-        err(`      query: ${snippet(query)}`);
-      }
+    const outcome = describeResults.get(fp)!;
+    if (outcome.ok) {
+      raw.push({ fp, query, sites: ss, paramOids: outcome.paramOids, fields: outcome.fields });
+      continue;
+    }
+    failures++;
+    const e = outcome.error;
+    if (e instanceof PgError) {
+      const extras: string[] = [];
+      if (e.position) extras.push(`pos ${e.position}`);
+      if (e.code) extras.push(`code ${e.code}`);
+      const tail = extras.length > 0 ? ` (${extras.join(", ")})` : "";
+      err(`  ✗ ${formatSite(site)} — describe failed: ${e.message}${tail}`);
+      if (e.hint) err(`      hint: ${e.hint}`);
+      err(`      query: ${snippet(query)}`);
+    } else {
+      err(`  ✗ ${formatSite(site)} — describe failed: ${(e as Error).message}`);
+      err(`      query: ${snippet(query)}`);
     }
   }
 

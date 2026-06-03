@@ -1,13 +1,24 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { PgClient, parseDatabaseUrl } from "./pg/wire";
+import { PgClient, parseDatabaseUrl, PgError } from "./pg/wire";
 import { applyPending, acquireMigrateLock, releaseMigrateLock, DEFAULT_MIGRATE_LOCK_KEY } from "./commands/migrate";
+
+export type OnQueryEvent = {
+  query: string;
+  params: unknown[];
+  durationMs: number;
+  rowCount?: number;
+  error?: unknown;
+};
+
+export type OnQueryHook = (event: OnQueryEvent) => void;
 
 export type RuntimeClient = {
   query: (query: string, params: unknown[]) => Promise<unknown[]>;
   transformParam?: (param: unknown) => unknown;
   transaction: <R>(fn: (client: RuntimeClient) => Promise<R>) => Promise<R>;
   close: () => Promise<void>;
+  onQuery?: OnQueryHook;
 };
 
 type AnyFn = (...args: unknown[]) => Promise<unknown[]>;
@@ -162,6 +173,54 @@ export class TooManyRowsError extends Error {
   }
 }
 
+// SQLSTATE is exactly five characters from [0-9A-Z]; lowercase or other shapes
+// are never valid, so transport codes like "EPIPE" must not match on shape alone.
+const SQLSTATE = /^[0-9A-Z]{5}$/;
+
+function firstString(...candidates: unknown[]): string | undefined {
+  for (const value of candidates) {
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return undefined;
+}
+
+export function toPgError(e: unknown): PgError | null {
+  if (e instanceof PgError) return e;
+  if (e === null || typeof e !== "object") return null;
+  const o = e as Record<string, unknown>;
+  const code = typeof o.code === "string" ? o.code : undefined;
+  // `_name` variants are postgres.js; bare forms are node-postgres. Bare
+  // `column`/`schema`/`table` can also collide with runtime-added Error
+  // properties, so we read namespaced variants first and only accept strings.
+  const severity = firstString(o.severity, o.severity_local);
+  // A genuine database error is identified by the driver's branded name
+  // (Postgres.js) or by a SQLSTATE-shaped code paired with a severity. Transport
+  // and system errors (EPIPE, ECONNREFUSED, CONNECTION_ENDED) carry neither, so
+  // they pass through untouched instead of masquerading as a PgError.
+  const isDatabaseError =
+    o.name === "PostgresError" ||
+    (code !== undefined && SQLSTATE.test(code) && severity !== undefined);
+  if (!isDatabaseError) return null;
+
+  const fields: Record<string, string> = {};
+  if (typeof o.message === "string" && o.message.length > 0) fields.M = o.message;
+  if (code) fields.C = code;
+  if (typeof o.detail === "string" && o.detail.length > 0) fields.D = o.detail;
+  if (typeof o.hint === "string" && o.hint.length > 0) fields.H = o.hint;
+  const position = firstString(o.position) ?? (typeof o.position === "number" && Number.isFinite(o.position) ? String(o.position) : undefined);
+  if (position) fields.P = position;
+  if (severity) fields.S = severity;
+  const table = firstString(o.table_name, o.table);
+  if (table) fields.t = table;
+  const column = firstString(o.column_name, o.column);
+  if (column) fields.c = column;
+  const constraint = firstString(o.constraint_name, o.constraint);
+  if (constraint) fields.n = constraint;
+  const schema = firstString(o.schema_name, o.schema);
+  if (schema) fields.s = schema;
+  return new PgError(fields, { cause: e });
+}
+
 export const _internal = {
   renameRows,
   encodeParam,
@@ -170,14 +229,31 @@ export const _internal = {
   loadSqlFile,
   buildSetTransaction,
   clearIdentifierCache,
+  toPgError,
 };
 
 async function runQuery(client: RuntimeClient, query: string, params: unknown[]): Promise<unknown[]> {
   const encoded = params.length === 0
     ? params
     : params.map((p) => client.transformParam ? client.transformParam(p) : encodeParam(p));
-  const rows = await client.query(query, encoded);
-  return renameRows(rows);
+  const onQuery = client.onQuery;
+  if (!onQuery) {
+    try {
+      return renameRows(await client.query(query, encoded));
+    } catch (e) {
+      throw toPgError(e) ?? e;
+    }
+  }
+  const start = performance.now();
+  try {
+    const rows = await client.query(query, encoded);
+    onQuery({ query, params, durationMs: performance.now() - start, rowCount: rows.length });
+    return renameRows(rows);
+  } catch (e) {
+    const error = toPgError(e) ?? e;
+    onQuery({ query, params, durationMs: performance.now() - start, error });
+    throw error;
+  }
 }
 
 async function runOne(client: RuntimeClient, query: string, params: unknown[]): Promise<unknown> {
@@ -481,6 +557,9 @@ export async function migrate(opts: MigrateOptions = {}): Promise<void> {
     const result = await applyPending(client, dir, (e) => {
       if (e.kind === "applied") {
         log(`migrate: applied ${String(e.version).padStart(4, "0")}_${e.name}`);
+        appliedAny = true;
+      } else if (e.kind === "adopted") {
+        log(`migrate: adopted ${String(e.version).padStart(4, "0")}_${e.name} (${e.replaced} replaced)`);
         appliedAny = true;
       } else if (e.kind === "tampered") {
         throw new Error(

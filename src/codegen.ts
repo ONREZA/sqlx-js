@@ -25,8 +25,6 @@ export function emitDts(outPath: string, entries: CacheEntry[]): void {
   lines.push("");
   emitModule(lines, "@onreza/sqlx-js", entries);
   lines.push("");
-  emitModule(lines, "@onreza/sqlx-js/bun", entries);
-  lines.push("");
   lines.push("export {};");
   writeFileSync(outPath, lines.join("\n") + "\n");
 }

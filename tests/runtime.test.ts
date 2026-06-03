@@ -5,11 +5,15 @@ import { join } from "node:path";
 import {
   _internal,
   clearSqlFileCache,
+  createSqlRuntime,
   encodePgArrayLiteral,
   id,
   NoRowsError,
+  type OnQueryEvent,
+  type RuntimeClient,
   TooManyRowsError,
 } from "../src/runtime";
+import { PgError } from "../src/pg/wire";
 
 describe("renameRows", () => {
   test("returns same array when no rows", () => {
@@ -103,6 +107,117 @@ describe("typed errors", () => {
     expect(e.name).toBe("TooManyRowsError");
     expect(e.actual).toBe(5);
     expect(e.message).toContain("5");
+  });
+});
+
+describe("toPgError", () => {
+  test("maps a postgres.js-style driver error to PgError", () => {
+    const driver = Object.assign(new Error("duplicate key value"), {
+      name: "PostgresError",
+      code: "23505",
+      detail: "Key (email)=(a@b) already exists.",
+      hint: "use a different email",
+      position: "42",
+      severity: "ERROR",
+      table_name: "users",
+      column_name: "email",
+      constraint_name: "users_email_key",
+      schema_name: "public",
+    });
+    const pg = _internal.toPgError(driver)!;
+    expect(pg).toBeInstanceOf(PgError);
+    expect(pg.code).toBe("23505");
+    expect(pg.position).toBe(42);
+    expect(pg.detail).toContain("already exists");
+    expect(pg.hint).toBe("use a different email");
+    expect(pg.severity).toBe("ERROR");
+    expect(pg.table).toBe("users");
+    expect(pg.column).toBe("email");
+    expect(pg.constraint).toBe("users_email_key");
+    expect(pg.schema).toBe("public");
+    expect(pg.cause).toBe(driver);
+  });
+
+  test("recognizes a node-postgres-style error (SQLSTATE + severity, no PostgresError name)", () => {
+    const pg = _internal.toPgError({ code: "42P01", severity: "ERROR", message: "relation does not exist" });
+    expect(pg).toBeInstanceOf(PgError);
+    expect(pg!.code).toBe("42P01");
+    expect(pg!.severity).toBe("ERROR");
+  });
+
+  test("does not treat transport/system errors as database errors", () => {
+    // 5-char uppercase codes that are NOT SQLSTATE and carry no severity.
+    expect(_internal.toPgError(Object.assign(new Error("broken pipe"), { code: "EPIPE" }))).toBeNull();
+    expect(_internal.toPgError(Object.assign(new Error("cross-device"), { code: "EXDEV" }))).toBeNull();
+    expect(_internal.toPgError({ code: "CONNECTION_ENDED" })).toBeNull();
+    // SQLSTATE shape but no severity → not enough to claim it's a database error.
+    expect(_internal.toPgError({ code: "42P01" })).toBeNull();
+  });
+
+  test("returns the same instance when already a PgError", () => {
+    const existing = new PgError({ C: "23505", M: "dup" });
+    expect(_internal.toPgError(existing)).toBe(existing);
+  });
+
+  test("returns null for non-pg errors", () => {
+    expect(_internal.toPgError(new Error("ECONNRESET"))).toBeNull();
+    expect(_internal.toPgError({ code: "ECONNRESET" })).toBeNull();
+    expect(_internal.toPgError("nope")).toBeNull();
+    expect(_internal.toPgError(null)).toBeNull();
+  });
+});
+
+describe("onQuery hook", () => {
+  function harness(client: Partial<RuntimeClient>) {
+    const events: OnQueryEvent[] = [];
+    const base: RuntimeClient = {
+      query: async () => [],
+      transaction: async (fn) => fn(base),
+      close: async () => {},
+      onQuery: (e) => events.push(e),
+      ...client,
+    };
+    return { events, api: createSqlRuntime(() => base) };
+  }
+
+  test("fires once per query with timing and row count", async () => {
+    const { events, api } = harness({ query: async () => [{ id: 1 }, { id: 2 }] });
+    const rows = await api.sql("SELECT id FROM users");
+    expect(rows.length).toBe(2);
+    expect(events.length).toBe(1);
+    expect(events[0]!.query).toBe("SELECT id FROM users");
+    expect(events[0]!.rowCount).toBe(2);
+    expect(events[0]!.durationMs).toBeGreaterThanOrEqual(0);
+    expect(events[0]!.error).toBeUndefined();
+  });
+
+  test("fires with normalized PgError on failure and rethrows it", async () => {
+    const driver = Object.assign(new Error("dup"), { name: "PostgresError", code: "23505" });
+    const { events, api } = harness({ query: async () => { throw driver; } });
+    await expect(api.sql("INSERT INTO users DEFAULT VALUES")).rejects.toBeInstanceOf(PgError);
+    expect(events.length).toBe(1);
+    expect(events[0]!.error).toBeInstanceOf(PgError);
+    expect((events[0]!.error as PgError).code).toBe("23505");
+    expect(events[0]!.rowCount).toBeUndefined();
+  });
+
+  test("normalizes errors even without an onQuery hook", async () => {
+    const api = createSqlRuntime((): RuntimeClient => ({
+      query: async () => { throw Object.assign(new Error("x"), { code: "42P01", severity: "ERROR" }); },
+      transaction: async (fn) => fn({} as RuntimeClient),
+      close: async () => {},
+    }));
+    await expect(api.sql("SELECT 1")).rejects.toBeInstanceOf(PgError);
+  });
+
+  test("rethrows transport errors unchanged (not wrapped in PgError)", async () => {
+    const transport = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+    const api = createSqlRuntime((): RuntimeClient => ({
+      query: async () => { throw transport; },
+      transaction: async (fn) => fn({} as RuntimeClient),
+      close: async () => {},
+    }));
+    await expect(api.sql("SELECT 1")).rejects.toBe(transport);
   });
 });
 
