@@ -4,7 +4,7 @@ Compile-time-checked raw SQL for TypeScript + PostgreSQL. Inspired by Rust's [sq
 
 You write plain SQL strings. A `prepare` step validates them against your database via the PostgreSQL wire protocol and generates a TypeScript declaration file. Wrong column names, mismatched parameter types, stale queries after a migration — all become compile errors.
 
-The default runtime adapter uses [Postgres.js](https://github.com/porsager/postgres). A `Bun.SQL` adapter is still available as `@onreza/sqlx-js/bun` for compatibility, but it is not the recommended production adapter; Bun.SQL has had production-affecting connection-state regressions such as [oven-sh/bun#16691](https://github.com/oven-sh/bun/issues/16691), fixed by [oven-sh/bun#17272](https://github.com/oven-sh/bun/pull/17272). Validate the exact Bun version and workload before using that adapter in production.
+The runtime uses [Postgres.js](https://github.com/porsager/postgres), so both the runtime and the CLI work on **Node ≥ 18, Bun, and Deno** — the CLI ships a `#!/usr/bin/env node` shebang and uses no runtime-specific APIs.
 
 ```ts
 import { sql } from "@onreza/sqlx-js";
@@ -40,7 +40,7 @@ const rows = await sql(
 - **Schema snapshot + LLM manifest** via `schema dump` / `schema check`: tables, columns, constraints, indexes, types, and function/procedure metadata are introspected from PostgreSQL.
 - **Shadow database validation** via `migrate dev` / `migrate verify`: auto-create a disposable shadow DB, apply migrations, validate SQL, and drop it afterwards.
 - **Safe identifier quoting** via `sql.id(...)`, backed by the committed schema snapshot whitelist.
-- **Tree-shakeable runtime adapters**: `@onreza/sqlx-js` imports Postgres.js; `@onreza/sqlx-js/bun` imports `Bun.SQL` only when explicitly used.
+- **Cross-runtime**: one Postgres.js-backed runtime that works on Node, Bun, and Deno — no runtime-specific adapter to choose.
 - **Watch mode**: ~15ms incremental re-prepare on file change.
 - **Cache pruning** removes orphaned entries automatically (toggleable with `--no-prune`).
 
@@ -56,6 +56,14 @@ The package installs a `sqlx-js` binary. The CLI examples below use `npx @onreza
 
 ## Setup
 
+### 0. Scaffold a project (optional)
+
+```bash
+npx @onreza/sqlx-js init
+```
+
+Creates `sqlx-js.config.ts`, a `migrations/` directory, and `.env.example` if they don't already exist (it never overwrites existing files), then prints the next steps. Skip it if you prefer to wire things up manually.
+
 ### 1. Configure the database URL
 
 ```bash
@@ -65,7 +73,7 @@ DATABASE_URL=postgres://user:password@localhost:5432/your_db
 # DATABASE_URL=postgres://user:password@db.example.com:5432/your_db?sslmode=require
 ```
 
-Supported `sslmode` values: `disable`, `prefer` (default — try TLS, fall back to plaintext), `require` (TLS or fail), `verify-ca`, `verify-full`. `application_name` and `connect_timeout` are also honored when provided as URL parameters.
+Supported `sslmode` values: `disable`, `prefer` (default — try TLS, fall back to plaintext), `require` (TLS or fail), `verify-ca`, `verify-full`. For a private/self-signed CA, point `sslrootcert` (and optionally `sslcert` / `sslkey` for client certs) at PEM files: `?sslmode=verify-full&sslrootcert=/etc/ssl/ca.pem`. `application_name`, `connect_timeout`, and `statement_timeout` (milliseconds) are also honored when provided as URL parameters.
 
 ### 2. Create a migration
 
@@ -269,14 +277,22 @@ import { createClient, setClient } from "@onreza/sqlx-js";
 setClient(createClient(process.env.DATABASE_URL));
 ```
 
-For the compatibility adapter, import from `@onreza/sqlx-js/bun`:
+`createClient(url, options)` accepts every Postgres.js option plus two sqlx-js extras for observability and reliability:
 
 ```ts
-import { SQL } from "bun";
-import { setClient } from "@onreza/sqlx-js/bun";
-
-setClient(new SQL({ url: process.env.DATABASE_URL!, bigint: true }));
+setClient(createClient(process.env.DATABASE_URL, {
+  // Server-side per-connection statement timeout (ms). Also settable via
+  // ?statement_timeout=5000 in DATABASE_URL.
+  statementTimeoutMs: 5000,
+  // Fires after every query/transaction statement, success or failure.
+  onQuery: ({ query, params, durationMs, rowCount, error }) => {
+    if (error) logger.error({ query, error });        // error is a PgError
+    else if (durationMs > 200) logger.warn({ slow: query, durationMs, rowCount });
+  },
+}));
 ```
+
+The `onQuery` hook works on any runtime (Node/Bun/Deno) and is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. The event carries the raw `params`, which may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks.
 
 ### `clearSqlFileCache()`
 
@@ -297,7 +313,7 @@ try {
 }
 ```
 
-`sql.one` throws `NoRowsError` on 0 rows and `TooManyRowsError` (with `.actual`) on >1. `PgError` exposes `.code`, `.position`, `.hint`, `.detail`, `.severity`.
+`sql.one` throws `NoRowsError` on 0 rows and `TooManyRowsError` (with `.actual`) on >1. Any database error raised by the runtime — whatever the adapter — is normalized into a `PgError`, so `e instanceof PgError` works the same in `prepare`, `migrate`, and ordinary `sql(...)` calls. `PgError` exposes `.code`, `.position`, `.hint`, `.detail`, `.severity`, `.schema`, `.table`, `.column`, `.constraint`, and the original driver error on `.cause`. Non-database failures (e.g. a dropped connection) are rethrown unchanged.
 
 ### Transactions with options
 
@@ -313,16 +329,19 @@ Options: `{ isolation?: "read uncommitted" | "read committed" | "repeatable read
 
 ### Namespace imports
 
-In addition to `import { sql } from "@onreza/sqlx-js"`, the scanner recognises `import * as ns from "@onreza/sqlx-js"` and the same forms from `@onreza/sqlx-js/bun`. It validates `ns.sql(...)`, `ns.sql.one(...)`, `ns.sql.file(...)`, and `ns.sql.transaction(...)` exactly like the named-import form. Local re-declarations (`const sql = ...`, `const { sql } = ...`) correctly shadow the alias inside their scope.
+In addition to `import { sql } from "@onreza/sqlx-js"`, the scanner recognises `import * as ns from "@onreza/sqlx-js"`. It validates `ns.sql(...)`, `ns.sql.one(...)`, `ns.sql.file(...)`, and `ns.sql.transaction(...)` exactly like the named-import form. Local re-declarations (`const sql = ...`, `const { sql } = ...`) correctly shadow the alias inside their scope.
 
 ## CLI
 
 ```
+sqlx-js init [--root <dir>]
 sqlx-js prepare [--check | --watch] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
 sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] | verify [--shadow-admin-url <url> | --shadow-url <url>] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] | archive list | archive restore <name> [--force] [--migrations <dir>]
 sqlx-js schema dump | check [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
 sqlx-js --version | --help
 ```
+
+`prepare` describes queries across a small connection pool (default 8, override with `SQLX_JS_PREPARE_CONCURRENCY`) for faster cold runs on large projects.
 
 | Flag                  | Meaning                                                                              |
 |-----------------------|--------------------------------------------------------------------------------------|
@@ -492,7 +511,7 @@ export default config;
 
 Domains resolve to their base type through `pg_type.typbasetype`. `CREATE DOMAIN positive_int AS integer CHECK (VALUE > 0)` → `number`, `CREATE DOMAIN tagged AS hstore` → `Record<string, string | null>`. Array variants of any registered scalar are also wired up automatically — `vector[]` → `(number[])[]`.
 
-Composite types (`CREATE TYPE foo AS (a int, b text)`) still resolve to `unknown`; see ROADMAP.
+Composite types (`CREATE TYPE foo AS (a int, b text)`) resolve to a struct literal — `{ a: number | null; b: string | null }` — with each attribute typed (enums, domains, and nested composites included) and nullable unless the attribute is `NOT NULL`. Array variants (`foo[]`) resolve too.
 
 ## How nullability is inferred
 
@@ -545,12 +564,10 @@ Releases are automated via `release-please`: pushes to `main` accumulate into a 
 - `INSERT INTO t VALUES (...)` without an explicit column list isn't parameter-mapped.
 - `SELECT *` falls back to conservative nullability.
 - Nested CTE references (CTE-`b` referencing CTE-`a` in the same `WITH`) and `WITH RECURSIVE` are not analysed transitively — at worst this produces extra `T | null`. Use `AS "id!"` overrides if needed.
-- Composite types resolve to `unknown`. Domains and array types of registered types resolve correctly.
 - Column names whose **real** name (not an alias) ends with `!` or `?` are not supported — the runtime strips those suffixes assuming an override. Use `AS "alias"` if you have such a column.
 - Migrations run inside `BEGIN/COMMIT`. DDL that disallows transactions (`CREATE INDEX CONCURRENTLY`, `VACUUM`, `REINDEX CONCURRENTLY`, …) will fail; split such operations into separate migrations executed outside the runner.
-- `parseDatabaseUrl` parses `sslmode`, `application_name`, and `connect_timeout` for the **internal** wire client (used by `migrate run`, `prepare`, and the runtime `migrate()` helper). The default runtime `sql()` path delegates connection handling to Postgres.js.
-- The `@onreza/sqlx-js/bun` adapter delegates runtime queries to `Bun.SQL`; it is kept for compatibility and is not recommended as the production adapter without workload-specific validation.
-- `connect_timeout` covers the TCP-connect phase only; TLS handshake and SCRAM authentication have no timeout.
+- The **internal** wire client (used by `migrate run`, `prepare`, and the runtime `migrate()` helper) reads `sslmode`, `sslrootcert`/`sslcert`/`sslkey`, `application_name`, `connect_timeout`, and `statement_timeout` from `DATABASE_URL`. The default runtime `sql()` path delegates connection handling to Postgres.js; configure TLS, pooling, and timeouts through the `DATABASE_URL` and `createClient(...)` options it understands (`statementTimeoutMs` is a convenience that maps to a per-connection `statement_timeout`).
+- `connect_timeout` bounds the entire internal-client connect, including the TLS handshake and SCRAM authentication.
 - `sql.file(path)` path is matched literally between scan time and runtime — they must agree on the working directory. Document a convention for your team (e.g. always run from the repo root).
 
 See [ROADMAP.md](./ROADMAP.md) for what's planned.

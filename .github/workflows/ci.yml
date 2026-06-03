@@ -65,8 +65,11 @@ jobs:
       - name: Verify built package entrypoints
         run: |
           node -e 'await import("@onreza/sqlx-js"); console.log("node root import ok")'
-          bun -e 'await import("@onreza/sqlx-js/bun"); console.log("bun adapter import ok")'
+          bun -e 'await import("@onreza/sqlx-js"); console.log("bun root import ok")'
           node dist/bin/sqlx-js.js --version
+
+      - name: Verify CLI runs under Node (cross-runtime)
+        run: node dist/bin/sqlx-js.js prepare --check --root example
 
       - name: Verify npm package contents
         run: npm pack --dry-run
