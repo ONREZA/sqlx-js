@@ -2,9 +2,9 @@
 
 Compile-time-checked raw SQL for TypeScript + PostgreSQL. Inspired by Rust's [sqlx](https://github.com/launchbadge/sqlx).
 
-You write plain SQL strings. A `prepare` step validates them against your database via the PostgreSQL wire protocol and generates a TypeScript declaration file. Wrong column names, mismatched parameter types, stale queries after a migration — all become compile errors.
+You write plain SQL strings. A `prepare` step validates them against your database via the PostgreSQL wire protocol and generates a TypeScript declaration file. Wrong column names and stale queries fail during `prepare`; mismatched parameter types and row usage become TypeScript errors.
 
-The runtime uses [Postgres.js](https://github.com/porsager/postgres), so both the runtime and the CLI work on **Node ≥ 18, Bun, and Deno** — the CLI ships a `#!/usr/bin/env node` shebang and uses no runtime-specific APIs.
+The runtime uses [Postgres.js](https://github.com/porsager/postgres) through a single adapter instead of a Bun-specific client. The published CLI is a **Node ≥ 18** binary (`#!/usr/bin/env node`) and can also be run through Bun's npm tooling.
 
 ```ts
 import { sql } from "@onreza/sqlx-js";
@@ -28,7 +28,7 @@ const rows = await sql(
 - **Extension types out of the box**: `pgvector` (`vector`, `halfvec`, `sparsevec`), `hstore`, `citext`, `ltree`/`lquery`/`ltxtquery`. Add your own through `customTypes` config.
 - **Domains** resolve to their base TypeScript type (`CREATE DOMAIN email AS text` → `string`), including domains over extension types or other domains.
 - **Wide built-in type coverage**: numeric, text, date/time, UUID, json/jsonb, network (inet/cidr/macaddr/macaddr8), bit strings, ranges/multiranges, geometric, money, tsvector/tsquery, xml — and the matching array variants.
-- **External SQL files** via `sql.file("queries/foo.sql", ...)` — typed exactly like inline queries. Watch mode re-prepares on `.sql` edits too.
+- **External SQL files** via `sql.file("queries/foo.sql", ...)` — prepared and typed through `KnownFileQueries`. Watch mode re-prepares on `.sql` edits too.
 - **One-row helpers**: `sql.one(...)`, `sql.optional(...)`, `sql.file.one(...)`, `sql.file.optional(...)`, and the same chain on the `tx` callback — friendly with `noUncheckedIndexedAccess: true`. The scanner walks all of them.
 - **Array params** for `text[]`, `int[]`, etc. are auto-serialised to PostgreSQL array literals (`{a,b,c}`) at runtime — no more `string_to_array` workaround.
 - **Typed transactions** via `sql.transaction(async tx => …)` — the `tx` callback parameter is recognized by the scanner, so queries inside the block keep full type checking.
@@ -40,8 +40,8 @@ const rows = await sql(
 - **Schema snapshot + LLM manifest** via `schema dump` / `schema check`: tables, columns, constraints, indexes, types, and function/procedure metadata are introspected from PostgreSQL.
 - **Shadow database validation** via `migrate dev` / `migrate verify`: auto-create a disposable shadow DB, apply migrations, validate SQL, and drop it afterwards.
 - **Safe identifier quoting** via `sql.id(...)`, backed by the committed schema snapshot whitelist.
-- **Cross-runtime**: one Postgres.js-backed runtime that works on Node, Bun, and Deno — no runtime-specific adapter to choose.
-- **Watch mode**: ~15ms incremental re-prepare on file change.
+- **Single runtime adapter**: Postgres.js backs the runtime on Node/Bun-compatible environments — no Bun.SQL-specific adapter to choose.
+- **Watch mode**: debounced re-prepare with a warm `PgClient` + `SchemaCache` on `.ts` / `.tsx` / `.mts` / `.cts` / `.sql` changes.
 - **Cache pruning** removes orphaned entries automatically (toggleable with `--no-prune`).
 
 ## Install
@@ -73,7 +73,7 @@ DATABASE_URL=postgres://user:password@localhost:5432/your_db
 # DATABASE_URL=postgres://user:password@db.example.com:5432/your_db?sslmode=require
 ```
 
-Supported `sslmode` values: `disable`, `prefer` (default — try TLS, fall back to plaintext), `require` (TLS or fail), `verify-ca`, `verify-full`. For a private/self-signed CA, point `sslrootcert` (and optionally `sslcert` / `sslkey` for client certs) at PEM files: `?sslmode=verify-full&sslrootcert=/etc/ssl/ca.pem`. `application_name`, `connect_timeout`, and `statement_timeout` (milliseconds) are also honored when provided as URL parameters.
+Supported `sslmode` values: `disable`, `prefer` (default — try TLS, fall back to plaintext), `require` (TLS or fail), `verify-ca`, `verify-full`. For a private/self-signed CA, point `sslrootcert` (and optionally `sslcert` / `sslkey` for client certs) at PEM files: `?sslmode=verify-full&sslrootcert=/etc/ssl/ca.pem`. `application_name`, `connect_timeout` (seconds), and `statement_timeout` (milliseconds) are also honored when provided as URL parameters.
 
 ### 2. Create a migration
 
@@ -81,7 +81,7 @@ Supported `sslmode` values: `disable`, `prefer` (default — try TLS, fall back 
 npx @onreza/sqlx-js migrate add init
 ```
 
-Edit the created file (`migrations/0001_init.up.sql`):
+The command creates matching `.up.sql` and `.down.sql` stubs. Edit the `.up.sql` file (`migrations/0001_init.up.sql`):
 
 ```sql
 CREATE TABLE users (
@@ -99,7 +99,7 @@ During local development, validate the migration and regenerate query artifacts 
 npx @onreza/sqlx-js migrate dev
 ```
 
-`migrate dev` does not touch your application database. It creates a temporary shadow database using `DATABASE_URL` credentials, applies migrations from scratch, validates that the latest non-squash `.down.sql` restores the schema, prepares SQL queries against the resulting schema, writes `.sqlx-js/` and `sqlx-js-env.d.ts`, then drops the shadow database.
+`migrate dev` does not touch your application database. It creates a temporary shadow database using `DATABASE_URL` credentials, applies migrations from scratch, validates that the latest migration's `.down.sql` restores the previous schema (squash baselines may omit `.down.sql`), prepares SQL queries against the resulting schema, writes `.sqlx-js/` and `sqlx-js-env.d.ts`, then drops the shadow database.
 
 When you want to update your local application database, run:
 
@@ -152,7 +152,7 @@ Unknown queries, wrong parameter types, and dynamic strings are compile errors. 
 
 ### `sql.file(path, ...params)`
 
-Load SQL from an external file. The path is resolved against the source file at scan time (so `prepare` can read it), and against `process.cwd()` at runtime (so the running process can read it). Both must point at the same content.
+Load SQL from an external file. At prepare time the scanner reads the path relative to the source file. The generated `KnownFileQueries` key is the resolved SQL file path relative to `--root`; at runtime `sql.file(...)` reads the string argument relative to `process.cwd()`.
 
 ```ts
 // queries/top_admins.sql
@@ -165,7 +165,7 @@ const admins = await sql.file("queries/top_admins.sql", "admin", 5);
 // admins: { id: bigint; name: string }[]
 ```
 
-File-backed queries are emitted into a separate `KnownFileQueries` interface; the path becomes the type key.
+File-backed queries are emitted into a separate `KnownFileQueries` interface. Because the type key is the root-relative resolved SQL file path, keep file-backed call sites under a convention where that key matches the runtime string literal; the example keeps those call sites at the project root. Nested source-relative file paths are a current limitation.
 
 ### `sql.one(query, ...params)` and `sql.optional(query, ...params)`
 
@@ -240,7 +240,7 @@ const orderBy = sql.id("users", "created_at");
 await unsafe(`SELECT id, email FROM ${sql.id("users")} ORDER BY ${orderBy} DESC`);
 ```
 
-The default snapshot path is `.sqlx-js/schema/schema.json`. Override it at runtime with `SQLX_JS_SCHEMA_PATH`. Pass schema-qualified identifiers as separate segments: `sql.id("public", "users")`, not `sql.id("public.users")`.
+The default snapshot path is `.sqlx-js/schema/schema.json`. Override it at runtime with `SQLX_JS_SCHEMA_PATH`. `sql.id(...)` accepts one to three identifier segments. Pass schema-qualified identifiers as separate segments: `sql.id("public", "users")`, not `sql.id("public.users")`.
 
 ### `migrate(options)`
 
@@ -286,13 +286,13 @@ setClient(createClient(process.env.DATABASE_URL, {
   statementTimeoutMs: 5000,
   // Fires after every query/transaction statement, success or failure.
   onQuery: ({ query, params, durationMs, rowCount, error }) => {
-    if (error) logger.error({ query, error });        // error is a PgError
+    if (error) logger.error({ query, error });        // database errors are PgError
     else if (durationMs > 200) logger.warn({ slow: query, durationMs, rowCount });
   },
 }));
 ```
 
-The `onQuery` hook works on any runtime (Node/Bun/Deno) and is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. The event carries the raw `params`, which may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks.
+The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. The event carries the raw `params`, which may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
 
 ### `clearSqlFileCache()`
 
@@ -313,7 +313,7 @@ try {
 }
 ```
 
-`sql.one` throws `NoRowsError` on 0 rows and `TooManyRowsError` (with `.actual`) on >1. Any database error raised by the runtime — whatever the adapter — is normalized into a `PgError`, so `e instanceof PgError` works the same in `prepare`, `migrate`, and ordinary `sql(...)` calls. `PgError` exposes `.code`, `.position`, `.hint`, `.detail`, `.severity`, `.schema`, `.table`, `.column`, `.constraint`, and the original driver error on `.cause`. Non-database failures (e.g. a dropped connection) are rethrown unchanged.
+`sql.one` throws `NoRowsError` on 0 rows and `TooManyRowsError` (with `.actual`) on >1. Any database error raised by the default runtime is normalized into a `PgError`, so `e instanceof PgError` works the same in `prepare`, `migrate`, and ordinary `sql(...)` calls. `PgError` exposes `.code`, `.position`, `.hint`, `.detail`, `.severity`, `.schema`, `.table`, `.column`, `.constraint`, and the original driver error on `.cause`. Non-database failures (e.g. a dropped connection) are rethrown unchanged.
 
 ### Transactions with options
 
@@ -336,16 +336,16 @@ In addition to `import { sql } from "@onreza/sqlx-js"`, the scanner recognises `
 ```
 sqlx-js init [--root <dir>]
 sqlx-js prepare [--check | --watch] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
-sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] | verify [--shadow-admin-url <url> | --shadow-url <url>] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] | archive list | archive restore <name> [--force] [--migrations <dir>]
+sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | verify [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
 sqlx-js schema dump | check [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
 sqlx-js --version | --help
 ```
 
-`prepare` describes queries across a small connection pool (default 8, override with `SQLX_JS_PREPARE_CONCURRENCY`) for faster cold runs on large projects.
+Regular `prepare` describes queries across a small connection pool (default 8, override with `SQLX_JS_PREPARE_CONCURRENCY`) for faster cold runs on large projects. Watch mode keeps one session warm and reuses it between debounced changes.
 
 | Flag                  | Meaning                                                                              |
 |-----------------------|--------------------------------------------------------------------------------------|
-| `--check`             | Offline: verify cache matches sources, no database required.                         |
+| `--check`             | Offline: verify every scanned query is present in cache, no database required.       |
 | `--watch`             | Persistent connection, re-prepare on file change.                                    |
 | `--root <dir>`        | Source/cache/migrations root (default: cwd).                                         |
 | `--dts <path>`        | Declarations output (default: `<root>/sqlx-js-env.d.ts`).                           |
@@ -354,7 +354,7 @@ sqlx-js --version | --help
 | `--dry-run`           | For `migrate run` / `migrate revert`: validate without applying to the target DB.   |
 | `--json`              | Machine-readable output for `migrate info/check` and migration dry-runs.            |
 | `--force`             | For `migrate archive restore`: allow overwriting existing migration files.           |
-| `--lock-timeout <ms>` | Advisory-lock acquisition timeout for `migrate run` / `migrate revert`.              |
+| `--lock-timeout <ms>` | Advisory-lock acquisition timeout for `migrate run` / `revert` / `dev` / `verify` / `squash`. |
 | `--shadow-url <url>`  | Use an existing disposable shadow DB instead of auto-creating one.                   |
 | `--shadow-admin-url <url>` | Admin/maintenance DB URL used to auto-create shadow DBs.                       |
 | `--replace`           | For `migrate squash`: archive replaced migration files after writing the baseline.   |
@@ -363,9 +363,9 @@ sqlx-js --version | --help
 | `--manifest <path>`   | LLM schema manifest path (default: `<root>/.sqlx-js/schema/schema.md`).             |
 | `--no-manifest`       | Skip writing the LLM schema manifest during `schema dump`.                           |
 
-All flags accept both `--flag value` and `--flag=value` forms.
+Flags that take a value accept both `--flag value` and `--flag=value` forms.
 
-`DATABASE_URL` must be set for any command that touches the application database or auto-creates a shadow database. `SHADOW_ADMIN_DATABASE_URL` can point at a maintenance/admin database when the application user cannot `CREATE DATABASE`; `SHADOW_DATABASE_URL` can point at a pre-created disposable shadow database. Supported URL search params: `sslmode`, `application_name`, `connect_timeout`.
+`DATABASE_URL` must be set for any command that touches the application database or auto-creates a shadow database. `SHADOW_ADMIN_DATABASE_URL` can point at a maintenance/admin database when the application user cannot `CREATE DATABASE`; `SHADOW_DATABASE_URL` can point at a pre-created disposable shadow database. The internal wire client understands `sslmode`, `sslrootcert`, `sslcert`, `sslkey`, `application_name`, `connect_timeout` (seconds), and `statement_timeout` (milliseconds).
 
 ### Development and deployment flows
 
@@ -377,7 +377,7 @@ sqlx-js migrate add add_users
 sqlx-js migrate dev
 ```
 
-`migrate dev` creates a disposable shadow database, applies all migrations from scratch, validates that the latest non-squash `.down.sql` restores the schema, prepares project SQL against the shadow schema, writes `.sqlx-js/` plus `sqlx-js-env.d.ts`, and drops the shadow database. This means you can keep editing a local WIP migration before it is merged. You do not need to drop your application database or create a new migration for every local edit.
+`migrate dev` creates a disposable shadow database, applies all migrations from scratch, validates that the latest migration's `.down.sql` restores the previous schema (squash baselines may omit `.down.sql`), prepares project SQL against the shadow schema, writes `.sqlx-js/` plus `sqlx-js-env.d.ts`, and drops the shadow database. This means you can keep editing a local WIP migration before it is merged. You do not need to drop your application database or create a new migration for every local edit.
 
 Use `migrate verify` in PR/CI before merge:
 
@@ -428,7 +428,7 @@ On an empty database, the baseline runs as ordinary schema SQL. On an already-mi
 - `.sqlx-js/schema/schema.json` — machine-readable contract for runtime identifier whitelisting and CI drift checks.
 - `.sqlx-js/schema/schema.md` — compact LLM-facing manifest with tables, columns, constraints, indexes, types, and functions.
 
-`schema check` re-introspects the database and fails if the committed snapshot is stale. With `--shadow-url`, both `prepare` and `schema dump/check` first apply pending migrations to the shadow database, then use that database as the source of truth. In watch mode, pending shadow migrations are checked before every re-prepare; when a migration is applied, the prepare session is reopened so schema metadata is not reused across DDL changes.
+`schema check` re-introspects the database and fails if the committed snapshot is stale. With `--shadow-url`, both `prepare` and `schema dump/check` first apply pending migrations to the shadow database, then use that database as the source of truth. Unlike `migrate dev` / `verify` / `squash`, these commands do not clear an explicit shadow database first. In watch mode, pending shadow migrations are checked before every re-prepare; when a migration is applied, the prepare session is reopened so schema metadata is not reused across DDL changes.
 
 ### Error output
 
@@ -494,7 +494,7 @@ sqlx-js ships with a built-in registry that resolves popular PostgreSQL extensio
 | `lquery`          | `string`                           | ltree             |
 | `ltxtquery`       | `string`                           | ltree             |
 
-Add or override mappings via `customTypes` in `sqlx-js.config.ts`. Keys are `pg_type.typname` values (the bare type name; namespacing isn't required):
+Add or override mappings via `customTypes` in `sqlx-js.config.ts`. Keys are `pg_type.typname` values (the bare type name). The registry is global by type name, so two schemas with the same `typname` cannot be mapped differently:
 
 ```ts
 import type { SqlxJsConfig } from "@onreza/sqlx-js";
@@ -561,14 +561,16 @@ Releases are automated via `release-please`: pushes to `main` accumulate into a 
 `sqlx-js` is a young library. Known gaps:
 
 - PostgreSQL only (no MySQL or SQLite).
+- The scanner only follows direct named imports and namespace imports from `@onreza/sqlx-js`; it does not follow re-exports, dynamic aliases, or tagged-template calls.
 - `INSERT INTO t VALUES (...)` without an explicit column list isn't parameter-mapped.
 - `SELECT *` falls back to conservative nullability.
+- Statements without a row description, such as `UPDATE ...` without `RETURNING`, are emitted with `row: never`, so the public return type is `Promise<never[]>`.
 - Nested CTE references (CTE-`b` referencing CTE-`a` in the same `WITH`) and `WITH RECURSIVE` are not analysed transitively — at worst this produces extra `T | null`. Use `AS "id!"` overrides if needed.
 - Column names whose **real** name (not an alias) ends with `!` or `?` are not supported — the runtime strips those suffixes assuming an override. Use `AS "alias"` if you have such a column.
 - Migrations run inside `BEGIN/COMMIT`. DDL that disallows transactions (`CREATE INDEX CONCURRENTLY`, `VACUUM`, `REINDEX CONCURRENTLY`, …) will fail; split such operations into separate migrations executed outside the runner.
 - The **internal** wire client (used by `migrate run`, `prepare`, and the runtime `migrate()` helper) reads `sslmode`, `sslrootcert`/`sslcert`/`sslkey`, `application_name`, `connect_timeout`, and `statement_timeout` from `DATABASE_URL`. The default runtime `sql()` path delegates connection handling to Postgres.js; configure TLS, pooling, and timeouts through the `DATABASE_URL` and `createClient(...)` options it understands (`statementTimeoutMs` is a convenience that maps to a per-connection `statement_timeout`).
 - `connect_timeout` bounds the entire internal-client connect, including the TLS handshake and SCRAM authentication.
-- `sql.file(path)` path is matched literally between scan time and runtime — they must agree on the working directory. Document a convention for your team (e.g. always run from the repo root).
+- `sql.file(path)` has a path-key mismatch to be aware of: prepare resolves the file relative to the source file, codegen keys it by root-relative resolved path, and runtime reads the literal path relative to `process.cwd()`. Keep a project convention and verify with `tsc` after `prepare`.
 
 See [ROADMAP.md](./ROADMAP.md) for what's planned.
 

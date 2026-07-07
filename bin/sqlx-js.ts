@@ -37,26 +37,26 @@ function help(): never {
 usage:
   sqlx-js init [--root <dir>]
   sqlx-js prepare [--check | --watch] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
-  sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] | verify [--shadow-admin-url <url> | --shadow-url <url>] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] | archive list | archive restore <name> [--force]
+  sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | verify [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
   sqlx-js schema dump | check [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
   sqlx-js --version
 
 env:
-  DATABASE_URL=postgres://...  (supports ?sslmode=require|verify-ca|verify-full)
+  DATABASE_URL=postgres://...  (supports sslmode, cert paths, application_name, connect_timeout, statement_timeout)
   SHADOW_DATABASE_URL=postgres://...  (optional pre-created disposable shadow DB)
   SHADOW_ADMIN_DATABASE_URL=postgres://...  (optional admin URL for auto-created shadow DBs)
 
 flags:
   --root <dir>             scan root (default: cwd)
   --dts <path>             declarations output (default: <root>/sqlx-js-env.d.ts)
-  --check                  offline mode: validate cache vs sources, no DB
+  --check                  offline mode: verify scanned queries exist in cache, no DB
   --watch                  re-prepare on file change (persistent PG connection)
   --no-prune               keep orphaned cache entries (default: remove)
   --migrations <dir>       migrations directory (default: <root>/migrations)
   --dry-run                validate and print migrate run/revert plan without applying migrations
   --json                   machine-readable output for migrate info/check and migrate run/revert --dry-run
   --force                  allow archive restore to overwrite existing migration files
-  --lock-timeout <ms>      advisory-lock acquisition timeout for migrate run/revert
+  --lock-timeout <ms>      advisory-lock acquisition timeout for migrate run/revert/dev/verify/squash
   --shadow-url <url>       use an existing disposable shadow DB instead of auto-creating one
   --shadow-admin-url <url> admin/maintenance DB URL used to auto-create shadow DBs
   --replace                archive replaced migrations after migrate squash writes the baseline

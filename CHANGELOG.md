@@ -3,9 +3,9 @@
 ## [0.2.0](https://github.com/ONREZA/sqlx-js/compare/v0.1.0...v0.2.0) (2026-06-03)
 
 
-### ⚠ BREAKING CHANGES
+### Breaking Changes
 
-* the @onreza/sqlx-js/bun entry point is removed. Import from @onreza/sqlx-js instead; it runs on Node, Bun and Deno via Postgres.js.
+* the @onreza/sqlx-js/bun entry point is removed. Import from @onreza/sqlx-js instead; the runtime uses the Postgres.js-backed root entry point.
 
 ### Features
 
@@ -19,9 +19,9 @@
 ## 0.1.0 (2026-05-26)
 
 
-### ⚠ BREAKING CHANGES
+### Breaking Changes
 
-* cache JSON written by prior versions is rejected on read; users must re-run \`bun-sqlx prepare\` to regenerate.
+* cache JSON written by prior versions is rejected on read; users must re-run `sqlx-js prepare` to regenerate.
 
 ### Features
 
@@ -68,7 +68,3 @@
 ### Chores
 
 * pin initial release to 0.1.0 ([41378a0](https://github.com/ONREZA/sqlx-js/commit/41378a0ce38f4df09e5a12a800a8e443ce923009))
-
-## Changelog
-
-No releases yet.

@@ -68,7 +68,7 @@ jobs:
           bun -e 'await import("@onreza/sqlx-js"); console.log("bun root import ok")'
           node dist/bin/sqlx-js.js --version
 
-      - name: Verify CLI runs under Node (cross-runtime)
+      - name: Verify CLI runs under Node
         run: node dist/bin/sqlx-js.js prepare --check --root example
 
       - name: Verify npm package contents

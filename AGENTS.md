@@ -6,24 +6,27 @@ Operational handbook for any agent (human or AI) working on this repository. Rea
 
 `sqlx-js` is a TypeScript library published as `@onreza/sqlx-js` that ports the developer experience of Rust's `sqlx` to TypeScript + PostgreSQL: you write raw SQL, a `prepare` step validates it against a live database and emits typed declarations. The library has both a CLI (`bin/sqlx-js.ts`) and a runtime (`src/index.ts`).
 
-The library is **PostgreSQL-only** and **compile-time-only by design** — no runtime SQL parsing, no runtime validation, no ORM layer. The runtime is backed by Postgres.js, so it runs on Node, Bun, and Deno through a single adapter.
+The library is **PostgreSQL-only** and **compile-time-only by design** — no runtime SQL parsing, no runtime validation, no ORM layer. The runtime is backed by Postgres.js through a single adapter instead of a Bun-specific client. The published CLI is a Node ≥ 18 binary and is also exercised through Bun's npm tooling.
 
 ## Repository layout
 
 ```
 .
 ├── bin/
-│   └── sqlx-js.ts           CLI entry point (prepare, migrate, watch)
+│   └── sqlx-js.ts           CLI entry point (init, prepare, migrate, schema, watch)
 ├── src/
 │   ├── index.ts              Public package entry (sql, migrate, types)
 │   ├── runtime.ts            Shared runtime core + key renaming + migrate()
 │   ├── postgres-runtime.ts   Postgres.js runtime adapter
 │   ├── cache.ts              .sqlx-js/<fingerprint>.json reader/writer
 │   ├── codegen.ts            Emits sqlx-js-env.d.ts from CacheEntry[]
-│   ├── config.ts             Loads sqlx-js.config.ts (jsonbTypes map)
+│   ├── config.ts             Loads sqlx-js.config.ts (jsonbTypes + customTypes)
+│   ├── schema-snapshot.ts    Schema dump/check snapshot + manifest rendering
+│   ├── typed.ts              Public typed overload helpers
 │   ├── commands/
 │   │   ├── prepare.ts        runPrepare + openSession + prepareOnce + describeAll pool
 │   │   ├── migrate.ts        CLI migrateRun + shared applyPending
+│   │   ├── schema.ts         schema dump/check + shadow migration helper
 │   │   ├── init.ts           sqlx-js init scaffolding
 │   │   └── watch.ts          fs.watch loop with debounced re-prepare
 │   ├── scan/
@@ -31,11 +34,12 @@ The library is **PostgreSQL-only** and **compile-time-only by design** — no ru
 │   └── pg/
 │       ├── wire.ts           Raw PG wire protocol client (SCRAM-SHA-256)
 │       ├── oids.ts           Built-in OID → TS type table
-│       ├── schema.ts         pg_class / pg_attribute / pg_type / pg_enum loaders
+│       ├── schema.ts         query-time pg_class / pg_attribute / pg_type / pg_enum loaders
+│       ├── extensions.ts     Built-in extension type registry
 │       ├── analyze.ts        libpg-query-based nullability inference
 │       ├── narrow.ts         WHERE-clause non-null narrowing
 │       └── param-map.ts      Maps $N → (table, column) for INSERT/UPDATE/WHERE
-├── tests/                    Bun-test unit tests for pure modules
+├── tests/                    Bun-test unit + integration tests
 ├── example/                  End-to-end fixture project used by CI integration
 ├── .github/workflows/        CI + npm publish
 ├── README.md                 User-facing documentation
@@ -47,11 +51,11 @@ The library is **PostgreSQL-only** and **compile-time-only by design** — no ru
 
 A `prepare` run executes the following pipeline:
 
-1. **Scan** (`src/scan/scanner.ts`) — TypeScript AST walk over `.ts` / `.tsx` files. Finds every `sql("literal", ...args)` call where `sql` is imported from `@onreza/sqlx-js`. Refuses non-literal first arguments.
+1. **Scan** (`src/scan/scanner.ts`) — TypeScript AST walk over `.ts` / `.tsx` / `.mts` / `.cts` files. Finds direct named imports and namespace imports from `@onreza/sqlx-js`, including `sql(...)`, `sql.one(...)`, `sql.optional(...)`, `sql.file(...)`, and the same surface inside recognized transaction callbacks. Refuses non-literal query/file arguments.
 2. **Describe** (`src/pg/wire.ts`) — for each unique query, sends `Parse` + `Describe Statement` + `Sync` to PostgreSQL. Returns parameter OIDs and `RowDescription` (column name, type OID, source table OID, source column attno).
 3. **Schema introspection** (`src/pg/schema.ts`) — batch-loads `pg_class`, `pg_attribute`, `pg_type`, `pg_enum` for everything touched by the queries. Cached per-session.
 4. **AST analysis** (`src/pg/analyze.ts`) — parses each query via `libpg-query`, builds a scope of aliases with their join-nullability, walks each target to determine per-column nullability. Calls into `src/pg/narrow.ts` for WHERE-clause forced-non-null tracking.
-5. **Param mapping** (`src/pg/param-map.ts`) — maps every `$N` to a `(table, column)` target for INSERT VALUES, UPDATE SET, and WHERE-equality positions.
+5. **Param mapping** (`src/pg/param-map.ts`) — maps `$N` to a `(table, column)` target for supported INSERT VALUES / INSERT SELECT, ON CONFLICT UPDATE, UPDATE SET, WHERE/JOIN equality, and IN-list positions.
 6. **Type resolution** — combines OID, custom enum/array info, schema's `jsonbTypes` config, and analysis output into the final TS type strings for every column and parameter.
 7. **Persistence** — writes `.sqlx-js/<fingerprint>.json` per query and emits `sqlx-js-env.d.ts` with `KnownQueries` / `KnownFileQueries` declarations for `@onreza/sqlx-js`.
 
@@ -65,9 +69,9 @@ The runtime (`src/index.ts` + `src/runtime.ts` + `src/postgres-runtime.ts`) is a
 
 ### Prerequisites
 
-- Node ≥ 18, Bun, or Deno to run the CLI and the Postgres.js runtime — the CLI
-  ships a `#!/usr/bin/env node` shebang and uses no runtime-specific APIs. Bun ≥ 1.3
-  is required for the test suite (`bun test`) only.
+- Node ≥ 18 for the published CLI and default runtime. Bun ≥ 1.3 is required
+  for the test suite (`bun test`) and can run the package through npm tooling.
+  The runtime uses Postgres.js; CI currently smoke-tests Node and Bun entrypoints.
 - A reachable PostgreSQL 14+ (15+ recommended for full SCRAM-SHA-256 coverage)
 - `DATABASE_URL` exported in your shell
 
@@ -109,7 +113,7 @@ Edit `src/pg/oids.ts`. Add to `SCALAR` (single types) or `ARRAY` (where the valu
 
 ### Adding a new param-mapping case
 
-`src/pg/param-map.ts`. Each statement type has its own walker (`walkInsert`, `walkUpdate`, `walkWhere`). New patterns should call `tryBind(colSide, valSide, defaultRel, map)` to record the mapping.
+`src/pg/param-map.ts`. Statement walkers (`walkInsert`, `walkUpdate`, `walkDelete`, `walkSelect`) delegate expression traversal through `walkExpr`. New column/parameter equality-like patterns should reuse `tryBind(...)` or `bindParam(...)` so DML-bound nullability precedence stays intact.
 
 ### Working on the wire protocol
 
@@ -172,7 +176,8 @@ Skipping hooks for a single commit: `LEFTHOOK=0 git commit ...`. Don't make a ha
 - Postgres.js returns `int8` as a string by default. The adapter registers `postgres.BigInt` so types and runtime agree. Don't change it without re-checking every `bigint` site.
 - The codegen writes literal SQL strings as keys in `KnownQueries`. Whitespace in the source must match exactly when the query is rewritten — the runtime sees the user's literal, then `KnownQueries` is looked up by that literal. The fingerprint normalization is only for cache deduplication, not type lookup.
 - `bun install` runs `prepare` lifecycle scripts. Don't name a script `prepare` in `package.json`; it'll loop. We use `sqlx:prepare`.
-- `fs.watch` on Linux requires Bun's recursive support. Don't use chokidar; it adds dependencies for no real gain here.
+- Watch mode depends on recursive `fs.watch` support from the active runtime. Don't use chokidar; it adds dependencies for no real gain here.
+- `sql.file(path)` currently has three path surfaces: scanner reads relative to the source file, codegen keys file queries by root-relative resolved path, and runtime reads the literal path relative to `process.cwd()`. Keep examples and docs honest about that limitation.
 
 ## Where to start if you're new
 
