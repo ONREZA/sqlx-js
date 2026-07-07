@@ -12,6 +12,7 @@ export type CacheColumn = {
 
 export type CacheEntry = {
   query: string;
+  inlineQueries?: string[];
   paramOids: number[];
   paramTsTypes: string[];
   paramNullable?: boolean[];
@@ -23,8 +24,140 @@ export type CacheEntry = {
 };
 
 export function fingerprint(query: string): string {
-  const norm = query.replace(/\s+/g, " ").trim();
+  const norm = normalizeForFingerprint(query);
   return createHash("sha256").update(norm).digest("hex").slice(0, 16);
+}
+
+function normalizeForFingerprint(query: string): string {
+  let out = "";
+  let pendingSpace = false;
+  let i = 0;
+
+  const emit = (text: string) => {
+    if (pendingSpace && out.length > 0) out += " ";
+    out += text;
+    pendingSpace = false;
+  };
+
+  const markSpace = () => {
+    if (out.length > 0) pendingSpace = true;
+  };
+
+  while (i < query.length) {
+    const ch = query[i]!;
+    if (/\s/.test(ch)) {
+      markSpace();
+      i++;
+      continue;
+    }
+    if (ch === "-" && query[i + 1] === "-") {
+      i = readLineComment(query, i);
+      markSpace();
+      continue;
+    }
+    if (ch === "/" && query[i + 1] === "*") {
+      i = readBlockComment(query, i);
+      markSpace();
+      continue;
+    }
+    if (ch === "'") {
+      const next = readSingleQuoted(query, i, isEscapeStringPrefix(query, i));
+      emit(query.slice(i, next));
+      i = next;
+      continue;
+    }
+    if (ch === "\"") {
+      const next = readQuotedIdentifier(query, i);
+      emit(query.slice(i, next));
+      i = next;
+      continue;
+    }
+    if (ch === "$") {
+      const next = readDollarQuoted(query, i);
+      if (next !== null) {
+        emit(query.slice(i, next));
+        i = next;
+        continue;
+      }
+    }
+    emit(ch);
+    i++;
+  }
+  return out;
+}
+
+function readSingleQuoted(query: string, start: number, escapeBackslash: boolean): number {
+  let i = start + 1;
+  while (i < query.length) {
+    const ch = query[i]!;
+    if (escapeBackslash && ch === "\\") {
+      i += 2;
+      continue;
+    }
+    if (ch === "'") {
+      if (query[i + 1] === "'") {
+        i += 2;
+        continue;
+      }
+      return i + 1;
+    }
+    i++;
+  }
+  return query.length;
+}
+
+function readQuotedIdentifier(query: string, start: number): number {
+  let i = start + 1;
+  while (i < query.length) {
+    if (query[i] === "\"") {
+      if (query[i + 1] === "\"") {
+        i += 2;
+        continue;
+      }
+      return i + 1;
+    }
+    i++;
+  }
+  return query.length;
+}
+
+function readDollarQuoted(query: string, start: number): number | null {
+  let tagEnd = start + 1;
+  while (tagEnd < query.length && /[A-Za-z0-9_]/.test(query[tagEnd]!)) tagEnd++;
+  if (query[tagEnd] !== "$") return null;
+  const tag = query.slice(start, tagEnd + 1);
+  const end = query.indexOf(tag, tagEnd + 1);
+  return end === -1 ? query.length : end + tag.length;
+}
+
+function readLineComment(query: string, start: number): number {
+  const end = query.indexOf("\n", start + 2);
+  return end === -1 ? query.length : end + 1;
+}
+
+function readBlockComment(query: string, start: number): number {
+  let depth = 1;
+  let i = start + 2;
+  while (i < query.length && depth > 0) {
+    if (query[i] === "/" && query[i + 1] === "*") {
+      depth++;
+      i += 2;
+      continue;
+    }
+    if (query[i] === "*" && query[i + 1] === "/") {
+      depth--;
+      i += 2;
+      continue;
+    }
+    i++;
+  }
+  return i;
+}
+
+function isEscapeStringPrefix(query: string, quoteIndex: number): boolean {
+  if (quoteIndex === 0 || query[quoteIndex - 1]?.toLowerCase() !== "e") return false;
+  const beforePrefix = query[quoteIndex - 2];
+  return beforePrefix === undefined || !/[A-Za-z0-9_$]/.test(beforePrefix);
 }
 
 export function effectiveNullable(c: CacheColumn): boolean {

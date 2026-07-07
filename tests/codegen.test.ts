@@ -116,6 +116,7 @@ test("entries with both inline and file usage emit into both interfaces", () => 
   const dts = write([
     {
       query: "SELECT id FROM users",
+      inlineQueries: ["SELECT id FROM users", "SELECT  id  FROM users"],
       paramOids: [],
       paramTsTypes: [],
       hasResultSet: true,
@@ -127,7 +128,29 @@ test("entries with both inline and file usage emit into both interfaces", () => 
     },
   ]);
   expect(dts).toContain('"SELECT id FROM users":');
+  expect(dts).toContain('"SELECT  id  FROM users":');
   expect(dts).toContain('"queries/users.sql":');
+});
+
+test("KnownQueries emits all inline query variants for a shared fingerprint", () => {
+  const dts = write([
+    {
+      query: "SELECT id FROM users WHERE id = $1",
+      inlineQueries: [
+        "SELECT id FROM users WHERE id = $1",
+        "SELECT  id  FROM users WHERE id = $1",
+      ],
+      paramOids: [20],
+      paramTsTypes: ["bigint"],
+      hasResultSet: true,
+      hasInline: true,
+      columns: [
+        { name: "id", typeOid: 20, tsType: "bigint", nullable: false },
+      ],
+    },
+  ]);
+  expect(dts).toContain('"SELECT id FROM users WHERE id = $1": { params: [bigint]');
+  expect(dts).toContain('"SELECT  id  FROM users WHERE id = $1": { params: [bigint]');
 });
 
 test("KnownFileQueries deduplicates paths across entries", () => {

@@ -1,6 +1,8 @@
 import { test, expect } from "bun:test";
 import { oidToTs, isBuiltinOid } from "../src/pg/oids";
 
+const JSON_VALUE = 'import("@onreza/sqlx-js").JsonValue';
+
 test("scalar OIDs map to expected TS types", () => {
   expect(oidToTs(16).ts).toBe("boolean");
   expect(oidToTs(20).ts).toBe("bigint");
@@ -9,7 +11,7 @@ test("scalar OIDs map to expected TS types", () => {
   expect(oidToTs(1082).ts).toBe("Date");
   expect(oidToTs(1184).ts).toBe("Date");
   expect(oidToTs(2950).ts).toBe("string");
-  expect(oidToTs(3802).ts).toBe("unknown");
+  expect(oidToTs(3802).ts).toBe(JSON_VALUE);
 });
 
 test("array OIDs map to (T)[]", () => {
@@ -78,7 +80,7 @@ test("network array types resolve to (string)[]", () => {
 });
 
 test("json array type maps via _json (199)", () => {
-  expect(oidToTs(199).ts).toBe("(unknown)[]");
+  expect(oidToTs(199).ts).toBe(`(${JSON_VALUE})[]`);
   expect(isBuiltinOid(199)).toBe(true);
 });
 

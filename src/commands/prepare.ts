@@ -12,6 +12,7 @@ import { mergeExtensionTypes } from "../pg/extensions";
 
 const JSON_OIDS = new Set([114, 3802]);
 const JSON_ARRAY_OIDS = new Set([199, 3807]);
+const JSON_INPUT = 'import("@onreza/sqlx-js").JsonInput';
 
 function enumUnion(values: string[]): string {
   if (values.length === 0) return "never";
@@ -63,11 +64,23 @@ function resolveParamTs(
   if (JSON_OIDS.has(paramOid) || JSON_ARRAY_OIDS.has(paramOid)) {
     const target = paramMap.get(paramIndex);
     if (target) {
-      const decl = lookupJsonbType(cfg, target.schema ?? "public", target.table, target.column);
+      const column = resolveTargetColumn(target, schema);
+      const decl = column ? lookupJsonbType(cfg, target.schema ?? "public", target.table, column) : undefined;
       if (decl) return JSON_ARRAY_OIDS.has(paramOid) ? `(${decl})[]` : decl;
     }
+    return JSON_ARRAY_OIDS.has(paramOid) ? `(${JSON_INPUT})[]` : JSON_INPUT;
   }
   return resolveTs(paramOid, (oid) => schema.customType(oid));
+}
+
+function resolveTargetColumn(target: { schema?: string; table: string; column?: string; columnIndex?: number }, schema: SchemaCache): string | undefined {
+  if (target.column) return target.column;
+  if (target.columnIndex === undefined) return undefined;
+  const oid = schema.resolveTable(target.schema, target.table);
+  if (oid === undefined) return undefined;
+  const cols = schema.columnsOf(oid);
+  if (!cols) return undefined;
+  return [...cols.values()].sort((a, b) => a.attnum - b.attnum)[target.columnIndex - 1]?.name;
 }
 
 function resolveParamNullable(
@@ -81,7 +94,9 @@ function resolveParamNullable(
     if (!t) return false;
     const oid = schema.resolveTable(t.schema, t.table);
     if (oid === undefined) return false;
-    const col = schema.columnsOf(oid)?.get(t.column);
+    const column = resolveTargetColumn(t, schema);
+    if (!column) return false;
+    const col = schema.columnsOf(oid)?.get(column);
     if (!col) return false;
     return !col.notNull;
   }
@@ -118,6 +133,20 @@ function formatSite(s: QueryCallSite): string {
 function snippet(query: string, max = 80): string {
   const oneLine = query.replace(/\s+/g, " ").trim();
   return oneLine.length > max ? oneLine.slice(0, max) + "…" : oneLine;
+}
+
+function siteUsage(sites: QueryCallSite[]): Pick<CacheEntry, "hasInline" | "inlineQueries" | "filePaths"> {
+  const inlineQueries = Array.from(new Set(
+    sites.filter((s) => s.kind !== "file").map((s) => s.query),
+  )).sort();
+  const filePaths = Array.from(new Set(
+    sites.filter((s) => s.kind === "file").map((s) => s.sqlFilePath!).filter(Boolean),
+  )).sort();
+  return {
+    hasInline: inlineQueries.length > 0,
+    ...(inlineQueries.length > 0 ? { inlineQueries } : {}),
+    ...(filePaths.length > 0 ? { filePaths } : {}),
+  };
 }
 
 export type PrepareSession = {
@@ -324,13 +353,9 @@ export async function prepareOnce(
       forceNullable: new Set(),
       dmlBound: new Set(),
     };
-    const fileSites = r.sites.filter((s) => s.kind === "file");
-    const hasInline = r.sites.some((s) => s.kind !== "file");
-    const filePaths = fileSites.length > 0
-      ? Array.from(new Set(fileSites.map((s) => s.sqlFilePath!))).sort()
-      : undefined;
     const entry: CacheEntry = {
       query: r.query,
+      ...siteUsage(r.sites),
       paramOids: r.paramOids,
       paramTsTypes: r.paramOids.map((o, idx) => resolveParamTs(idx + 1, o, pm.targets, schema, userCfg)),
       paramNullable: r.paramOids.map((_o, idx) => resolveParamNullable(idx + 1, pm, schema)),
@@ -346,8 +371,6 @@ export async function prepareOnce(
         };
       }),
       hasResultSet: r.fields.length > 0,
-      hasInline,
-      ...(filePaths ? { filePaths } : {}),
       ...(analysis.degraded ? { degraded: analysis.degraded } : {}),
     };
     cache.write(r.fp, entry);
@@ -391,7 +414,10 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
       console.error(`\nsqlx-js prepare --check: ${stale} stale/missing entries. Run \`sqlx-js prepare\` against a live DB.`);
       process.exit(1);
     }
-    const entries = [...unique.values()].map((u) => cache.read(u.fp)!).filter(Boolean);
+    const entries = [...unique.values()].map((u) => {
+      const entry = cache.read(u.fp);
+      return entry ? { ...entry, ...siteUsage(u.sites) } : null;
+    }).filter((e): e is CacheEntry => e !== null);
     emitDts(opts.dtsPath, entries);
     console.log(`ok — ${entries.length} unique queries, types regenerated`);
     return;

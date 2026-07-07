@@ -34,17 +34,19 @@ function emitModule(lines: string[], moduleName: string, entries: CacheEntry[]):
   lines.push("  interface KnownQueries {");
 
   const inlineSeen = new Set<string>();
-  const inlineEntries = entries.filter((e) => {
-    if (e.hasInline === true) return true;
-    if (e.hasInline === false) return false;
-    return !e.filePaths || e.filePaths.length === 0;
-  });
-  for (const e of inlineEntries.slice().sort((a, b) => a.query.localeCompare(b.query))) {
-    if (inlineSeen.has(e.query)) continue;
-    inlineSeen.add(e.query);
-    const { params, row } = entrySignature(e);
-    if (e.degraded) lines.push(`    /** Nullability inference degraded: ${e.degraded.reason}. All result columns conservatively typed as nullable. */`);
-    lines.push(`    ${JSON.stringify(e.query)}: { params: ${params}; row: ${row} };`);
+  const inlinePairs: { query: string; entry: CacheEntry }[] = [];
+  for (const e of entries) {
+    const emitInline = e.hasInline === true || (e.hasInline !== false && (!e.filePaths || e.filePaths.length === 0));
+    if (!emitInline) continue;
+    const queries = e.inlineQueries && e.inlineQueries.length > 0 ? e.inlineQueries : [e.query];
+    for (const query of queries) inlinePairs.push({ query, entry: e });
+  }
+  for (const { query, entry } of inlinePairs.slice().sort((a, b) => a.query.localeCompare(b.query))) {
+    if (inlineSeen.has(query)) continue;
+    inlineSeen.add(query);
+    const { params, row } = entrySignature(entry);
+    if (entry.degraded) lines.push(`    /** Nullability inference degraded: ${entry.degraded.reason}. All result columns conservatively typed as nullable. */`);
+    lines.push(`    ${JSON.stringify(query)}: { params: ${params}; row: ${row} };`);
   }
 
   lines.push("  }");

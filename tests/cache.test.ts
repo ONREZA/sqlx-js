@@ -8,6 +8,23 @@ test("fingerprint is whitespace-invariant", () => {
   expect(fingerprint("SELECT 1")).toBe(fingerprint(" SELECT 1 "));
 });
 
+test("fingerprint keeps whitespace significant inside quoted SQL tokens", () => {
+  expect(fingerprint('SELECT "a b" FROM t')).not.toBe(fingerprint('SELECT "a  b" FROM t'));
+  expect(fingerprint("SELECT 'a b'")).not.toBe(fingerprint("SELECT 'a  b'"));
+  expect(fingerprint("SELECT $$a b$$")).not.toBe(fingerprint("SELECT $$a  b$$"));
+});
+
+test("fingerprint still ignores formatting around quoted SQL tokens", () => {
+  expect(fingerprint(' SELECT  "a  b"  FROM   t ')).toBe(fingerprint('SELECT "a  b" FROM t'));
+  expect(fingerprint("SELECT  'a  b'")).toBe(fingerprint("SELECT 'a  b'"));
+  expect(fingerprint("SELECT  $tag$a  b$tag$")).toBe(fingerprint("SELECT $tag$a  b$tag$"));
+});
+
+test("fingerprint treats SQL comments as whitespace", () => {
+  expect(fingerprint("SELECT 1 -- comment\nFROM t")).toBe(fingerprint("SELECT 1 FROM t"));
+  expect(fingerprint("SELECT 1 /* comment */ FROM t")).toBe(fingerprint("SELECT 1 FROM t"));
+});
+
 test("different queries have different fingerprints", () => {
   expect(fingerprint("SELECT 1")).not.toBe(fingerprint("SELECT 2"));
 });

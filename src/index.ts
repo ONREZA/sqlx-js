@@ -4,6 +4,15 @@ import type { Typed as TypedFor, TypedFile as TypedFileFor, TypedSql as TypedSql
 export interface KnownQueries {}
 export interface KnownFileQueries {}
 
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
+export type JsonObject = { readonly [key: string]: JsonValue };
+export type JsonArray = readonly JsonValue[];
+export type JsonInput = string | number | boolean | JsonInputObject | JsonInputArray;
+export type JsonInputValue = JsonPrimitive | JsonInputObject | JsonInputArray;
+export type JsonInputObject = { readonly [key: string]: JsonInputValue | undefined };
+export type JsonInputArray = readonly JsonInputValue[];
+
 export type { SqlxJsConfig } from "./config";
 export type { SslMode, ConnConfig } from "./pg/wire";
 export { PgError, ConnectionLostError } from "./pg/wire";

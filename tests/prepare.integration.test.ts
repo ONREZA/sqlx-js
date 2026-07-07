@@ -309,6 +309,27 @@ if (!haveDocker) {
     expect(second.length).toBe(first.length + 1);
   });
 
+  test("prepare --check emits all inline variants sharing one fingerprint", () => {
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT id FROM tmp_users WHERE id = $1\", 1);\n",
+    );
+    let r = prepare();
+    expect(r.code).toBe(0);
+    expect(readdirSync(join(tmp, ".sqlx-js")).filter((f) => f.endsWith(".json")).length).toBe(1);
+
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT id FROM tmp_users WHERE id = $1\", 1);\n" +
+      "await sql(\"SELECT  id  FROM tmp_users WHERE id = $1\", 1);\n",
+    );
+    r = prepare(["--check"]);
+    expect(r.code).toBe(0);
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain('"SELECT id FROM tmp_users WHERE id = $1":');
+    expect(dts).toContain('"SELECT  id  FROM tmp_users WHERE id = $1":');
+  });
+
   test("sql.file produces KnownFileQueries entry keyed by path", () => {
     writeFile("queries/by_id.sql", "SELECT id, name FROM tmp_users WHERE id = $1\n");
     writeFile("a.ts",
@@ -688,6 +709,55 @@ if (!haveDocker) {
     expect(r.code).toBe(0);
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toMatch(/INSERT INTO tmp_users.*params: \[string, string, string \| null\]/);
+  });
+
+  test("INSERT VALUES without column list resolves nullable params by table order", () => {
+    writeFile("migrations/0005_insert_values_order.up.sql",
+      "CREATE TABLE IF NOT EXISTS tmp_insert_values_order (\n" +
+      "  id BIGINT NOT NULL,\n" +
+      "  note TEXT\n" +
+      ");\n",
+    );
+    writeFile("migrations/0005_insert_values_order.down.sql",
+      "DROP TABLE IF EXISTS tmp_insert_values_order;\n",
+    );
+    const mig = migrate();
+    expect(mig.code).toBe(0);
+
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"INSERT INTO tmp_insert_values_order VALUES ($1, $2)\", 1n, null);\n",
+    );
+    const r = prepare();
+    expect(r.code).toBe(0);
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toMatch(/INSERT INTO tmp_insert_values_order VALUES.*params: \[bigint, string \| null\]/);
+  });
+
+  test("unconfigured jsonb params fall back to JsonInput", () => {
+    writeFile("migrations/0006_json_fallback.up.sql",
+      "CREATE TABLE IF NOT EXISTS tmp_json_fallback (\n" +
+      "  id BIGSERIAL PRIMARY KEY,\n" +
+      "  payload JSONB NOT NULL,\n" +
+      "  maybe_payload JSONB\n" +
+      ");\n",
+    );
+    writeFile("migrations/0006_json_fallback.down.sql",
+      "DROP TABLE IF EXISTS tmp_json_fallback;\n",
+    );
+    const mig = migrate();
+    expect(mig.code).toBe(0);
+
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"INSERT INTO tmp_json_fallback (payload, maybe_payload) VALUES ($1, $2) RETURNING payload, maybe_payload\", { ok: true, tags: [\"a\"], nested: { n: 1 } }, null);\n",
+    );
+    const r = prepare();
+    expect(r.code).toBe(0);
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toMatch(/tmp_json_fallback.*params: \[import\("@onreza\/sqlx-js"\)\.JsonInput, import\("@onreza\/sqlx-js"\)\.JsonInput \| null\]/);
+    expect(dts).toContain('"payload": import("@onreza/sqlx-js").JsonValue');
+    expect(dts).toContain('"maybe_payload": import("@onreza/sqlx-js").JsonValue | null');
   });
 
   test("$N IS NULL OR col = $N pattern makes the param nullable", () => {

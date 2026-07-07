@@ -3,6 +3,8 @@ export type TsTypeInfo = {
   bigint?: boolean;
 };
 
+const JSON_VALUE = 'import("@onreza/sqlx-js").JsonValue';
+
 const SCALAR: Record<number, TsTypeInfo> = {
   16: { ts: "boolean" },
   17: { ts: "Uint8Array" },
@@ -16,7 +18,7 @@ const SCALAR: Record<number, TsTypeInfo> = {
   27: { ts: "string" },
   28: { ts: "string" },
   29: { ts: "string" },
-  114: { ts: "unknown" },
+  114: { ts: JSON_VALUE },
   142: { ts: "string" },
   600: { ts: "string" },
   601: { ts: "string" },
@@ -49,7 +51,7 @@ const SCALAR: Record<number, TsTypeInfo> = {
   3220: { ts: "string" },
   3614: { ts: "string" },
   3615: { ts: "string" },
-  3802: { ts: "unknown" },
+  3802: { ts: JSON_VALUE },
   3904: { ts: "string" },
   3906: { ts: "string" },
   3908: { ts: "string" },
