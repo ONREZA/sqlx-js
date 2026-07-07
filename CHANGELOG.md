@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/ONREZA/sqlx-js/compare/v0.2.0...v0.3.0) (2026-07-07)
+
+
+### Features
+
+* **prepare:** tighten parameter typing ([ee0f372](https://github.com/ONREZA/sqlx-js/commit/ee0f372de456b62a3b56e48d4f9740e87ac8de99))
+
+
+### Documentation
+
+* align docs with current behavior ([994a3ae](https://github.com/ONREZA/sqlx-js/commit/994a3ae18b06614639d6f134068abde856a59662))
+
 ## [0.2.0](https://github.com/ONREZA/sqlx-js/compare/v0.1.0...v0.2.0) (2026-06-03)
 
 
