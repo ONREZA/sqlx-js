@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/ONREZA/sqlx-js/compare/v0.3.0...v0.4.0) (2026-07-09)
+
+
+### Features
+
+* add pgschema workflow and function types ([80a84c2](https://github.com/ONREZA/sqlx-js/commit/80a84c26cb80aa47efd22e461529149678665d85))
+
 ## [0.3.0](https://github.com/ONREZA/sqlx-js/compare/v0.2.0...v0.3.0) (2026-07-07)
 
 
