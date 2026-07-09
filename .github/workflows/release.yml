@@ -74,8 +74,8 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Upgrade npm to latest (trusted publishing requires >= 11.5.1)
-        run: npm install -g npm@latest
+      - name: Upgrade npm to 11.x (trusted publishing requires >= 11.5.1)
+        run: npm install -g npm@11.18.0
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
