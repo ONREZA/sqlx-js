@@ -15,14 +15,36 @@ const config: SqlxJsConfig = {
 export default config;
 `;
 
+const PGSCHEMA_CONFIG_TEMPLATE = `import type { SqlxJsConfig } from "@onreza/sqlx-js";
+
+const config: SqlxJsConfig = {
+  schema: {
+    provider: "pgschema",
+    file: "schema.sql",
+    schemas: ["public"],
+  },
+  jsonbTypes: {},
+  customTypes: {},
+};
+
+export default config;
+`;
+
 const ENV_TEMPLATE = `# Connection string used by sqlx-js prepare/migrate and the runtime.
 DATABASE_URL=postgres://user:password@localhost:5432/your_db
 # Managed Postgres with TLS:
 # DATABASE_URL=postgres://user:password@db.example.com:5432/your_db?sslmode=verify-full
 `;
 
+const PGSCHEMA_TEMPLATE = `-- Desired PostgreSQL schema managed by pgschema.
+-- Edit this file, then run:
+--   sqlx-js db plan -- --output-json plan.json
+--   sqlx-js db apply -- --auto-approve
+`;
+
 export type InitOptions = {
   root: string;
+  schemaProvider?: "builtin" | "pgschema";
   log?: (msg: string) => void;
 };
 
@@ -52,8 +74,10 @@ export function runInit(opts: InitOptions): void {
     created.push(`${rel}/`);
   };
 
-  ensureFile("sqlx-js.config.ts", CONFIG_TEMPLATE);
-  ensureDir("migrations");
+  const schemaProvider = opts.schemaProvider ?? "builtin";
+  ensureFile("sqlx-js.config.ts", schemaProvider === "pgschema" ? PGSCHEMA_CONFIG_TEMPLATE : CONFIG_TEMPLATE);
+  if (schemaProvider === "pgschema") ensureFile("schema.sql", PGSCHEMA_TEMPLATE);
+  else ensureDir("migrations");
   ensureFile(".env.example", ENV_TEMPLATE);
 
   for (const f of created) log(`created ${f}`);
@@ -62,7 +86,14 @@ export function runInit(opts: InitOptions): void {
   log("");
   log("Next steps:");
   log("  1. Set DATABASE_URL (see .env.example).");
-  log("  2. Add a migration:  sqlx-js migrate add init");
-  log("  3. Make sure tsconfig.json \"include\" covers sqlx-js-env.d.ts.");
-  log("  4. Develop locally:  sqlx-js migrate dev");
+  if (schemaProvider === "pgschema") {
+    log("  2. Install managed pgschema:  sqlx-js db install");
+    log("  3. Verify it:  sqlx-js db check");
+    log("  4. Edit schema.sql, then review:  sqlx-js db plan");
+    log("  5. After applying schema changes, run:  sqlx-js prepare");
+  } else {
+    log("  2. Add a migration:  sqlx-js migrate add init");
+    log("  3. Make sure tsconfig.json \"include\" covers sqlx-js-env.d.ts.");
+    log("  4. Develop locally:  sqlx-js migrate dev");
+  }
 }

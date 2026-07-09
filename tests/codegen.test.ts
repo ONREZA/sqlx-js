@@ -3,6 +3,7 @@ import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { emitDts } from "../src/codegen";
 import type { CacheEntry } from "../src/cache";
+import type { FunctionEntry } from "../src/function-cache";
 
 const tmp = join(import.meta.dir, ".tmp-codegen");
 
@@ -10,9 +11,9 @@ afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-function write(entries: CacheEntry[]): string {
+function write(entries: CacheEntry[], functions: FunctionEntry[] = []): string {
   const out = join(tmp, "sqlx-js-env.d.ts");
-  emitDts(out, entries);
+  emitDts(out, entries, functions);
   return readFileSync(out, "utf8");
 }
 
@@ -207,4 +208,30 @@ test("force flags take precedence over schema-derived nullability", () => {
   ]);
   expect(dts).toContain('"bio": string }');
   expect(dts).not.toContain("string | null");
+});
+
+test("KnownFunctions emits pg_proc catalog entries", () => {
+  const dts = write([], [
+    {
+      schema: "public",
+      name: "slugify",
+      signature: "public.slugify(value text)",
+      kind: "function",
+      params: [{ mode: "in", name: "value", tsType: "string" }],
+      returns: "string | null",
+      returnsSet: false,
+    },
+    {
+      schema: "public",
+      name: "search_posts",
+      signature: "public.search_posts(query text)",
+      kind: "function",
+      params: [{ mode: "in", name: "query", tsType: "string" }],
+      returns: "{ slug: string | null; score: number | null }",
+      returnsSet: true,
+    },
+  ]);
+  expect(dts).toContain("interface KnownFunctions");
+  expect(dts).toContain('"public.slugify(value text)": { kind: "function"; params: [string]; returns: string | null; returnsSet: false }');
+  expect(dts).toContain('"public.search_posts(query text)": { kind: "function"; params: [string]; returns: { slug: string | null; score: number | null }; returnsSet: true }');
 });

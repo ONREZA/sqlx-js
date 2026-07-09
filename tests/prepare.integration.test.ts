@@ -183,6 +183,51 @@ if (!haveDocker) {
     expect(readdirSync(join(tmp, ".sqlx-js")).filter((f) => f.endsWith(".json")).length).toBeGreaterThan(0);
   });
 
+  test("prepare emits KnownFunctions from pg_proc and keeps them in --check", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        DROP FUNCTION IF EXISTS tmp_catalog_slug(text);
+        DROP FUNCTION IF EXISTS tmp_catalog_pair(text);
+        DROP FUNCTION IF EXISTS tmp_catalog_json_table(jsonb);
+        DROP FUNCTION IF EXISTS tmp_catalog_json_out(text);
+        DROP FUNCTION IF EXISTS tmp_catalog_json_inout(jsonb);
+        CREATE FUNCTION tmp_catalog_slug(value text) RETURNS text
+        LANGUAGE sql IMMUTABLE AS $$ SELECT lower(value) $$;
+        CREATE FUNCTION tmp_catalog_pair(value text) RETURNS TABLE(slug text, score integer)
+        LANGUAGE sql STABLE AS $$ SELECT lower(value), length(value)::int $$;
+        CREATE FUNCTION tmp_catalog_json_table(value jsonb) RETURNS TABLE(payload jsonb)
+        LANGUAGE sql STABLE AS $$ SELECT value $$;
+        CREATE FUNCTION tmp_catalog_json_out(value text, OUT payload jsonb)
+        LANGUAGE sql STABLE AS $$ SELECT jsonb_build_object('value', value) $$;
+        CREATE FUNCTION tmp_catalog_json_inout(INOUT payload jsonb)
+        LANGUAGE sql STABLE AS $$ SELECT payload $$;
+      `);
+    } finally {
+      await setup.end();
+    }
+
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT tmp_catalog_slug($1) AS slug\", \"Hello\");\n",
+    );
+    let r = prepare();
+    expect(r.code).toBe(0);
+    let dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain("interface KnownFunctions");
+    expect(dts).toContain('"public.tmp_catalog_slug(value text)": { kind: "function"; params: [string]; returns: string | null; returnsSet: false }');
+    expect(dts).toContain('"public.tmp_catalog_pair(value text)": { kind: "function"; params: [string]; returns: { slug: string | null; score: number | null }; returnsSet: true }');
+    expect(dts).toContain('"public.tmp_catalog_json_table(value jsonb)": { kind: "function"; params: [import("@onreza/sqlx-js").JsonInput]; returns: { payload: import("@onreza/sqlx-js").JsonValue | null }; returnsSet: true }');
+    expect(dts).toContain('"public.tmp_catalog_json_out(value text, OUT payload jsonb)": { kind: "function"; params: [string]; returns: { payload: import("@onreza/sqlx-js").JsonValue | null }; returnsSet: false }');
+    expect(dts).toMatch(/"public\.tmp_catalog_json_inout\([^"]*jsonb\)": \{ kind: "function"; params: \[import\("@onreza\/sqlx-js"\)\.JsonInput\]; returns: \{ payload: import\("@onreza\/sqlx-js"\)\.JsonValue \| null \}; returnsSet: false \}/);
+
+    r = prepare(["--check"]);
+    expect(r.code).toBe(0);
+    dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain('"public.tmp_catalog_slug(value text)":');
+  });
+
   test("describeAll resolves every query across a connection pool", async () => {
     const cfg = parseDatabaseUrl(dbUrl);
     const session = new PgClient(cfg);

@@ -18,6 +18,8 @@ import {
 } from "../src/commands/migrate";
 import { applyShadowMigrations, runSchemaCheck, runSchemaDump } from "../src/commands/schema";
 import { runInit } from "../src/commands/init";
+import { runPgschemaCommand, runPgschemaInstall, type PgschemaSubcommand } from "../src/commands/pgschema";
+import { loadConfig } from "../src/config";
 
 function packageVersion(): string {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -35,7 +37,8 @@ function help(): never {
   console.error(`sqlx-js — compile-time-checked SQL for TypeScript + Postgres (v${VERSION})
 
 usage:
-  sqlx-js init [--root <dir>]
+  sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]
+  sqlx-js db install | check | plan | apply [--root <dir>] [-- <pgschema args>]
   sqlx-js prepare [--check | --watch] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
   sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | verify [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
   sqlx-js schema dump | check [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
@@ -64,23 +67,27 @@ flags:
   --schema <path>          schema snapshot path (default: <root>/.sqlx-js/schema/schema.json)
   --manifest <path>        LLM schema manifest path (default: <root>/.sqlx-js/schema/schema.md)
   --no-manifest            skip writing the LLM schema manifest during schema dump
+  --schema-provider <name> init schema workflow: builtin (default) or pgschema
 `);
   process.exit(2);
 }
 
+const passthroughIndex = process.argv.indexOf("--");
+const cliArgv = passthroughIndex >= 0 ? process.argv.slice(0, passthroughIndex) : process.argv;
+const passthroughArgs = passthroughIndex >= 0 ? process.argv.slice(passthroughIndex + 1) : [];
+
 function arg(name: string, def?: string): string | undefined {
-  const argv = process.argv;
   const eq = `${name}=`;
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]!;
-    if (a === name) return argv[i + 1] ?? def;
+  for (let i = 0; i < cliArgv.length; i++) {
+    const a = cliArgv[i]!;
+    if (a === name) return cliArgv[i + 1] ?? def;
     if (a.startsWith(eq)) return a.slice(eq.length);
   }
   return def;
 }
 
 function flag(name: string): boolean {
-  for (const a of process.argv) {
+  for (const a of cliArgv) {
     if (a === name) return true;
   }
   return false;
@@ -111,7 +118,36 @@ const manifestArg = arg("--manifest");
 const manifestPath = manifestArg ? resolve(manifestArg) : join(root, ".sqlx-js/schema/schema.md");
 
 if (cmd === "init") {
-  runInit({ root });
+  const provider = arg("--schema-provider", "builtin");
+  if (provider !== "builtin" && provider !== "pgschema") {
+    console.error("--schema-provider must be builtin or pgschema");
+    process.exit(2);
+  }
+  runInit({ root, schemaProvider: provider });
+} else if (cmd === "db") {
+  const sub = process.argv[3];
+  if (sub === "install") {
+    try {
+      await runPgschemaInstall({ root });
+    } catch (e) {
+      console.error((e as Error).message);
+      process.exit(2);
+    }
+  } else {
+    if (sub !== "check" && sub !== "plan" && sub !== "apply") help();
+    try {
+      runPgschemaCommand({
+        root,
+        databaseUrl,
+        config: await loadConfig(root),
+        subcommand: sub as PgschemaSubcommand,
+        passthrough: passthroughArgs,
+      });
+    } catch (e) {
+      console.error((e as Error).message);
+      process.exit(2);
+    }
+  }
 } else if (cmd === "prepare") {
   if (flag("--check") && shadowUrlArg) {
     console.error("--shadow-url cannot be used with prepare --check; use live prepare or schema check --shadow-url");

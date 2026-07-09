@@ -48,6 +48,8 @@ const SCALAR: Record<number, TsTypeInfo> = {
   2950: { ts: "string" },
   2205: { ts: "string" },
   2206: { ts: "string" },
+  2249: { ts: "Record<string, unknown>" },
+  2278: { ts: "void" },
   3220: { ts: "string" },
   3614: { ts: "string" },
   3615: { ts: "string" },

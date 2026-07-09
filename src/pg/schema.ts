@@ -280,6 +280,10 @@ export class SchemaCache {
   customType(oid: number): CustomTypeInfo | undefined {
     return this.customTypes.get(oid);
   }
+
+  tsType(oid: number): string {
+    return this.resolveBaseTs(oid) ?? "unknown";
+  }
 }
 
 function key(oid: number, attno: number): string {

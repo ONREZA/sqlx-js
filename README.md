@@ -36,8 +36,10 @@ const rows = await sql(
 - **Linear migrations** with hash tampering detection.
 - **Migration squash baselines** via `migrate squash`: generate a schema-only baseline from a shadow database, then hash-adopt it on already-migrated databases.
 - **Runtime `migrate()`** with PostgreSQL advisory lock, safe for multi-replica startup.
+- **Optional pgschema workflow** via `init --schema-provider pgschema` and `sqlx-js db install|check|plan|apply` for PostgreSQL schema-as-code projects.
 - **Offline cache** committed to your repo. CI verifies via `prepare --check` without a database.
 - **Schema snapshot + LLM manifest** via `schema dump` / `schema check`: tables, columns, constraints, indexes, types, and function/procedure metadata are introspected from PostgreSQL.
+- **Generated function catalog** via `KnownFunctions`: `prepare` records user-schema PostgreSQL functions/procedures from `pg_proc` with approximate parameter and return TypeScript types.
 - **Shadow database validation** via `migrate dev` / `migrate verify`: auto-create a disposable shadow DB, apply migrations, validate SQL, and drop it afterwards.
 - **Safe identifier quoting** via `sql.id(...)`, backed by the committed schema snapshot whitelist.
 - **Single runtime adapter**: Postgres.js backs the runtime on Node/Bun-compatible environments — no Bun.SQL-specific adapter to choose.
@@ -63,6 +65,16 @@ npx @onreza/sqlx-js init
 ```
 
 Creates `sqlx-js.config.ts`, a `migrations/` directory, and `.env.example` if they don't already exist (it never overwrites existing files), then prints the next steps. Skip it if you prefer to wire things up manually.
+
+For declarative PostgreSQL schema management, scaffold the pgschema workflow instead:
+
+```bash
+npx @onreza/sqlx-js init --schema-provider pgschema
+```
+
+This creates `schema.sql` and configures `schema.provider = "pgschema"` in `sqlx-js.config.ts`. The npm package does not bundle pgschema, but `sqlx-js db install` downloads the pinned pgschema binary into `node_modules/.cache/sqlx-js/pgschema/`; then `sqlx-js db check` verifies it.
+
+The managed pgschema workflow supports Linux and macOS. On Windows, run sqlx-js under WSL/Linux/macOS or use the built-in `sqlx-js migrate` workflow.
 
 ### 1. Configure the database URL
 
@@ -334,7 +346,8 @@ In addition to `import { sql } from "@onreza/sqlx-js"`, the scanner recognises `
 ## CLI
 
 ```
-sqlx-js init [--root <dir>]
+sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]
+sqlx-js db install | check | plan | apply [--root <dir>] [-- <pgschema args>]
 sqlx-js prepare [--check | --watch] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
 sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | verify [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
 sqlx-js schema dump | check [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
@@ -362,12 +375,27 @@ Regular `prepare` describes queries across a small connection pool (default 8, o
 | `--schema <path>`     | Schema snapshot path (default: `<root>/.sqlx-js/schema/schema.json`).               |
 | `--manifest <path>`   | LLM schema manifest path (default: `<root>/.sqlx-js/schema/schema.md`).             |
 | `--no-manifest`       | Skip writing the LLM schema manifest during `schema dump`.                           |
+| `--schema-provider <name>` | For `init`: `builtin` (default) or `pgschema`.                                |
 
 Flags that take a value accept both `--flag value` and `--flag=value` forms.
 
 `DATABASE_URL` must be set for any command that touches the application database or auto-creates a shadow database. `SHADOW_ADMIN_DATABASE_URL` can point at a maintenance/admin database when the application user cannot `CREATE DATABASE`; `SHADOW_DATABASE_URL` can point at a pre-created disposable shadow database. The internal wire client understands `sslmode`, `sslrootcert`, `sslcert`, `sslkey`, `application_name`, `connect_timeout` (seconds), and `statement_timeout` (milliseconds).
 
 ### Development and deployment flows
+
+For complex PostgreSQL schemas with functions, triggers, RLS, grants, partitions, and other schema-level objects, prefer pgschema for DDL ownership and use sqlx-js for application-query typing:
+
+```bash
+sqlx-js init --schema-provider pgschema
+sqlx-js db install
+sqlx-js db check
+# edit schema.sql
+sqlx-js db plan -- --output-json plan.json
+sqlx-js db apply -- --auto-approve
+sqlx-js prepare
+```
+
+`sqlx-js db install` installs the pinned pgschema version used by this sqlx-js release. `sqlx-js db check`, `plan`, and `apply` use `schema.command` when configured; otherwise they prefer the managed binary under `node_modules/.cache/sqlx-js/pgschema/` and fall back to `pgschema` on `PATH`. `plan` and file-backed `apply` translate `DATABASE_URL` into `--host`, `--port`, `--db`, `--user`, `--file`, and `--schema` arguments, pass the password through `PGPASSWORD`, pass TLS settings through `PGSSLMODE` / `PGSSLROOTCERT` / `PGSSLCERT` / `PGSSLKEY`, and forward any arguments after `--` directly to pgschema. `sqlx-js db apply -- --plan plan.json` applies a reviewed pgschema plan without requiring the local `schema.sql` file. The schema provider is configured in `sqlx-js.config.ts`; by default the schema file is `schema.sql` and the schema is `public`. The pinned pgschema 1.12.0 CLI accepts a single `--schema` value, so sqlx-js rejects pgschema configs with more than one schema instead of silently applying only one.
 
 Use `migrate dev` while developing migrations and SQL:
 
@@ -378,6 +406,8 @@ sqlx-js migrate dev
 ```
 
 `migrate dev` creates a disposable shadow database, applies all migrations from scratch, validates that the latest migration's `.down.sql` restores the previous schema (squash baselines may omit `.down.sql`), prepares project SQL against the shadow schema, writes `.sqlx-js/` plus `sqlx-js-env.d.ts`, and drops the shadow database. This means you can keep editing a local WIP migration before it is merged. You do not need to drop your application database or create a new migration for every local edit.
+
+The built-in `migrate` workflow is kept for simple projects and embedded application startup. PostgreSQL-heavy schema lifecycle features belong in pgschema rather than in sqlx-js.
 
 Use `migrate verify` in PR/CI before merge:
 
@@ -449,6 +479,11 @@ Phases reported separately: `describe failed`, `analyze failed`, `paramMap faile
 import type { SqlxJsConfig } from "@onreza/sqlx-js";
 
 const config: SqlxJsConfig = {
+  schema: {
+    provider: "pgschema",
+    file: "schema.sql",
+    schemas: ["public"],
+  },
   jsonbTypes: {
     "users.settings":     "SqlxJsJson.UserSettings",
     "posts.meta":         "SqlxJsJson.PostMeta",
@@ -458,6 +493,8 @@ const config: SqlxJsConfig = {
 
 export default config;
 ```
+
+The `schema` block is optional. Use `provider: "pgschema"` when sqlx-js should delegate schema planning/apply commands to pgschema. `command` can override the managed binary lookup and point at another executable. With the pinned pgschema 1.12.0 CLI, `schemas` must contain exactly one schema name.
 
 Declare the referenced types anywhere in your project (`.d.ts` file is conventional):
 
@@ -535,7 +572,10 @@ Commit the generated `sqlx-js-env.d.ts` and the `.sqlx-js/` cache directory to y
 
 ```yaml
 - run: bun install
-- run: sqlx-js migrate verify    # builds schema from migrations in a disposable shadow DB
+- run: sqlx-js migrate verify    # built-in migration workflow
+# or, when schema.provider is "pgschema":
+- run: sqlx-js db install
+- run: sqlx-js db plan -- --output-json plan.json
 - run: sqlx-js prepare --check   # fails if any query is missing from the committed cache
 - run: sqlx-js schema check      # fails if the committed schema snapshot is stale
 - run: tsc --noEmit               # fails if types are stale
@@ -543,7 +583,9 @@ Commit the generated `sqlx-js-env.d.ts` and the `.sqlx-js/` cache directory to y
 - run: bun run build              # emits publishable JS + declarations under dist/
 ```
 
-The `migrate verify` step needs `DATABASE_URL` credentials that can either create a temporary database or use `--shadow-admin-url` / `--shadow-url`. It does not write `.sqlx-js/` or `sqlx-js-env.d.ts`. The `prepare --check` step then runs without a database; your committed offline cache is the source of truth. `schema check` intentionally uses a live database because it verifies the committed schema contract against PostgreSQL.
+The `migrate verify` step needs `DATABASE_URL` credentials that can either create a temporary database or use `--shadow-admin-url` / `--shadow-url`. It does not write `.sqlx-js/` or `sqlx-js-env.d.ts`. For pgschema projects, `sqlx-js db plan` checks the desired `schema.sql` against the target database and leaves application query typing to `prepare`. The `prepare --check` step then runs without a database; your committed offline cache is the source of truth. `schema check` intentionally uses a live database because it verifies the committed schema contract against PostgreSQL.
+
+The managed pgschema binary is installed under `node_modules/.cache/sqlx-js/pgschema/`, not `.sqlx-js/`, so it is not part of the committed offline cache.
 
 ## Contributing
 

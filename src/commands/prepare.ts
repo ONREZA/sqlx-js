@@ -7,6 +7,8 @@ import { scanProject, type QueryCallSite } from "../scan/scanner";
 import { Cache, fingerprint, effectiveNullable, type CacheEntry } from "../cache";
 import { emitDts } from "../codegen";
 import { loadConfig, lookupJsonbType, type SqlxJsConfig } from "../config";
+import { readFunctionCache, writeFunctionCache, type FunctionEntry } from "../function-cache";
+import { introspectFunctions } from "../pg/functions";
 import { buildParamMap, type ParamMap, type ParamMapResult } from "../pg/param-map";
 import { mergeExtensionTypes } from "../pg/extensions";
 
@@ -229,7 +231,7 @@ export async function prepareOnce(
   log: (msg: string) => void = console.log,
   err: (msg: string) => void = console.error,
   concurrency: number = defaultPrepareConcurrency(),
-): Promise<{ entries: number; failures: number; pruned: number }> {
+): Promise<{ entries: number; failures: number; pruned: number; functions: number }> {
   const sites = scanProject(opts.root);
   log(`scanned: found ${sites.length} sql() call site(s)`);
 
@@ -386,8 +388,14 @@ export async function prepareOnce(
     if (pruned > 0) log(`pruned ${pruned} orphaned cache entry/entries`);
   }
 
-  emitDts(opts.dtsPath, entries);
-  return { entries: entries.length, failures, pruned };
+  let functions: FunctionEntry[] = [];
+  if (failures === 0) {
+    functions = await introspectFunctions(client, schema);
+    writeFunctionCache(opts.cacheDir, functions);
+  }
+
+  emitDts(opts.dtsPath, entries, functions);
+  return { entries: entries.length, failures, pruned, functions: functions.length };
 }
 
 export async function runPrepare(opts: PrepareOptions): Promise<void> {
@@ -418,8 +426,9 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
       const entry = cache.read(u.fp);
       return entry ? { ...entry, ...siteUsage(u.sites) } : null;
     }).filter((e): e is CacheEntry => e !== null);
-    emitDts(opts.dtsPath, entries);
-    console.log(`ok — ${entries.length} unique queries, types regenerated`);
+    const functions = readFunctionCache(opts.cacheDir);
+    emitDts(opts.dtsPath, entries, functions);
+    console.log(`ok — ${entries.length} unique queries, ${functions.length} function(s), types regenerated`);
     return;
   }
 
@@ -431,7 +440,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
       await session.client.end();
       process.exit(1);
     }
-    console.log(`\nprepared ${r.entries} unique query/queries → ${opts.dtsPath}`);
+    console.log(`\nprepared ${r.entries} unique query/queries, ${r.functions} function(s) → ${opts.dtsPath}`);
   } finally {
     await session.client.end();
   }

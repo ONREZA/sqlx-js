@@ -4,6 +4,12 @@ import { join } from "node:path";
 export type SqlxJsConfig = {
   jsonbTypes?: Record<string, string>;
   customTypes?: Record<string, string>;
+  schema?: {
+    provider?: "builtin" | "pgschema";
+    file?: string;
+    schemas?: string[];
+    command?: string;
+  };
 };
 
 export async function loadConfig(root: string): Promise<SqlxJsConfig> {

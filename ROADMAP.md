@@ -6,7 +6,8 @@ Items already shipped live in the [README](./README.md) feature list; this file 
 
 | Feature | ROI | Notes |
 |---------|-----|-------|
-| Migration lifecycle improvements | 8 | Squash baseline MVP, `migrate run --dry-run`, read-only `migrate info`, archive/restore helpers, JSON operator output, filesystem-only `migrate check`, and shadow-based `migrate revert --dry-run` exist; continue with safer migration lifecycle guardrails. This is the foundation for reliable external migration import. |
+| pgschema integration hardening | 8 | Basic `init --schema-provider pgschema` plus managed `sqlx-js db install/check/plan/apply` exists. Continue with better docs, CI examples, schema snapshot handoff, and migration guidance for projects that outgrow built-in migrations. |
+| Built-in migration lifecycle maintenance | 5 | Keep `migrate run/dev/verify/revert/squash/archive` stable for simple projects and application startup, but avoid expanding it into a full PostgreSQL schema-as-code system. |
 | Prisma migration assistant | 7 | Import Prisma Migrate SQL history and Prisma TypedSQL/raw SQL into `sqlx-js`; classify Prisma Client CRUD/nested-write sites as assisted/manual instead of promising a fully automatic ORM rewrite. |
 | Self-join precision (unqualified ColumnRef) | 4 | `SELECT name FROM users u1 JOIN users u2 ON ...` with unqualified `name` can't be attributed to a specific alias. PG would reject ambiguous unqualified refs anyway, but explicit aliasing currently has no narrowing benefit in self-joins. |
 | `INSERT INTO t VALUES (...)` without column list | 3 | Map params by `pg_attribute attnum` ordering. Rare in practice — most teams use explicit column lists. |

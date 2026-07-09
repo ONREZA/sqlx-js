@@ -3,6 +3,7 @@ import type { Typed as TypedFor, TypedFile as TypedFileFor, TypedSql as TypedSql
 
 export interface KnownQueries {}
 export interface KnownFileQueries {}
+export interface KnownFunctions {}
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
