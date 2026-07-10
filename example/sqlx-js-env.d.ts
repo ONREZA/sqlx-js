@@ -7,7 +7,7 @@ declare module "@onreza/sqlx-js" {
     "INSERT INTO users (name, email, age) VALUES ($1, $2, $3) RETURNING id AS \"id!\", created_at AS \"created_at!\"": { params: [string, string, number | null]; row: { "id": bigint; "created_at": Date } };
     "INSERT INTO users (name, email, role) VALUES ($1, $2, $3) RETURNING id AS \"id!\"": { params: [string, string, "admin" | "editor" | "viewer"]; row: { "id": bigint } };
     "INSERT INTO users (name, email, role) VALUES ($1, $2, $3) RETURNING id AS \"id!\", role AS \"role!\"": { params: [string, string, "admin" | "editor" | "viewer"]; row: { "id": bigint; "role": "admin" | "editor" | "viewer" } };
-    "INSERT INTO users (name, email, settings) VALUES ($1, $2, $3) RETURNING id AS \"id!\"": { params: [string, string, SqlxJsJson.UserSettings]; row: { "id": bigint } };
+    "INSERT INTO users (name, email, settings) VALUES ($1, $2, $3) RETURNING id AS \"id!\"": { params: [string, string, import("@onreza/sqlx-js").JsonParameter<SqlxJsJson.UserSettings>]; row: { "id": bigint } };
     "INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id AS \"id!\"": { params: [string, string]; row: { "id": bigint } };
     "SELECT 1 AS one, 'literal'::text AS msg, now() AS ts FROM users LIMIT 1": { params: []; row: { "one": number; "msg": string; "ts": Date } };
     "SELECT COUNT(*) AS \"n!\" FROM users": { params: []; row: { "n": bigint } };
@@ -27,18 +27,22 @@ declare module "@onreza/sqlx-js" {
     "SELECT id, name, email, age, bio FROM users WHERE id = $1": { params: [bigint]; row: { "id": bigint; "name": string; "email": string; "age": number | null; "bio": string | null } };
     "SELECT id, name, role FROM users WHERE id = $1": { params: [bigint]; row: { "id": bigint; "name": string; "role": "admin" | "editor" | "viewer" } };
     "SELECT id, name, settings FROM users WHERE id = $1": { params: [bigint]; row: { "id": bigint; "name": string; "settings": SqlxJsJson.UserSettings } };
-    "SELECT id, settings FROM users WHERE settings = $1 LIMIT 1": { params: [SqlxJsJson.UserSettings]; row: { "id": bigint; "settings": SqlxJsJson.UserSettings } };
+    "SELECT id, settings FROM users WHERE settings = $1 LIMIT 1": { params: [import("@onreza/sqlx-js").JsonParameter<SqlxJsJson.UserSettings>]; row: { "id": bigint; "settings": SqlxJsJson.UserSettings } };
     "SELECT id, title, meta, attachments FROM posts WHERE id = $1": { params: [bigint]; row: { "id": bigint; "title": string; "meta": SqlxJsJson.PostMeta | null; "attachments": (SqlxJsJson.Attachment)[] } };
     "SELECT p.id, p.title, p.status, p.tags, p.history, u.role AS author_role FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = $1": { params: [bigint]; row: { "id": bigint; "title": string; "status": "draft" | "published" | "archived"; "tags": (string)[]; "history": ("admin" | "editor" | "viewer")[]; "author_role": "admin" | "editor" | "viewer" } };
     "SELECT u.id AS uid, p.id AS pid FROM users u FULL OUTER JOIN posts p ON p.user_id = u.id WHERE u.id = $1 OR p.id = $1": { params: [bigint]; row: { "uid": bigint | null; "pid": bigint | null } };
     "SELECT u.id AS user_id, u.name, p.title, p.published FROM users u LEFT JOIN posts p ON p.user_id = u.id WHERE u.id = $1": { params: [bigint]; row: { "user_id": bigint; "name": string; "title": string | null; "published": boolean | null } };
     "SELECT u.id, p.title, p.body FROM users u LEFT JOIN posts p ON p.user_id = u.id WHERE p.body IS NOT NULL AND u.id = $1": { params: [bigint]; row: { "id": bigint; "title": string | null; "body": string } };
-    "UPDATE users SET settings = $1 WHERE id = $2 RETURNING id AS \"id!\", settings": { params: [SqlxJsJson.UserSettings, bigint]; row: { "id": bigint; "settings": SqlxJsJson.UserSettings } };
+    "UPDATE users SET name = $1 WHERE id = $2": { params: [string, bigint]; row: never };
+    "UPDATE users SET settings = $1 WHERE id = $2 RETURNING id AS \"id!\", settings": { params: [import("@onreza/sqlx-js").JsonParameter<SqlxJsJson.UserSettings>, bigint]; row: { "id": bigint; "settings": SqlxJsJson.UserSettings } };
   }
 
   interface KnownFileQueries {
     "queries/count_posts.sql": { params: [bigint]; row: { "n": bigint } };
     "queries/get_users_by_role.sql": { params: ["admin" | "editor" | "viewer", number]; row: { "id": bigint; "name": string; "email": string } };
+  }
+
+  interface KnownFunctions {
   }
 }
 

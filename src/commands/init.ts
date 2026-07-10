@@ -1,23 +1,21 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-const CONFIG_TEMPLATE = `import type { SqlxJsConfig } from "@onreza/sqlx-js";
+const CONFIG_TEMPLATE = `import { defineConfig } from "@onreza/sqlx-js";
 
-const config: SqlxJsConfig = {
+export default defineConfig({
   // Map jsonb columns/params to TypeScript types declared in a .d.ts, e.g.
   //   "users.settings": "SqlxJsJson.UserSettings",
   jsonbTypes: {},
   // Map PostgreSQL type names to TypeScript types, e.g.
   //   geometry: "GeoJSON.Geometry",
   customTypes: {},
-};
-
-export default config;
+});
 `;
 
-const PGSCHEMA_CONFIG_TEMPLATE = `import type { SqlxJsConfig } from "@onreza/sqlx-js";
+const PGSCHEMA_CONFIG_TEMPLATE = `import { defineConfig } from "@onreza/sqlx-js";
 
-const config: SqlxJsConfig = {
+export default defineConfig({
   schema: {
     provider: "pgschema",
     file: "schema.sql",
@@ -25,9 +23,7 @@ const config: SqlxJsConfig = {
   },
   jsonbTypes: {},
   customTypes: {},
-};
-
-export default config;
+});
 `;
 
 const ENV_TEMPLATE = `# Connection string used by sqlx-js prepare/migrate and the runtime.

@@ -4,7 +4,7 @@ Compile-time-checked raw SQL for TypeScript + PostgreSQL. Inspired by Rust's [sq
 
 You write plain SQL strings. A `prepare` step validates them against your database via the PostgreSQL wire protocol and generates a TypeScript declaration file. Wrong column names and stale queries fail during `prepare`; mismatched parameter types and row usage become TypeScript errors.
 
-The runtime uses [Postgres.js](https://github.com/porsager/postgres) through a single adapter instead of a Bun-specific client. The published CLI is a **Node ≥ 18** binary (`#!/usr/bin/env node`) and can also be run through Bun's npm tooling.
+The runtime uses [Postgres.js](https://github.com/porsager/postgres) through a single adapter instead of a Bun-specific client. The published CLI requires **Node ≥ 24** (`#!/usr/bin/env node`) and can also run through **Bun ≥ 1.3**.
 
 ```ts
 import { sql } from "@onreza/sqlx-js";
@@ -30,21 +30,22 @@ const rows = await sql(
 - **Wide built-in type coverage**: numeric, text, date/time, UUID, json/jsonb, network (inet/cidr/macaddr/macaddr8), bit strings, ranges/multiranges, geometric, money, tsvector/tsquery, xml — and the matching array variants.
 - **External SQL files** via `sql.file("queries/foo.sql", ...)` — prepared and typed through `KnownFileQueries`. Watch mode re-prepares on `.sql` edits too.
 - **One-row helpers**: `sql.one(...)`, `sql.optional(...)`, `sql.file.one(...)`, `sql.file.optional(...)`, and the same chain on the `tx` callback — friendly with `noUncheckedIndexedAccess: true`. The scanner walks all of them.
-- **Array params** for `text[]`, `int[]`, etc. are auto-serialised to PostgreSQL array literals (`{a,b,c}`) at runtime — no more `string_to_array` workaround.
+- **Unambiguous JSON and PostgreSQL array params** through `sql.json(...)` and `sql.array(...)`. Primitive JSON arrays cannot be silently encoded as PostgreSQL array literals.
 - **Typed transactions** via `sql.transaction(async tx => …)` — the `tx` callback parameter is recognized by the scanner, so queries inside the block keep full type checking.
 - **Sourcemap-accurate error reporting**: every prepare failure points to `file:line:column` of the originating `sql(...)` call site, with PG error code, position, and hint.
 - **Linear migrations** with hash tampering detection.
 - **Migration squash baselines** via `migrate squash`: generate a schema-only baseline from a shadow database, then hash-adopt it on already-migrated databases.
 - **Runtime `migrate()`** with PostgreSQL advisory lock, safe for multi-replica startup.
 - **Optional pgschema workflow** via `init --schema-provider pgschema` and `sqlx-js db install|check|plan|apply` for PostgreSQL schema-as-code projects.
-- **Offline cache** committed to your repo. CI verifies via `prepare --check` without a database.
+- **Versioned offline cache** committed to your repo. `prepare --check` validates fingerprints, generator revision, and type-affecting config without a database; `prepare --verify` compares fresh live/shadow artifacts without writing.
 - **Schema snapshot + LLM manifest** via `schema dump` / `schema check`: tables, columns, constraints, indexes, types, and function/procedure metadata are introspected from PostgreSQL.
 - **Generated function catalog** via `KnownFunctions`: `prepare` records user-schema PostgreSQL functions/procedures from `pg_proc` with approximate parameter and return TypeScript types.
 - **Shadow database validation** via `migrate dev` / `migrate verify`: auto-create a disposable shadow DB, apply migrations, validate SQL, and drop it afterwards.
 - **Safe identifier quoting** via `sql.id(...)`, backed by the committed schema snapshot whitelist.
 - **Single runtime adapter**: Postgres.js backs the runtime on Node/Bun-compatible environments — no Bun.SQL-specific adapter to choose.
-- **Watch mode**: debounced re-prepare with a warm `PgClient` + `SchemaCache` on `.ts` / `.tsx` / `.mts` / `.cts` / `.sql` changes.
+- **Watch mode**: debounced re-prepare with a warm `PgClient` + `SchemaCache` on source/SQL changes and scanner/config graph updates.
 - **Cache pruning** removes orphaned entries automatically (toggleable with `--no-prune`).
+- **Environment doctor** checks runtime versions, config loading, `.env`, database connectivity/permissions, cache metadata, tsconfig inclusion, and pgschema availability.
 
 ## Install
 
@@ -53,6 +54,8 @@ npm install @onreza/sqlx-js
 # or
 bun add @onreza/sqlx-js
 ```
+
+Node.js 24 or newer is required. Bun users need Bun 1.3 or newer.
 
 The package installs a `sqlx-js` binary. The CLI examples below use `npx @onreza/sqlx-js`; `bunx @onreza/sqlx-js ...` works the same if your project uses Bun.
 
@@ -86,6 +89,8 @@ DATABASE_URL=postgres://user:password@localhost:5432/your_db
 ```
 
 Supported `sslmode` values: `disable`, `prefer` (default — try TLS, fall back to plaintext), `require` (TLS or fail), `verify-ca`, `verify-full`. For a private/self-signed CA, point `sslrootcert` (and optionally `sslcert` / `sslkey` for client certs) at PEM files: `?sslmode=verify-full&sslrootcert=/etc/ssl/ca.pem`. `application_name`, `connect_timeout` (seconds), and `statement_timeout` (milliseconds) are also honored when provided as URL parameters.
+
+CLI commands load `<root>/.env` before reading connection settings. Variables already present in the process environment take precedence. Application runtime configuration remains owned by your application/framework.
 
 ### 2. Create a migration
 
@@ -164,7 +169,7 @@ Unknown queries, wrong parameter types, and dynamic strings are compile errors. 
 
 ### `sql.file(path, ...params)`
 
-Load SQL from an external file. At prepare time the scanner reads the path relative to the source file. The generated `KnownFileQueries` key is the resolved SQL file path relative to `--root`; at runtime `sql.file(...)` reads the string argument relative to `process.cwd()`.
+Load SQL from an external file. The path is root-relative everywhere: prepare resolves it against `--root`, codegen keeps the exact string literal as the `KnownFileQueries` key, and runtime resolves it against `fileRoot` (default: `process.cwd()`). Absolute paths and paths escaping the root are rejected.
 
 ```ts
 // queries/top_admins.sql
@@ -177,7 +182,7 @@ const admins = await sql.file("queries/top_admins.sql", "admin", 5);
 // admins: { id: bigint; name: string }[]
 ```
 
-File-backed queries are emitted into a separate `KnownFileQueries` interface. Because the type key is the root-relative resolved SQL file path, keep file-backed call sites under a convention where that key matches the runtime string literal; the example keeps those call sites at the project root. Nested source-relative file paths are a current limitation.
+File-backed queries are emitted into a separate `KnownFileQueries` interface. A call from any nested source directory still uses the same project-root-relative literal.
 
 ### `sql.one(query, ...params)` and `sql.optional(query, ...params)`
 
@@ -193,18 +198,46 @@ const maybe = await sql.optional(`SELECT id FROM users WHERE email = $1`, "x@y")
 
 Both forms also exist on `sql.file` (`sql.file.one("queries/by_id.sql", ...)`) and inside transactions (`tx.one(...)`, `tx.optional(...)`, `tx.file.one(...)`, `tx.file.optional(...)`). The scanner recognizes every chain — these call sites are added to `KnownQueries` / `KnownFileQueries` just like a plain `sql(...)`.
 
-### Array parameters
+### `sql.execute(query, ...params)`
 
-JavaScript arrays passed to `text[]`, `int[]`, `uuid[]`, etc. are auto-encoded as PostgreSQL array literals before being sent. Strings containing commas, braces, quotes, or backslashes are escaped; `null` elements emit SQL `NULL`.
+Execute a typed statement when rows are not the result contract. It preserves parameter checking and returns Postgres command metadata:
 
 ```ts
-await sql("SELECT $1::text[] AS tags", ["alpha", "beta,gamma", "with \"quote\""]);
-// → $1 sent as {alpha,"beta,gamma","with \"quote\""}
+const result = await sql.execute(
+  `UPDATE jobs SET claimed_at = now() WHERE id = $1 AND claimed_at IS NULL`,
+  jobId,
+);
+
+if (result.rowCount !== 1) throw new Error("job was already claimed");
+// result: { rowCount: number; command: string }
 ```
 
-Encoding only kicks in when every element is a primitive (`string` / `number` / `bigint` / `boolean` / `null`). Arrays containing objects pass through unchanged — that's the path for `jsonb` columns whose value is a JSON array (`attachments: SqlxJsJson.Attachment[]`). If you need to store a primitive JS array as `jsonb` (rare), pass `JSON.stringify(arr)` explicitly. `encodePgArrayLiteral(arr)` is exported if you need the literal yourself for `unsafe(...)`.
+`sql.file.execute(...)` and `tx.execute(...)` use the same contract. Query hooks receive the affected-row count rather than `0` for DML without `RETURNING`.
 
-Empty arrays (`[]`) are passed straight through to the active driver. If you need the literal `"{}"` instead (e.g. when concatenating into raw SQL), call `encodePgArrayLiteral([])`.
+### JSON and PostgreSQL array parameters
+
+Parameter wrappers make the wire representation explicit. Use `sql.array(...)` for PostgreSQL arrays and `sql.json(...)` for `json`/`jsonb` values:
+
+```ts
+await sql(
+  "SELECT $1::text[] AS tags",
+  sql.array(["alpha", "beta,gamma", "with \"quote\""]),
+);
+
+await sql(
+  "INSERT INTO events (payload) VALUES ($1)",
+  sql.json([1, 2, 3]),
+);
+
+await sql(
+  "SELECT $1::jsonb[] AS payloads",
+  sql.array([sql.json({ kind: "created" }), sql.json([1, 2, 3]), null]),
+);
+```
+
+Generated parameter types require `PgArrayParameter<T>` or `JsonParameter<T>`, so mixing the two representations is a TypeScript error. A PostgreSQL `json[]` / `jsonb[]` composes both wrappers: the outer `sql.array(...)` selects the PostgreSQL array representation and each non-SQL-NULL element uses `sql.json(...)`. `sql.json(null)` represents JSON `null`; a bare `null` remains SQL `NULL` when the database parameter is nullable.
+
+Both helpers also work with `unsafe(...)`. `encodePgArrayLiteral(arr)` remains exported for code that explicitly needs a PostgreSQL array literal string.
 
 ### Parameter nullability
 
@@ -289,13 +322,18 @@ import { createClient, setClient } from "@onreza/sqlx-js";
 setClient(createClient(process.env.DATABASE_URL));
 ```
 
-`createClient(url, options)` accepts every Postgres.js option plus two sqlx-js extras for observability and reliability:
+`createClient(url, options)` accepts every Postgres.js option plus sqlx-js runtime options:
 
 ```ts
 setClient(createClient(process.env.DATABASE_URL, {
   // Server-side per-connection statement timeout (ms). Also settable via
   // ?statement_timeout=5000 in DATABASE_URL.
   statementTimeoutMs: 5000,
+  // Base directory for root-relative sql.file(...) calls.
+  fileRoot: import.meta.dirname,
+  // Honored for every unsafe call. Set false for PgBouncer transaction mode
+  // unless protocol-level prepared statements are configured there.
+  prepare: false,
   // Fires after every query/transaction statement, success or failure.
   onQuery: ({ query, params, durationMs, rowCount, error }) => {
     if (error) logger.error({ query, error });        // database errors are PgError
@@ -347,8 +385,9 @@ In addition to `import { sql } from "@onreza/sqlx-js"`, the scanner recognises `
 
 ```
 sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]
+sqlx-js doctor [--root <dir>] [--json]
 sqlx-js db install | check | plan | apply [--root <dir>] [-- <pgschema args>]
-sqlx-js prepare [--check | --watch] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
+sqlx-js prepare [--check | --verify | --watch] [--json] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
 sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | verify [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
 sqlx-js schema dump | check [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
 sqlx-js --version | --help
@@ -359,13 +398,14 @@ Regular `prepare` describes queries across a small connection pool (default 8, o
 | Flag                  | Meaning                                                                              |
 |-----------------------|--------------------------------------------------------------------------------------|
 | `--check`             | Offline: verify every scanned query is present in cache, no database required.       |
+| `--verify`            | Prepare against the live/shadow schema and compare generated artifacts without writing. |
 | `--watch`             | Persistent connection, re-prepare on file change.                                    |
 | `--root <dir>`        | Source/cache/migrations root (default: cwd).                                         |
 | `--dts <path>`        | Declarations output (default: `<root>/sqlx-js-env.d.ts`).                           |
 | `--no-prune`          | Keep orphaned cache entries instead of removing them.                                |
 | `--migrations <dir>`  | Migrations directory (default: `<root>/migrations`).                                 |
 | `--dry-run`           | For `migrate run` / `migrate revert`: validate without applying to the target DB.   |
-| `--json`              | Machine-readable output for `migrate info/check` and migration dry-runs.            |
+| `--json`              | Machine-readable prepare diagnostics, doctor output, migration inspection and dry-runs. |
 | `--force`             | For `migrate archive restore`: allow overwriting existing migration files.           |
 | `--lock-timeout <ms>` | Advisory-lock acquisition timeout for `migrate run` / `revert` / `dev` / `verify` / `squash`. |
 | `--shadow-url <url>`  | Use an existing disposable shadow DB instead of auto-creating one.                   |
@@ -378,6 +418,8 @@ Regular `prepare` describes queries across a small connection pool (default 8, o
 | `--schema-provider <name>` | For `init`: `builtin` (default) or `pgschema`.                                |
 
 Flags that take a value accept both `--flag value` and `--flag=value` forms.
+
+Prepare and doctor JSON use `formatVersion: 1`. Prepare diagnostics include a stable phase plus root-relative file, 1-based line/column, PostgreSQL code/position/hint when available, and the query text. This is intended for CI annotations and editor integrations; stdout contains one JSON document and human progress is suppressed.
 
 `DATABASE_URL` must be set for any command that touches the application database or auto-creates a shadow database. `SHADOW_ADMIN_DATABASE_URL` can point at a maintenance/admin database when the application user cannot `CREATE DATABASE`; `SHADOW_DATABASE_URL` can point at a pre-created disposable shadow database. The internal wire client understands `sslmode`, `sslrootcert`, `sslcert`, `sslkey`, `application_name`, `connect_timeout` (seconds), and `statement_timeout` (milliseconds).
 
@@ -414,10 +456,11 @@ Use `migrate verify` in PR/CI before merge:
 ```bash
 sqlx-js migrate verify
 sqlx-js prepare --check
+sqlx-js doctor --json
 tsc --noEmit
 ```
 
-`migrate verify` runs the same shadow-database migration/down/SQL validation as `migrate dev`, but writes prepare output to temporary files instead of modifying `.sqlx-js/` or `sqlx-js-env.d.ts`.
+`migrate verify` runs the same shadow-database migration/down/SQL validation as `migrate dev`, generates prepare output in a temporary directory, and fails when the committed `.sqlx-js/` or `sqlx-js-env.d.ts` differs. It never modifies those artifacts.
 
 Use `migrate run` in production/staging:
 
@@ -475,10 +518,16 @@ Phases reported separately: `describe failed`, `analyze failed`, `paramMap faile
 
 `sqlx-js.config.ts` at the project root is optional.
 
-```ts
-import type { SqlxJsConfig } from "@onreza/sqlx-js";
+Under Node.js, TypeScript config is loaded through Node 24's native type stripping, so keep it to erasable TypeScript syntax. The generated `defineConfig(...)` form works on both Node and Bun; use `.mjs` if the config needs runtime constructs that Node cannot strip.
 
-const config: SqlxJsConfig = {
+```ts
+import { defineConfig } from "@onreza/sqlx-js";
+
+export default defineConfig({
+  scan: {
+    include: ["apps/*/src/**/*", "packages/*/src/**/*"],
+    exclude: ["**/*.generated.ts"],
+  },
   schema: {
     provider: "pgschema",
     file: "schema.sql",
@@ -489,10 +538,10 @@ const config: SqlxJsConfig = {
     "posts.meta":         "SqlxJsJson.PostMeta",
     "posts.attachments":  "SqlxJsJson.Attachment",
   },
-};
-
-export default config;
+});
 ```
+
+By default the scanner uses the root `tsconfig.json` file list and follows TypeScript project references, so a referenced monorepo is scanned without walking unrelated folders. `scan.include` replaces that source-file universe with TypeScript glob patterns; `scan.exclude` is added to the built-in dependency/build exclusions. If there is no root `tsconfig.json`, the fallback is a recursive TypeScript scan.
 
 The `schema` block is optional. Use `provider: "pgschema"` when sqlx-js should delegate schema planning/apply commands to pgschema. `command` can override the managed binary lookup and point at another executable. With the pinned pgschema 1.12.0 CLI, `schemas` must contain exactly one schema name.
 
@@ -514,7 +563,7 @@ declare global {
 export {};
 ```
 
-After re-running `prepare`, every `jsonb` column or parameter declared in `jsonbTypes` is checked against the corresponding TypeScript type. Columns without a custom mapping use `JsonValue` for result rows and `JsonInput` for parameters, both exported by `@onreza/sqlx-js`, so non-JSON inputs such as `Date`, functions, and `bigint` are rejected by TypeScript while plain JSON objects, arrays, strings, numbers, booleans, and nested JSON `null` values are accepted. Top-level SQL `null` is added separately as `| null` only when the mapped database parameter is nullable.
+After re-running `prepare`, every `jsonb` column or parameter declared in `jsonbTypes` is checked against the corresponding TypeScript type. Columns without a custom mapping use `JsonValue` for result rows and `JsonInput` inside `JsonParameter` for parameters, both exported by `@onreza/sqlx-js`. Pass JSON parameters through `sql.json(value)`: non-JSON inputs such as `Date`, functions, and `bigint` are rejected by TypeScript while plain JSON objects, arrays, strings, numbers, booleans, and nested JSON `null` values are accepted. A bare top-level `null` remains SQL `NULL` and is allowed only when the mapped database parameter is nullable; use `sql.json(null)` for JSON `null`.
 
 ### Extension types and `customTypes`
 
@@ -534,16 +583,15 @@ sqlx-js ships with a built-in registry that resolves popular PostgreSQL extensio
 Add or override mappings via `customTypes` in `sqlx-js.config.ts`. Keys are `pg_type.typname` values (the bare type name). The registry is global by type name, so two schemas with the same `typname` cannot be mapped differently:
 
 ```ts
-import type { SqlxJsConfig } from "@onreza/sqlx-js";
+import { defineConfig } from "@onreza/sqlx-js";
 
-const config: SqlxJsConfig = {
+export default defineConfig({
   customTypes: {
     vector: "Float32Array",         // override pgvector default
     geometry: "GeoJSON.Geometry",   // postgis (not built-in by design)
     myapp_color: "`#${string}`",    // your own CREATE TYPE base/domain
   },
-};
-export default config;
+});
 ```
 
 Domains resolve to their base type through `pg_type.typbasetype`. `CREATE DOMAIN positive_int AS integer CHECK (VALUE > 0)` → `number`, `CREATE DOMAIN tagged AS hstore` → `Record<string, string | null>`. Array variants of any registered scalar are also wired up automatically — `vector[]` → `(number[])[]`.
@@ -576,14 +624,16 @@ Commit the generated `sqlx-js-env.d.ts` and the `.sqlx-js/` cache directory to y
 # or, when schema.provider is "pgschema":
 - run: sqlx-js db install
 - run: sqlx-js db plan -- --output-json plan.json
-- run: sqlx-js prepare --check   # fails if any query is missing from the committed cache
+- run: sqlx-js prepare --verify  # live/shadow comparison of every generated artifact
+- run: sqlx-js prepare --check   # offline cache/version/config consistency
+- run: sqlx-js doctor --json     # runtime/config/DB/cache/tsconfig preflight
 - run: sqlx-js schema check      # fails if the committed schema snapshot is stale
 - run: tsc --noEmit               # fails if types are stale
 - run: bun test
 - run: bun run build              # emits publishable JS + declarations under dist/
 ```
 
-The `migrate verify` step needs `DATABASE_URL` credentials that can either create a temporary database or use `--shadow-admin-url` / `--shadow-url`. It does not write `.sqlx-js/` or `sqlx-js-env.d.ts`. For pgschema projects, `sqlx-js db plan` checks the desired `schema.sql` against the target database and leaves application query typing to `prepare`. The `prepare --check` step then runs without a database; your committed offline cache is the source of truth. `schema check` intentionally uses a live database because it verifies the committed schema contract against PostgreSQL.
+The `migrate verify` step needs `DATABASE_URL` credentials that can either create a temporary database or use `--shadow-admin-url` / `--shadow-url`. It does not write `.sqlx-js/` or `sqlx-js-env.d.ts`. For pgschema projects, `sqlx-js db plan` checks the desired `schema.sql` against the target database and leaves application query typing to `prepare`. The `prepare --check` step then runs without a database; your committed offline cache is the source of truth. Add `prepare --verify` when CI has a canonical database/shadow schema and must prove byte-for-byte artifact freshness. `schema check` intentionally uses a live database because it verifies the committed schema contract against PostgreSQL.
 
 The managed pgschema binary is installed under `node_modules/.cache/sqlx-js/pgschema/`, not `.sqlx-js/`, so it is not part of the committed offline cache.
 
@@ -604,23 +654,24 @@ Releases are automated via `release-please`: pushes to `main` accumulate into a 
 
 - PostgreSQL only (no MySQL or SQLite).
 - The scanner only follows direct named imports and namespace imports from `@onreza/sqlx-js`; it does not follow re-exports, dynamic aliases, or tagged-template calls.
-- `INSERT INTO t VALUES (...)` without an explicit column list isn't parameter-mapped.
 - `SELECT *` falls back to conservative nullability.
-- Statements without a row description, such as `UPDATE ...` without `RETURNING`, are emitted with `row: never`, so the public return type is `Promise<never[]>`.
+- Plain `sql(...)` keeps returning rows, so statements without `RETURNING` produce an empty typed array. Use `sql.execute(...)` when affected-row count and command metadata matter.
 - Nested CTE references (CTE-`b` referencing CTE-`a` in the same `WITH`) and `WITH RECURSIVE` are not analysed transitively — at worst this produces extra `T | null`. Use `AS "id!"` overrides if needed.
 - Column names whose **real** name (not an alias) ends with `!` or `?` are not supported — the runtime strips those suffixes assuming an override. Use `AS "alias"` if you have such a column.
 - Migrations run inside `BEGIN/COMMIT`. DDL that disallows transactions (`CREATE INDEX CONCURRENTLY`, `VACUUM`, `REINDEX CONCURRENTLY`, …) will fail; split such operations into separate migrations executed outside the runner.
 - The **internal** wire client (used by `migrate run`, `prepare`, and the runtime `migrate()` helper) reads `sslmode`, `sslrootcert`/`sslcert`/`sslkey`, `application_name`, `connect_timeout`, and `statement_timeout` from `DATABASE_URL`. The default runtime `sql()` path delegates connection handling to Postgres.js; configure TLS, pooling, and timeouts through the `DATABASE_URL` and `createClient(...)` options it understands (`statementTimeoutMs` is a convenience that maps to a per-connection `statement_timeout`).
 - `connect_timeout` bounds the entire internal-client connect, including the TLS handshake and SCRAM authentication.
-- `sql.file(path)` has a path-key mismatch to be aware of: prepare resolves the file relative to the source file, codegen keys it by root-relative resolved path, and runtime reads the literal path relative to `process.cwd()`. Keep a project convention and verify with `tsc` after `prepare`.
+- Runtime `sql.file(path)` resolves against `fileRoot` while prepare resolves against `--root`. They are both root-relative, but applications started outside the project root must set `fileRoot` explicitly.
 
 See [ROADMAP.md](./ROADMAP.md) for what's planned.
 
 ## Upgrading
 
-### Cache schema change (pre-1.0)
+### Cache and parameter contract change (pre-1.0)
 
-The `.sqlx-js/<fingerprint>.json` entries dropped `forceNonNull`/`forceNullable` in favour of a single `override?: "non-null" | "nullable"` field. Cache files from the previous schema are rejected with a clear error pointing at the offending file. Delete `.sqlx-js/` and re-run `sqlx-js prepare` against your database — there's no data loss, the cache is regenerated.
+Generated cache now includes `.sqlx-js/cache-manifest.json` with an explicit cache format, generator revision, and hash of `jsonbTypes` / `customTypes`. Cache without this manifest is rejected. Delete `.sqlx-js/` and re-run `sqlx-js prepare` against your database — there is no data loss because the cache is generated.
+
+Generated JSON and PostgreSQL array parameters now require `sql.json(...)` and `sql.array(...)`. This removes the ambiguous runtime guess where a JavaScript array could mean either a PostgreSQL array or a JSON array. Replace raw array JSON params with `sql.json(value)` and PostgreSQL arrays with `sql.array(value)` before regenerating declarations.
 
 CI (`prepare --check`) will also fail loudly until the cache is regenerated; this is intentional so a stale schema can't silently emit incorrect `.d.ts`.
 

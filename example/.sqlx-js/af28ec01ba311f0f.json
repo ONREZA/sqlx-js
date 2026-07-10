@@ -1,5 +1,9 @@
 {
   "query": "INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id AS \"id!\"",
+  "hasInline": true,
+  "inlineQueries": [
+    "INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id AS \"id!\""
+  ],
   "paramOids": [
     25,
     25
@@ -21,6 +25,5 @@
       "override": "non-null"
     }
   ],
-  "hasResultSet": true,
-  "hasInline": true
+  "hasResultSet": true
 }

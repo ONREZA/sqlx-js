@@ -1,0 +1,21 @@
+{
+  "query": "UPDATE users SET name = $1 WHERE id = $2",
+  "hasInline": true,
+  "inlineQueries": [
+    "UPDATE users SET name = $1 WHERE id = $2"
+  ],
+  "paramOids": [
+    25,
+    20
+  ],
+  "paramTsTypes": [
+    "string",
+    "bigint"
+  ],
+  "paramNullable": [
+    false,
+    false
+  ],
+  "columns": [],
+  "hasResultSet": false
+}

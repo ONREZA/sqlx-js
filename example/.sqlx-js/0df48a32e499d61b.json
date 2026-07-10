@@ -1,5 +1,9 @@
 {
   "query": "SELECT COUNT(*) AS \"n!\" FROM users WHERE age >= $1",
+  "hasInline": true,
+  "inlineQueries": [
+    "SELECT COUNT(*) AS \"n!\" FROM users WHERE age >= $1"
+  ],
   "paramOids": [
     23
   ],
@@ -18,6 +22,5 @@
       "override": "non-null"
     }
   ],
-  "hasResultSet": true,
-  "hasInline": true
+  "hasResultSet": true
 }

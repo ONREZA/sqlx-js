@@ -1,10 +1,14 @@
 {
   "query": "SELECT id, settings FROM users WHERE settings = $1 LIMIT 1",
+  "hasInline": true,
+  "inlineQueries": [
+    "SELECT id, settings FROM users WHERE settings = $1 LIMIT 1"
+  ],
   "paramOids": [
     3802
   ],
   "paramTsTypes": [
-    "SqlxJsJson.UserSettings"
+    "import(\"@onreza/sqlx-js\").JsonParameter<SqlxJsJson.UserSettings>"
   ],
   "paramNullable": [
     false
@@ -23,6 +27,5 @@
       "nullable": false
     }
   ],
-  "hasResultSet": true,
-  "hasInline": true
+  "hasResultSet": true
 }

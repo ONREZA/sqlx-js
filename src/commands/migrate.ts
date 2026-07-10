@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { PgClient, parseDatabaseUrl, decodeText } from "../pg/wire";
-import { openSession, prepareOnce } from "./prepare";
+import { openSession, prepareOnce, verifyPrepareArtifacts } from "./prepare";
 import {
   introspectConnected,
   schemaSnapshotEqual,
@@ -738,30 +738,16 @@ async function prepareWorkflowArtifacts(opts: MigrationWorkflowOptions, database
 }
 
 async function prepareInTemporaryArtifacts(opts: MigrationWorkflowOptions, databaseUrl: string): Promise<boolean> {
-  const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-verify-"));
-  const cacheDir = join(tmp, "cache");
-  const dtsPath = join(tmp, "sqlx-js-env.d.ts");
-  const prepareOpts = {
+  const verification = await verifyPrepareArtifacts({
     root: opts.root,
     databaseUrl,
-    cacheDir,
-    dtsPath,
+    cacheDir: opts.cacheDir,
+    dtsPath: opts.dtsPath,
     check: false,
+    verify: true,
     prune: true,
-  };
-  const session = await openSession(prepareOpts);
-  try {
-    const r = await prepareOnce(prepareOpts, session);
-    if (r.failures > 0) {
-      console.error(`\n${r.failures} query/queries failed to prepare`);
-      return false;
-    }
-    console.log(`shadow: prepared ${r.entries} unique query/queries`);
-    return true;
-  } finally {
-    await session.client.end();
-    rmSync(tmp, { recursive: true, force: true });
-  }
+  });
+  return verification.ok;
 }
 
 function effectiveSquashReplacements(all: MigrationFile[]): SquashReplacement[] {

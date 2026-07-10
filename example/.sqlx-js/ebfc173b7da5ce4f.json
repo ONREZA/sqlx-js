@@ -1,5 +1,9 @@
 {
   "query": "SELECT id AS \"id!\", name AS \"name!\", email AS \"email!\"\nFROM users\nWHERE role = $1\nORDER BY id\nLIMIT $2::int\n",
+  "hasInline": false,
+  "filePaths": [
+    "queries/get_users_by_role.sql"
+  ],
   "paramOids": [
     16421,
     23
@@ -35,9 +39,5 @@
       "override": "non-null"
     }
   ],
-  "hasResultSet": true,
-  "hasInline": false,
-  "filePaths": [
-    "queries/get_users_by_role.sql"
-  ]
+  "hasResultSet": true
 }

@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   _internal,
+  array,
   clearSqlFileCache,
   createSqlRuntime,
   encodePgArrayLiteral,
   id,
+  json,
   NoRowsError,
   type OnQueryEvent,
   type RuntimeClient,
@@ -53,19 +55,23 @@ describe("encodeParam", () => {
     expect(_internal.encodeParam(null)).toBe(null);
   });
 
-  test("empty array passes through as-is (no magic)", () => {
+  test("plain arrays pass through without type guessing", () => {
     const arr: unknown[] = [];
     expect(_internal.encodeParam(arr)).toBe(arr);
+    const values = [1, 2, 3];
+    expect(_internal.encodeParam(values)).toBe(values);
   });
 
-  test("primitive array becomes PG array literal", () => {
-    expect(_internal.encodeParam([1, 2, 3])).toBe("{1,2,3}");
-    expect(_internal.encodeParam(["a", "b"])).toBe("{a,b}");
-  });
-
-  test("array of objects (jsonb path) passes through as-is", () => {
-    const arr = [{ x: 1 }, { y: 2 }];
-    expect(_internal.encodeParam(arr)).toBe(arr);
+  test("explicit array and JSON parameters serialize independently", () => {
+    expect(_internal.encodeParam(array([1, 2, 3]))).toBe("{1,2,3}");
+    expect(_internal.encodeParam(json([1, 2, 3]))).toBe("[1,2,3]");
+    expect(_internal.encodeParam(json(null))).toBe("null");
+    expect(_internal.encodeParam(array([json({ kind: "object" }), null])))
+      .toBe('{"{\\"kind\\":\\"object\\"}",NULL}');
+    expect(_internal.encodeParam(array([new Date("2026-01-02T03:04:05.000Z")])))
+      .toBe('{"2026-01-02T03:04:05.000Z"}');
+    expect(_internal.encodeParam(array([new Uint8Array([0xde, 0xad])])))
+      .toBe('{"\\\\xdead"}');
   });
 
   test("array containing comma/quote/brace is escaped", () => {
@@ -91,6 +97,8 @@ describe("isPrimitiveArrayElement", () => {
   test("objects and arrays are not primitive", () => {
     expect(_internal.isPrimitiveArrayElement({})).toBe(false);
     expect(_internal.isPrimitiveArrayElement([])).toBe(false);
+    expect(_internal.isPrimitiveArrayElement(new Date())).toBe(true);
+    expect(_internal.isPrimitiveArrayElement(new Uint8Array())).toBe(true);
   });
 });
 
@@ -191,6 +199,16 @@ describe("onQuery hook", () => {
     expect(events[0]!.error).toBeUndefined();
   });
 
+  test("uses driver affected-row count and exposes sql.execute metadata", async () => {
+    const result = Object.assign([], { count: 3, command: "UPDATE" });
+    const { events, api } = harness({ query: async () => result });
+    expect(await api.sql.execute("UPDATE users SET active = false")).toEqual({
+      rowCount: 3,
+      command: "UPDATE",
+    });
+    expect(events[0]!.rowCount).toBe(3);
+  });
+
   test("fires with normalized PgError on failure and rethrows it", async () => {
     const driver = Object.assign(new Error("dup"), { name: "PostgresError", code: "23505" });
     const { events, api } = harness({ query: async () => { throw driver; } });
@@ -227,18 +245,18 @@ describe("loadSqlFile + mtime cache", () => {
     const path = join(dir, "q.sql");
     writeFileSync(path, "SELECT 1");
     clearSqlFileCache();
-    const a = _internal.loadSqlFile(path);
+    const a = _internal.loadSqlFile("q.sql", dir);
     expect(a).toBe("SELECT 1");
 
     await new Promise((resolve) => setTimeout(resolve, 10));
     writeFileSync(path, "SELECT 2");
-    const b = _internal.loadSqlFile(path);
+    const b = _internal.loadSqlFile("q.sql", dir);
     expect(b).toBe("SELECT 2");
   });
 
   test("missing file throws with path context", () => {
-    expect(() => _internal.loadSqlFile("/tmp/sqlx-js-does-not-exist.sql"))
-      .toThrow(/sqlx-js\.sql\.file: cannot read \/tmp\/sqlx-js-does-not-exist\.sql/);
+    expect(() => _internal.loadSqlFile("sqlx-js-does-not-exist.sql", "/tmp"))
+      .toThrow(/sqlx-js\.sql\.file: cannot read sqlx-js-does-not-exist\.sql/);
   });
 });
 

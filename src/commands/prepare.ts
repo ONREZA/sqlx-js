@@ -1,20 +1,38 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PgClient, parseDatabaseUrl, PgError, type ConnConfig, type FieldDescription } from "../pg/wire";
 import { SchemaCache, compositeLiteral, type CustomTypeInfo } from "../pg/schema";
 import { analyzeQuery } from "../pg/analyze";
-import { isBuiltinOid, oidToTs } from "../pg/oids";
-import { scanProject, type QueryCallSite } from "../scan/scanner";
-import { Cache, fingerprint, effectiveNullable, type CacheEntry } from "../cache";
+import { arrayElementOid, isBuiltinOid, oidToTs } from "../pg/oids";
+import { ScanError, scanProject, type QueryCallSite } from "../scan/scanner";
+import {
+  assertCacheManifest,
+  Cache,
+  fingerprint,
+  effectiveNullable,
+  writeCacheManifest,
+  type CacheEntry,
+} from "../cache";
 import { emitDts } from "../codegen";
-import { loadConfig, lookupJsonbType, type SqlxJsConfig } from "../config";
+import { loadConfig, lookupJsonbType, prepareConfigHash, type SqlxJsConfig } from "../config";
 import { readFunctionCache, writeFunctionCache, type FunctionEntry } from "../function-cache";
 import { introspectFunctions } from "../pg/functions";
 import { buildParamMap, type ParamMap, type ParamMapResult } from "../pg/param-map";
 import { mergeExtensionTypes } from "../pg/extensions";
+import { compareArtifacts } from "../artifacts";
 
 const JSON_OIDS = new Set([114, 3802]);
 const JSON_ARRAY_OIDS = new Set([199, 3807]);
-const JSON_INPUT = 'import("@onreza/sqlx-js").JsonInput';
+const JSON_INPUT_VALUE = 'import("@onreza/sqlx-js").JsonInputValue';
+
+function jsonParameter(type: string): string {
+  return `import("@onreza/sqlx-js").JsonParameter<${type}>`;
+}
+
+function arrayParameter(type: string): string {
+  return `import("@onreza/sqlx-js").PgArrayParameter<${type}>`;
+}
 
 function enumUnion(values: string[]): string {
   if (values.length === 0) return "never";
@@ -63,14 +81,34 @@ function resolveParamTs(
   schema: SchemaCache,
   cfg: SqlxJsConfig,
 ): string {
-  if (JSON_OIDS.has(paramOid) || JSON_ARRAY_OIDS.has(paramOid)) {
+  if (JSON_OIDS.has(paramOid)) {
     const target = paramMap.get(paramIndex);
     if (target) {
       const column = resolveTargetColumn(target, schema);
       const decl = column ? lookupJsonbType(cfg, target.schema ?? "public", target.table, column) : undefined;
-      if (decl) return JSON_ARRAY_OIDS.has(paramOid) ? `(${decl})[]` : decl;
+      if (decl) return jsonParameter(decl);
     }
-    return JSON_ARRAY_OIDS.has(paramOid) ? `(${JSON_INPUT})[]` : JSON_INPUT;
+    return jsonParameter(JSON_INPUT_VALUE);
+  }
+  if (JSON_ARRAY_OIDS.has(paramOid)) {
+    const target = paramMap.get(paramIndex);
+    if (target) {
+      const column = resolveTargetColumn(target, schema);
+      const decl = column ? lookupJsonbType(cfg, target.schema ?? "public", target.table, column) : undefined;
+      if (decl) return arrayParameter(jsonParameter(decl));
+    }
+    return arrayParameter(jsonParameter(JSON_INPUT_VALUE));
+  }
+  const builtinElementOid = arrayElementOid(paramOid);
+  if (builtinElementOid !== undefined) {
+    return arrayParameter(resolveTs(builtinElementOid, (oid) => schema.customType(oid)));
+  }
+  const custom = schema.customType(paramOid);
+  if (custom?.kind === "enumArray") return arrayParameter(enumUnion(custom.element.values));
+  if (custom?.kind === "scalarArray") return arrayParameter(custom.element.tsType);
+  if (custom?.kind === "compositeArray") return arrayParameter(compositeLiteral(custom.element));
+  if (custom) {
+    return resolveTs(paramOid, () => custom);
   }
   return resolveTs(paramOid, (oid) => schema.customType(oid));
 }
@@ -125,7 +163,71 @@ export type PrepareOptions = {
   cacheDir: string;
   dtsPath: string;
   check: boolean;
+  verify?: boolean;
+  json?: boolean;
   prune?: boolean;
+};
+
+export type PrepareDiagnosticPhase =
+  | "config"
+  | "connect"
+  | "shadow"
+  | "scan"
+  | "describe"
+  | "introspect"
+  | "analyze"
+  | "param-map"
+  | "cache"
+  | "verify";
+
+export class PrepareFatalError extends Error {
+  public readonly file?: string;
+  public readonly line?: number;
+  public readonly column?: number;
+
+  constructor(
+    public readonly phase: PrepareDiagnosticPhase,
+    message: string,
+    location: { file?: string; line?: number; column?: number } = {},
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "PrepareFatalError";
+    this.file = location.file;
+    this.line = location.line;
+    this.column = location.column;
+  }
+}
+
+function fatal(phase: PrepareDiagnosticPhase, error: unknown): PrepareFatalError {
+  if (error instanceof PrepareFatalError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  const location = error instanceof ScanError
+    ? { file: error.file, line: error.line, column: error.column }
+    : {};
+  return new PrepareFatalError(phase, message, location, { cause: error });
+}
+
+export type PrepareDiagnostic = {
+  severity: "error" | "warning";
+  phase: PrepareDiagnosticPhase;
+  message: string;
+  file?: string;
+  line?: number;
+  column?: number;
+  query?: string;
+  code?: string;
+  position?: number;
+  hint?: string;
+};
+
+export type PrepareResult = {
+  sites: number;
+  entries: number;
+  failures: number;
+  pruned: number;
+  functions: number;
+  diagnostics: PrepareDiagnostic[];
 };
 
 function formatSite(s: QueryCallSite): string {
@@ -158,10 +260,25 @@ export type PrepareSession = {
 };
 
 export async function openSession(opts: PrepareOptions): Promise<PrepareSession> {
-  const userCfg = await loadConfig(opts.root);
-  const cfg = parseDatabaseUrl(opts.databaseUrl);
+  let userCfg: SqlxJsConfig;
+  try {
+    userCfg = await loadConfig(opts.root);
+  } catch (error) {
+    throw fatal("config", error);
+  }
+  let cfg: ConnConfig;
+  try {
+    cfg = parseDatabaseUrl(opts.databaseUrl);
+  } catch (error) {
+    throw fatal("connect", error);
+  }
   const client = new PgClient(cfg);
-  await client.connect();
+  try {
+    await client.connect();
+  } catch (error) {
+    await client.end().catch(() => {});
+    throw fatal("connect", error);
+  }
   const schema = new SchemaCache(client);
   schema.setTypeRegistry(mergeExtensionTypes(userCfg.customTypes));
   return { client, schema, userCfg };
@@ -231,9 +348,15 @@ export async function prepareOnce(
   log: (msg: string) => void = console.log,
   err: (msg: string) => void = console.error,
   concurrency: number = defaultPrepareConcurrency(),
-): Promise<{ entries: number; failures: number; pruned: number; functions: number }> {
-  const sites = scanProject(opts.root);
+): Promise<PrepareResult> {
+  let sites: QueryCallSite[];
+  try {
+    sites = scanProject(opts.root, session.userCfg.scan);
+  } catch (error) {
+    throw fatal("scan", error);
+  }
   log(`scanned: found ${sites.length} sql() call site(s)`);
+  const diagnostics: PrepareDiagnostic[] = [];
 
   const cache = new Cache(opts.cacheDir);
 
@@ -268,6 +391,18 @@ export async function prepareOnce(
     failures++;
     const e = outcome.error;
     if (e instanceof PgError) {
+      diagnostics.push({
+        severity: "error",
+        phase: "describe",
+        message: e.message,
+        file: site.file,
+        line: site.line,
+        column: site.column,
+        query,
+        ...(e.code ? { code: e.code } : {}),
+        ...(e.position ? { position: e.position } : {}),
+        ...(e.hint ? { hint: e.hint } : {}),
+      });
       const extras: string[] = [];
       if (e.position) extras.push(`pos ${e.position}`);
       if (e.code) extras.push(`code ${e.code}`);
@@ -276,6 +411,15 @@ export async function prepareOnce(
       if (e.hint) err(`      hint: ${e.hint}`);
       err(`      query: ${snippet(query)}`);
     } else {
+      diagnostics.push({
+        severity: "error",
+        phase: "describe",
+        message: (e as Error).message,
+        file: site.file,
+        line: site.line,
+        column: site.column,
+        query,
+      });
       err(`  ✗ ${formatSite(site)} — describe failed: ${(e as Error).message}`);
       err(`      query: ${snippet(query)}`);
     }
@@ -291,8 +435,12 @@ export async function prepareOnce(
       }
     }
   }
-  await schema.loadAttributes(allAttrRefs);
-  await schema.loadTableNamesByOid(allTableOids);
+  try {
+    await schema.loadAttributes(allAttrRefs);
+    await schema.loadTableNamesByOid(allTableOids);
+  } catch (error) {
+    throw fatal("introspect", error);
+  }
 
   const analyses = new Map<string, Awaited<ReturnType<typeof analyzeQuery>>>();
   const paramMaps = new Map<string, ParamMapResult>();
@@ -304,6 +452,15 @@ export async function prepareOnce(
     } catch (e) {
       failures++;
       failedFps.add(r.fp);
+      diagnostics.push({
+        severity: "error",
+        phase: "analyze",
+        message: (e as Error).message,
+        file: site.file,
+        line: site.line,
+        column: site.column,
+        query: r.query,
+      });
       err(`  ✗ ${formatSite(site)} — analyze failed: ${(e as Error).message}`);
       err(`      query: ${snippet(r.query)}`);
       continue;
@@ -313,30 +470,43 @@ export async function prepareOnce(
     } catch (e) {
       failures++;
       failedFps.add(r.fp);
+      diagnostics.push({
+        severity: "error",
+        phase: "param-map",
+        message: (e as Error).message,
+        file: site.file,
+        line: site.line,
+        column: site.column,
+        query: r.query,
+      });
       err(`  ✗ ${formatSite(site)} — paramMap failed: ${(e as Error).message}`);
       err(`      query: ${snippet(r.query)}`);
     }
   }
 
-  const dmlTablesToLoad = new Set<string>();
+  const dmlTablesToLoad = new Map<string, { schema: string; name: string }>();
   for (const pm of paramMaps.values()) {
     for (const idx of pm.dmlBound) {
       const t = pm.targets.get(idx);
-      if (t) dmlTablesToLoad.add(`${t.schema ?? "public"}.${t.table}`);
+      if (t) {
+        const schema = t.schema ?? "public";
+        dmlTablesToLoad.set(JSON.stringify([schema, t.table]), { schema, name: t.table });
+      }
     }
   }
-  if (dmlTablesToLoad.size > 0) {
-    const names = [...dmlTablesToLoad].map((k) => {
-      const [schema, name] = k.split(".");
-      return { schema, name: name! };
-    });
-    await schema.loadTableNames(names);
-    const oids: number[] = [];
-    for (const n of names) {
-      const oid = schema.resolveTable(n.schema, n.name);
-      if (oid !== undefined) oids.push(oid);
+  try {
+    if (dmlTablesToLoad.size > 0) {
+      const names = [...dmlTablesToLoad.values()];
+      await schema.loadTableNames(names);
+      const oids: number[] = [];
+      for (const n of names) {
+        const oid = schema.resolveTable(n.schema, n.name);
+        if (oid !== undefined) oids.push(oid);
+      }
+      await schema.loadColumnsForTables(oids);
     }
-    await schema.loadColumnsForTables(oids);
+  } catch (error) {
+    throw fatal("introspect", error);
   }
 
   const unknownOids = new Set<number>();
@@ -344,9 +514,14 @@ export async function prepareOnce(
     for (const o of r.paramOids) if (!isBuiltinOid(o)) unknownOids.add(o);
     for (const f of r.fields) if (!isBuiltinOid(f.typeOid)) unknownOids.add(f.typeOid);
   }
-  await schema.loadCustomTypes([...unknownOids]);
+  try {
+    await schema.loadCustomTypes([...unknownOids]);
+  } catch (error) {
+    throw fatal("introspect", error);
+  }
 
   const entries: CacheEntry[] = [];
+  const generated: { fp: string; entry: CacheEntry }[] = [];
   for (const r of raw) {
     if (failedFps.has(r.fp)) continue;
     const analysis = analyses.get(r.fp)!;
@@ -375,34 +550,75 @@ export async function prepareOnce(
       hasResultSet: r.fields.length > 0,
       ...(analysis.degraded ? { degraded: analysis.degraded } : {}),
     };
-    cache.write(r.fp, entry);
     entries.push(entry);
+    generated.push({ fp: r.fp, entry });
     const nn = entry.columns.filter((c) => !effectiveNullable(c)).length;
     const tag = entry.degraded ? ` [degraded: ${entry.degraded.reason}]` : "";
     log(`  ✓ ${formatSite(r.sites[0]!)} → ${r.paramOids.length} param(s), ${r.fields.length} col(s) [${nn} non-null]${tag}`);
   }
 
-  let pruned = 0;
-  if (opts.prune !== false) {
-    pruned = cache.prune(unique.keys()).length;
-    if (pruned > 0) log(`pruned ${pruned} orphaned cache entry/entries`);
+  if (failures > 0) {
+    return { sites: sites.length, entries: entries.length, failures, pruned: 0, functions: 0, diagnostics };
   }
 
-  let functions: FunctionEntry[] = [];
-  if (failures === 0) {
+  let functions: FunctionEntry[];
+  try {
     functions = await introspectFunctions(client, schema);
-    writeFunctionCache(opts.cacheDir, functions);
+  } catch (error) {
+    throw fatal("introspect", error);
   }
-
-  emitDts(opts.dtsPath, entries, functions);
-  return { entries: entries.length, failures, pruned, functions: functions.length };
+  let pruned: number;
+  try {
+    pruned = cache.replaceAll(generated, opts.prune !== false).length;
+    if (pruned > 0) log(`pruned ${pruned} orphaned cache entry/entries`);
+    writeFunctionCache(opts.cacheDir, functions);
+    writeCacheManifest(opts.cacheDir, prepareConfigHash(userCfg));
+    emitDts(opts.dtsPath, entries, functions);
+  } catch (error) {
+    throw fatal("cache", error);
+  }
+  return { sites: sites.length, entries: entries.length, failures, pruned, functions: functions.length, diagnostics };
 }
 
 export async function runPrepare(opts: PrepareOptions): Promise<void> {
+  if (opts.verify) {
+    const verification = await verifyPrepareArtifacts(
+      opts,
+      opts.json ? () => {} : console.log,
+      opts.json ? () => {} : console.error,
+    );
+    if (opts.json) {
+      console.log(JSON.stringify({
+        formatVersion: 1,
+        ok: verification.ok,
+        mode: "verify",
+        ...verification.result,
+        changed: verification.changed,
+      }, null, 2));
+    }
+    if (!verification.ok) process.exitCode = 1;
+    return;
+  }
   if (opts.check) {
-    const sites = scanProject(opts.root);
-    console.log(`scanned: found ${sites.length} sql() call site(s)`);
+    let userCfg: SqlxJsConfig;
+    try {
+      userCfg = await loadConfig(opts.root);
+    } catch (error) {
+      throw fatal("config", error);
+    }
+    let sites: QueryCallSite[];
+    try {
+      sites = scanProject(opts.root, userCfg.scan);
+    } catch (error) {
+      throw fatal("scan", error);
+    }
+    if (!opts.json) console.log(`scanned: found ${sites.length} sql() call site(s)`);
     const cache = new Cache(opts.cacheDir);
+    try {
+      assertCacheManifest(opts.cacheDir, prepareConfigHash(userCfg));
+    } catch (error) {
+      throw fatal("cache", error);
+    }
     const unique = new Map<string, { fp: string; query: string; sites: QueryCallSite[] }>();
     for (const s of sites) {
       const fp = fingerprint(s.query);
@@ -410,38 +626,139 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
       if (existing) existing.sites.push(s);
       else unique.set(fp, { fp, query: s.query, sites: [s] });
     }
-    let stale = 0;
+    const diagnostics: PrepareDiagnostic[] = [];
     for (const { fp, query, sites: ss } of unique.values()) {
       if (!cache.has(fp)) {
-        stale++;
-        console.error(`stale: ${formatSite(ss[0]!)} — query not in cache`);
-        console.error(`       query: ${snippet(query)}`);
+        const site = ss[0]!;
+        diagnostics.push({
+          severity: "error",
+          phase: "cache",
+          message: "query is not in the offline cache",
+          file: site.file,
+          line: site.line,
+          column: site.column,
+          query,
+        });
+        if (!opts.json) {
+          console.error(`stale: ${formatSite(site)} — query not in cache`);
+          console.error(`       query: ${snippet(query)}`);
+        }
       }
     }
-    if (stale > 0) {
-      console.error(`\nsqlx-js prepare --check: ${stale} stale/missing entries. Run \`sqlx-js prepare\` against a live DB.`);
-      process.exit(1);
+    if (diagnostics.length > 0) {
+      if (opts.json) {
+        console.log(JSON.stringify({
+          formatVersion: 1,
+          ok: false,
+          mode: "check",
+          sites: sites.length,
+          entries: unique.size - diagnostics.length,
+          failures: diagnostics.length,
+          pruned: 0,
+          functions: 0,
+          diagnostics,
+        }, null, 2));
+      } else {
+        console.error(`\nsqlx-js prepare --check: ${diagnostics.length} stale/missing entries. Run \`sqlx-js prepare\` against a live DB.`);
+      }
+      process.exitCode = 1;
+      return;
     }
-    const entries = [...unique.values()].map((u) => {
-      const entry = cache.read(u.fp);
-      return entry ? { ...entry, ...siteUsage(u.sites) } : null;
-    }).filter((e): e is CacheEntry => e !== null);
-    const functions = readFunctionCache(opts.cacheDir);
-    emitDts(opts.dtsPath, entries, functions);
-    console.log(`ok — ${entries.length} unique queries, ${functions.length} function(s), types regenerated`);
+    let entries: CacheEntry[];
+    let functions: FunctionEntry[];
+    try {
+      entries = [...unique.values()].map((u) => {
+        const entry = cache.read(u.fp);
+        return entry ? { ...entry, ...siteUsage(u.sites) } : null;
+      }).filter((e): e is CacheEntry => e !== null);
+      functions = readFunctionCache(opts.cacheDir);
+      emitDts(opts.dtsPath, entries, functions);
+    } catch (error) {
+      throw fatal("cache", error);
+    }
+    if (opts.json) {
+      console.log(JSON.stringify({
+        formatVersion: 1,
+        ok: true,
+        mode: "check",
+        sites: sites.length,
+        entries: entries.length,
+        failures: 0,
+        pruned: 0,
+        functions: functions.length,
+        diagnostics: [],
+      }, null, 2));
+    } else {
+      console.log(`ok — ${entries.length} unique queries, ${functions.length} function(s), types regenerated`);
+    }
     return;
   }
 
   const session = await openSession(opts);
   try {
-    const r = await prepareOnce(opts, session);
-    if (r.failures > 0) {
-      console.error(`\n${r.failures} query/queries failed to prepare`);
-      await session.client.end();
-      process.exit(1);
+    const r = await prepareOnce(
+      opts,
+      session,
+      opts.json ? () => {} : console.log,
+      opts.json ? () => {} : console.error,
+    );
+    if (opts.json) {
+      console.log(JSON.stringify({ formatVersion: 1, ok: r.failures === 0, mode: "prepare", ...r }, null, 2));
     }
-    console.log(`\nprepared ${r.entries} unique query/queries, ${r.functions} function(s) → ${opts.dtsPath}`);
+    if (r.failures > 0) {
+      if (!opts.json) console.error(`\n${r.failures} query/queries failed to prepare`);
+      process.exitCode = 1;
+      return;
+    }
+    if (!opts.json) console.log(`\nprepared ${r.entries} unique query/queries, ${r.functions} function(s) → ${opts.dtsPath}`);
   } finally {
     await session.client.end();
+  }
+}
+
+export async function verifyPrepareArtifacts(
+  opts: PrepareOptions,
+  log: (msg: string) => void = console.log,
+  err: (msg: string) => void = console.error,
+): Promise<{ ok: boolean; result: PrepareResult; changed: string[] }> {
+  const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-verify-"));
+  const cacheDir = join(tmp, "cache");
+  const dtsPath = join(tmp, "sqlx-js-env.d.ts");
+  const verifyOpts: PrepareOptions = {
+    ...opts,
+    cacheDir,
+    dtsPath,
+    check: false,
+    verify: false,
+    prune: true,
+  };
+  let session: PrepareSession | undefined;
+  try {
+    session = await openSession(verifyOpts);
+    const result = await prepareOnce(verifyOpts, session, log, err);
+    if (result.failures > 0) {
+      err(`\n${result.failures} query/queries failed to prepare`);
+      return { ok: false, result, changed: [] };
+    }
+    let comparison: ReturnType<typeof compareArtifacts>;
+    try {
+      comparison = compareArtifacts(
+        { cacheDir: opts.cacheDir, dtsPath: opts.dtsPath },
+        { cacheDir, dtsPath },
+      );
+    } catch (error) {
+      throw fatal("verify", error);
+    }
+    if (!comparison.ok) {
+      err("sqlx-js prepare --verify: generated artifacts are stale:");
+      for (const file of comparison.changed) err(`  ${file}`);
+      err("Run `sqlx-js prepare` and commit the regenerated artifacts.");
+      return { ok: false, result, changed: comparison.changed };
+    }
+    log(`verified ${result.entries} query/queries and ${result.functions} function(s); generated artifacts are current`);
+    return { ok: true, result, changed: [] };
+  } finally {
+    if (session) await session.client.end();
+    rmSync(tmp, { recursive: true, force: true });
   }
 }

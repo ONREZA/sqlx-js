@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { prepareWatchedOnce, type WatchOptions, type WatchState } from "../src/commands/watch";
+import { prepareWatchedOnce, shouldWatchFile, type WatchOptions, type WatchState } from "../src/commands/watch";
 import type { PrepareSession } from "../src/commands/prepare";
 
 function session(name: string, closed: string[]): PrepareSession {
@@ -72,4 +72,14 @@ test("prepareWatchedOnce resets the session when beforePrepare reports schema ch
 
   expect(closed).toEqual(["old"]);
   expect(opened).toEqual(["new"]);
+});
+
+test("watch reacts to source, SQL, config, and tsconfig graph changes", () => {
+  expect(shouldWatchFile("packages/app/src/index.ts")).toBe(true);
+  expect(shouldWatchFile("queries/user.sql")).toBe(true);
+  expect(shouldWatchFile("sqlx-js.config.mjs")).toBe(true);
+  expect(shouldWatchFile("packages/app/tsconfig.build.json")).toBe(true);
+  expect(shouldWatchFile("package.json")).toBe(false);
+  expect(shouldWatchFile("dist/sqlx-js.config.js")).toBe(false);
+  expect(shouldWatchFile("sqlx-js-env.d.ts")).toBe(false);
 });

@@ -1,5 +1,9 @@
 {
   "query": "SELECT COUNT(*) AS \"n!\" FROM posts WHERE user_id = $1\n",
+  "hasInline": false,
+  "filePaths": [
+    "queries/count_posts.sql"
+  ],
   "paramOids": [
     20
   ],
@@ -18,9 +22,5 @@
       "override": "non-null"
     }
   ],
-  "hasResultSet": true,
-  "hasInline": false,
-  "filePaths": [
-    "queries/count_posts.sql"
-  ]
+  "hasResultSet": true
 }

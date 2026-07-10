@@ -1,5 +1,9 @@
 {
   "query": "SELECT u.id AS user_id, u.name, p.title, p.published FROM users u LEFT JOIN posts p ON p.user_id = u.id WHERE u.id = $1",
+  "hasInline": true,
+  "inlineQueries": [
+    "SELECT u.id AS user_id, u.name, p.title, p.published FROM users u LEFT JOIN posts p ON p.user_id = u.id WHERE u.id = $1"
+  ],
   "paramOids": [
     20
   ],
@@ -35,6 +39,5 @@
       "nullable": true
     }
   ],
-  "hasResultSet": true,
-  "hasInline": true
+  "hasResultSet": true
 }

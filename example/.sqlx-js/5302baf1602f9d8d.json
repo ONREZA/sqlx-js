@@ -1,5 +1,9 @@
 {
   "query": "SELECT id FROM users WHERE role = $1",
+  "hasInline": true,
+  "inlineQueries": [
+    "SELECT id FROM users WHERE role = $1"
+  ],
   "paramOids": [
     16421
   ],
@@ -17,6 +21,5 @@
       "nullable": false
     }
   ],
-  "hasResultSet": true,
-  "hasInline": true
+  "hasResultSet": true
 }

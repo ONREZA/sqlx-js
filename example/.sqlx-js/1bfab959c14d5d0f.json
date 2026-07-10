@@ -1,5 +1,9 @@
 {
   "query": "SELECT COUNT(*) AS n FROM users",
+  "hasInline": true,
+  "inlineQueries": [
+    "SELECT COUNT(*) AS n FROM users"
+  ],
   "paramOids": [],
   "paramTsTypes": [],
   "paramNullable": [],
@@ -11,6 +15,5 @@
       "nullable": false
     }
   ],
-  "hasResultSet": true,
-  "hasInline": true
+  "hasResultSet": true
 }

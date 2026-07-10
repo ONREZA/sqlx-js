@@ -21,6 +21,8 @@ test("CLI help prints package metadata version", () => {
   expect(r.stderr).toContain("--dry-run");
   expect(r.stderr).toContain("--json");
   expect(r.stderr).toContain("sqlx-js db install");
+  expect(r.stderr).toContain("sqlx-js doctor");
+  expect(r.stderr).toContain("--verify");
   expect(r.stderr).toContain("--schema-provider");
   expect(r.stderr).toContain("check [--json]");
   expect(r.stderr).toContain("migrate dev");
@@ -48,7 +50,7 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
     expect(existsSync(join(root, "sqlx-js.config.ts"))).toBe(true);
     expect(existsSync(join(root, "migrations"))).toBe(true);
     expect(existsSync(join(root, ".env.example"))).toBe(true);
-    expect(readFileSync(join(root, "sqlx-js.config.ts"), "utf8")).toContain("SqlxJsConfig");
+    expect(readFileSync(join(root, "sqlx-js.config.ts"), "utf8")).toContain("defineConfig");
 
     const r2 = spawnSync("bun", [binPath, "init", "--root", root], {
       encoding: "utf8",
@@ -321,4 +323,67 @@ test("CLI rejects migrate revert --json without dry-run before connecting", () =
   });
   expect(r.status).toBe(2);
   expect(r.stderr).toContain("--json for migrate revert requires --dry-run");
+});
+
+test("prepare --json reports missing DATABASE_URL as one structured document", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-cli-json-"));
+  try {
+    const r = spawnSync("bun", [binPath, "prepare", "--json", "--root", root], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: "" },
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toBe("");
+    expect(JSON.parse(r.stdout)).toMatchObject({
+      formatVersion: 1,
+      ok: false,
+      mode: "prepare",
+      diagnostics: [{ phase: "connect" }],
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("prepare --check --json classifies config loading failures", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-cli-config-"));
+  try {
+    writeFileSync(join(root, "sqlx-js.config.mjs"), "export default [];\n");
+    const r = spawnSync("bun", [binPath, "prepare", "--check", "--json", "--root", root], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: "" },
+    });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toBe("");
+    expect(JSON.parse(r.stdout)).toMatchObject({
+      formatVersion: 1,
+      ok: false,
+      mode: "check",
+      diagnostics: [{ phase: "config" }],
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("prepare --check --json preserves scanner source location", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-cli-scan-"));
+  try {
+    writeFileSync(join(root, "a.ts"),
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "const query = \"SELECT 1\";\n" +
+      "await sql(query);\n",
+    );
+    const r = spawnSync("bun", [binPath, "prepare", "--check", "--json", "--root", root], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: "" },
+    });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toBe("");
+    expect(JSON.parse(r.stdout)).toMatchObject({
+      diagnostics: [{ phase: "scan", file: "a.ts", line: 3, column: 11 }],
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -1,6 +1,7 @@
 import { test, expect, beforeAll, afterAll } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -10,7 +11,7 @@ import { SchemaCache, compositeLiteral } from "../src/pg/schema";
 import { mergeExtensionTypes } from "../src/pg/extensions";
 
 const repoRoot = resolve(import.meta.dir, "..");
-const tmp = join(repoRoot, "tests/.tmp-integration");
+const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-integration-"));
 const IMAGE = process.env.SQLX_JS_PG_IMAGE ?? "pgvector/pgvector:pg17";
 
 function hash(s: string): string {
@@ -26,6 +27,7 @@ const haveDocker = dockerAvailable();
 
 if (!haveDocker) {
   test.skip("integration suite requires Docker for testcontainers", () => {});
+  afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 } else {
   let container: StartedPostgreSqlContainer;
   let dbUrl: string;
@@ -48,6 +50,10 @@ if (!haveDocker) {
     mkdirSync(root, { recursive: true });
     writeRootFile(root, "package.json", `{"name":"${name}","type":"module"}`);
     return root;
+  }
+
+  function queryCacheFiles(root = tmp): string[] {
+    return readdirSync(join(root, ".sqlx-js")).filter((name) => /^[0-9a-f]{16}\.json$/.test(name));
   }
 
   function prepare(args: string[] = []): { code: number; stdout: string; stderr: string } {
@@ -102,6 +108,15 @@ if (!haveDocker) {
     const r = spawnSync(
       "bun",
       [join(repoRoot, "bin/sqlx-js.ts"), "schema", ...args, "--root", tmp],
+      { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
+    );
+    return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  }
+
+  function doctor(args: string[] = []): { code: number; stdout: string; stderr: string } {
+    const r = spawnSync(
+      "bun",
+      [join(repoRoot, "bin/sqlx-js.ts"), "doctor", "--root", tmp, ...args],
       { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
     );
     return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
@@ -180,7 +195,115 @@ if (!haveDocker) {
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain("interface KnownQueries");
     expect(dts).toContain("SELECT id, name FROM tmp_users WHERE id = $1");
-    expect(readdirSync(join(tmp, ".sqlx-js")).filter((f) => f.endsWith(".json")).length).toBeGreaterThan(0);
+    expect(queryCacheFiles().length).toBeGreaterThan(0);
+  });
+
+  test("prepare publishes no partial artifacts when any query fails", () => {
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT id FROM tmp_users\");\n",
+    );
+    let r = prepare();
+    expect(r.code).toBe(0);
+    const dtsPath = join(tmp, "sqlx-js-env.d.ts");
+    const beforeDts = readFileSync(dtsPath, "utf8");
+    const beforeCache = readdirSync(join(tmp, ".sqlx-js"))
+      .filter((name) => name.endsWith(".json"))
+      .sort()
+      .map((name) => [name, readFileSync(join(tmp, ".sqlx-js", name), "utf8")]);
+
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT name FROM tmp_users\");\n" +
+      "await sql(\"SELECT * FROM tmp_missing_atomic_relation\");\n",
+    );
+    r = prepare();
+    expect(r.code).toBe(1);
+    expect(readFileSync(dtsPath, "utf8")).toBe(beforeDts);
+    expect(readdirSync(join(tmp, ".sqlx-js"))
+      .filter((name) => name.endsWith(".json"))
+      .sort()
+      .map((name) => [name, readFileSync(join(tmp, ".sqlx-js", name), "utf8")]))
+      .toEqual(beforeCache);
+  });
+
+  test("prepare --verify compares live generated artifacts without writing", () => {
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT id, name FROM tmp_users WHERE id = $1\", 1);\n",
+    );
+    let r = prepare();
+    expect(r.code).toBe(0);
+    const before = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    r = prepare(["--verify"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("generated artifacts are current");
+    expect(readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8")).toBe(before);
+  });
+
+  test("prepare --check rejects cache generated with a different type config", () => {
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT id FROM tmp_users\");\n",
+    );
+    expect(prepare().code).toBe(0);
+    writeFile("sqlx-js.config.ts", "export default { customTypes: { geometry: \"GeoJSON.Geometry\" } };\n");
+    try {
+      const result = prepare(["--check", "--json"]);
+      expect(result.code).toBe(1);
+      const payload = JSON.parse(result.stdout) as { ok: boolean; diagnostics: { message: string }[] };
+      expect(payload.ok).toBe(false);
+      expect(payload.diagnostics[0]!.message).toContain("different jsonbTypes/customTypes config");
+    } finally {
+      rmSync(join(tmp, "sqlx-js.config.ts"), { force: true });
+    }
+  });
+
+  test("doctor checks runtime, config, cache, tsconfig, database, permissions, and schema provider", () => {
+    writeFile("tsconfig.json", JSON.stringify({ include: ["a.ts", "sqlx-js-env.d.ts"] }));
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT id FROM tmp_users\");\n",
+    );
+    expect(prepare().code).toBe(0);
+    const result = doctor(["--json"]);
+    expect(result.code).toBe(0);
+    const payload = JSON.parse(result.stdout) as {
+      ok: boolean;
+      checks: { name: string; status: string; details?: Record<string, unknown> }[];
+    };
+    expect(payload.ok).toBe(true);
+    expect(payload.checks.map((check) => check.name)).toEqual([
+      "runtime",
+      "config",
+      "env",
+      "cache",
+      "tsconfig",
+      "database",
+      "permissions",
+      "pgschema",
+    ]);
+    expect(payload.checks.every((check) => check.status !== "error")).toBe(true);
+    expect(payload.checks.find((check) => check.name === "permissions")?.details).toMatchObject({
+      schemaUsage: true,
+      createDatabase: true,
+    });
+  });
+
+  test("prepare --json emits structured PostgreSQL diagnostics", () => {
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT * FROM tmp_json_diagnostic_missing\");\n",
+    );
+    const result = prepare(["--json"]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe("");
+    const payload = JSON.parse(result.stdout) as {
+      ok: boolean;
+      diagnostics: { phase: string; file: string; line: number; code?: string }[];
+    };
+    expect(payload.ok).toBe(false);
+    expect(payload.diagnostics[0]).toMatchObject({ phase: "describe", file: "a.ts", line: 2, code: "42P01" });
   });
 
   test("prepare emits KnownFunctions from pg_proc and keeps them in --check", async () => {
@@ -319,7 +442,7 @@ if (!haveDocker) {
     );
     let r = prepare();
     expect(r.code).toBe(0);
-    const firstFiles = readdirSync(join(tmp, ".sqlx-js")).filter((f) => f.endsWith(".json"));
+    const firstFiles = queryCacheFiles();
     expect(firstFiles.length).toBe(1);
 
     writeFile("a.ts",
@@ -329,7 +452,7 @@ if (!haveDocker) {
     r = prepare();
     expect(r.code).toBe(0);
     expect(r.stdout).toMatch(/pruned 1 orphaned/);
-    const second = readdirSync(join(tmp, ".sqlx-js")).filter((f) => f.endsWith(".json"));
+    const second = queryCacheFiles();
     expect(second.length).toBe(1);
     expect(second[0]).not.toBe(firstFiles[0]);
   });
@@ -341,7 +464,7 @@ if (!haveDocker) {
     );
     let r = prepare();
     expect(r.code).toBe(0);
-    const first = readdirSync(join(tmp, ".sqlx-js")).filter((f) => f.endsWith(".json"));
+    const first = queryCacheFiles();
 
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
@@ -350,7 +473,7 @@ if (!haveDocker) {
     r = prepare(["--no-prune"]);
     expect(r.code).toBe(0);
     expect(r.stdout).not.toMatch(/pruned/);
-    const second = readdirSync(join(tmp, ".sqlx-js")).filter((f) => f.endsWith(".json"));
+    const second = queryCacheFiles();
     expect(second.length).toBe(first.length + 1);
   });
 
@@ -361,7 +484,7 @@ if (!haveDocker) {
     );
     let r = prepare();
     expect(r.code).toBe(0);
-    expect(readdirSync(join(tmp, ".sqlx-js")).filter((f) => f.endsWith(".json")).length).toBe(1);
+    expect(queryCacheFiles()).toHaveLength(1);
 
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
@@ -385,7 +508,7 @@ if (!haveDocker) {
     expect(r.code).toBe(0);
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain("interface KnownFileQueries");
-    expect(dts).toContain('"queries/by_id.sql":');
+    expect(dts).toContain('"./queries/by_id.sql":');
   });
 
   test("sql.file with missing path errors at scan time with file:line:column", () => {
@@ -589,7 +712,7 @@ if (!haveDocker) {
     expect(r.stdout).toContain("revert dry-run: 0212_add_email restores schema");
   });
 
-  test("migrate verify auto-creates a shadow database without writing prepare artifacts", () => {
+  test("migrate verify auto-creates a shadow database and compares committed prepare artifacts", () => {
     const root = isolatedRoot("migrate-verify-auto-shadow");
     try {
       writeRootFile(root, "migrations/0301_base.up.sql",
@@ -606,15 +729,25 @@ if (!haveDocker) {
         "await sql(\"SELECT id, email FROM tmp_migrate_verify_auto_shadow_users WHERE email = $1\", \"x\");\n",
       );
 
+      const generated = migrateCommand(["dev"], root);
+      expect(generated.code).toBe(0);
+      const beforeDts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
+      const beforeCache = queryCacheFiles(root)
+        .sort()
+        .map((name) => [name, readFileSync(join(root, ".sqlx-js", name), "utf8")]);
+
       const r = migrateCommand(["verify"], root);
 
       expect(r.code).toBe(0);
       expect(r.stderr).toBe("");
       expect(r.stdout).toContain("shadow: created");
-      expect(r.stdout).toContain("shadow: prepared 1 unique query");
+      expect(r.stdout).toContain("generated artifacts are current");
       expect(r.stdout).toContain("shadow: dropped");
-      expect(existsSync(join(root, "sqlx-js-env.d.ts"))).toBe(false);
-      expect(existsSync(join(root, ".sqlx-js"))).toBe(false);
+      expect(readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8")).toBe(beforeDts);
+      expect(queryCacheFiles(root)
+        .sort()
+        .map((name) => [name, readFileSync(join(root, ".sqlx-js", name), "utf8")]))
+        .toEqual(beforeCache);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -646,7 +779,7 @@ if (!haveDocker) {
       expect(r.stdout).toContain("shadow: dropped");
       const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
       expect(dts).toContain("tmp_migrate_dev_auto_shadow_users");
-      expect(readdirSync(join(root, ".sqlx-js")).filter((f) => f.endsWith(".json")).length).toBe(1);
+      expect(queryCacheFiles(root)).toHaveLength(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -779,7 +912,25 @@ if (!haveDocker) {
     expect(dts).toMatch(/INSERT INTO tmp_insert_values_order VALUES.*params: \[bigint, string \| null\]/);
   });
 
-  test("unconfigured jsonb params fall back to JsonInput", () => {
+  test("DML introspection preserves dots inside quoted schema and table names", () => {
+    writeFile("migrations/0009_quoted_dots.up.sql",
+      "CREATE SCHEMA IF NOT EXISTS \"tmp.dot\";\n" +
+      "CREATE TABLE IF NOT EXISTS \"tmp.dot\".\"table.dot\" (\"id.dot\" BIGINT NOT NULL, \"note.dot\" TEXT);\n",
+    );
+    writeFile("migrations/0009_quoted_dots.down.sql", "DROP SCHEMA IF EXISTS \"tmp.dot\" CASCADE;\n");
+    expect(migrate().code).toBe(0);
+
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"INSERT INTO \\\"tmp.dot\\\".\\\"table.dot\\\" (\\\"id.dot\\\", \\\"note.dot\\\") VALUES ($1, $2)\", 1n, null);\n",
+    );
+    const result = prepare();
+    expect(result.code).toBe(0);
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toMatch(/table\.dot.*params: \[bigint, string \| null\]/);
+  });
+
+  test("unconfigured jsonb params use explicit JsonParameter<JsonInputValue>", () => {
     writeFile("migrations/0006_json_fallback.up.sql",
       "CREATE TABLE IF NOT EXISTS tmp_json_fallback (\n" +
       "  id BIGSERIAL PRIMARY KEY,\n" +
@@ -795,14 +946,34 @@ if (!haveDocker) {
 
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
-      "await sql(\"INSERT INTO tmp_json_fallback (payload, maybe_payload) VALUES ($1, $2) RETURNING payload, maybe_payload\", { ok: true, tags: [\"a\"], nested: { n: 1 } }, null);\n",
+      "await sql(\"INSERT INTO tmp_json_fallback (payload, maybe_payload) VALUES ($1, $2) RETURNING payload, maybe_payload\", sql.json({ ok: true, tags: [\"a\"], nested: { n: 1 } }), null);\n",
     );
     const r = prepare();
     expect(r.code).toBe(0);
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
-    expect(dts).toMatch(/tmp_json_fallback.*params: \[import\("@onreza\/sqlx-js"\)\.JsonInput, import\("@onreza\/sqlx-js"\)\.JsonInput \| null\]/);
+    expect(dts).toMatch(/tmp_json_fallback.*params: \[import\("@onreza\/sqlx-js"\)\.JsonParameter<import\("@onreza\/sqlx-js"\)\.JsonInputValue>, import\("@onreza\/sqlx-js"\)\.JsonParameter<import\("@onreza\/sqlx-js"\)\.JsonInputValue> \| null\]/);
     expect(dts).toContain('"payload": import("@onreza/sqlx-js").JsonValue');
     expect(dts).toContain('"maybe_payload": import("@onreza/sqlx-js").JsonValue | null');
+  });
+
+  test("PostgreSQL array params emit the explicit PgArrayParameter wrapper", () => {
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT $1::text[] AS values\", sql.array([\"a\", \"b\"]));\n",
+    );
+    const result = prepare();
+    expect(result.code).toBe(0);
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain('params: [import("@onreza/sqlx-js").PgArrayParameter<string>]');
+
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT $1::jsonb[] AS values\", sql.array([sql.json({ ok: true })]));\n",
+    );
+    const jsonResult = prepare();
+    expect(jsonResult.code).toBe(0);
+    const jsonDts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(jsonDts).toContain('PgArrayParameter<import("@onreza/sqlx-js").JsonParameter<import("@onreza/sqlx-js").JsonInputValue>>');
   });
 
   test("$N IS NULL OR col = $N pattern makes the param nullable", () => {
@@ -877,21 +1048,107 @@ if (!haveDocker) {
     const r = prepare();
     expect(r.code).toBe(0);
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
-    expect(dts).toContain('"queries/by_id.sql":');
-    expect(dts).toContain('"queries/by_email.sql":');
+    expect(dts).toContain('"./queries/by_id.sql":');
+    expect(dts).toContain('"./queries/by_email.sql":');
   });
 
-  test("text[] param roundtrips via PG array literal encoding", async () => {
+  test("explicit PostgreSQL array params roundtrip", async () => {
     const { sql, close } = await import("../src/index");
     const prev = process.env.DATABASE_URL;
     process.env.DATABASE_URL = dbUrl;
     try {
-      const rows = await sql("SELECT $1::text[] AS xs", ["alpha", "beta,gamma", "with \"quote\""]);
+      const rows = await sql("SELECT $1::text[] AS xs", sql.array(["alpha", "beta,gamma", "with \"quote\""]));
       expect((rows[0] as { xs: string[] }).xs).toEqual(["alpha", "beta,gamma", "with \"quote\""]);
-      const ints = await sql("SELECT $1::int[] AS ns", [1, 2, 3]);
+      const ints = await sql("SELECT $1::int[] AS ns", sql.array([1, 2, 3]));
       expect(Array.from((ints[0] as { ns: ArrayLike<number> }).ns)).toEqual([1, 2, 3]);
-      const withNull = await sql("SELECT $1::text[] AS xs", ["a", null, "b"]);
+      const withNull = await sql("SELECT $1::text[] AS xs", sql.array(["a", null, "b"]));
       expect((withNull[0] as { xs: (string | null)[] }).xs).toEqual(["a", null, "b"]);
+      const timestamp = new Date("2026-01-02T03:04:05.000Z");
+      const dates = await sql("SELECT $1::timestamptz[] AS xs", sql.array([timestamp]));
+      expect((dates[0] as { xs: Date[] }).xs).toEqual([timestamp]);
+    } finally {
+      await close();
+      if (prev === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = prev;
+    }
+  });
+
+  test("explicit JSON params preserve top-level primitive arrays", async () => {
+    const { sql, close } = await import("../src/index");
+    const prev = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = dbUrl;
+    try {
+      const rows = await sql("SELECT $1::jsonb AS value", sql.json([1, 2, 3]));
+      expect((rows[0] as { value: unknown }).value).toEqual([1, 2, 3]);
+      const jsonNull = await sql("SELECT $1::jsonb AS value", sql.json(null));
+      expect((jsonNull[0] as { value: unknown }).value).toBeNull();
+    } finally {
+      await close();
+      if (prev === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = prev;
+    }
+  });
+
+  test("explicit PostgreSQL jsonb[] params roundtrip", async () => {
+    const { sql, close } = await import("../src/index");
+    const prev = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = dbUrl;
+    try {
+      const rows = await sql(
+        "SELECT $1::jsonb[] AS values",
+        sql.array([
+          sql.json({ kind: "object" }),
+          sql.json([1, 2, 3]),
+          null,
+        ]),
+      );
+      expect((rows[0] as { values: unknown[] }).values).toEqual([
+        { kind: "object" },
+        [1, 2, 3],
+        null,
+      ]);
+    } finally {
+      await close();
+      if (prev === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = prev;
+    }
+  });
+
+  test("setClient installs required array codecs before the first query", async () => {
+    const postgres = (await import("postgres")).default;
+    const { sql, setClient, close } = await import("../src/index");
+    const external = postgres(dbUrl);
+    setClient(external as never);
+    const timestamp = new Date("2026-01-02T03:04:05.000Z");
+    try {
+      const rows = await sql(
+        "SELECT $1::jsonb[] AS js, $2::bytea[] AS bs, $3::timestamptz[] AS ds",
+        sql.array([sql.json({ kind: "external" }), null]),
+        sql.array([new Uint8Array([0xde, 0xad])]),
+        sql.array([timestamp]),
+      );
+      const row = rows[0] as { js: unknown[]; bs: Uint8Array[]; ds: Date[] };
+      expect(row.js).toEqual([{ kind: "external" }, null]);
+      expect(row.bs.map((value) => Array.from(value))).toEqual([[0xde, 0xad]]);
+      expect(row.ds).toEqual([timestamp]);
+    } finally {
+      await close();
+    }
+  });
+
+  test("sql.execute returns affected row count and command", async () => {
+    const { sql, close } = await import("../src/index");
+    const prev = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = dbUrl;
+    try {
+      const inserted = await sql.execute(
+        "INSERT INTO tmp_users (name, email) VALUES ($1, $2)",
+        "execute-user",
+        `execute-${Date.now()}@example.com`,
+      );
+      expect(inserted).toEqual({ rowCount: 1, command: "INSERT" });
+      const updated = await sql.execute("UPDATE tmp_users SET name = $1 WHERE name = $2", "execute-done", "execute-user");
+      expect(updated).toEqual({ rowCount: 1, command: "UPDATE" });
     } finally {
       await close();
       if (prev === undefined) delete process.env.DATABASE_URL;
@@ -908,10 +1165,10 @@ if (!haveDocker) {
       const literal = (literalRows[0] as { xs: Uint8Array[] }).xs;
       expect(literal.map((x) => Array.from(x))).toEqual([[0xde, 0xad], [0xbe, 0xef]]);
 
-      const paramRows = await sql("SELECT $1::bytea[] AS xs", [
+      const paramRows = await sql("SELECT $1::bytea[] AS xs", sql.array([
         new Uint8Array([0xde, 0xad]),
         new Uint8Array([0xbe, 0xef]),
-      ]);
+      ]));
       const param = (paramRows[0] as { xs: Uint8Array[] }).xs;
       expect(param.map((x) => Array.from(x))).toEqual([[0xde, 0xad], [0xbe, 0xef]]);
     } finally {

@@ -1,7 +1,13 @@
 import { test, expect } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Cache, fingerprint } from "../src/cache";
+import {
+  assertCacheManifest,
+  Cache,
+  fingerprint,
+  readCacheManifest,
+  writeCacheManifest,
+} from "../src/cache";
 
 test("fingerprint is whitespace-invariant", () => {
   expect(fingerprint("SELECT 1")).toBe(fingerprint("SELECT  1"));
@@ -158,5 +164,29 @@ test("Cache.remove on missing fp is a no-op", () => {
   c.write("present", { query: "x", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: false });
   c.remove("absent");
   expect(c.has("present")).toBe(true);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("cache manifest binds generated artifacts to type-affecting config", () => {
+  const dir = join(import.meta.dir, ".tmp-cache-manifest");
+  rmSync(dir, { recursive: true, force: true });
+  writeCacheManifest(dir, "config-a");
+  expect(readCacheManifest(dir)?.configHash).toBe("config-a");
+  expect(assertCacheManifest(dir, "config-a").generatorRevision).toBeGreaterThan(0);
+  expect(() => assertCacheManifest(dir, "config-b")).toThrow(/different jsonbTypes\/customTypes config/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("Cache.replaceAll stages the complete successful query set before pruning", () => {
+  const dir = join(import.meta.dir, ".tmp-cache-replace");
+  rmSync(dir, { recursive: true, force: true });
+  const cache = new Cache(dir);
+  cache.write("old", { query: "SELECT old", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: true });
+  const removed = cache.replaceAll([
+    { fp: "new-a", entry: { query: "SELECT a", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: true } },
+    { fp: "new-b", entry: { query: "SELECT b", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: true } },
+  ]);
+  expect(removed).toEqual(["old"]);
+  expect(cache.list().map((item) => item.fp).sort()).toEqual(["new-a", "new-b"]);
   rmSync(dir, { recursive: true, force: true });
 });

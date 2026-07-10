@@ -1,6 +1,7 @@
 import ts from "typescript";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import type { ScanConfig } from "../config";
 
 export type QueryCallSite = {
   file: string;
@@ -12,24 +13,70 @@ export type QueryCallSite = {
   sqlFilePath?: string;
 };
 
-const EXCLUDE_DIRS = new Set(["node_modules", ".git", ".sqlx-js", "dist", "build", ".next"]);
-const SQLX_MODULES = new Set(["@onreza/sqlx-js"]);
-const EXT = /\.(ts|tsx|mts|cts)$/;
-
-function walk(dir: string, out: string[]): void {
-  for (const name of readdirSync(dir)) {
-    if (EXCLUDE_DIRS.has(name)) continue;
-    const full = join(dir, name);
-    const st = statSync(full);
-    if (st.isDirectory()) walk(full, out);
-    else if (EXT.test(name)) out.push(full);
+export class ScanError extends Error {
+  constructor(
+    public readonly file: string,
+    public readonly line: number,
+    public readonly column: number,
+    message: string,
+  ) {
+    super(`sqlx-js: ${file}:${line}:${column} — ${message}`);
+    this.name = "ScanError";
   }
 }
 
-export function findSourceFiles(root: string): string[] {
-  const out: string[] = [];
-  walk(root, out);
-  return out;
+const DEFAULT_EXCLUDES = [
+  "**/node_modules/**",
+  "**/.git/**",
+  "**/.sqlx-js/**",
+  "**/dist/**",
+  "**/build/**",
+  "**/.next/**",
+];
+const SQLX_MODULES = new Set(["@onreza/sqlx-js"]);
+const EXT = /\.(ts|tsx|mts|cts)$/;
+const TS_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts"];
+
+function formatConfigError(error: ts.Diagnostic): string {
+  return ts.flattenDiagnosticMessageText(error.messageText, "\n");
+}
+
+function collectTsconfigFiles(configPath: string, out: Set<string>, visited: Set<string>): void {
+  const resolved = resolve(configPath);
+  if (visited.has(resolved)) return;
+  visited.add(resolved);
+  const read = ts.readConfigFile(resolved, ts.sys.readFile);
+  if (read.error) throw new Error(`sqlx-js scan: ${resolved}: ${formatConfigError(read.error)}`);
+  const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, resolve(resolved, ".."), undefined, resolved);
+  if (parsed.errors.length > 0) {
+    throw new Error(`sqlx-js scan: ${resolved}: ${parsed.errors.map(formatConfigError).join("; ")}`);
+  }
+  for (const file of parsed.fileNames) {
+    if (EXT.test(file)) out.add(resolve(file));
+  }
+  for (const reference of parsed.projectReferences ?? []) {
+    collectTsconfigFiles(ts.resolveProjectReferencePath(reference), out, visited);
+  }
+}
+
+export function findSourceFiles(root: string, scan: ScanConfig = {}): string[] {
+  const excludes = [...DEFAULT_EXCLUDES, ...(scan.exclude ?? [])];
+  if (scan.include !== undefined) {
+    if (scan.include.length === 0) return [];
+    return ts.sys.readDirectory(root, TS_EXTENSIONS, excludes, scan.include).map((file) => resolve(file)).sort();
+  }
+
+  const configPath = join(root, "tsconfig.json");
+  if (!ts.sys.fileExists(configPath)) {
+    return ts.sys.readDirectory(root, TS_EXTENSIONS, excludes, ["**/*"]).map((file) => resolve(file)).sort();
+  }
+
+  const configured = new Set<string>();
+  collectTsconfigFiles(configPath, configured, new Set());
+  const allowed = new Set(
+    ts.sys.readDirectory(root, TS_EXTENSIONS, excludes, ["**/*"]).map((file) => resolve(file)),
+  );
+  return [...configured].filter((file) => allowed.has(file)).sort();
 }
 
 type ScopeState = {
@@ -61,7 +108,7 @@ function classifyCallee(
     if (!scope.sqlAliases.has(id)) return null;
     if (methodName === "transaction") return { kind: "transaction" };
     if (methodName === "file") return { kind: "file" };
-    if (methodName === "one" || methodName === "optional") return { kind: "inline" };
+    if (methodName === "one" || methodName === "optional" || methodName === "execute") return { kind: "inline" };
     return null;
   }
 
@@ -72,7 +119,7 @@ function classifyCallee(
     // ns.sql.X(...) chains
     if (ts.isIdentifier(mid.expression) && scope.namespaces.has(mid.expression.text)) {
       if (mid.name.text !== "sql") return null;
-      if (methodName === "one" || methodName === "optional") return { kind: "inline" };
+      if (methodName === "one" || methodName === "optional" || methodName === "execute") return { kind: "inline" };
       if (methodName === "file") return { kind: "file" };
       if (methodName === "transaction") return { kind: "transaction" };
       return null;
@@ -83,7 +130,7 @@ function classifyCallee(
       const root = mid.expression.text;
       if (!scope.sqlAliases.has(root)) return null;
       if (mid.name.text !== "file") return null;
-      if (methodName === "one" || methodName === "optional") return { kind: "file" };
+      if (methodName === "one" || methodName === "optional" || methodName === "execute") return { kind: "file" };
       return null;
     }
 
@@ -95,7 +142,7 @@ function classifyCallee(
       scope.namespaces.has(mid.expression.expression.text) &&
       mid.expression.name.text === "sql" &&
       mid.name.text === "file" &&
-      (methodName === "one" || methodName === "optional")
+      (methodName === "one" || methodName === "optional" || methodName === "execute")
     ) {
       return { kind: "file" };
     }
@@ -141,9 +188,7 @@ export function scanFile(absPath: string, root: string): QueryCallSite[] {
   const recordInline = (first: ts.Node, args: ts.NodeArray<ts.Expression>): boolean => {
     if (!ts.isStringLiteralLike(first)) {
       const pos = here(first);
-      throw new Error(
-        `sqlx-js: ${fileRel}:${pos.line}:${pos.column} — sql() requires a string literal as first argument`,
-      );
+      throw new ScanError(fileRel, pos.line, pos.column, "sql() requires a string literal as first argument");
     }
     const pos = here(first);
     out.push({
@@ -160,17 +205,22 @@ export function scanFile(absPath: string, root: string): QueryCallSite[] {
   const recordFile = (first: ts.Node, args: ts.NodeArray<ts.Expression>, callee: ts.Node): boolean => {
     if (!ts.isStringLiteralLike(first)) {
       const pos = first ? here(first) : here(callee);
-      throw new Error(
-        `sqlx-js: ${fileRel}:${pos.line}:${pos.column} — sql.file() requires a string literal path`,
-      );
+      throw new ScanError(fileRel, pos.line, pos.column, "sql.file() requires a string literal path");
     }
     const sqlPath = first.text;
-    const abs = resolve(dirname(absPath), sqlPath);
+    if (isAbsolute(sqlPath)) {
+      const pos = here(first);
+      throw new ScanError(fileRel, pos.line, pos.column, `sql.file path must be relative to --root: ${sqlPath}`);
+    }
+    const abs = resolve(root, sqlPath);
+    const rel = relative(root, abs);
+    if (rel === ".." || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(rel)) {
+      const pos = here(first);
+      throw new ScanError(fileRel, pos.line, pos.column, `sql.file path escapes --root: ${sqlPath}`);
+    }
     if (!existsSync(abs)) {
       const pos = here(first);
-      throw new Error(
-        `sqlx-js: ${fileRel}:${pos.line}:${pos.column} — sql.file path not found: ${sqlPath}`,
-      );
+      throw new ScanError(fileRel, pos.line, pos.column, `sql.file path not found: ${sqlPath}`);
     }
     const query = readFileSync(abs, "utf8");
     const pos = here(first);
@@ -181,7 +231,7 @@ export function scanFile(absPath: string, root: string): QueryCallSite[] {
       query,
       paramCount: args.length - 1,
       kind: "file",
-      sqlFilePath: relative(root, abs),
+      sqlFilePath: sqlPath,
     });
     return true;
   };
@@ -286,8 +336,8 @@ export function scanFile(absPath: string, root: string): QueryCallSite[] {
   return out;
 }
 
-export function scanProject(root: string): QueryCallSite[] {
-  const files = findSourceFiles(root);
+export function scanProject(root: string, scan: ScanConfig = {}): QueryCallSite[] {
+  const files = findSourceFiles(root, scan);
   const out: QueryCallSite[] = [];
   for (const f of files) {
     for (const site of scanFile(f, root)) out.push(site);

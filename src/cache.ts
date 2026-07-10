@@ -2,6 +2,16 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
+export const CACHE_FORMAT_VERSION = 2;
+export const GENERATOR_REVISION = 2;
+export const CACHE_MANIFEST_FILE = "cache-manifest.json";
+
+export type CacheManifest = {
+  cacheFormat: typeof CACHE_FORMAT_VERSION;
+  generatorRevision: typeof GENERATOR_REVISION;
+  configHash: string;
+};
+
 export type CacheColumn = {
   name: string;
   typeOid: number;
@@ -227,10 +237,30 @@ export class Cache {
     }
   }
 
+  replaceAll(entries: Iterable<{ fp: string; entry: CacheEntry }>, prune = true): string[] {
+    this.ensure();
+    const staged: { fp: string; tmp: string; final: string }[] = [];
+    try {
+      for (const { fp, entry } of entries) {
+        const final = join(this.dir, `${fp}.json`);
+        const tmp = `${final}.tmp-${randomBytes(4).toString("hex")}`;
+        writeFileSync(tmp, JSON.stringify(entry, null, 2));
+        staged.push({ fp, tmp, final });
+      }
+      for (const item of staged) renameSync(item.tmp, item.final);
+    } catch (err) {
+      for (const item of staged) {
+        try { unlinkSync(item.tmp); } catch {}
+      }
+      throw err;
+    }
+    return prune ? this.prune(staged.map((item) => item.fp)) : [];
+  }
+
   list(): { fp: string; entry: CacheEntry }[] {
     if (!existsSync(this.dir)) return [];
     return readdirSync(this.dir)
-      .filter((f) => f.endsWith(".json") && !f.includes(".tmp-"))
+      .filter((f) => f !== CACHE_MANIFEST_FILE && f.endsWith(".json") && !f.includes(".tmp-"))
       .map((f) => {
         const fp = f.replace(/\.json$/, "");
         return { fp, entry: assertEntryShape(fp, parseEntryJson(join(this.dir, f))) };
@@ -253,4 +283,55 @@ export class Cache {
     }
     return removed;
   }
+}
+
+export function cacheManifestPath(cacheDir: string): string {
+  return join(cacheDir, CACHE_MANIFEST_FILE);
+}
+
+export function writeCacheManifest(cacheDir: string, configHash: string): void {
+  if (!existsSync(cacheDir)) mkdirSync(cacheDir, { recursive: true });
+  const path = cacheManifestPath(cacheDir);
+  const tmp = `${path}.tmp-${randomBytes(4).toString("hex")}`;
+  const manifest: CacheManifest = {
+    cacheFormat: CACHE_FORMAT_VERSION,
+    generatorRevision: GENERATOR_REVISION,
+    configHash,
+  };
+  writeFileSync(tmp, JSON.stringify(manifest, null, 2) + "\n");
+  try {
+    renameSync(tmp, path);
+  } catch (err) {
+    try { unlinkSync(tmp); } catch {}
+    throw err;
+  }
+}
+
+export function readCacheManifest(cacheDir: string): CacheManifest | null {
+  const path = cacheManifestPath(cacheDir);
+  if (!existsSync(path)) return null;
+  const raw = parseEntryJson(path);
+  if (!raw || typeof raw !== "object") {
+    throw new Error(`sqlx-js: cache manifest is malformed: ${path}`);
+  }
+  const value = raw as Partial<CacheManifest>;
+  if (
+    value.cacheFormat !== CACHE_FORMAT_VERSION ||
+    value.generatorRevision !== GENERATOR_REVISION ||
+    typeof value.configHash !== "string"
+  ) {
+    throw new Error(`sqlx-js: cache manifest is stale: ${path}. Run \`sqlx-js prepare\`.`);
+  }
+  return value as CacheManifest;
+}
+
+export function assertCacheManifest(cacheDir: string, configHash: string): CacheManifest {
+  const manifest = readCacheManifest(cacheDir);
+  if (!manifest) {
+    throw new Error(`sqlx-js: cache manifest is missing. Run \`sqlx-js prepare\` to regenerate the cache.`);
+  }
+  if (manifest.configHash !== configHash) {
+    throw new Error("sqlx-js: cache was generated with a different jsonbTypes/customTypes config. Run `sqlx-js prepare`.");
+  }
+  return manifest;
 }

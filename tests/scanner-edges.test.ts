@@ -25,11 +25,17 @@ test("namespace import: bs.sql(...) is detected", () => {
       "import * as bs from \"@onreza/sqlx-js\";\n" +
       "await bs.sql(\"SELECT 1\");\n" +
       "await bs.sql.one(\"SELECT 2\");\n" +
-      "await bs.sql.optional(\"SELECT 3\");\n",
+      "await bs.sql.optional(\"SELECT 3\");\n" +
+      "await bs.sql.execute(\"UPDATE jobs SET active = false\");\n",
   });
   const sites = scanProject(tmp).slice().sort((a, b) => a.line - b.line);
-  expect(sites).toHaveLength(3);
-  expect(sites.map((s) => s.query)).toEqual(["SELECT 1", "SELECT 2", "SELECT 3"]);
+  expect(sites).toHaveLength(4);
+  expect(sites.map((s) => s.query)).toEqual([
+    "SELECT 1",
+    "SELECT 2",
+    "SELECT 3",
+    "UPDATE jobs SET active = false",
+  ]);
 });
 
 test("namespace import: bs.sql.file(...) / bs.sql.file.one(...)", () => {
@@ -37,14 +43,15 @@ test("namespace import: bs.sql.file(...) / bs.sql.file.one(...)", () => {
     "a.ts":
       "import * as bs from \"@onreza/sqlx-js\";\n" +
       "await bs.sql.file(\"./q.sql\");\n" +
-      "await bs.sql.file.one(\"./q.sql\");\n",
+      "await bs.sql.file.one(\"./q.sql\");\n" +
+      "await bs.sql.file.execute(\"./q.sql\");\n",
     "q.sql": "SELECT 1\n",
   });
   const sites = scanProject(tmp).slice().sort((a, b) => a.line - b.line);
-  expect(sites).toHaveLength(2);
+  expect(sites).toHaveLength(3);
   for (const s of sites) {
     expect(s.kind).toBe("file");
-    expect(s.sqlFilePath).toBe("q.sql");
+    expect(s.sqlFilePath).toBe("./q.sql");
   }
 });
 

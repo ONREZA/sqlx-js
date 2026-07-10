@@ -1,5 +1,9 @@
 {
   "query": "INSERT INTO users (name, email, settings) VALUES ($1, $2, $3) RETURNING id AS \"id!\"",
+  "hasInline": true,
+  "inlineQueries": [
+    "INSERT INTO users (name, email, settings) VALUES ($1, $2, $3) RETURNING id AS \"id!\""
+  ],
   "paramOids": [
     25,
     25,
@@ -8,7 +12,7 @@
   "paramTsTypes": [
     "string",
     "string",
-    "SqlxJsJson.UserSettings"
+    "import(\"@onreza/sqlx-js\").JsonParameter<SqlxJsJson.UserSettings>"
   ],
   "paramNullable": [
     false,
@@ -24,6 +28,5 @@
       "override": "non-null"
     }
   ],
-  "hasResultSet": true,
-  "hasInline": true
+  "hasResultSet": true
 }

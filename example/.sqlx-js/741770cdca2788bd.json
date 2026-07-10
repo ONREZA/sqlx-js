@@ -1,5 +1,9 @@
 {
   "query": "SELECT p.id, p.title, p.status, p.tags, p.history, u.role AS author_role FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = $1",
+  "hasInline": true,
+  "inlineQueries": [
+    "SELECT p.id, p.title, p.status, p.tags, p.history, u.role AS author_role FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = $1"
+  ],
   "paramOids": [
     20
   ],
@@ -47,6 +51,5 @@
       "nullable": false
     }
   ],
-  "hasResultSet": true,
-  "hasInline": true
+  "hasResultSet": true
 }

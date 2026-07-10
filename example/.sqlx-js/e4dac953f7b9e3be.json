@@ -1,11 +1,15 @@
 {
   "query": "UPDATE users SET settings = $1 WHERE id = $2 RETURNING id AS \"id!\", settings",
+  "hasInline": true,
+  "inlineQueries": [
+    "UPDATE users SET settings = $1 WHERE id = $2 RETURNING id AS \"id!\", settings"
+  ],
   "paramOids": [
     3802,
     20
   ],
   "paramTsTypes": [
-    "SqlxJsJson.UserSettings",
+    "import(\"@onreza/sqlx-js\").JsonParameter<SqlxJsJson.UserSettings>",
     "bigint"
   ],
   "paramNullable": [
@@ -27,6 +31,5 @@
       "nullable": false
     }
   ],
-  "hasResultSet": true,
-  "hasInline": true
+  "hasResultSet": true
 }

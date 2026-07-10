@@ -1,5 +1,9 @@
 {
   "query": "SELECT id, COALESCE(bio, 'none') AS bio_or_default, length(bio) AS bio_len FROM users WHERE bio IS NOT NULL AND id = $1",
+  "hasInline": true,
+  "inlineQueries": [
+    "SELECT id, COALESCE(bio, 'none') AS bio_or_default, length(bio) AS bio_len FROM users WHERE bio IS NOT NULL AND id = $1"
+  ],
   "paramOids": [
     20
   ],
@@ -29,6 +33,5 @@
       "nullable": false
     }
   ],
-  "hasResultSet": true,
-  "hasInline": true
+  "hasResultSet": true
 }

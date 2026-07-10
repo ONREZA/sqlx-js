@@ -2,7 +2,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runPrepare } from "../src/commands/prepare";
+import {
+  PrepareFatalError,
+  runPrepare,
+  type PrepareDiagnosticPhase,
+} from "../src/commands/prepare";
 import { runWatch } from "../src/commands/watch";
 import {
   migrateArchiveList,
@@ -19,7 +23,8 @@ import {
 import { applyShadowMigrations, runSchemaCheck, runSchemaDump } from "../src/commands/schema";
 import { runInit } from "../src/commands/init";
 import { runPgschemaCommand, runPgschemaInstall, type PgschemaSubcommand } from "../src/commands/pgschema";
-import { loadConfig } from "../src/config";
+import { runDoctor } from "../src/commands/doctor";
+import { assertSupportedRuntime, loadConfig, loadRootEnv } from "../src/config";
 
 function packageVersion(): string {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -38,8 +43,9 @@ function help(): never {
 
 usage:
   sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]
+  sqlx-js doctor [--root <dir>] [--json]
   sqlx-js db install | check | plan | apply [--root <dir>] [-- <pgschema args>]
-  sqlx-js prepare [--check | --watch] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
+  sqlx-js prepare [--check | --verify | --watch] [--json] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
   sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | verify [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
   sqlx-js schema dump | check [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
   sqlx-js --version
@@ -53,11 +59,12 @@ flags:
   --root <dir>             scan root (default: cwd)
   --dts <path>             declarations output (default: <root>/sqlx-js-env.d.ts)
   --check                  offline mode: verify scanned queries exist in cache, no DB
+  --verify                 prepare against DB/shadow and compare committed generated artifacts
   --watch                  re-prepare on file change (persistent PG connection)
   --no-prune               keep orphaned cache entries (default: remove)
   --migrations <dir>       migrations directory (default: <root>/migrations)
   --dry-run                validate and print migrate run/revert plan without applying migrations
-  --json                   machine-readable output for migrate info/check and migrate run/revert --dry-run
+  --json                   machine-readable output for prepare and migration inspection/dry-run commands
   --force                  allow archive restore to overwrite existing migration files
   --lock-timeout <ms>      advisory-lock acquisition timeout for migrate run/revert/dev/verify/squash
   --shadow-url <url>       use an existing disposable shadow DB instead of auto-creating one
@@ -104,6 +111,24 @@ if (cmd === "--help" || cmd === "-h" || !cmd) {
 }
 
 const root = resolve(arg("--root", process.cwd())!);
+if (cmd !== "doctor") {
+  try {
+    assertSupportedRuntime();
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exit(2);
+  }
+}
+let envError: string | undefined;
+try {
+  loadRootEnv(root);
+} catch (e) {
+  envError = (e as Error).message;
+  if (cmd !== "doctor") {
+    console.error(envError);
+    process.exit(2);
+  }
+}
 const databaseUrl = process.env.DATABASE_URL ?? "";
 const shadowUrlArg = arg("--shadow-url");
 const shadowUrl = shadowUrlArg ?? process.env.SHADOW_DATABASE_URL;
@@ -124,6 +149,8 @@ if (cmd === "init") {
     process.exit(2);
   }
   runInit({ root, schemaProvider: provider });
+} else if (cmd === "doctor") {
+  await runDoctor({ root, databaseUrl, cacheDir, dtsPath, json: flag("--json"), envError });
 } else if (cmd === "db") {
   const sub = process.argv[3];
   if (sub === "install") {
@@ -149,29 +176,62 @@ if (cmd === "init") {
     }
   }
 } else if (cmd === "prepare") {
-  if (flag("--check") && shadowUrlArg) {
-    console.error("--shadow-url cannot be used with prepare --check; use live prepare or schema check --shadow-url");
-    process.exit(2);
+  const prepareCheck = flag("--check");
+  const prepareVerify = flag("--verify");
+  const prepareWatch = flag("--watch");
+  const prepareJson = flag("--json");
+  const prepareMode = prepareVerify ? "verify" : prepareCheck ? "check" : "prepare";
+  const failPrepare = (
+    message: string,
+    phase: PrepareDiagnosticPhase,
+    exitCode = 2,
+    location: { file?: string; line?: number; column?: number } = {},
+  ): never => {
+    if (prepareJson) {
+      console.log(JSON.stringify({
+        formatVersion: 1,
+        ok: false,
+        mode: prepareMode,
+        sites: 0,
+        entries: 0,
+        failures: 1,
+        pruned: 0,
+        functions: 0,
+        diagnostics: [{ severity: "error", phase, message, ...location }],
+      }, null, 2));
+    } else {
+      console.error(message);
+    }
+    process.exit(exitCode);
+  };
+  if ([prepareCheck, prepareVerify, prepareWatch].filter(Boolean).length > 1) {
+    failPrepare("--check, --verify, and --watch are mutually exclusive", "config");
   }
-  const prepareShadowUrl = flag("--check") ? undefined : shadowUrl;
+  if (prepareCheck && shadowUrlArg) {
+    failPrepare(
+      "--shadow-url cannot be used with prepare --check; use live prepare or schema check --shadow-url",
+      "config",
+    );
+  }
+  if (prepareWatch && prepareJson) {
+    failPrepare("--watch and --json are mutually exclusive", "config");
+  }
+  const prepareShadowUrl = prepareCheck ? undefined : shadowUrl;
   const prepareDatabaseUrl = prepareShadowUrl ?? databaseUrl;
-  if (!flag("--check") && !prepareDatabaseUrl) {
-    console.error("DATABASE_URL is required for prepare (use --check for offline)");
-    process.exit(2);
+  if (!prepareCheck && !prepareDatabaseUrl) {
+    failPrepare("DATABASE_URL is required for prepare (use --check for offline)", "connect");
   }
   const opts = {
     root,
     databaseUrl: prepareDatabaseUrl,
     cacheDir,
     dtsPath,
-    check: flag("--check"),
+    check: prepareCheck,
+    verify: prepareVerify,
+    json: prepareJson,
     prune: !flag("--no-prune"),
   };
-  if (flag("--watch")) {
-    if (flag("--check")) {
-      console.error("--watch and --check are mutually exclusive");
-      process.exit(2);
-    }
+  if (prepareWatch) {
     await runWatch({
       ...opts,
       ...(prepareShadowUrl
@@ -184,8 +244,35 @@ if (cmd === "init") {
         : {}),
     });
   } else {
-    if (prepareShadowUrl) await applyShadowMigrations(prepareShadowUrl, migrationsDir);
-    await runPrepare(opts);
+    if (prepareShadowUrl) {
+      try {
+        await applyShadowMigrations(
+          prepareShadowUrl,
+          migrationsDir,
+          prepareJson ? () => {} : console.log,
+        );
+      } catch (e) {
+        failPrepare((e as Error).message, "shadow", 1);
+      }
+    }
+    try {
+      await runPrepare(opts);
+    } catch (e) {
+      const message = (e as Error).message;
+      const phase = e instanceof PrepareFatalError
+        ? e.phase
+        : prepareVerify
+          ? "verify"
+          : "scan";
+      failPrepare(
+        message,
+        phase,
+        1,
+        e instanceof PrepareFatalError
+          ? { file: e.file, line: e.line, column: e.column }
+          : {},
+      );
+    }
   }
 } else if (cmd === "schema") {
   const sub = process.argv[3];

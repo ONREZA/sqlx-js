@@ -1,4 +1,5 @@
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { dirname } from "node:path";
 import { effectiveNullable, type CacheEntry } from "./cache";
 import type { FunctionEntry } from "./function-cache";
@@ -27,7 +28,14 @@ export function emitDts(outPath: string, entries: CacheEntry[], functions: Funct
   emitModule(lines, "@onreza/sqlx-js", entries, functions);
   lines.push("");
   lines.push("export {};");
-  writeFileSync(outPath, lines.join("\n") + "\n");
+  const tmp = `${outPath}.tmp-${randomBytes(4).toString("hex")}`;
+  writeFileSync(tmp, lines.join("\n") + "\n");
+  try {
+    renameSync(tmp, outPath);
+  } catch (err) {
+    try { unlinkSync(tmp); } catch {}
+    throw err;
+  }
 }
 
 function emitModule(lines: string[], moduleName: string, entries: CacheEntry[], functions: FunctionEntry[]): void {

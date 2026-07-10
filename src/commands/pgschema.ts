@@ -57,6 +57,12 @@ export type PgschemaInstallOptions = {
   log?: (msg: string) => void;
 };
 
+export type PgschemaProbe = {
+  ok: boolean;
+  command?: string;
+  message: string;
+};
+
 export function resolvePgschemaAsset(
   platform: NodeJS.Platform = process.platform,
   arch: NodeJS.Architecture = process.arch,
@@ -100,6 +106,36 @@ function commandName(root: string, config: NonNullable<SqlxJsConfig["schema"]>):
   const managed = maybeManagedPgschemaPath(root);
   if (managed && existsSync(managed)) return managed;
   return "pgschema";
+}
+
+export function probePgschema(root: string, config: SqlxJsConfig): PgschemaProbe {
+  try {
+    const schema = pgschemaConfig(config);
+    const command = commandName(root, schema);
+    const child = spawnSync(command, ["--help"], {
+      encoding: "utf8",
+      env: process.env,
+      timeout: 5_000,
+    });
+    if (child.error) {
+      const code = (child.error as NodeJS.ErrnoException).code;
+      return {
+        ok: false,
+        command,
+        message: code === "ENOENT"
+          ? installHint(command)
+          : code === "ETIMEDOUT"
+            ? `${command} --help timed out after 5000ms`
+            : child.error.message,
+      };
+    }
+    if (child.status !== 0) {
+      return { ok: false, command, message: `${command} --help exited with ${child.status}` };
+    }
+    return { ok: true, command, message: `pgschema is available: ${command}` };
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
 }
 
 function schemaFile(root: string, config: NonNullable<SqlxJsConfig["schema"]>): string {

@@ -1,10 +1,28 @@
 import { watch as fsWatch } from "node:fs";
 import { basename } from "node:path";
 import { openSession, prepareOnce, type PrepareOptions, type PrepareSession } from "./prepare";
+import { configHash, loadConfig } from "../config";
 
 const EXT_RE = /\.(ts|tsx|mts|cts|sql)$/;
 const SKIP_DIRS = ["node_modules", ".git", ".sqlx-js", "dist", "build", ".next"];
 const DEBOUNCE_MS = 150;
+const CONFIG_FILES = new Set([
+  "sqlx-js.config.ts",
+  "sqlx-js.config.mts",
+  "sqlx-js.config.js",
+  "sqlx-js.config.mjs",
+]);
+
+export function shouldWatchFile(filename: string): boolean {
+  const file = filename.replace(/\\/g, "/");
+  if (SKIP_DIRS.some((dir) => file === dir || file.startsWith(`${dir}/`) || file.includes(`/${dir}/`))) {
+    return false;
+  }
+  const base = basename(file);
+  if (base === "sqlx-js-env.d.ts" || base === "sqlx-js.d.ts") return false;
+  if (CONFIG_FILES.has(base) || /^tsconfig(?:\.[^.]+)*\.json$/.test(base)) return true;
+  return EXT_RE.test(file);
+}
 
 export type WatchPrepareHookResult = {
   resetSession?: boolean;
@@ -38,7 +56,11 @@ export async function prepareWatchedOnce(
   deps: WatchDeps = DEFAULT_DEPS,
 ): Promise<{ entries: number; failures: number; pruned: number }> {
   const hookResult = await opts.beforePrepare?.();
-  if (hookResult?.resetSession === true) {
+  const currentConfig = await loadConfig(opts.root);
+  if (
+    hookResult?.resetSession === true ||
+    (state.session !== null && configHash(state.session.userCfg) !== configHash(currentConfig))
+  ) {
     await closeSession(state.session);
     state.session = null;
   }
@@ -93,12 +115,7 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
 
   const watcher = fsWatch(opts.root, { recursive: true }, (_event, filename) => {
     if (!filename) return;
-    const raw = filename.toString();
-    const f = raw.replace(/\\/g, "/");
-    if (SKIP_DIRS.some((d) => f === d || f.startsWith(`${d}/`) || f.includes(`/${d}/`))) return;
-    const base = basename(f);
-    if (base === "sqlx-js-env.d.ts" || base === "sqlx-js.d.ts") return;
-    if (!EXT_RE.test(f)) return;
+    if (!shouldWatchFile(filename.toString())) return;
     trigger();
   });
 

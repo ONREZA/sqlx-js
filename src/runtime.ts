@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { PgClient, parseDatabaseUrl, PgError } from "./pg/wire";
 import { applyPending, acquireMigrateLock, releaseMigrateLock, DEFAULT_MIGRATE_LOCK_KEY } from "./commands/migrate";
 
@@ -13,18 +13,60 @@ export type OnQueryEvent = {
 
 export type OnQueryHook = (event: OnQueryEvent) => void;
 
+export type RuntimeQueryResult = unknown[] & {
+  count?: number | null;
+  command?: string | null;
+};
+
 export type RuntimeClient = {
-  query: (query: string, params: unknown[]) => Promise<unknown[]>;
+  query: (query: string, params: unknown[]) => Promise<RuntimeQueryResult>;
   transformParam?: (param: unknown) => unknown;
   transaction: <R>(fn: (client: RuntimeClient) => Promise<R>) => Promise<R>;
   close: () => Promise<void>;
   onQuery?: OnQueryHook;
+  fileRoot?: string;
 };
 
 type AnyFn = (...args: unknown[]) => Promise<unknown[]>;
 type AnyOneFn = (...args: unknown[]) => Promise<unknown>;
 type AnyOptionalFn = (...args: unknown[]) => Promise<unknown | null>;
+type AnyExecuteFn = (...args: unknown[]) => Promise<ExecuteResult>;
 type IdentifierFn = (...parts: string[]) => string;
+
+const PARAMETER_KIND = Symbol("sqlx-js.parameter");
+
+export type JsonParameter<T = JsonInputValue> = {
+  readonly [PARAMETER_KIND]: "json";
+  readonly value: T;
+};
+
+export type PgArrayParameter<T = unknown> = {
+  readonly [PARAMETER_KIND]: "array";
+  readonly value: readonly (T | null)[];
+};
+
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonInputValue = JsonPrimitive | JsonInputObject | JsonInputArray;
+export type JsonInputObject = { readonly [key: string]: JsonInputValue | undefined };
+export type JsonInputArray = readonly JsonInputValue[];
+
+export type ExecuteResult = {
+  rowCount: number;
+  command: string;
+};
+
+export function json<T extends JsonInputValue>(value: T): JsonParameter<T> {
+  return { [PARAMETER_KIND]: "json", value };
+}
+
+export function array<T>(value: readonly (T | null)[]): PgArrayParameter<T> {
+  return { [PARAMETER_KIND]: "array", value };
+}
+
+export function parameterKind(value: unknown): "json" | "array" | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  return (value as { [PARAMETER_KIND]?: "json" | "array" })[PARAMETER_KIND];
+}
 
 const SUFFIX = /[!?]$/;
 
@@ -50,8 +92,9 @@ function renameRows(rows: unknown[]): unknown[] {
   return out;
 }
 
-function isPrimitiveArrayElement(v: unknown): boolean {
+export function isPrimitiveArrayElement(v: unknown): boolean {
   if (v === null || v === undefined) return true;
+  if (v instanceof Date || v instanceof Uint8Array) return true;
   const t = typeof v;
   return t === "string" || t === "number" || t === "bigint" || t === "boolean";
 }
@@ -65,6 +108,18 @@ export function encodePgArrayLiteral(arr: unknown[]): string {
   for (const v of arr) {
     if (v === null || v === undefined) {
       parts.push("NULL");
+      continue;
+    }
+    if (parameterKind(v) === "json") {
+      parts.push(quoteArrayElement(JSON.stringify((v as JsonParameter).value)));
+      continue;
+    }
+    if (v instanceof Date) {
+      parts.push(quoteArrayElement(v.toISOString()));
+      continue;
+    }
+    if (v instanceof Uint8Array) {
+      parts.push(quoteArrayElement(`\\x${Buffer.from(v).toString("hex")}`));
       continue;
     }
     if (typeof v === "bigint") {
@@ -151,10 +206,10 @@ export function parsePgArrayLiteral<T = string>(
 }
 
 export function encodeParam(p: unknown): unknown {
-  if (!Array.isArray(p)) return p;
-  if (p.length === 0) return p;
-  if (!p.every(isPrimitiveArrayElement)) return p;
-  return encodePgArrayLiteral(p);
+  const kind = parameterKind(p);
+  if (kind === "json") return JSON.stringify((p as JsonParameter).value);
+  if (kind === "array") return encodePgArrayLiteral([...(p as PgArrayParameter).value]);
+  return p;
 }
 
 export class NoRowsError extends Error {
@@ -229,31 +284,49 @@ export const _internal = {
   loadSqlFile,
   buildSetTransaction,
   clearIdentifierCache,
+  parameterKind,
   toPgError,
 };
 
-async function runQuery(client: RuntimeClient, query: string, params: unknown[]): Promise<unknown[]> {
+async function runRawQuery(client: RuntimeClient, query: string, params: unknown[]): Promise<RuntimeQueryResult> {
   const encoded = params.length === 0
     ? params
     : params.map((p) => client.transformParam ? client.transformParam(p) : encodeParam(p));
   const onQuery = client.onQuery;
   if (!onQuery) {
     try {
-      return renameRows(await client.query(query, encoded));
+      return await client.query(query, encoded);
     } catch (e) {
       throw toPgError(e) ?? e;
     }
   }
   const start = performance.now();
   try {
-    const rows = await client.query(query, encoded);
-    onQuery({ query, params, durationMs: performance.now() - start, rowCount: rows.length });
-    return renameRows(rows);
+    const result = await client.query(query, encoded);
+    onQuery({
+      query,
+      params,
+      durationMs: performance.now() - start,
+      rowCount: result.count ?? result.length,
+    });
+    return result;
   } catch (e) {
     const error = toPgError(e) ?? e;
     onQuery({ query, params, durationMs: performance.now() - start, error });
     throw error;
   }
+}
+
+async function runQuery(client: RuntimeClient, query: string, params: unknown[]): Promise<unknown[]> {
+  return renameRows(await runRawQuery(client, query, params));
+}
+
+async function runExecute(client: RuntimeClient, query: string, params: unknown[]): Promise<ExecuteResult> {
+  const result = await runRawQuery(client, query, params);
+  return {
+    rowCount: result.count ?? result.length,
+    command: result.command ?? "",
+  };
 }
 
 async function runOne(client: RuntimeClient, query: string, params: unknown[]): Promise<unknown> {
@@ -272,8 +345,16 @@ async function runOptional(client: RuntimeClient, query: string, params: unknown
 
 type SqlFileCacheEntry = { mtimeMs: number; size: number; content: string };
 const sqlFileCache = new Map<string, SqlFileCacheEntry>();
-function loadSqlFile(path: string): string {
-  const full = resolve(process.cwd(), path);
+function loadSqlFile(path: string, fileRoot = process.env.SQLX_JS_FILE_ROOT ?? process.cwd()): string {
+  const root = resolve(fileRoot);
+  if (isAbsolute(path)) {
+    throw new Error(`sqlx-js.sql.file: path must be relative to fileRoot: ${path}`);
+  }
+  const full = resolve(root, path);
+  const rel = relative(root, full);
+  if (rel === ".." || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(rel)) {
+    throw new Error(`sqlx-js.sql.file: path escapes fileRoot: ${path}`);
+  }
   try {
     const st = statSync(full);
     const cached = sqlFileCache.get(full);
@@ -416,22 +497,33 @@ export function id(...parts: string[]): string {
   return parts.map(quoteIdentifier).join(".");
 }
 
-type FileCallable = AnyFn & { one: AnyOneFn; optional: AnyOptionalFn };
-type SqlCallable = AnyFn & { file: FileCallable; one: AnyOneFn; optional: AnyOptionalFn; id: IdentifierFn };
+type FileCallable = AnyFn & { one: AnyOneFn; optional: AnyOptionalFn; execute: AnyExecuteFn };
+type SqlCallable = AnyFn & {
+  file: FileCallable;
+  one: AnyOneFn;
+  optional: AnyOptionalFn;
+  execute: AnyExecuteFn;
+  id: IdentifierFn;
+  json: typeof json;
+  array: typeof array;
+};
 
 function makeBoundCallable(client: RuntimeClient): SqlCallable {
   const fn: AnyFn = (async (query: string, ...params: unknown[]) => {
     return runQuery(client, query, params);
   }) as AnyFn;
   const file: AnyFn = (async (path: string, ...params: unknown[]) => {
-    return runQuery(client, loadSqlFile(path), params);
+    return runQuery(client, loadSqlFile(path, client.fileRoot), params);
   }) as AnyFn;
   (file as FileCallable).one = (async (path: string, ...params: unknown[]) => {
-    return runOne(client, loadSqlFile(path), params);
+    return runOne(client, loadSqlFile(path, client.fileRoot), params);
   }) as AnyOneFn;
   (file as FileCallable).optional = (async (path: string, ...params: unknown[]) => {
-    return runOptional(client, loadSqlFile(path), params);
+    return runOptional(client, loadSqlFile(path, client.fileRoot), params);
   }) as AnyOptionalFn;
+  (file as FileCallable).execute = (async (path: string, ...params: unknown[]) => {
+    return runExecute(client, loadSqlFile(path, client.fileRoot), params);
+  }) as AnyExecuteFn;
   (fn as SqlCallable).file = file as FileCallable;
   (fn as SqlCallable).one = (async (query: string, ...params: unknown[]) => {
     return runOne(client, query, params);
@@ -439,7 +531,12 @@ function makeBoundCallable(client: RuntimeClient): SqlCallable {
   (fn as SqlCallable).optional = (async (query: string, ...params: unknown[]) => {
     return runOptional(client, query, params);
   }) as AnyOptionalFn;
+  (fn as SqlCallable).execute = (async (query: string, ...params: unknown[]) => {
+    return runExecute(client, query, params);
+  }) as AnyExecuteFn;
   (fn as SqlCallable).id = id;
+  (fn as SqlCallable).json = json;
+  (fn as SqlCallable).array = array;
   return fn as SqlCallable;
 }
 
@@ -476,14 +573,21 @@ export function createSqlRuntime(getClient: () => RuntimeClient): RuntimeApi {
   }) as SqlRoot;
 
   const rootFile: AnyFn = (async (path: string, ...params: unknown[]) => {
-    return runQuery(getClient(), loadSqlFile(path), params);
+    const client = getClient();
+    return runQuery(client, loadSqlFile(path, client.fileRoot), params);
   }) as AnyFn;
   (rootFile as FileCallable).one = (async (path: string, ...params: unknown[]) => {
-    return runOne(getClient(), loadSqlFile(path), params);
+    const client = getClient();
+    return runOne(client, loadSqlFile(path, client.fileRoot), params);
   }) as AnyOneFn;
   (rootFile as FileCallable).optional = (async (path: string, ...params: unknown[]) => {
-    return runOptional(getClient(), loadSqlFile(path), params);
+    const client = getClient();
+    return runOptional(client, loadSqlFile(path, client.fileRoot), params);
   }) as AnyOptionalFn;
+  (rootFile as FileCallable).execute = (async (path: string, ...params: unknown[]) => {
+    const client = getClient();
+    return runExecute(client, loadSqlFile(path, client.fileRoot), params);
+  }) as AnyExecuteFn;
   root.file = rootFile as FileCallable;
 
   root.one = (async (query: string, ...params: unknown[]) => {
@@ -492,7 +596,12 @@ export function createSqlRuntime(getClient: () => RuntimeClient): RuntimeApi {
   root.optional = (async (query: string, ...params: unknown[]) => {
     return runOptional(getClient(), query, params);
   }) as AnyOptionalFn;
+  root.execute = (async (query: string, ...params: unknown[]) => {
+    return runExecute(getClient(), query, params);
+  }) as AnyExecuteFn;
   root.id = id;
+  root.json = json;
+  root.array = array;
 
   root.transaction = (async <R>(
     fnOrOpts: TransactionOptions | ((tx: SqlCallable) => Promise<R>),

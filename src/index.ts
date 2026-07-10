@@ -14,11 +14,13 @@ export type JsonInputValue = JsonPrimitive | JsonInputObject | JsonInputArray;
 export type JsonInputObject = { readonly [key: string]: JsonInputValue | undefined };
 export type JsonInputArray = readonly JsonInputValue[];
 
-export type { SqlxJsConfig } from "./config";
+export { defineConfig } from "./config";
+export type { ScanConfig, SqlxJsConfig } from "./config";
 export type { SslMode, ConnConfig } from "./pg/wire";
 export { PgError, ConnectionLostError } from "./pg/wire";
 export { NoRowsError, TooManyRowsError } from "./runtime";
 export type { TransactionOptions, MigrateOptions, OnQueryEvent, OnQueryHook } from "./runtime";
+export type { ExecuteResult, JsonParameter, PgArrayParameter } from "./runtime";
 export type { PostgresClient, PostgresOptions, CreateClientOptions } from "./postgres-runtime";
 
 export type TypedFile = TypedFileFor<KnownFileQueries>;
@@ -33,4 +35,4 @@ export const getClient = rt.getClient;
 export const setClient = rt.setClient;
 export const createClient = rt.createClient;
 export const close = rt.close;
-export { migrate, clearSqlFileCache, encodePgArrayLiteral, id } from "./runtime";
+export { migrate, clearSqlFileCache, encodePgArrayLiteral, id, json, array } from "./runtime";
