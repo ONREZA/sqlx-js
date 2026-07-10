@@ -72,7 +72,7 @@ The runtime (`src/index.ts` + `src/runtime.ts` + `src/postgres-runtime.ts`) is a
 ### Prerequisites
 
 - Node ≥ 24 for the published CLI and default runtime. Bun ≥ 1.3 is required
-  for the test suite (`bun test`) and can run the package through npm tooling.
+  for the test suite (`bun test --timeout 120000`) and can run the package through npm tooling.
   The runtime uses Postgres.js; CI currently smoke-tests Node and Bun entrypoints.
 - A reachable PostgreSQL 14+ (15+ recommended for full SCRAM-SHA-256 coverage)
 - `DATABASE_URL` exported in your shell
@@ -80,7 +80,7 @@ The runtime (`src/index.ts` + `src/runtime.ts` + `src/postgres-runtime.ts`) is a
 ### Running tests
 
 ```bash
-bun test                # unit + integration tests
+bun test --timeout 120000 # unit + integration tests
 bunx tsc -p example     # type-check the example fixture
 ```
 
@@ -153,7 +153,7 @@ The same trailer works at any version to pin a release manually. `release-please
 `lefthook` is installed as a dev-dependency and wires hooks via the `prepare` lifecycle script on `bun install`. The configuration lives in `lefthook.yml`:
 
 - `pre-commit` → `tsc --noEmit` (parallel, glob-filtered to `*.ts`/`*.tsx`).
-- `pre-push` → `bun test tests`.
+- `pre-push` → `bun test tests --timeout 120000`.
 - `commit-msg` → `cog verify` for conventional-commit compliance.
 
 The `commit-msg` hook degrades gracefully if `cog` isn't installed (prints a hint, allows the commit). To enforce locally, install cocogitto:

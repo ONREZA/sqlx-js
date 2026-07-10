@@ -51,7 +51,7 @@
   ],
   "scripts": {
     "prepare": "node scripts/prepare-package.mjs",
-    "test": "bun test tests",
+    "test": "bun test tests --timeout 120000",
     "test:typecheck": "tsc --noEmit",
     "test:example": "bunx tsc -p example --noEmit",
     "sqlx:prepare": "bun bin/sqlx-js.ts prepare",

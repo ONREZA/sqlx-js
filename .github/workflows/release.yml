@@ -58,6 +58,7 @@ jobs:
 
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_test
+      SQLX_JS_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_test
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -84,7 +85,7 @@ jobs:
         run: bunx tsc --noEmit
 
       - name: Run test suite (PostgreSQL 17)
-        run: bun test tests
+        run: bun test tests --timeout 120000
 
       - name: Migrate example schema
         run: bun bin/sqlx-js.ts migrate run --root example

@@ -629,7 +629,7 @@ Commit the generated `sqlx-js-env.d.ts` and the `.sqlx-js/` cache directory to y
 - run: sqlx-js doctor --json     # runtime/config/DB/cache/tsconfig preflight
 - run: sqlx-js schema check      # fails if the committed schema snapshot is stale
 - run: tsc --noEmit               # fails if types are stale
-- run: bun test
+- run: bun test --timeout 120000
 - run: bun run build              # emits publishable JS + declarations under dist/
 ```
 

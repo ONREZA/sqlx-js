@@ -13,6 +13,7 @@ import { mergeExtensionTypes } from "../src/pg/extensions";
 const repoRoot = resolve(import.meta.dir, "..");
 const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-integration-"));
 const IMAGE = process.env.SQLX_JS_PG_IMAGE ?? "pgvector/pgvector:pg17";
+const configuredDbUrl = process.env.SQLX_JS_TEST_DATABASE_URL?.trim() || undefined;
 
 function hash(s: string): string {
   return createHash("sha256").update(s).digest("hex");
@@ -23,14 +24,14 @@ function dockerAvailable(): boolean {
   return r.status === 0;
 }
 
-const haveDocker = dockerAvailable();
+const haveIntegrationDatabase = Boolean(configuredDbUrl) || dockerAvailable();
 
-if (!haveDocker) {
-  test.skip("integration suite requires Docker for testcontainers", () => {});
+if (!haveIntegrationDatabase) {
+  test.skip("integration suite requires SQLX_JS_TEST_DATABASE_URL or Docker", () => {});
   afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 } else {
-  let container: StartedPostgreSqlContainer;
-  let dbUrl: string;
+  let container: StartedPostgreSqlContainer | undefined;
+  let dbUrl = configuredDbUrl ?? "";
 
   function writeFile(rel: string, content: string) {
     const full = join(tmp, rel);
@@ -155,22 +156,24 @@ if (!haveDocker) {
   }
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer(IMAGE)
-      .withDatabase("sqlx_js_it")
-      .withUsername("postgres")
-      .withPassword("postgres")
-      .start();
-    dbUrl = `postgres://postgres:postgres@${container.getHost()}:${container.getMappedPort(5432)}/sqlx_js_it`;
+    if (!configuredDbUrl) {
+      container = await new PostgreSqlContainer(IMAGE)
+        .withDatabase("sqlx_js_it")
+        .withUsername("postgres")
+        .withPassword("postgres")
+        .start();
+      dbUrl = `postgres://postgres:postgres@${container.getHost()}:${container.getMappedPort(5432)}/sqlx_js_it`;
+    }
 
     resetWorkspace();
     const r = migrate();
     if (r.code !== 0) throw new Error(`integration migrate failed: ${r.stderr}\n${r.stdout}`);
-  }, 120_000);
+  });
 
   afterAll(async () => {
     rmSync(tmp, { recursive: true, force: true });
     if (container) await container.stop();
-  }, 60_000);
+  });
 
   test("prepare emits file:line:column on PG describe error", () => {
     writeFile("a.ts",
