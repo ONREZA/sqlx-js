@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/ONREZA/sqlx-js/compare/v0.5.0...v0.6.0) (2026-07-10)
+
+
+### Features
+
+* **dx:** harden production workflows ([f252cb6](https://github.com/ONREZA/sqlx-js/commit/f252cb64d4d534dd8b3c3f8706183947e48deccc))
+
 ## [0.5.0](https://github.com/ONREZA/sqlx-js/compare/v0.4.0...v0.5.0) (2026-07-10)
 
 
