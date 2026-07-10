@@ -19,7 +19,8 @@
     }
   },
   "bin": {
-    "sqlx-js": "dist/bin/sqlx-js.js"
+    "sqlx-js": "dist/bin/sqlx-js.js",
+    "sqlx-js-diagnostics": "dist/bin/sqlx-js-diagnostics.js"
   },
   "files": [
     "dist",
@@ -54,6 +55,9 @@
     "test": "bun test tests --timeout 120000",
     "test:typecheck": "tsc --noEmit",
     "test:example": "bunx tsc -p example --noEmit",
+    "test:runtime-boundary": "bun run build && node scripts/check-runtime-boundary.mjs",
+    "test:node-package": "node scripts/node-package-smoke.mjs",
+    "test:corpus": "bun scripts/check-production-corpus.ts",
     "sqlx:prepare": "bun bin/sqlx-js.ts prepare",
     "sqlx:migrate": "bun bin/sqlx-js.ts migrate",
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json && bun scripts/fix-dist-imports.ts",

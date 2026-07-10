@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { PgClient, parseDatabaseUrl, PgError } from "./pg/wire";
-import { applyPending, acquireMigrateLock, releaseMigrateLock, DEFAULT_MIGRATE_LOCK_KEY } from "./commands/migrate";
+import { applyPending, acquireMigrateLock, releaseMigrateLock, DEFAULT_MIGRATE_LOCK_KEY } from "./migration-core";
 
 export type OnQueryEvent = {
   query: string;

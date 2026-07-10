@@ -1,0 +1,37 @@
+{
+  "query": "UPDATE posts\n     SET status = 'published', published = true\n     WHERE id = (\n       SELECT id\n       FROM posts\n       WHERE status = 'draft'\n       ORDER BY id\n       FOR UPDATE SKIP LOCKED\n       LIMIT 1\n     )\n     RETURNING id AS post_id, user_id, status, published",
+  "hasInline": true,
+  "inlineQueries": [
+    "UPDATE posts\n     SET status = 'published', published = true\n     WHERE id = (\n       SELECT id\n       FROM posts\n       WHERE status = 'draft'\n       ORDER BY id\n       FOR UPDATE SKIP LOCKED\n       LIMIT 1\n     )\n     RETURNING id AS post_id, user_id, status, published"
+  ],
+  "paramOids": [],
+  "paramTsTypes": [],
+  "paramNullable": [],
+  "columns": [
+    {
+      "name": "post_id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false
+    },
+    {
+      "name": "user_id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false
+    },
+    {
+      "name": "status",
+      "typeOid": 0,
+      "tsType": "\"draft\" | \"published\" | \"archived\"",
+      "nullable": false
+    },
+    {
+      "name": "published",
+      "typeOid": 16,
+      "tsType": "boolean",
+      "nullable": false
+    }
+  ],
+  "hasResultSet": true
+}

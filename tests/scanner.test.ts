@@ -45,6 +45,17 @@ test("respects alias import", () => {
   expect(sites[0]!.query).toBe("SELECT x");
 });
 
+test("scan.modules recognizes an application database module", () => {
+  setup({
+    "a.ts": `
+      import { sql } from "@app/database";
+      await sql("SELECT app_query");
+    `,
+  });
+  const sites = scanProject(tmp, { modules: ["@onreza/sqlx-js", "@app/database"] });
+  expect(sites.map((site) => site.query)).toEqual(["SELECT app_query"]);
+});
+
 test("ignores sql() not imported from sqlx-js", () => {
   setup({
     "a.ts": `

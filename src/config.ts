@@ -7,6 +7,7 @@ import { parseEnv } from "node:util";
 export type ScanConfig = {
   include?: string[];
   exclude?: string[];
+  modules?: string[];
 };
 
 export type SqlxJsConfig = {
@@ -72,6 +73,13 @@ function validateStringArray(value: unknown, name: string, path: string): void {
   }
 }
 
+function validateModuleArray(value: unknown, path: string): void {
+  validateStringArray(value, "scan.modules", path);
+  if ((value as string[]).length === 0 || (value as string[]).some((item) => item.trim() === "")) {
+    throw new Error(`sqlx-js: ${path} scan.modules must contain at least one non-empty module name`);
+  }
+}
+
 function validateConfig(value: unknown, path: string): SqlxJsConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`sqlx-js: ${path} must default-export a config object`);
@@ -86,6 +94,7 @@ function validateConfig(value: unknown, path: string): SqlxJsConfig {
     const scan = config.scan as Record<string, unknown>;
     if (scan.include !== undefined) validateStringArray(scan.include, "scan.include", path);
     if (scan.exclude !== undefined) validateStringArray(scan.exclude, "scan.exclude", path);
+    if (scan.modules !== undefined) validateModuleArray(scan.modules, path);
   }
   if (config.schema !== undefined) {
     if (!config.schema || typeof config.schema !== "object" || Array.isArray(config.schema)) {

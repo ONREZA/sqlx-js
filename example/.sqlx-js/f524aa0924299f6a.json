@@ -1,0 +1,40 @@
+{
+  "query": "SELECT id AS user_id, name AS user_name, email AS user_email\n     FROM users\n     WHERE ($1::text IS NULL OR name ILIKE '%' || $1 || '%')\n     ORDER BY id\n     LIMIT $2::int",
+  "hasInline": true,
+  "inlineQueries": [
+    "SELECT id AS user_id, name AS user_name, email AS user_email\n     FROM users\n     WHERE ($1::text IS NULL OR name ILIKE '%' || $1 || '%')\n     ORDER BY id\n     LIMIT $2::int"
+  ],
+  "paramOids": [
+    25,
+    23
+  ],
+  "paramTsTypes": [
+    "string",
+    "number"
+  ],
+  "paramNullable": [
+    true,
+    false
+  ],
+  "columns": [
+    {
+      "name": "user_id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false
+    },
+    {
+      "name": "user_name",
+      "typeOid": 25,
+      "tsType": "string",
+      "nullable": false
+    },
+    {
+      "name": "user_email",
+      "typeOid": 25,
+      "tsType": "string",
+      "nullable": false
+    }
+  ],
+  "hasResultSet": true
+}

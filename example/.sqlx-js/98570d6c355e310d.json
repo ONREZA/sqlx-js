@@ -1,0 +1,37 @@
+{
+  "query": "DELETE FROM posts\n     WHERE user_id = $1 AND status = 'archived'\n     RETURNING id AS post_id, user_id, status",
+  "hasInline": true,
+  "inlineQueries": [
+    "DELETE FROM posts\n     WHERE user_id = $1 AND status = 'archived'\n     RETURNING id AS post_id, user_id, status"
+  ],
+  "paramOids": [
+    20
+  ],
+  "paramTsTypes": [
+    "bigint"
+  ],
+  "paramNullable": [
+    false
+  ],
+  "columns": [
+    {
+      "name": "post_id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false
+    },
+    {
+      "name": "user_id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false
+    },
+    {
+      "name": "status",
+      "typeOid": 0,
+      "tsType": "\"draft\" | \"published\" | \"archived\"",
+      "nullable": false
+    }
+  ],
+  "hasResultSet": true
+}

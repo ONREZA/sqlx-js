@@ -22,6 +22,7 @@ import { introspectFunctions } from "../pg/functions";
 import { buildParamMap, type ParamMap, type ParamMapResult } from "../pg/param-map";
 import { mergeExtensionTypes } from "../pg/extensions";
 import { compareArtifacts } from "../artifacts";
+import { containsUnknownType } from "../type-inspection";
 
 const JSON_OIDS = new Set([114, 3802]);
 const JSON_ARRAY_OIDS = new Set([199, 3807]);
@@ -158,6 +159,15 @@ function isAliasOrExpression(f: FieldDescription, schema: SchemaCache): boolean 
   return real !== undefined && real !== f.name;
 }
 
+function duplicateOutputColumns(fields: FieldDescription[]): string[] {
+  const counts = new Map<string, number>();
+  for (const field of fields) {
+    const name = parseColumnOverride(field.name).name;
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return [...counts].filter(([, count]) => count > 1).map(([name]) => name).sort();
+}
+
 export type PrepareOptions = {
   root: string;
   databaseUrl: string;
@@ -167,6 +177,7 @@ export type PrepareOptions = {
   verify?: boolean;
   json?: boolean;
   prune?: boolean;
+  strictInference?: boolean;
 };
 
 export type PrepareDiagnosticPhase =
@@ -175,9 +186,11 @@ export type PrepareDiagnosticPhase =
   | "shadow"
   | "scan"
   | "describe"
+  | "result-shape"
   | "introspect"
   | "analyze"
   | "param-map"
+  | "inference"
   | "cache"
   | "verify";
 
@@ -252,6 +265,36 @@ function siteUsage(sites: QueryCallSite[]): Pick<CacheEntry, "hasInline" | "inli
     ...(inlineQueries.length > 0 ? { inlineQueries } : {}),
     ...(filePaths.length > 0 ? { filePaths } : {}),
   };
+}
+
+function inferenceIssues(entry: CacheEntry): string[] {
+  const issues: string[] = [];
+  if (entry.degraded) issues.push(`nullability inference degraded: ${entry.degraded.reason}`);
+  entry.paramTsTypes.forEach((type, index) => {
+    if (containsUnknownType(type)) issues.push(`parameter $${index + 1} resolved to ${type}`);
+  });
+  for (const column of entry.columns) {
+    if (containsUnknownType(column.tsType)) {
+      issues.push(`result column ${JSON.stringify(column.name)} resolved to ${column.tsType}`);
+    }
+  }
+  return issues;
+}
+
+function inferenceDiagnostics(
+  entry: CacheEntry,
+  site: QueryCallSite,
+  strict: boolean,
+): PrepareDiagnostic[] {
+  return inferenceIssues(entry).map((message) => ({
+    severity: strict ? "error" : "warning",
+    phase: "inference",
+    message,
+    file: site.file,
+    line: site.line,
+    column: site.column,
+    query: entry.query,
+  }));
 }
 
 export type PrepareSession = {
@@ -386,6 +429,23 @@ export async function prepareOnce(
     const site = ss[0]!;
     const outcome = describeResults.get(fp)!;
     if (outcome.ok) {
+      const duplicates = duplicateOutputColumns(outcome.fields);
+      if (duplicates.length > 0) {
+        failures++;
+        const message = `duplicate output column name(s): ${duplicates.join(", ")}. Alias each result column to a unique name`;
+        diagnostics.push({
+          severity: "error",
+          phase: "result-shape",
+          message,
+          file: site.file,
+          line: site.line,
+          column: site.column,
+          query,
+        });
+        err(`  ✗ ${formatSite(site)} — ${message}`);
+        err(`      query: ${snippet(query)}`);
+        continue;
+      }
       raw.push({ fp, query, sites: ss, paramOids: outcome.paramOids, fields: outcome.fields });
       continue;
     }
@@ -551,6 +611,18 @@ export async function prepareOnce(
       hasResultSet: r.fields.length > 0,
       ...(analysis.degraded ? { degraded: analysis.degraded } : {}),
     };
+    const entryDiagnostics = inferenceDiagnostics(entry, r.sites[0]!, opts.strictInference === true);
+    diagnostics.push(...entryDiagnostics);
+    if (entryDiagnostics.length > 0) {
+      for (const diagnostic of entryDiagnostics) {
+        const label = diagnostic.severity === "error" ? "inference failed" : "inference warning";
+        err(`  ${label}: ${formatSite(r.sites[0]!)} — ${diagnostic.message}`);
+      }
+      if (opts.strictInference) {
+        failures++;
+        continue;
+      }
+    }
     entries.push(entry);
     generated.push({ fp: r.fp, entry });
     const nn = entry.columns.filter((c) => !effectiveNullable(c)).length;
@@ -665,14 +737,44 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    let entries: CacheEntry[];
+    const entries: CacheEntry[] = [];
+    let inferenceFailures = 0;
     let functions: FunctionEntry[];
     try {
-      entries = [...unique.values()].map((u) => {
+      for (const u of unique.values()) {
         const entry = cache.read(u.fp);
-        return entry ? { ...entry, ...siteUsage(u.sites) } : null;
-      }).filter((e): e is CacheEntry => e !== null);
+        if (!entry) continue;
+        const current = { ...entry, ...siteUsage(u.sites) };
+        const entryDiagnostics = inferenceDiagnostics(current, u.sites[0]!, opts.strictInference === true);
+        diagnostics.push(...entryDiagnostics);
+        if (opts.strictInference && entryDiagnostics.length > 0) {
+          inferenceFailures++;
+          continue;
+        }
+        entries.push(current);
+      }
       functions = readFunctionCache(opts.cacheDir);
+      if (inferenceFailures > 0) {
+        if (opts.json) {
+          console.log(JSON.stringify({
+            formatVersion: 1,
+            ok: false,
+            mode: "check",
+            sites: sites.length,
+            entries: entries.length,
+            failures: inferenceFailures,
+            pruned: 0,
+            functions: functions.length,
+            diagnostics,
+          }, null, 2));
+        } else {
+          for (const diagnostic of diagnostics) {
+            console.error(`inference failed: ${diagnostic.file}:${diagnostic.line}:${diagnostic.column} — ${diagnostic.message}`);
+          }
+        }
+        process.exitCode = 1;
+        return;
+      }
       emitDts(opts.dtsPath, entries, functions);
     } catch (error) {
       throw fatal("cache", error);
@@ -687,9 +789,12 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         failures: 0,
         pruned: 0,
         functions: functions.length,
-        diagnostics: [],
+        diagnostics,
       }, null, 2));
     } else {
+      for (const diagnostic of diagnostics) {
+        console.error(`inference warning: ${diagnostic.file}:${diagnostic.line}:${diagnostic.column} — ${diagnostic.message}`);
+      }
       console.log(`ok — ${entries.length} unique queries, ${functions.length} function(s), types regenerated`);
     }
     return;

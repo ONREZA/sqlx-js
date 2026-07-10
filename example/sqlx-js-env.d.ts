@@ -3,18 +3,22 @@
 
 declare module "@onreza/sqlx-js" {
   interface KnownQueries {
+    "DELETE FROM posts\n     WHERE user_id = $1 AND status = 'archived'\n     RETURNING id AS post_id, user_id, status": { params: [bigint]; row: { "post_id": bigint; "user_id": bigint; "status": "draft" | "published" | "archived" } };
     "INSERT INTO posts (user_id, title) VALUES ($1, $2) RETURNING id AS \"id!\"": { params: [bigint, string]; row: { "id": bigint } };
     "INSERT INTO users (name, email, age) VALUES ($1, $2, $3) RETURNING id AS \"id!\", created_at AS \"created_at!\"": { params: [string, string, number | null]; row: { "id": bigint; "created_at": Date } };
     "INSERT INTO users (name, email, role) VALUES ($1, $2, $3) RETURNING id AS \"id!\"": { params: [string, string, "admin" | "editor" | "viewer"]; row: { "id": bigint } };
     "INSERT INTO users (name, email, role) VALUES ($1, $2, $3) RETURNING id AS \"id!\", role AS \"role!\"": { params: [string, string, "admin" | "editor" | "viewer"]; row: { "id": bigint; "role": "admin" | "editor" | "viewer" } };
     "INSERT INTO users (name, email, settings) VALUES ($1, $2, $3) RETURNING id AS \"id!\"": { params: [string, string, import("@onreza/sqlx-js").JsonParameter<SqlxJsJson.UserSettings>]; row: { "id": bigint } };
+    "INSERT INTO users (name, email)\n     VALUES ($1, $2)\n     ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name\n     RETURNING id AS user_id, name AS user_name, email AS user_email, role AS user_role": { params: [string, string]; row: { "user_id": bigint; "user_name": string; "user_email": string; "user_role": "admin" | "editor" | "viewer" } };
     "INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id AS \"id!\"": { params: [string, string]; row: { "id": bigint } };
+    "SELECT\n       u.id AS user_id,\n       u.email AS user_email,\n       u.role AS user_role,\n       COUNT(p.id) AS post_count,\n       MAX(p.id) AS latest_post_id\n     FROM users u\n     LEFT JOIN posts p ON p.user_id = u.id\n     GROUP BY u.id, u.email, u.role\n     ORDER BY u.id DESC\n     LIMIT $1::int OFFSET $2::int": { params: [number, number]; row: { "user_id": bigint; "user_email": string; "user_role": "admin" | "editor" | "viewer"; "post_count": bigint; "latest_post_id": bigint | null } };
     "SELECT 1 AS one, 'literal'::text AS msg, now() AS ts FROM users LIMIT 1": { params: []; row: { "one": number; "msg": string; "ts": Date } };
     "SELECT COUNT(*) AS \"n!\" FROM users": { params: []; row: { "n": bigint } };
     "SELECT COUNT(*) AS \"n!\" FROM users WHERE age >= $1": { params: [number]; row: { "n": bigint } };
     "SELECT COUNT(*) AS n FROM users": { params: []; row: { "n": bigint } };
     "SELECT id AS \"id!\", name AS \"name!\" FROM users WHERE id = $1": { params: [bigint]; row: { "id": bigint; "name": string } };
     "SELECT id AS \"id!\", name AS \"name!\", email AS \"email!\", age, bio FROM users WHERE id = $1": { params: [bigint]; row: { "id": bigint; "name": string; "email": string; "age": number | null; "bio": string | null } };
+    "SELECT id AS user_id, name AS user_name, email AS user_email\n     FROM users\n     WHERE ($1::text IS NULL OR name ILIKE '%' || $1 || '%')\n     ORDER BY id\n     LIMIT $2::int": { params: [string | null, number]; row: { "user_id": bigint; "user_name": string; "user_email": string } };
     "SELECT id FROM users WHERE role = $1": { params: ["admin" | "editor" | "viewer"]; row: { "id": bigint } };
     "SELECT id, age FROM users WHERE age = $1": { params: [number]; row: { "id": bigint; "age": number } };
     "SELECT id, age FROM users WHERE age IN (18, 21, 25)": { params: []; row: { "id": bigint; "age": number } };
@@ -33,6 +37,7 @@ declare module "@onreza/sqlx-js" {
     "SELECT u.id AS uid, p.id AS pid FROM users u FULL OUTER JOIN posts p ON p.user_id = u.id WHERE u.id = $1 OR p.id = $1": { params: [bigint]; row: { "uid": bigint | null; "pid": bigint | null } };
     "SELECT u.id AS user_id, u.name, p.title, p.published FROM users u LEFT JOIN posts p ON p.user_id = u.id WHERE u.id = $1": { params: [bigint]; row: { "user_id": bigint; "name": string; "title": string | null; "published": boolean | null } };
     "SELECT u.id, p.title, p.body FROM users u LEFT JOIN posts p ON p.user_id = u.id WHERE p.body IS NOT NULL AND u.id = $1": { params: [bigint]; row: { "id": bigint; "title": string | null; "body": string } };
+    "UPDATE posts\n     SET status = 'published', published = true\n     WHERE id = (\n       SELECT id\n       FROM posts\n       WHERE status = 'draft'\n       ORDER BY id\n       FOR UPDATE SKIP LOCKED\n       LIMIT 1\n     )\n     RETURNING id AS post_id, user_id, status, published": { params: []; row: { "post_id": bigint; "user_id": bigint; "status": "draft" | "published" | "archived"; "published": boolean } };
     "UPDATE users SET name = $1 WHERE id = $2": { params: [string, bigint]; row: never };
     "UPDATE users SET settings = $1 WHERE id = $2 RETURNING id AS \"id!\", settings": { params: [import("@onreza/sqlx-js").JsonParameter<SqlxJsJson.UserSettings>, bigint]; row: { "id": bigint; "settings": SqlxJsJson.UserSettings } };
   }

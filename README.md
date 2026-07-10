@@ -46,6 +46,8 @@ const rows = await sql(
 - **Watch mode**: debounced re-prepare with a warm `PgClient` + `SchemaCache` on source/SQL changes and scanner/config graph updates.
 - **Cache pruning** removes orphaned entries automatically (toggleable with `--no-prune`).
 - **Environment doctor** checks runtime versions, config loading, `.env`, database connectivity/permissions, cache metadata, tsconfig inclusion, and pgschema availability.
+- **Strict inference gate** promotes degraded nullability analysis and generated `unknown` query types to CI errors.
+- **GitHub/editor diagnostics adapter** converts versioned prepare JSON into workflow annotations or Unix problem-matcher output.
 
 ## Install
 
@@ -57,7 +59,7 @@ bun add @onreza/sqlx-js
 
 Node.js 24 or newer is required. Bun users need Bun 1.3 or newer.
 
-The package installs a `sqlx-js` binary. The CLI examples below use `npx @onreza/sqlx-js`; `bunx @onreza/sqlx-js ...` works the same if your project uses Bun.
+The package installs `sqlx-js` and `sqlx-js-diagnostics` binaries. The CLI examples below use `npx @onreza/sqlx-js`; `bunx @onreza/sqlx-js ...` works the same if your project uses Bun.
 
 ## Setup
 
@@ -67,7 +69,7 @@ The package installs a `sqlx-js` binary. The CLI examples below use `npx @onreza
 npx @onreza/sqlx-js init
 ```
 
-Creates `sqlx-js.config.ts`, a `migrations/` directory, and `.env.example` if they don't already exist (it never overwrites existing files), then prints the next steps. Skip it if you prefer to wire things up manually.
+Creates `sqlx-js.config.ts`, `sqlx-js-env.d.ts`, a `migrations/` directory, and `.env.example` if they don't already exist. For strict-JSON files it adds missing `sqlx:*` scripts to `package.json` and appends the declaration to an existing `files` or `include` array in `tsconfig.json`, without replacing existing values; JSONC files are left unchanged with a manual-update hint. Skip it if you prefer to wire things up manually.
 
 For declarative PostgreSQL schema management, scaffold the pgschema workflow instead:
 
@@ -144,7 +146,7 @@ const users = await sql(
 npx @onreza/sqlx-js prepare
 ```
 
-This generates `sqlx-js-env.d.ts` next to your code. Add it to your `tsconfig.json` `include` if it isn't picked up automatically. Use `--dts <path>` to override the destination.
+This generates `sqlx-js-env.d.ts` next to your code. Add it to your `tsconfig.json` `include` if it isn't picked up automatically. Use `--dts <path>` to override the destination relative to `--root`.
 
 ### 5. Dev loop with watch
 
@@ -385,11 +387,13 @@ In addition to `import { sql } from "@onreza/sqlx-js"`, the scanner recognises `
 
 ```
 sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]
-sqlx-js doctor [--root <dir>] [--json]
-sqlx-js db install | check | plan | apply [--root <dir>] [-- <pgschema args>]
-sqlx-js prepare [--check | --verify | --watch] [--json] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
-sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | verify [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
-sqlx-js schema dump | check [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
+sqlx-js doctor [--root <dir>] [--dts <path>] [--json]
+sqlx-js db install | check [--root <dir>]
+sqlx-js db plan | apply [--root <dir>] [-- <pgschema args>]
+sqlx-js prepare [--check | --verify | --watch] [--json] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
+sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | verify [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
+sqlx-js schema dump [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
+sqlx-js schema check [--schema <path>] [--shadow-url <url>]
 sqlx-js --version | --help
 ```
 
@@ -401,25 +405,26 @@ Regular `prepare` describes queries across a small connection pool (default 8, o
 | `--verify`            | Prepare against the live/shadow schema and compare generated artifacts without writing. |
 | `--watch`             | Persistent connection, re-prepare on file change.                                    |
 | `--root <dir>`        | Source/cache/migrations root (default: cwd).                                         |
-| `--dts <path>`        | Declarations output (default: `<root>/sqlx-js-env.d.ts`).                           |
+| `--dts <path>`        | Root-relative declarations output (default: `<root>/sqlx-js-env.d.ts`).             |
 | `--no-prune`          | Keep orphaned cache entries instead of removing them.                                |
-| `--migrations <dir>`  | Migrations directory (default: `<root>/migrations`).                                 |
+| `--migrations <dir>`  | Root-relative migrations directory (default: `<root>/migrations`).                   |
 | `--dry-run`           | For `migrate run` / `migrate revert`: validate without applying to the target DB.   |
 | `--json`              | Machine-readable prepare diagnostics, doctor output, migration inspection and dry-runs. |
+| `--strict-inference`  | Fail prepare/dev/verify when nullability degrades or a generated query type contains `unknown`. |
 | `--force`             | For `migrate archive restore`: allow overwriting existing migration files.           |
 | `--lock-timeout <ms>` | Advisory-lock acquisition timeout for `migrate run` / `revert` / `dev` / `verify` / `squash`. |
 | `--shadow-url <url>`  | Use an existing disposable shadow DB instead of auto-creating one.                   |
 | `--shadow-admin-url <url>` | Admin/maintenance DB URL used to auto-create shadow DBs.                       |
 | `--replace`           | For `migrate squash`: archive replaced migration files after writing the baseline.   |
 | `--pg-dump <path>`    | For `migrate squash`: `pg_dump` executable path (default: `pg_dump`).                |
-| `--schema <path>`     | Schema snapshot path (default: `<root>/.sqlx-js/schema/schema.json`).               |
-| `--manifest <path>`   | LLM schema manifest path (default: `<root>/.sqlx-js/schema/schema.md`).             |
+| `--schema <path>`     | Root-relative schema snapshot path (default: `<root>/.sqlx-js/schema/schema.json`). |
+| `--manifest <path>`   | Root-relative LLM schema manifest path (default: `<root>/.sqlx-js/schema/schema.md`). |
 | `--no-manifest`       | Skip writing the LLM schema manifest during `schema dump`.                           |
 | `--schema-provider <name>` | For `init`: `builtin` (default) or `pgschema`.                                |
 
 Flags that take a value accept both `--flag value` and `--flag=value` forms.
 
-Prepare and doctor JSON use `formatVersion: 1`. Prepare diagnostics include a stable phase plus root-relative file, 1-based line/column, PostgreSQL code/position/hint when available, and the query text. This is intended for CI annotations and editor integrations; stdout contains one JSON document and human progress is suppressed.
+Prepare and doctor JSON use `formatVersion: 1`. Prepare diagnostics include a stable phase plus root-relative file, 1-based line/column, PostgreSQL code/position/hint when available, and the query text. Degraded inference and generated `unknown` types appear as warnings by default; `--strict-inference` promotes them to errors. This is intended for CI annotations and editor integrations; stdout contains one JSON document and human progress is suppressed.
 
 `DATABASE_URL` must be set for any command that touches the application database or auto-creates a shadow database. `SHADOW_ADMIN_DATABASE_URL` can point at a maintenance/admin database when the application user cannot `CREATE DATABASE`; `SHADOW_DATABASE_URL` can point at a pre-created disposable shadow database. The internal wire client understands `sslmode`, `sslrootcert`, `sslcert`, `sslkey`, `application_name`, `connect_timeout` (seconds), and `statement_timeout` (milliseconds).
 
@@ -454,7 +459,7 @@ The built-in `migrate` workflow is kept for simple projects and embedded applica
 Use `migrate verify` in PR/CI before merge:
 
 ```bash
-sqlx-js migrate verify
+sqlx-js migrate verify --strict-inference
 sqlx-js prepare --check
 sqlx-js doctor --json
 tsc --noEmit
@@ -514,6 +519,39 @@ When `prepare` fails, every diagnostic points back to the originating call site:
 
 Phases reported separately: `describe failed`, `analyze failed`, `paramMap failed`. PostgreSQL `position`, `code`, and `hint` are surfaced when present.
 
+### GitHub and editor diagnostics
+
+`sqlx-js-diagnostics` converts the versioned prepare JSON document into GitHub workflow commands or a standard Unix problem-matcher stream:
+
+```bash
+set -o pipefail
+sqlx-js prepare --verify --json | sqlx-js-diagnostics github
+sqlx-js prepare --check --json | sqlx-js-diagnostics unix
+```
+
+The `github` format creates inline workflow annotations. The `unix` format emits `file:line:column: severity: [phase] message`, which can be consumed by VS Code tasks and other editors without a dedicated extension. A minimal VS Code task uses a custom problem matcher:
+
+```json
+{
+  "label": "sqlx-js: check",
+  "type": "shell",
+  "command": "sqlx-js prepare --check --json | sqlx-js-diagnostics unix",
+  "problemMatcher": {
+    "owner": "sqlx-js",
+    "fileLocation": ["relative", "${workspaceFolder}"],
+    "pattern": {
+      "regexp": "^(.+):(\\d+):(\\d+): (error|warning): \\[([^\\]]+)\\] (.*)$",
+      "file": 1,
+      "line": 2,
+      "column": 3,
+      "severity": 4,
+      "code": 5,
+      "message": 6
+    }
+  }
+}
+```
+
 ## Configuration
 
 `sqlx-js.config.ts` at the project root is optional.
@@ -527,6 +565,7 @@ export default defineConfig({
   scan: {
     include: ["apps/*/src/**/*", "packages/*/src/**/*"],
     exclude: ["**/*.generated.ts"],
+    modules: ["@onreza/sqlx-js", "@app/database"],
   },
   schema: {
     provider: "pgschema",
@@ -541,7 +580,7 @@ export default defineConfig({
 });
 ```
 
-By default the scanner uses the root `tsconfig.json` file list and follows TypeScript project references, so a referenced monorepo is scanned without walking unrelated folders. `scan.include` replaces that source-file universe with TypeScript glob patterns; `scan.exclude` is added to the built-in dependency/build exclusions. If there is no root `tsconfig.json`, the fallback is a recursive TypeScript scan.
+By default the scanner uses the root `tsconfig.json` file list and follows TypeScript project references, so a referenced monorepo is scanned without walking unrelated folders. `scan.include` replaces that source-file universe with TypeScript glob patterns; `scan.exclude` is added to the built-in dependency/build exclusions. `scan.modules` replaces the default `@onreza/sqlx-js` import source list, which lets an application re-export `sql` through a shared database module without requiring arbitrary re-export graph analysis. Include `@onreza/sqlx-js` explicitly when direct imports and application-module imports are both used. If there is no root `tsconfig.json`, the fallback is a recursive TypeScript scan.
 
 The `schema` block is optional. Use `provider: "pgschema"` when sqlx-js should delegate schema planning/apply commands to pgschema. `command` can override the managed binary lookup and point at another executable. With the pinned pgschema 1.12.0 CLI, `schemas` must contain exactly one schema name.
 
@@ -620,11 +659,11 @@ Commit the generated `sqlx-js-env.d.ts` and the `.sqlx-js/` cache directory to y
 
 ```yaml
 - run: bun install
-- run: sqlx-js migrate verify    # built-in migration workflow
+- run: sqlx-js migrate verify --strict-inference # built-in migration workflow
 # or, when schema.provider is "pgschema":
 - run: sqlx-js db install
 - run: sqlx-js db plan -- --output-json plan.json
-- run: sqlx-js prepare --verify  # live/shadow comparison of every generated artifact
+- run: sqlx-js prepare --verify --strict-inference # live/shadow comparison with complete inference
 - run: sqlx-js prepare --check   # offline cache/version/config consistency
 - run: sqlx-js doctor --json     # runtime/config/DB/cache/tsconfig preflight
 - run: sqlx-js schema check      # fails if the committed schema snapshot is stale
@@ -646,18 +685,19 @@ bun install                  # installs lefthook + wires git hooks
 cargo install cocogitto      # or: brew install cocogitto
 ```
 
-Releases are automated via `release-please`: pushes to `main` accumulate into a release PR that bumps `package.json`, writes `CHANGELOG.md`, and on merge tags the commit. The tag push fires the npm publish workflow, which builds `dist/`, smoke-tests the package entrypoints, checks the tarball contents, and publishes to npm.
+Releases are automated via `release-please`: pushes to `main` accumulate into a release PR that bumps `package.json` and writes `CHANGELOG.md`. Merging that PR creates the tag and release, then the same workflow builds `dist/`, smoke-tests the package entrypoints, checks the tarball contents, and publishes to npm through Trusted Publishing.
 
 ## Limitations
 
 `sqlx-js` is a young library. Known gaps:
 
 - PostgreSQL only (no MySQL or SQLite).
-- The scanner only follows direct named imports and namespace imports from `@onreza/sqlx-js`; it does not follow re-exports, dynamic aliases, or tagged-template calls.
+- The scanner only follows direct named imports and namespace imports from configured `scan.modules` (default: `@onreza/sqlx-js`); it does not discover re-export graphs, dynamic aliases, or tagged-template calls automatically.
 - `SELECT *` falls back to conservative nullability.
 - Plain `sql(...)` keeps returning rows, so statements without `RETURNING` produce an empty typed array. Use `sql.execute(...)` when affected-row count and command metadata matter.
 - Nested CTE references (CTE-`b` referencing CTE-`a` in the same `WITH`) and `WITH RECURSIVE` are not analysed transitively — at worst this produces extra `T | null`. Use `AS "id!"` overrides if needed.
 - Column names whose **real** name (not an alias) ends with `!` or `?` are not supported — the runtime strips those suffixes assuming an override. Use `AS "alias"` if you have such a column.
+- Result columns must have unique names because Postgres.js returns object rows. Alias join projections such as `users.id AS user_id, posts.id AS post_id`; `prepare` rejects duplicate output names before generating declarations.
 - Migrations run inside `BEGIN/COMMIT`. DDL that disallows transactions (`CREATE INDEX CONCURRENTLY`, `VACUUM`, `REINDEX CONCURRENTLY`, …) will fail; split such operations into separate migrations executed outside the runner.
 - The **internal** wire client (used by `migrate run`, `prepare`, and the runtime `migrate()` helper) reads `sslmode`, `sslrootcert`/`sslcert`/`sslkey`, `application_name`, `connect_timeout`, and `statement_timeout` from `DATABASE_URL`. The default runtime `sql()` path delegates connection handling to Postgres.js; configure TLS, pooling, and timeouts through the `DATABASE_URL` and `createClient(...)` options it understands (`statementTimeoutMs` is a convenience that maps to a per-connection `statement_timeout`).
 - `connect_timeout` bounds the entire internal-client connect, including the TLS handshake and SCRAM authentication.

@@ -1,0 +1,46 @@
+{
+  "query": "INSERT INTO users (name, email)\n     VALUES ($1, $2)\n     ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name\n     RETURNING id AS user_id, name AS user_name, email AS user_email, role AS user_role",
+  "hasInline": true,
+  "inlineQueries": [
+    "INSERT INTO users (name, email)\n     VALUES ($1, $2)\n     ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name\n     RETURNING id AS user_id, name AS user_name, email AS user_email, role AS user_role"
+  ],
+  "paramOids": [
+    25,
+    25
+  ],
+  "paramTsTypes": [
+    "string",
+    "string"
+  ],
+  "paramNullable": [
+    false,
+    false
+  ],
+  "columns": [
+    {
+      "name": "user_id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false
+    },
+    {
+      "name": "user_name",
+      "typeOid": 25,
+      "tsType": "string",
+      "nullable": false
+    },
+    {
+      "name": "user_email",
+      "typeOid": 25,
+      "tsType": "string",
+      "nullable": false
+    },
+    {
+      "name": "user_role",
+      "typeOid": 0,
+      "tsType": "\"admin\" | \"editor\" | \"viewer\"",
+      "nullable": false
+    }
+  ],
+  "hasResultSet": true
+}

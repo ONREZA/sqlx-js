@@ -13,10 +13,12 @@ The library is **PostgreSQL-only** and **compile-time-only by design** — no ru
 ```
 .
 ├── bin/
-│   └── sqlx-js.ts           CLI entry point (init, prepare, migrate, schema, watch)
+│   ├── sqlx-js.ts           CLI entry point (init, prepare, migrate, schema, watch)
+│   └── sqlx-js-diagnostics.ts JSON diagnostic adapter for GitHub and editors
 ├── src/
 │   ├── index.ts              Public package entry (sql, migrate, types)
 │   ├── runtime.ts            Shared runtime core + key renaming + migrate()
+│   ├── migration-core.ts     Lightweight migration apply/lock path shared by runtime + CLI
 │   ├── postgres-runtime.ts   Postgres.js runtime adapter
 │   ├── artifacts.ts          Generated-artifact comparison for prepare --verify
 │   ├── cache.ts              .sqlx-js/<fingerprint>.json reader/writer
@@ -82,6 +84,9 @@ The runtime (`src/index.ts` + `src/runtime.ts` + `src/postgres-runtime.ts`) is a
 ```bash
 bun test --timeout 120000 # unit + integration tests
 bunx tsc -p example     # type-check the example fixture
+bun run test:corpus     # production-query inference gate
+bun run test:runtime-boundary # build + production import allowlist
+bun run test:node-package     # packed Node runtime/CLI smoke; requires DATABASE_URL
 ```
 
 The integration suite (`tests/prepare.integration.test.ts`) spins up an
@@ -128,7 +133,7 @@ Releases are automated. The flow:
 1. **Commit using conventional-commits** (`feat:`, `fix:`, `chore:`, `docs:`, etc.). `lefthook` enforces this locally via `cog verify` on every commit.
 2. **Push to `main`.** `release-please.yml` reads conventional commits since the last release and opens (or updates) a release PR titled `chore(main): release X.Y.Z`. The PR contains the `package.json` version bump and the generated `CHANGELOG.md` entry.
 3. **Review and merge the release PR.** release-please tags the merge commit `vX.Y.Z`.
-4. **Tag push triggers the publish job in `release.yml`**, which type-checks, tests, builds JS + declarations into `dist/`, smoke-tests package entrypoints, verifies version parity, and publishes to npm with provenance using the `NPM_TOKEN` repository secret.
+4. **The same `release.yml` run triggers the publish job**, which type-checks, tests, builds JS + declarations into `dist/`, smoke-tests package entrypoints, verifies version parity, and publishes to npm with provenance through Trusted Publishing.
 
 Version bumps follow **Rust-crate-style** pre-1.0 semver. While `version < 1.0.0`:
 

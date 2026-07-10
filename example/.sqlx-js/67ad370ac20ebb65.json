@@ -1,0 +1,52 @@
+{
+  "query": "SELECT\n       u.id AS user_id,\n       u.email AS user_email,\n       u.role AS user_role,\n       COUNT(p.id) AS post_count,\n       MAX(p.id) AS latest_post_id\n     FROM users u\n     LEFT JOIN posts p ON p.user_id = u.id\n     GROUP BY u.id, u.email, u.role\n     ORDER BY u.id DESC\n     LIMIT $1::int OFFSET $2::int",
+  "hasInline": true,
+  "inlineQueries": [
+    "SELECT\n       u.id AS user_id,\n       u.email AS user_email,\n       u.role AS user_role,\n       COUNT(p.id) AS post_count,\n       MAX(p.id) AS latest_post_id\n     FROM users u\n     LEFT JOIN posts p ON p.user_id = u.id\n     GROUP BY u.id, u.email, u.role\n     ORDER BY u.id DESC\n     LIMIT $1::int OFFSET $2::int"
+  ],
+  "paramOids": [
+    23,
+    23
+  ],
+  "paramTsTypes": [
+    "number",
+    "number"
+  ],
+  "paramNullable": [
+    false,
+    false
+  ],
+  "columns": [
+    {
+      "name": "user_id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false
+    },
+    {
+      "name": "user_email",
+      "typeOid": 25,
+      "tsType": "string",
+      "nullable": false
+    },
+    {
+      "name": "user_role",
+      "typeOid": 0,
+      "tsType": "\"admin\" | \"editor\" | \"viewer\"",
+      "nullable": false
+    },
+    {
+      "name": "post_count",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false
+    },
+    {
+      "name": "latest_post_id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": true
+    }
+  ],
+  "hasResultSet": true
+}

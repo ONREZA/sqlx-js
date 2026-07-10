@@ -1,6 +1,6 @@
 import { introspectDatabase, readSchemaSnapshot, schemaSnapshotEqual, schemaSnapshotExists, writeSchemaManifest, writeSchemaSnapshot } from "../schema-snapshot";
 import { PgClient, parseDatabaseUrl } from "../pg/wire";
-import { acquireMigrateLock, applyPending, DEFAULT_MIGRATE_LOCK_KEY, releaseMigrateLock } from "./migrate";
+import { acquireMigrateLock, applyPending, DEFAULT_MIGRATE_LOCK_KEY, releaseMigrateLock } from "../migration-core";
 
 export type SchemaCommandOptions = {
   databaseUrl: string;

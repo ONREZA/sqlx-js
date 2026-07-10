@@ -33,7 +33,7 @@ const DEFAULT_EXCLUDES = [
   "**/build/**",
   "**/.next/**",
 ];
-const SQLX_MODULES = new Set(["@onreza/sqlx-js"]);
+const DEFAULT_SQLX_MODULES = ["@onreza/sqlx-js"];
 const EXT = /\.(ts|tsx|mts|cts)$/;
 const TS_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts"];
 
@@ -151,7 +151,11 @@ function classifyCallee(
   return null;
 }
 
-export function scanFile(absPath: string, root: string): QueryCallSite[] {
+export function scanFile(
+  absPath: string,
+  root: string,
+  modules: readonly string[] = DEFAULT_SQLX_MODULES,
+): QueryCallSite[] {
   const text = readFileSync(absPath, "utf8");
   const source = ts.createSourceFile(absPath, text, ts.ScriptTarget.ESNext, false, ts.ScriptKind.TSX);
 
@@ -161,7 +165,7 @@ export function scanFile(absPath: string, root: string): QueryCallSite[] {
     if (!ts.isImportDeclaration(stmt)) continue;
     const mod = stmt.moduleSpecifier;
     if (!ts.isStringLiteral(mod)) continue;
-    if (!SQLX_MODULES.has(mod.text)) continue;
+    if (!modules.includes(mod.text)) continue;
     const ic = stmt.importClause;
     if (!ic) continue;
     const nb = ic.namedBindings;
@@ -340,7 +344,7 @@ export function scanProject(root: string, scan: ScanConfig = {}): QueryCallSite[
   const files = findSourceFiles(root, scan);
   const out: QueryCallSite[] = [];
   for (const f of files) {
-    for (const site of scanFile(f, root)) out.push(site);
+    for (const site of scanFile(f, root, scan.modules ?? DEFAULT_SQLX_MODULES)) out.push(site);
   }
   return out;
 }

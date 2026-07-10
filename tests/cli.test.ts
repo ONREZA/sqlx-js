@@ -6,6 +6,7 @@ import { delimiter, join, resolve } from "node:path";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const binPath = join(repoRoot, "bin/sqlx-js.ts");
+const diagnosticsBinPath = join(repoRoot, "bin/sqlx-js-diagnostics.ts");
 const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { version: string };
 
 test("CLI --version is sourced from package metadata", () => {
@@ -16,30 +17,63 @@ test("CLI --version is sourced from package metadata", () => {
 
 test("CLI help prints package metadata version", () => {
   const r = spawnSync("bun", [binPath, "--help"], { encoding: "utf8" });
-  expect(r.status).toBe(2);
-  expect(r.stderr).toContain(`v${pkg.version}`);
-  expect(r.stderr).toContain("--dry-run");
-  expect(r.stderr).toContain("--json");
-  expect(r.stderr).toContain("sqlx-js db install");
-  expect(r.stderr).toContain("sqlx-js doctor");
-  expect(r.stderr).toContain("--verify");
-  expect(r.stderr).toContain("--schema-provider");
-  expect(r.stderr).toContain("check [--json]");
-  expect(r.stderr).toContain("migrate dev");
-  expect(r.stderr).toContain("verify [--shadow-admin-url");
-  expect(r.stderr).toContain("--shadow-admin-url");
-  expect(r.stderr).toContain("revert [--dry-run]");
-  expect(r.stderr).toContain("archive restore");
+  expect(r.status).toBe(0);
+  expect(r.stderr).toBe("");
+  expect(r.stdout).toContain(`v${pkg.version}`);
+  expect(r.stdout).toContain("--dry-run");
+  expect(r.stdout).toContain("--json");
+  expect(r.stdout).toContain("sqlx-js db install");
+  expect(r.stdout).toContain("sqlx-js doctor");
+  expect(r.stdout).toContain("--verify");
+  expect(r.stdout).toContain("--schema-provider");
+  expect(r.stdout).toContain("check [--json]");
+  expect(r.stdout).toContain("migrate dev");
+  expect(r.stdout).toContain("verify [--shadow-admin-url");
+  expect(r.stdout).toContain("--shadow-admin-url");
+  expect(r.stdout).toContain("revert [--dry-run]");
+  expect(r.stdout).toContain("archive restore");
 });
 
 test("CLI help lists the init command", () => {
   const r = spawnSync("bun", [binPath, "--help"], { encoding: "utf8" });
-  expect(r.stderr).toContain("sqlx-js init");
+  expect(r.stdout).toContain("sqlx-js init");
+});
+
+test("CLI command help is successful and command-specific", () => {
+  const r = spawnSync("bun", [binPath, "prepare", "--help"], { encoding: "utf8" });
+  expect(r.status).toBe(0);
+  expect(r.stderr).toBe("");
+  expect(r.stdout).toContain("usage: sqlx-js prepare");
+  expect(r.stdout).toContain("--strict-inference");
+});
+
+test("diagnostics CLI renders versioned prepare JSON for editors and GitHub", () => {
+  const input = JSON.stringify({
+    formatVersion: 1,
+    ok: true,
+    diagnostics: [{
+      severity: "warning",
+      phase: "inference",
+      message: "result column resolved conservatively",
+      file: "src/users.ts",
+      line: 12,
+      column: 7,
+    }],
+  });
+  const unix = spawnSync("bun", [diagnosticsBinPath, "unix"], { encoding: "utf8", input });
+  expect(unix.status).toBe(0);
+  expect(unix.stdout.trim()).toBe("src/users.ts:12:7: warning: [inference] result column resolved conservatively");
+
+  const github = spawnSync("bun", [diagnosticsBinPath, "github"], { encoding: "utf8", input });
+  expect(github.status).toBe(0);
+  expect(github.stdout.trim()).toBe("::warning file=src/users.ts,line=12,col=7::[inference] result column resolved conservatively");
 });
 
 test("CLI init scaffolds project files and is idempotent without DATABASE_URL", () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-init-"));
   try {
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "fixture", scripts: { test: "bun test" } }, null, 2));
+    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ include: ["src/**/*.ts"] }, null, 2));
     const r1 = spawnSync("bun", [binPath, "init", "--root", root], {
       encoding: "utf8",
       env: { ...process.env, DATABASE_URL: "" },
@@ -50,7 +84,15 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
     expect(existsSync(join(root, "sqlx-js.config.ts"))).toBe(true);
     expect(existsSync(join(root, "migrations"))).toBe(true);
     expect(existsSync(join(root, ".env.example"))).toBe(true);
+    expect(existsSync(join(root, "sqlx-js-env.d.ts"))).toBe(true);
     expect(readFileSync(join(root, "sqlx-js.config.ts"), "utf8")).toContain("defineConfig");
+    expect(JSON.parse(readFileSync(join(root, "tsconfig.json"), "utf8")).include).toContain("sqlx-js-env.d.ts");
+    expect(JSON.parse(readFileSync(join(root, "package.json"), "utf8")).scripts).toMatchObject({
+      test: "bun test",
+      "sqlx:prepare": "sqlx-js prepare",
+      "sqlx:check": "sqlx-js prepare --check",
+      "sqlx:verify": "sqlx-js prepare --verify --strict-inference",
+    });
 
     const r2 = spawnSync("bun", [binPath, "init", "--root", root], {
       encoding: "utf8",

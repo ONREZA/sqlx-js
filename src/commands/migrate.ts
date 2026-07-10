@@ -4,7 +4,27 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { PgClient, parseDatabaseUrl, decodeText } from "../pg/wire";
-import { openSession, prepareOnce, verifyPrepareArtifacts } from "./prepare";
+import {
+  DEFAULT_MIGRATE_LOCK_KEY,
+  SQUASH_PREFIX,
+  acquireMigrateLock,
+  applyPending,
+  buildMigrationPlan,
+  effectiveSquashReplacements,
+  ensureTable,
+  inspectMigrationPlan,
+  inspectMigrations,
+  listApplied,
+  parseSquashMetadata,
+  planPending,
+  readMigrations,
+  releaseMigrateLock,
+  resetMigrationSession,
+  type MigrationFile,
+  type MigrationValidationOutcome,
+  type SquashMetadata,
+  type SquashReplacement,
+} from "../migration-core";
 import {
   introspectConnected,
   schemaSnapshotEqual,
@@ -13,6 +33,8 @@ import {
   type SchemaSnapshot,
   type SchemaTypeSnapshot,
 } from "../schema-snapshot";
+
+export * from "../migration-core";
 
 export type MigrateOptions = {
   databaseUrl: string;
@@ -28,105 +50,12 @@ export type MigrationWorkflowOptions = MigrateOptions & {
   shadowAdminUrl?: string;
   lockKey?: number | bigint;
   lockTimeoutMs?: number;
+  strictInference?: boolean;
 };
-
-type MigrationFile = {
-  version: number;
-  name: string;
-  upPath: string;
-  downPath: string | null;
-  upSql: string;
-  upHash: string;
-  squash: SquashMetadata | null;
-};
-
-type SquashReplacement = {
-  version: number;
-  name: string;
-  upHash: string;
-};
-
-type SquashMetadata = {
-  format: 1;
-  replaces: SquashReplacement[];
-};
-
-export type MigrationStore = {
-  table: string;
-};
-
-const SQUASH_PREFIX = "-- sqlx-js-squash:";
-
-export const DEFAULT_MIGRATE_LOCK_KEY = 18750938867203960n;
 
 const FILE_RE = /^(\d+)_(.+)\.up\.sql$/;
 const DOWN_FILE_RE = /^(\d+)_(.+)\.down\.sql$/;
 const SAFE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
-const MIGRATIONS_TABLE = "_sqlx_js_migrations";
-
-function readMigrations(dir: string): MigrationFile[] {
-  if (!existsSync(dir)) return [];
-  const out: MigrationFile[] = [];
-  for (const f of readdirSync(dir).sort()) {
-    const m = FILE_RE.exec(f);
-    if (!m) continue;
-    const version = parseInt(m[1]!, 10);
-    const name = m[2]!;
-    if (!SAFE_NAME_RE.test(name)) {
-      throw new Error(
-        `sqlx-js.migrate: unsafe migration filename ${f} — name must match /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/`,
-      );
-    }
-    const upPath = join(dir, f);
-    const downPath = join(dir, `${m[1]}_${name}.down.sql`);
-    const upSql = readFileSync(upPath, "utf8");
-    out.push({
-      version,
-      name,
-      upPath,
-      downPath: existsSync(downPath) ? downPath : null,
-      upSql,
-      upHash: createHash("sha256").update(upSql).digest("hex"),
-      squash: parseSquashMetadata(upSql),
-    });
-  }
-  return out;
-}
-
-function parseSquashMetadata(sql: string): SquashMetadata | null {
-  const line = sql.split(/\r?\n/).find((l) => l.startsWith(SQUASH_PREFIX));
-  if (!line) return null;
-  const raw = line.slice(SQUASH_PREFIX.length).trim();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (e) {
-    throw new Error(`sqlx-js.migrate: invalid squash metadata JSON: ${(e as Error).message}`);
-  }
-  if (!parsed || typeof parsed !== "object") {
-    throw new Error("sqlx-js.migrate: invalid squash metadata");
-  }
-  const obj = parsed as { format?: unknown; replaces?: unknown };
-  if (obj.format !== 1 || !Array.isArray(obj.replaces) || obj.replaces.length === 0) {
-    throw new Error("sqlx-js.migrate: invalid squash metadata");
-  }
-  const replaces: SquashReplacement[] = [];
-  for (const r of obj.replaces) {
-    if (!r || typeof r !== "object") throw new Error("sqlx-js.migrate: invalid squash replacement metadata");
-    const item = r as { version?: unknown; name?: unknown; upHash?: unknown };
-    if (typeof item.version !== "number" || !Number.isSafeInteger(item.version) || item.version <= 0) {
-      throw new Error("sqlx-js.migrate: invalid squash replacement version");
-    }
-    if (typeof item.name !== "string" || !SAFE_NAME_RE.test(item.name)) {
-      throw new Error("sqlx-js.migrate: invalid squash replacement name");
-    }
-    if (typeof item.upHash !== "string" || !/^[a-f0-9]{64}$/.test(item.upHash)) {
-      throw new Error("sqlx-js.migrate: invalid squash replacement hash");
-    }
-    replaces.push({ version: item.version as number, name: item.name, upHash: item.upHash });
-  }
-  return { format: 1, replaces };
-}
 
 function quoteIdent(ident: string): string {
   return `"${ident.replace(/"/g, '""')}"`;
@@ -145,101 +74,6 @@ function maintenanceDatabaseUrl(databaseUrl: string): string {
 function generatedShadowDatabaseName(): string {
   return `sqlx_js_shadow_${process.pid}_${Date.now().toString(36)}_${randomBytes(4).toString("hex")}`;
 }
-
-async function findMigrationStore(c: PgClient): Promise<MigrationStore | null> {
-  const r = await c.simpleQuery(`
-    SELECT n.nspname, cls.relname
-    FROM pg_class cls
-    JOIN pg_namespace n ON n.oid = cls.relnamespace
-    WHERE cls.oid = to_regclass('${MIGRATIONS_TABLE}')
-  `);
-  const row = r.rows[0];
-  if (!row) return null;
-  const schema = decodeText(row[0]!);
-  const table = decodeText(row[1]!);
-  if (!schema || !table) {
-    throw new Error(`sqlx-js.migrate: failed to resolve ${MIGRATIONS_TABLE} identifier`);
-  }
-  return { table: `${quoteIdent(schema)}.${quoteIdent(table)}` };
-}
-
-async function resolveMigrationStore(c: PgClient): Promise<MigrationStore> {
-  const store = await findMigrationStore(c);
-  if (!store) {
-    throw new Error(`sqlx-js.migrate: failed to resolve ${MIGRATIONS_TABLE} in current search_path`);
-  }
-  return store;
-}
-
-export async function ensureTable(c: PgClient): Promise<MigrationStore> {
-  const existing = await findMigrationStore(c);
-  if (existing) return existing;
-  await c.simpleQuery(`
-    CREATE TABLE IF NOT EXISTS ${MIGRATIONS_TABLE} (
-      version BIGINT PRIMARY KEY,
-      name TEXT NOT NULL,
-      up_hash TEXT NOT NULL,
-      applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    )
-  `);
-  return resolveMigrationStore(c);
-}
-
-export async function listApplied(
-  c: PgClient,
-  store?: MigrationStore,
-): Promise<Map<number, { name: string; hash: string }>> {
-  const s = store ?? await resolveMigrationStore(c);
-  const r = await c.simpleQuery(`SELECT version, name, up_hash FROM ${s.table} ORDER BY version`);
-  const out = new Map<number, { name: string; hash: string }>();
-  for (const row of r.rows) {
-    out.set(Number(decodeText(row[0]!)), { name: decodeText(row[1]!)!, hash: decodeText(row[2]!)! });
-  }
-  return out;
-}
-
-export type ApplyOutcome =
-  | { kind: "applied"; version: number; name: string }
-  | { kind: "adopted"; version: number; name: string; replaced: number }
-  | { kind: "tampered"; version: number; name: string; applied: string; current: string }
-  | { kind: "failed"; version: number; name: string; error: string };
-
-export type PlanOutcome =
-  | { kind: "pending"; version: number; name: string }
-  | { kind: "adoptable"; version: number; name: string; replaced: number }
-  | { kind: "tampered"; version: number; name: string; applied: string; current: string }
-  | { kind: "failed"; version: number; name: string; error: string };
-
-export type MigrationPlanItem =
-  | { kind: "apply"; version: number; name: string }
-  | { kind: "adopt"; version: number; name: string; replaced: number };
-
-export type MigrationPlanDiagnostic = Extract<PlanOutcome, { kind: "tampered" | "failed" }>;
-
-export type MigrationPlanSnapshot = {
-  ok: boolean;
-  pending: number;
-  adoptable: number;
-  tampered: number;
-  failed: number;
-  steps: MigrationPlanItem[];
-  diagnostics: MigrationPlanDiagnostic[];
-};
-
-export type MigrationInfoStatus = "applied" | "pending" | "adoptable" | "superseded" | "tampered" | "failed";
-
-export type MigrationInfoItem = {
-  version: number;
-  name: string;
-  status: MigrationInfoStatus;
-  detail?: string;
-};
-
-export type MigrationInfoSnapshot = {
-  historyTable: string | null;
-  summary: Record<MigrationInfoStatus, number>;
-  items: MigrationInfoItem[];
-};
 
 export type MigrationArchive = {
   name: string;
@@ -299,66 +133,6 @@ export type RevertDryRunOutcome =
   | { kind: "passed"; version: number; name: string }
   | { kind: "schema-mismatch"; version: number; name: string; diff: SchemaDiffSummary }
   | { kind: "failed"; version?: number; name?: string; phase: RevertDryRunPhase; error: string };
-
-type InternalMigrationPlanItem =
-  | { kind: "apply"; migration: MigrationFile }
-  | { kind: "adopt"; migration: MigrationFile; replaced: number };
-
-type MigrationValidationOutcome =
-  | { kind: "tampered"; version: number; name: string; applied: string; current: string }
-  | { kind: "failed"; version: number; name: string; error: string };
-
-function appliedSquashSupersededVersions(
-  all: MigrationFile[],
-  applied: Map<number, { name: string; hash: string }>,
-  onEvent?: (e: MigrationValidationOutcome) => void,
-): Set<number> | null {
-  const superseded = new Set<number>();
-  const byVersion = new Map(all.map((m) => [m.version, m]));
-  const visitedSquashes = new Set<number>();
-  const visitReplacements = (m: MigrationFile): boolean => {
-    if (!m.squash || visitedSquashes.has(m.version)) return true;
-    visitedSquashes.add(m.version);
-    for (const r of m.squash.replaces) {
-      superseded.add(r.version);
-      const current = byVersion.get(r.version);
-      if (!current?.squash || current.version >= m.version) continue;
-      if (current.name !== r.name || current.upHash !== r.upHash) {
-        onEvent?.({ kind: "tampered", version: r.version, name: r.name, applied: r.upHash, current: current.upHash });
-        return false;
-      }
-      if (!visitReplacements(current)) return false;
-    }
-    return true;
-  };
-  for (const m of all) {
-    if (!m.squash) continue;
-    const a = applied.get(m.version);
-    if (!a) continue;
-    if (a.hash !== m.upHash) {
-      onEvent?.({ kind: "tampered", version: m.version, name: m.name, applied: a.hash, current: m.upHash });
-      return null;
-    }
-    if (!visitReplacements(m)) return null;
-  }
-  return superseded;
-}
-
-function squashCoveredVersions(all: MigrationFile[]): Set<number> {
-  const covered = new Set<number>();
-  for (const m of all) {
-    if (!m.squash) continue;
-    for (const r of m.squash.replaces) {
-      if (r.version >= m.version) {
-        throw new Error(
-          `sqlx-js.migrate: squash replacement ${r.version}_${r.name} must be older than ${m.version}_${m.name}`,
-        );
-      }
-      covered.add(r.version);
-    }
-  }
-  return covered;
-}
 
 function migrationCheckIssue(
   code: MigrationCheckIssue["code"],
@@ -715,6 +489,7 @@ async function validateLatestDownForWorkflow(databaseUrl: string, migrationsDir:
 }
 
 async function prepareWorkflowArtifacts(opts: MigrationWorkflowOptions, databaseUrl: string): Promise<boolean> {
+  const { openSession, prepareOnce } = await import("./prepare");
   const prepareOpts = {
     root: opts.root,
     databaseUrl,
@@ -722,6 +497,7 @@ async function prepareWorkflowArtifacts(opts: MigrationWorkflowOptions, database
     dtsPath: opts.dtsPath,
     check: false,
     prune: opts.prune,
+    strictInference: opts.strictInference,
   };
   const session = await openSession(prepareOpts);
   try {
@@ -738,6 +514,7 @@ async function prepareWorkflowArtifacts(opts: MigrationWorkflowOptions, database
 }
 
 async function prepareInTemporaryArtifacts(opts: MigrationWorkflowOptions, databaseUrl: string): Promise<boolean> {
+  const { verifyPrepareArtifacts } = await import("./prepare");
   const verification = await verifyPrepareArtifacts({
     root: opts.root,
     databaseUrl,
@@ -746,416 +523,9 @@ async function prepareInTemporaryArtifacts(opts: MigrationWorkflowOptions, datab
     check: false,
     verify: true,
     prune: true,
+    strictInference: opts.strictInference,
   });
   return verification.ok;
-}
-
-function effectiveSquashReplacements(all: MigrationFile[]): SquashReplacement[] {
-  const covered = squashCoveredVersions(all);
-  return all
-    .filter((m) => !covered.has(m.version))
-    .map((m) => ({ version: m.version, name: m.name, upHash: m.upHash }));
-}
-
-function preflightSquashMigrations(
-  all: MigrationFile[],
-  applied: Map<number, { name: string; hash: string }>,
-  superseded: Set<number>,
-  onEvent?: (e: MigrationValidationOutcome) => void,
-): "ok" | "failed" | "tampered" {
-  const byVersion = new Map(all.map((m) => [m.version, m]));
-  for (const m of all) {
-    if (!m.squash) continue;
-    let present = 0;
-    for (const r of m.squash.replaces) {
-      if (r.version >= m.version) {
-        onEvent?.({
-          kind: "failed",
-          version: m.version,
-          name: m.name,
-          error: `squash replacement ${r.version}_${r.name} must be older than ${m.version}_${m.name}`,
-        });
-        return "failed";
-      }
-      const current = byVersion.get(r.version);
-      if (current && !superseded.has(r.version) && (current.name !== r.name || current.upHash !== r.upHash)) {
-        onEvent?.({ kind: "tampered", version: r.version, name: r.name, applied: r.upHash, current: current.upHash });
-        return "tampered";
-      }
-      const a = applied.get(r.version);
-      if (!a) continue;
-      present++;
-      if (a.hash !== r.upHash || a.name !== r.name) {
-        onEvent?.({ kind: "tampered", version: r.version, name: r.name, applied: a.hash, current: r.upHash });
-        return "tampered";
-      }
-    }
-    if (present > 0 && present !== m.squash.replaces.length) {
-      onEvent?.({
-        kind: "failed",
-        version: m.version,
-        name: m.name,
-        error: `squash migration replaces ${m.squash.replaces.length} migration(s), but only ${present} matching row(s) are applied`,
-      });
-      return "failed";
-    }
-  }
-  return "ok";
-}
-
-function planSquashAdoption(
-  m: MigrationFile,
-  applied: Map<number, { name: string; hash: string }>,
-  onEvent?: (e: MigrationValidationOutcome) => void,
-): { kind: "none" } | { kind: "adopt"; replaced: number } | { kind: "failed" } | { kind: "tampered" } {
-  if (!m.squash) return { kind: "none" };
-  let present = 0;
-  for (const r of m.squash.replaces) {
-    if (r.version >= m.version) {
-      onEvent?.({
-        kind: "failed",
-        version: m.version,
-        name: m.name,
-        error: `squash replacement ${r.version}_${r.name} must be older than ${m.version}_${m.name}`,
-      });
-      return { kind: "failed" };
-    }
-    const a = applied.get(r.version);
-    if (!a) continue;
-    present++;
-    if (a.hash !== r.upHash || a.name !== r.name) {
-      onEvent?.({ kind: "tampered", version: r.version, name: r.name, applied: a.hash, current: r.upHash });
-      return { kind: "tampered" };
-    }
-  }
-
-  if (present === 0) return { kind: "none" };
-  if (present !== m.squash.replaces.length) {
-    onEvent?.({
-      kind: "failed",
-      version: m.version,
-      name: m.name,
-      error: `squash migration replaces ${m.squash.replaces.length} migration(s), but only ${present} matching row(s) are applied`,
-    });
-    return { kind: "failed" };
-  }
-
-  return { kind: "adopt", replaced: m.squash.replaces.length };
-}
-
-function buildMigrationPlan(
-  all: MigrationFile[],
-  applied: Map<number, { name: string; hash: string }>,
-  onEvent?: (e: MigrationValidationOutcome) => void,
-): { kind: "ok"; steps: InternalMigrationPlanItem[] } | { kind: "failed" } | { kind: "tampered" } {
-  const plannedApplied = new Map(applied);
-  const superseded = appliedSquashSupersededVersions(all, plannedApplied, onEvent);
-  if (!superseded) return { kind: "tampered" };
-  const preflight = preflightSquashMigrations(all, plannedApplied, superseded, onEvent);
-  if (preflight !== "ok") return { kind: preflight };
-
-  const steps: InternalMigrationPlanItem[] = [];
-  for (const m of all) {
-    if (superseded.has(m.version)) continue;
-    const a = plannedApplied.get(m.version);
-    if (a) {
-      if (a.hash !== m.upHash) {
-        onEvent?.({ kind: "tampered", version: m.version, name: m.name, applied: a.hash, current: m.upHash });
-        return { kind: "tampered" };
-      }
-      continue;
-    }
-    const adoption = planSquashAdoption(m, plannedApplied, onEvent);
-    if (adoption.kind === "adopt") {
-      steps.push({ kind: "adopt", migration: m, replaced: adoption.replaced });
-      for (const r of m.squash!.replaces) plannedApplied.delete(r.version);
-      plannedApplied.set(m.version, { name: m.name, hash: m.upHash });
-      continue;
-    }
-    if (adoption.kind === "tampered" || adoption.kind === "failed") return { kind: adoption.kind };
-    steps.push({ kind: "apply", migration: m });
-    plannedApplied.set(m.version, { name: m.name, hash: m.upHash });
-  }
-  return { kind: "ok", steps };
-}
-
-function publicPlanItem(step: InternalMigrationPlanItem): MigrationPlanItem {
-  if (step.kind === "apply") {
-    return { kind: "apply", version: step.migration.version, name: step.migration.name };
-  }
-  return {
-    kind: "adopt",
-    version: step.migration.version,
-    name: step.migration.name,
-    replaced: step.replaced,
-  };
-}
-
-async function resetMigrationSession(c: PgClient): Promise<void> {
-  await c.simpleQuery("RESET ALL");
-}
-
-async function executeSquashAdoption(
-  c: PgClient,
-  store: MigrationStore,
-  m: MigrationFile,
-  applied: Map<number, { name: string; hash: string }>,
-  replaced: number,
-  onEvent?: (e: ApplyOutcome) => void,
-): Promise<"done" | "failed"> {
-  if (!m.squash) return "failed";
-
-  let committed = false;
-  await c.simpleQuery("BEGIN");
-  try {
-    for (const r of m.squash.replaces) {
-      await c.execParamsText(`DELETE FROM ${store.table} WHERE version = $1`, [String(r.version)]);
-    }
-    await c.execParamsText(
-      `INSERT INTO ${store.table} (version, name, up_hash) VALUES ($1, $2, $3)`,
-      [String(m.version), m.name, m.upHash],
-    );
-    await c.simpleQuery("COMMIT");
-    committed = true;
-  } catch (err) {
-    let rollbackErr: string | undefined;
-    if (!committed) {
-      try { await c.simpleQuery("ROLLBACK"); } catch (rb) { rollbackErr = (rb as Error).message; }
-    }
-    const message = rollbackErr
-      ? `${(err as Error).message} (rollback also failed: ${rollbackErr})`
-      : (err as Error).message;
-    onEvent?.({ kind: "failed", version: m.version, name: m.name, error: message });
-    return "failed";
-  }
-  try {
-    await resetMigrationSession(c);
-  } catch (err) {
-    onEvent?.({ kind: "failed", version: m.version, name: m.name, error: `failed to reset migration session: ${(err as Error).message}` });
-    return "failed";
-  }
-  for (const r of m.squash.replaces) applied.delete(r.version);
-  applied.set(m.version, { name: m.name, hash: m.upHash });
-  onEvent?.({ kind: "adopted", version: m.version, name: m.name, replaced });
-  return "done";
-}
-
-export async function planPending(
-  c: PgClient,
-  migrationsDir: string,
-  onEvent?: (e: PlanOutcome) => void,
-): Promise<{ pending: number; adoptable: number; tampered: number; failed: number; steps: MigrationPlanItem[] }> {
-  const store = await findMigrationStore(c);
-  const applied = store ? await listApplied(c, store) : new Map<number, { name: string; hash: string }>();
-  const all = readMigrations(migrationsDir);
-  const counts = { pending: 0, adoptable: 0, tampered: 0, failed: 0 };
-  const plan = buildMigrationPlan(all, applied, onEvent);
-  if (plan.kind === "tampered") {
-    counts.tampered++;
-    return { ...counts, steps: [] };
-  }
-  if (plan.kind === "failed") {
-    counts.failed++;
-    return { ...counts, steps: [] };
-  }
-  const steps = plan.steps.map(publicPlanItem);
-  for (const step of steps) {
-    if (step.kind === "apply") {
-      counts.pending++;
-      onEvent?.({ kind: "pending", version: step.version, name: step.name });
-    } else {
-      counts.adoptable++;
-      onEvent?.({ kind: "adoptable", version: step.version, name: step.name, replaced: step.replaced });
-    }
-  }
-  return { ...counts, steps };
-}
-
-export async function inspectMigrationPlan(c: PgClient, migrationsDir: string): Promise<MigrationPlanSnapshot> {
-  const diagnostics: MigrationPlanDiagnostic[] = [];
-  const result = await planPending(c, migrationsDir, (e) => {
-    if (e.kind === "tampered" || e.kind === "failed") diagnostics.push(e);
-  });
-  return {
-    ok: result.tampered === 0 && result.failed === 0,
-    ...result,
-    diagnostics,
-  };
-}
-
-export async function inspectMigrations(c: PgClient, migrationsDir: string): Promise<MigrationInfoSnapshot> {
-  const store = await findMigrationStore(c);
-  const applied = store ? await listApplied(c, store) : new Map<number, { name: string; hash: string }>();
-  const all = readMigrations(migrationsDir);
-  const validation: MigrationValidationOutcome[] = [];
-  const plan = buildMigrationPlan(all, applied, (e) => validation.push(e));
-  const planned = new Map<number, InternalMigrationPlanItem>();
-  if (plan.kind === "ok") {
-    for (const step of plan.steps) planned.set(step.migration.version, step);
-  }
-  const validationByVersion = new Map(validation.map((e) => [e.version, e]));
-  const superseded = appliedSquashSupersededVersions(all, applied) ?? new Set<number>();
-  const summary: Record<MigrationInfoStatus, number> = {
-    applied: 0,
-    pending: 0,
-    adoptable: 0,
-    superseded: 0,
-    tampered: 0,
-    failed: 0,
-  };
-  const items = all.map((m): MigrationInfoItem => {
-    const validationEvent = validationByVersion.get(m.version);
-    if (validationEvent?.kind === "tampered") {
-      summary.tampered++;
-      return {
-        version: m.version,
-        name: m.name,
-        status: "tampered",
-        detail: `hash mismatch: applied ${validationEvent.applied.slice(0, 16)} vs current ${validationEvent.current.slice(0, 16)}`,
-      };
-    }
-    if (validationEvent?.kind === "failed") {
-      summary.failed++;
-      return { version: m.version, name: m.name, status: "failed", detail: validationEvent.error };
-    }
-    if (superseded.has(m.version)) {
-      summary.superseded++;
-      return { version: m.version, name: m.name, status: "superseded" };
-    }
-    const a = applied.get(m.version);
-    if (a) {
-      if (a.hash !== m.upHash) {
-        summary.tampered++;
-        return {
-          version: m.version,
-          name: m.name,
-          status: "tampered",
-          detail: `hash mismatch: applied ${a.hash.slice(0, 16)} vs current ${m.upHash.slice(0, 16)}`,
-        };
-      }
-      summary.applied++;
-      return { version: m.version, name: m.name, status: "applied" };
-    }
-    const plannedStep = planned.get(m.version);
-    if (plannedStep?.kind === "adopt") {
-      summary.adoptable++;
-      return { version: m.version, name: m.name, status: "adoptable", detail: `${plannedStep.replaced} replaced` };
-    }
-    summary.pending++;
-    return { version: m.version, name: m.name, status: "pending" };
-  });
-  return { historyTable: store?.table ?? null, summary, items };
-}
-
-export async function applyPending(
-  c: PgClient,
-  migrationsDir: string,
-  onEvent?: (e: ApplyOutcome) => void,
-): Promise<{ applied: number; tampered: number; failed: number }> {
-  const store = await ensureTable(c);
-  const applied = await listApplied(c, store);
-  const all = readMigrations(migrationsDir);
-  const counts = { applied: 0, tampered: 0, failed: 0 };
-  const plan = buildMigrationPlan(all, applied, onEvent);
-  if (plan.kind === "tampered") {
-    counts.tampered++;
-    return counts;
-  }
-  if (plan.kind === "failed") {
-    counts.failed++;
-    return counts;
-  }
-
-  for (const step of plan.steps) {
-    const m = step.migration;
-    if (step.kind === "adopt") {
-      const adoption = await executeSquashAdoption(c, store, m, applied, step.replaced, onEvent);
-      if (adoption === "failed") {
-        counts.failed++;
-        return counts;
-      }
-      counts.applied++;
-      continue;
-    }
-    let committed = false;
-    await c.simpleQuery("BEGIN");
-    try {
-      await c.simpleQuery(m.upSql);
-      await c.execParamsText(
-        `INSERT INTO ${store.table} (version, name, up_hash) VALUES ($1, $2, $3)`,
-        [String(m.version), m.name, m.upHash],
-      );
-      await c.simpleQuery("COMMIT");
-      committed = true;
-    } catch (err) {
-      let rollbackErr: string | undefined;
-      if (!committed) {
-        try { await c.simpleQuery("ROLLBACK"); } catch (rb) { rollbackErr = (rb as Error).message; }
-      }
-      counts.failed++;
-      const message = rollbackErr
-        ? `${(err as Error).message} (rollback also failed: ${rollbackErr})`
-        : (err as Error).message;
-      onEvent?.({ kind: "failed", version: m.version, name: m.name, error: message });
-      return counts;
-    }
-    try {
-      await resetMigrationSession(c);
-    } catch (err) {
-      counts.failed++;
-      onEvent?.({ kind: "failed", version: m.version, name: m.name, error: `failed to reset migration session: ${(err as Error).message}` });
-      return counts;
-    }
-    counts.applied++;
-    applied.set(m.version, { name: m.name, hash: m.upHash });
-    onEvent?.({ kind: "applied", version: m.version, name: m.name });
-  }
-  return counts;
-}
-
-function lockKeyToString(lockKey: number | bigint): string {
-  if (typeof lockKey === "bigint") return lockKey.toString();
-  if (!Number.isSafeInteger(lockKey)) {
-    throw new Error(`sqlx-js.migrate: lockKey must be a safe integer or bigint, got ${lockKey}`);
-  }
-  return BigInt(lockKey).toString();
-}
-
-export async function acquireMigrateLock(
-  c: PgClient,
-  lockKey: number | bigint = DEFAULT_MIGRATE_LOCK_KEY,
-  timeoutMs?: number,
-): Promise<void> {
-  if (timeoutMs !== undefined && !Number.isFinite(timeoutMs)) {
-    throw new Error(`sqlx-js.migrate: lockTimeoutMs must be a finite number, got ${timeoutMs}`);
-  }
-  const key = lockKeyToString(lockKey);
-  if (timeoutMs === undefined || timeoutMs <= 0) {
-    await c.simpleQuery(`SELECT pg_advisory_lock(${key})`);
-    return;
-  }
-  const start = Date.now();
-  let delay = 50;
-  while (true) {
-    const r = await c.simpleQuery(`SELECT pg_try_advisory_lock(${key})`);
-    const got = decodeText(r.rows[0]?.[0] ?? null) === "t";
-    if (got) return;
-    const elapsed = Date.now() - start;
-    if (elapsed >= timeoutMs) {
-      throw new Error(`sqlx-js.migrate: failed to acquire advisory lock ${key} within ${timeoutMs}ms`);
-    }
-    const remaining = timeoutMs - elapsed;
-    await new Promise((resolve) => setTimeout(resolve, Math.min(delay, remaining)));
-    delay = Math.min(delay * 2, 2000);
-  }
-}
-
-export async function releaseMigrateLock(
-  c: PgClient,
-  lockKey: number | bigint = DEFAULT_MIGRATE_LOCK_KEY,
-): Promise<void> {
-  const key = lockKeyToString(lockKey);
-  await c.simpleQuery(`SELECT pg_advisory_unlock(${key})`);
 }
 
 function safeMigrationName(name: string): string {

@@ -41,3 +41,4 @@ for (const file of files(dist)) {
 }
 
 chmodSync(join(dist, "bin/sqlx-js.js"), 0o755);
+chmodSync(join(dist, "bin/sqlx-js-diagnostics.js"), 0o755);

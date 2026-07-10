@@ -52,10 +52,13 @@ jobs:
         run: bun bin/sqlx-js.ts migrate run --root example
 
       - name: Verify committed prepare artifacts
-        run: bun bin/sqlx-js.ts prepare --verify --root example
+        run: bun bin/sqlx-js.ts prepare --verify --strict-inference --root example
 
       - name: Verify offline cache matches sources
-        run: bun bin/sqlx-js.ts prepare --check --root example
+        run: bun bin/sqlx-js.ts prepare --check --strict-inference --root example
+
+      - name: Verify production query corpus
+        run: bun scripts/check-production-corpus.ts
 
       - name: Type-check example
         run: bunx tsc -p example
@@ -65,15 +68,19 @@ jobs:
 
       - name: Verify built package entrypoints
         run: |
+          node scripts/check-runtime-boundary.mjs
           node -e 'await import("@onreza/sqlx-js"); console.log("node root import ok")'
           bun -e 'await import("@onreza/sqlx-js"); console.log("bun root import ok")'
           node dist/bin/sqlx-js.js --version
 
       - name: Verify CLI runs under Node
         run: |
-          node dist/bin/sqlx-js.js prepare --check --root example
-          node dist/bin/sqlx-js.js prepare --verify --root example
+          node dist/bin/sqlx-js.js prepare --check --strict-inference --root example
+          node dist/bin/sqlx-js.js prepare --verify --strict-inference --root example
           node dist/bin/sqlx-js.js doctor --json --root example
+
+      - name: Verify packed runtime under Node
+        run: node scripts/node-package-smoke.mjs
 
       - name: Verify npm package contents
         run: npm pack --dry-run
