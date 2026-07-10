@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0](https://github.com/ONREZA/sqlx-js/compare/v0.4.0...v0.5.0) (2026-07-10)
+
+
+### Features
+
+* harden production workflows ([090deeb](https://github.com/ONREZA/sqlx-js/commit/090deeb6a1d7984714f0e9b5932618f5f1a800b7))
+
+
+### Bug Fixes
+
+* **ci:** support minimum Bun test runner ([e2140c8](https://github.com/ONREZA/sqlx-js/commit/e2140c8c4ecd56b77efa31b9993f283be5c2943e))
+* **prepare:** make generated cache portable ([fab2dae](https://github.com/ONREZA/sqlx-js/commit/fab2dae411689638701f61e7e4757c8414a9130d))
+
 ## [0.4.0](https://github.com/ONREZA/sqlx-js/compare/v0.3.0...v0.4.0) (2026-07-09)
 
 
