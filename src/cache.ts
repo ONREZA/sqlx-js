@@ -1,9 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import { isBuiltinOid } from "./pg/oids";
 
 export const CACHE_FORMAT_VERSION = 2;
-export const GENERATOR_REVISION = 2;
+export const GENERATOR_REVISION = 3;
 export const CACHE_MANIFEST_FILE = "cache-manifest.json";
 
 export type CacheManifest = {
@@ -32,6 +33,10 @@ export type CacheEntry = {
   filePaths?: string[];
   degraded?: { reason: string };
 };
+
+export function portableCacheOid(oid: number): number {
+  return isBuiltinOid(oid) ? oid : 0;
+}
 
 export function fingerprint(query: string): string {
   const norm = normalizeForFingerprint(query);

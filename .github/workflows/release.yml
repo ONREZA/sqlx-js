@@ -47,7 +47,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: sqlx_js_test
+          POSTGRES_DB: sqlx_js_example
         ports:
           - 5432:5432
         options: >-
@@ -57,8 +57,8 @@ jobs:
           --health-retries 10
 
     env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_test
-      SQLX_JS_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_test
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_example
+      SQLX_JS_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

@@ -5,7 +5,7 @@
     "SELECT id FROM users WHERE role = $1"
   ],
   "paramOids": [
-    16421
+    0
   ],
   "paramTsTypes": [
     "\"admin\" | \"editor\" | \"viewer\""

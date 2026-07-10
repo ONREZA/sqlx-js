@@ -28,7 +28,7 @@
     },
     {
       "name": "status",
-      "typeOid": 16429,
+      "typeOid": 0,
       "tsType": "\"draft\" | \"published\" | \"archived\"",
       "nullable": false
     },
@@ -40,13 +40,13 @@
     },
     {
       "name": "history",
-      "typeOid": 16420,
+      "typeOid": 0,
       "tsType": "(\"admin\" | \"editor\" | \"viewer\")[]",
       "nullable": false
     },
     {
       "name": "author_role",
-      "typeOid": 16421,
+      "typeOid": 0,
       "tsType": "\"admin\" | \"editor\" | \"viewer\"",
       "nullable": false
     }

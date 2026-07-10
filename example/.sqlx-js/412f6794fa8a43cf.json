@@ -28,7 +28,7 @@
     },
     {
       "name": "role",
-      "typeOid": 16421,
+      "typeOid": 0,
       "tsType": "\"admin\" | \"editor\" | \"viewer\"",
       "nullable": false
     }

@@ -7,7 +7,7 @@
   "paramOids": [
     25,
     25,
-    16421
+    0
   ],
   "paramTsTypes": [
     "string",
@@ -29,7 +29,7 @@
     },
     {
       "name": "role",
-      "typeOid": 16421,
+      "typeOid": 0,
       "tsType": "\"admin\" | \"editor\" | \"viewer\"",
       "nullable": false,
       "override": "non-null"

@@ -5,9 +5,15 @@ import {
   assertCacheManifest,
   Cache,
   fingerprint,
+  portableCacheOid,
   readCacheManifest,
   writeCacheManifest,
 } from "../src/cache";
+
+test("portable cache OIDs keep built-ins and normalize database-local types", () => {
+  expect(portableCacheOid(20)).toBe(20);
+  expect(portableCacheOid(17458)).toBe(0);
+});
 
 test("fingerprint is whitespace-invariant", () => {
   expect(fingerprint("SELECT 1")).toBe(fingerprint("SELECT  1"));

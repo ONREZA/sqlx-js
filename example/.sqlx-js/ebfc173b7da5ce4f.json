@@ -5,7 +5,7 @@
     "queries/get_users_by_role.sql"
   ],
   "paramOids": [
-    16421,
+    0,
     23
   ],
   "paramTsTypes": [

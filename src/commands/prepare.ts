@@ -11,6 +11,7 @@ import {
   Cache,
   fingerprint,
   effectiveNullable,
+  portableCacheOid,
   writeCacheManifest,
   type CacheEntry,
 } from "../cache";
@@ -533,7 +534,7 @@ export async function prepareOnce(
     const entry: CacheEntry = {
       query: r.query,
       ...siteUsage(r.sites),
-      paramOids: r.paramOids,
+      paramOids: r.paramOids.map(portableCacheOid),
       paramTsTypes: r.paramOids.map((o, idx) => resolveParamTs(idx + 1, o, pm.targets, schema, userCfg)),
       paramNullable: r.paramOids.map((_o, idx) => resolveParamNullable(idx + 1, pm, schema)),
       columns: r.fields.map((f, i) => {
@@ -541,7 +542,7 @@ export async function prepareOnce(
         const treatAsOverride = parsed.override !== undefined && isAliasOrExpression(f, schema);
         return {
           name: parsed.name,
-          typeOid: f.typeOid,
+          typeOid: portableCacheOid(f.typeOid),
           tsType: resolveColumnTs(f, schema, userCfg),
           nullable: analysis.perColumnNullable[i] ?? true,
           ...(treatAsOverride ? { override: parsed.override } : {}),
