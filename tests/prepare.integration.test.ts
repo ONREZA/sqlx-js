@@ -1129,7 +1129,7 @@ if (!haveIntegrationDatabase) {
     expect(dts).toMatch(/table\.dot.*params: \[bigint, string \| null\]/);
   });
 
-  test("unconfigured jsonb params accept any structurally checked JsonParameter", () => {
+  test("strict inference accepts structurally checked existential JsonParameter values", () => {
     writeFile("migrations/0006_json_fallback.up.sql",
       "CREATE TABLE IF NOT EXISTS tmp_json_fallback (\n" +
       "  id BIGSERIAL PRIMARY KEY,\n" +
@@ -1147,8 +1147,9 @@ if (!haveIntegrationDatabase) {
       "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"INSERT INTO tmp_json_fallback (payload, maybe_payload) VALUES ($1, $2) RETURNING payload, maybe_payload\", sql.json({ ok: true, tags: [\"a\"], nested: { n: 1 } }), null);\n",
     );
-    const r = prepare();
+    const r = prepare(["--strict-inference"]);
     expect(r.code).toBe(0);
+    expect(r.stderr).not.toContain("inference failed");
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toMatch(/tmp_json_fallback.*params: \[import\("@onreza\/sqlx-js"\)\.JsonParameter<unknown>, import\("@onreza\/sqlx-js"\)\.JsonParameter<unknown> \| null\]/);
     expect(dts).toContain('"payload": import("@onreza/sqlx-js").JsonValue');
@@ -1169,7 +1170,7 @@ if (!haveIntegrationDatabase) {
       "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT $1::jsonb[] AS values\", sql.array([sql.json({ ok: true })]));\n",
     );
-    const jsonResult = prepare();
+    const jsonResult = prepare(["--strict-inference"]);
     expect(jsonResult.code).toBe(0);
     const jsonDts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(jsonDts).toContain('PgArrayParameter<import("@onreza/sqlx-js").JsonParameter<unknown>>');

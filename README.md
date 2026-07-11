@@ -512,7 +512,7 @@ Regular `prepare` describes queries across a small connection pool (default 8, o
 | `--json`              | Machine-readable prepare diagnostics, doctor output, migration inspection and dry-runs. |
 | `--embed <path>`      | For `queries`: write a deterministic TypeScript map of referenced external SQL files. |
 | `--jsonl`             | Versioned streaming events for `prepare --watch`.                                     |
-| `--strict-inference`  | Fail prepare/dev/verify when nullability degrades or a generated query type contains `unknown`. |
+| `--strict-inference`  | Fail prepare/dev/verify when nullability degrades or a generated query type contains unresolved `unknown`. Intentional `JsonParameter<unknown>` wrappers remain accepted. |
 | `--force`             | For `migrate archive restore`: allow overwriting existing migration files.           |
 | `--lock-timeout <ms>` | Advisory-lock acquisition timeout for `migrate run` / `revert` / `dev` / `verify` / `squash`. |
 | `--shadow-url <url>`  | Use an existing disposable shadow DB instead of auto-creating one.                   |
@@ -714,7 +714,7 @@ declare global {
 export {};
 ```
 
-After re-running `prepare`, every `jsonb` column or parameter declared in `jsonbTypes` is checked against the corresponding TypeScript type. Columns without a custom mapping use `JsonValue` for result rows and `JsonParameter<unknown>` for parameters: the existential parameter type accepts any wrapper already proven JSON-safe by `sql.json(value)` without requiring domain interfaces to declare a string index signature. Non-JSON inputs such as `Date`, functions, and `bigint` are rejected by TypeScript while plain JSON objects, arrays, strings, numbers, booleans, and nested JSON `null` values are accepted. A bare top-level `null` remains SQL `NULL` and is allowed only when the mapped database parameter is nullable; use `sql.json(null)` for JSON `null`.
+After re-running `prepare`, every `jsonb` column or parameter declared in `jsonbTypes` is checked against the corresponding TypeScript type. Columns without a custom mapping use `JsonValue` for result rows and `JsonParameter<unknown>` for parameters: the existential parameter type accepts any wrapper already proven JSON-safe by `sql.json(value)` without requiring domain interfaces to declare a string index signature. `--strict-inference` accepts this intentional wrapper while continuing to reject unresolved `unknown` elsewhere in generated query contracts. Non-JSON inputs such as `Date`, functions, and `bigint` are rejected by TypeScript while plain JSON objects, arrays, strings, numbers, booleans, and nested JSON `null` values are accepted. A bare top-level `null` remains SQL `NULL` and is allowed only when the mapped database parameter is nullable; use `sql.json(null)` for JSON `null`.
 
 ### Direct scalar `columnTypes`
 
