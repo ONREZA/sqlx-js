@@ -1,5 +1,7 @@
 import type { QUERY_EXECUTOR, QueryExecutorMethod } from "./query";
 
+declare const QUERY_REGISTRY: unique symbol;
+
 type ParamsOf<T> = T extends { params: infer P }
   ? P extends readonly unknown[] ? P : [P]
   : never[];
@@ -19,21 +21,51 @@ export type TypedFile<TFileQueries> = {
   execute: <P extends keyof TFileQueries>(path: P, ...params: ParamsOf<TFileQueries[P]>) => Promise<ExecuteResult>;
 };
 
-export type TypedSql<TQueries, TFileQueries> = {
-  <Q extends keyof TQueries>(query: Q, ...params: ParamsOf<TQueries[Q]>): Promise<RowOf<TQueries[Q]>[]>;
-  one: <Q extends keyof TQueries>(query: Q, ...params: ParamsOf<TQueries[Q]>) => Promise<RowOf<TQueries[Q]>>;
-  optional: <Q extends keyof TQueries>(query: Q, ...params: ParamsOf<TQueries[Q]>) => Promise<RowOf<TQueries[Q]> | null>;
-  execute: <Q extends keyof TQueries>(query: Q, ...params: ParamsOf<TQueries[Q]>) => Promise<ExecuteResult>;
-  file: TypedFile<TFileQueries>;
+export type TypedSqlForRegistry<Registry extends { queries: object; fileQueries: object }> = {
+  <Q extends keyof Registry["queries"]>(
+    query: Q,
+    ...params: ParamsOf<Registry["queries"][Q]>
+  ): Promise<RowOf<Registry["queries"][Q]>[]>;
+  one: <Q extends keyof Registry["queries"]>(
+    query: Q,
+    ...params: ParamsOf<Registry["queries"][Q]>
+  ) => Promise<RowOf<Registry["queries"][Q]>>;
+  optional: <Q extends keyof Registry["queries"]>(
+    query: Q,
+    ...params: ParamsOf<Registry["queries"][Q]>
+  ) => Promise<RowOf<Registry["queries"][Q]> | null>;
+  execute: <Q extends keyof Registry["queries"]>(
+    query: Q,
+    ...params: ParamsOf<Registry["queries"][Q]>
+  ) => Promise<ExecuteResult>;
+  file: TypedFile<Registry["fileQueries"]>;
   id: (...parts: string[]) => string;
   json: JsonFn;
   array: ArrayFn;
   readonly [QUERY_EXECUTOR]?: QueryExecutorMethod;
+  readonly [QUERY_REGISTRY]?: Registry;
 };
 
-export type Typed<TQueries, TFileQueries, TTransactionOptions> = TypedSql<TQueries, TFileQueries> & {
+export type TypedSql<TQueries extends object, TFileQueries extends object> = TypedSqlForRegistry<{
+  queries: TQueries;
+  fileQueries: TFileQueries;
+}>;
+
+export type TypedForRegistry<
+  Registry extends { queries: object; fileQueries: object },
+  TTransactionOptions,
+> = TypedSqlForRegistry<Registry> & {
   transaction: {
-    <R>(fn: (tx: TypedSql<TQueries, TFileQueries>) => Promise<R>): Promise<R>;
-    <R>(opts: TTransactionOptions, fn: (tx: TypedSql<TQueries, TFileQueries>) => Promise<R>): Promise<R>;
+    <R>(fn: (tx: TypedSqlForRegistry<Registry>) => Promise<R>): Promise<R>;
+    <R>(opts: TTransactionOptions, fn: (tx: TypedSqlForRegistry<Registry>) => Promise<R>): Promise<R>;
   };
 };
+
+export type Typed<
+  TQueries extends object,
+  TFileQueries extends object,
+  TTransactionOptions,
+> = TypedForRegistry<{
+  queries: TQueries;
+  fileQueries: TFileQueries;
+}, TTransactionOptions>;

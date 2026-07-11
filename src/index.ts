@@ -1,5 +1,9 @@
 import * as rt from "./postgres-runtime";
-import type { Typed as TypedFor, TypedFile as TypedFileFor, TypedSql as TypedSqlFor } from "./typed";
+import type {
+  TypedFile as TypedFileFor,
+  TypedForRegistry,
+  TypedSqlForRegistry,
+} from "./typed";
 import type {
   QueryParamsFor,
   QueryResultFor,
@@ -29,8 +33,8 @@ export type { ExecuteResult, JsonParameter, PgArrayParameter, JsonCompatible, Kn
 export type { PostgresClient, PostgresOptions, CreateClientOptions } from "./postgres-runtime";
 
 export type TypedFile = TypedFileFor<KnownFileQueries>;
-export type TypedSql = TypedSqlFor<KnownQueries, KnownFileQueries>;
-export type Typed = TypedFor<KnownQueries, KnownFileQueries, import("./runtime").TransactionOptions>;
+export type TypedSql = TypedSqlForRegistry<DefaultQueryRegistry>;
+export type Typed = TypedForRegistry<DefaultQueryRegistry, import("./runtime").TransactionOptions>;
 
 export type QueryRegistry = {
   queries: object;
@@ -44,14 +48,14 @@ export interface DefaultQueryRegistry {
 }
 
 export type SqlClient<Registry extends QueryRegistry = DefaultQueryRegistry> = {
-  sql: TypedFor<Registry["queries"], Registry["fileQueries"], import("./runtime").TransactionOptions>;
+  sql: TypedForRegistry<Registry, import("./runtime").TransactionOptions>;
   unsafe: Unsafe;
   client: import("./postgres-runtime").PostgresClient;
   close: () => Promise<void>;
 };
 
 export type SqlExecutor<Registry extends QueryRegistry = DefaultQueryRegistry> =
-  TypedSqlFor<Registry["queries"], Registry["fileQueries"]>;
+  TypedSqlForRegistry<Registry>;
 export type QueryParams<Definition, Registry extends QueryRegistry = DefaultQueryRegistry> =
   QueryParamsFor<Definition, Registry>;
 export type QueryRow<Definition, Registry extends QueryRegistry = DefaultQueryRegistry> =

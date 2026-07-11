@@ -316,6 +316,9 @@ test("query definitions, executor helpers, and structural JSON compile together"
   mkdirSync(root, { recursive: true });
   const query = "SELECT id, email FROM users WHERE id = $id";
   const jsonQuery = "SELECT $payload::jsonb AS payload";
+  const positionalQuery = "SELECT id, email FROM users WHERE id = $1 AND active IS NOT DISTINCT FROM $2";
+  const zeroParamsQuery = "SELECT COUNT(*)::int4 AS count FROM users";
+  const executeQuery = "UPDATE users SET active = $active WHERE id = $id";
   emitDts(join(root, "generated.d.ts"), [
     {
       query,
@@ -336,14 +339,56 @@ test("query definitions, executor helpers, and structural JSON compile together"
       hasResultSet: true,
       columns: [{ name: "payload", typeOid: 3802, tsType: 'import("@onreza/sqlx-js").JsonValue', nullable: false }],
     },
+    {
+      query: positionalQuery,
+      paramOids: [2950, 16],
+      paramTsTypes: ["string", "boolean"],
+      paramNullable: [false, true],
+      hasResultSet: true,
+      columns: [
+        { name: "id", typeOid: 2950, tsType: "string", nullable: false },
+        { name: "email", typeOid: 25, tsType: "string", nullable: false },
+      ],
+    },
+    {
+      query: zeroParamsQuery,
+      paramOids: [],
+      paramTsTypes: [],
+      hasResultSet: true,
+      columns: [{ name: "count", typeOid: 23, tsType: "number", nullable: false }],
+    },
+    {
+      query: executeQuery,
+      paramOids: [16, 2950],
+      paramTsTypes: ["boolean", "string"],
+      paramNames: ["active", "id"],
+      hasResultSet: false,
+      columns: [],
+    },
+    {
+      query: "SELECT id, email FROM users WHERE id = $1",
+      paramOids: [2950],
+      paramTsTypes: ["string"],
+      hasResultSet: true,
+      hasInline: false,
+      filePaths: ["queries/user.sql"],
+      columns: [
+        { name: "id", typeOid: 2950, tsType: "string", nullable: false },
+        { name: "email", typeOid: 25, tsType: "string", nullable: false },
+      ],
+    },
   ]);
   writeFileSync(join(root, "consumer.ts"), `
 import {
   defineQuery,
   json,
+  sql,
+  type ExecuteResult,
   type QueryParams,
+  type QueryRegistry,
   type QueryResult,
   type QueryRow,
+  type SqlClient,
   type SqlExecutor,
 } from "@onreza/sqlx-js";
 import type { SqlxJsGeneratedRegistry } from "./generated";
@@ -361,6 +406,128 @@ declare const executor: SqlExecutor<SqlxJsGeneratedRegistry>;
 void findUser.run(executor, params);
 void ambientParams;
 void result;
+
+export function runScoped(executor: SqlExecutor<SqlxJsGeneratedRegistry>, params: Params) {
+  return findUser.run(executor, params);
+}
+
+export function runAmbient(executor: SqlExecutor, params: AmbientParams) {
+  return findUser.run(executor, params);
+}
+
+const findUserOne = defineQuery.one("users.findOne", ${JSON.stringify(query)});
+export function runOneScoped(executor: SqlExecutor<SqlxJsGeneratedRegistry>, params: Params) {
+  return findUserOne.run(executor, params);
+}
+
+export function runOneAmbient(executor: SqlExecutor, params: AmbientParams) {
+  return findUserOne.run(executor, params);
+}
+
+const findUsers = defineQuery(${JSON.stringify(query)});
+export function runMany(executor: SqlExecutor<SqlxJsGeneratedRegistry>, params: Params) {
+  return findUsers.run(executor, params);
+}
+
+export function runManyAmbient(executor: SqlExecutor, params: AmbientParams) {
+  return findUsers.run(executor, params);
+}
+
+const positional = defineQuery.one("users.positional", ${JSON.stringify(positionalQuery)});
+type PositionalParams = QueryParams<typeof positional, SqlxJsGeneratedRegistry>;
+export function runPositional(executor: SqlExecutor<SqlxJsGeneratedRegistry>, params: PositionalParams) {
+  return positional.run(executor, ...params);
+}
+
+const countUsers = defineQuery.one("users.count", ${JSON.stringify(zeroParamsQuery)});
+export function runZeroParams(executor: SqlExecutor<SqlxJsGeneratedRegistry>) {
+  return countUsers.run(executor);
+}
+
+const updateUser = defineQuery.execute("users.update", ${JSON.stringify(executeQuery)});
+type UpdateParams = QueryParams<typeof updateUser, SqlxJsGeneratedRegistry>;
+export function runExecute(executor: SqlExecutor<SqlxJsGeneratedRegistry>, params: UpdateParams) {
+  return updateUser.run(executor, params);
+}
+
+type AmbientUpdateParams = QueryParams<typeof updateUser>;
+export function runExecuteAmbient(executor: SqlExecutor, params: AmbientUpdateParams) {
+  return updateUser.run(executor, params);
+}
+
+export function runClient(client: SqlClient<SqlxJsGeneratedRegistry>, params: Params) {
+  return findUserOne.run(client.sql, params);
+}
+
+export function runTransaction(params: AmbientParams) {
+  return sql.transaction((tx) => findUserOne.run(tx, params));
+}
+
+export function runRaw(executor: SqlExecutor<SqlxJsGeneratedRegistry>, params: Params) {
+  return executor.one(${JSON.stringify(query)}, params);
+}
+
+export function runFile(executor: SqlExecutor<SqlxJsGeneratedRegistry>, id: string) {
+  return executor.file.one("queries/user.sql", id);
+}
+
+export function runGeneric<Executor extends SqlExecutor<SqlxJsGeneratedRegistry>>(
+  executor: Executor,
+  params: Params,
+) {
+  return findUserOne.run(executor, params);
+}
+
+type TracedExecutor = SqlExecutor<SqlxJsGeneratedRegistry> & { traceId: string };
+export function runIntersection(executor: TracedExecutor, params: Params) {
+  return findUserOne.run(executor, params);
+}
+
+type FindUserEntry = SqlxJsGeneratedRegistry["queries"][typeof findUserOne.query];
+type CompatibleRegistry = QueryRegistry & {
+  queries: Record<typeof findUserOne.query, FindUserEntry>;
+};
+export function runRegistryGeneric<Registry extends CompatibleRegistry>(
+  executor: SqlExecutor<Registry>,
+  params: QueryParams<typeof findUserOne, Registry>,
+) {
+  return findUserOne.run(executor, params);
+}
+
+export function runExtendedRegistry<Registry extends SqlxJsGeneratedRegistry>(
+  executor: SqlExecutor<Registry>,
+  params: QueryParams<typeof findUserOne, Registry>,
+) {
+  return findUserOne.run(executor, params);
+}
+
+export function runGenericClient<Registry extends CompatibleRegistry>(
+  client: SqlClient<Registry>,
+  params: QueryParams<typeof findUserOne, Registry>,
+) {
+  return findUserOne.run(client.sql, params);
+}
+
+export function runGenericTransaction<Registry extends CompatibleRegistry>(
+  client: SqlClient<Registry>,
+  params: QueryParams<typeof findUserOne, Registry>,
+) {
+  return client.sql.transaction((tx) => findUserOne.run(tx, params));
+}
+
+type PositionalEntry = SqlxJsGeneratedRegistry["queries"][typeof positional.query];
+type CompatiblePositionalRegistry = QueryRegistry & {
+  queries: Record<typeof positional.query, PositionalEntry>;
+};
+export function runPositionalRegistryGeneric<Registry extends CompatiblePositionalRegistry>(
+  executor: SqlExecutor<Registry>,
+  params: QueryParams<typeof positional, Registry>,
+) {
+  return positional.run(executor, ...params);
+}
+
+const executeResult: Promise<ExecuteResult> = runExecute(executor, { active: true, id: params.id });
+void executeResult;
 
 interface Payload {
   id: string;
@@ -395,7 +562,10 @@ json({ id: "visible", [metadata]: "hidden" });
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
       strict: true,
-      noEmit: true,
+      declaration: true,
+      emitDeclarationOnly: true,
+      outDir: join(root, "declarations"),
+      rootDir: resolve(import.meta.dir, ".."),
       module: "Preserve",
       moduleResolution: "Bundler",
       target: "ESNext",
@@ -411,4 +581,54 @@ json({ id: "visible", [metadata]: "hidden" });
     encoding: "utf8",
   });
   expect(checked.status, checked.stdout + checked.stderr).toBe(0);
+  const declaration = readFileSync(
+    join(root, "declarations/tests/.tmp-codegen/query-definitions/consumer.d.ts"),
+    "utf8",
+  );
+  expect(declaration).not.toContain("Promise<unknown");
+  const emittedFunction = (name: string) => {
+    const start = declaration.indexOf(`export declare function ${name}`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const next = declaration.indexOf("export declare function ", start + 1);
+    return declaration.slice(start, next === -1 ? undefined : next);
+  };
+  for (const name of ["runScoped", "runAmbient"]) {
+    expect(emittedFunction(name)).toContain("email: string;");
+    expect(emittedFunction(name)).toContain("} | null>;");
+  }
+  for (const name of ["runOneScoped", "runOneAmbient"]) {
+    expect(emittedFunction(name)).toContain("email: string;");
+    expect(emittedFunction(name)).toContain("}>;");
+    expect(emittedFunction(name)).not.toContain("null");
+  }
+  for (const name of ["runMany", "runManyAmbient"]) {
+    expect(emittedFunction(name)).toContain("email: string;");
+    expect(emittedFunction(name)).toContain("}[]>;");
+  }
+  for (const name of [
+    "runPositional",
+    "runClient",
+    "runTransaction",
+    "runRaw",
+    "runFile",
+    "runGeneric",
+    "runIntersection",
+  ]) {
+    expect(emittedFunction(name)).toContain("email: string;");
+    expect(emittedFunction(name)).not.toContain("unknown");
+  }
+  for (const name of [
+    "runRegistryGeneric",
+    "runExtendedRegistry",
+    "runGenericClient",
+    "runGenericTransaction",
+    "runPositionalRegistryGeneric",
+  ]) {
+    expect(emittedFunction(name)).toContain("Promise<");
+    expect(emittedFunction(name)).not.toContain("unknown");
+  }
+  expect(emittedFunction("runZeroParams")).toContain("count: number;");
+  for (const name of ["runExecute", "runExecuteAmbient"]) {
+    expect(emittedFunction(name)).toContain("ExecuteResult");
+  }
 });

@@ -1,6 +1,6 @@
 import { queryId } from "./query-id";
 import type { ExecuteResult } from "./runtime";
-import type { TypedSql } from "./typed";
+import type { TypedSqlForRegistry } from "./typed";
 
 export type QueryExecutionMode = "many" | "one" | "optional" | "execute";
 export type QueryExecutionMetadata = { queryId: string; queryName?: string };
@@ -13,11 +13,8 @@ export type QueryExecutorMethod = (
   metadata: QueryExecutionMetadata,
 ) => Promise<unknown>;
 
-type QueryEntry = { params: unknown; row: unknown };
-type ParamsOf<T> = T extends { params: infer P }
-  ? P extends readonly unknown[] ? P : [P]
-  : never[];
-type RowOf<T> = T extends { row: infer R } ? R : never;
+type NamedQueryEntry = { params: Record<string, unknown>; row: unknown };
+type PositionalQueryEntry = { params: readonly unknown[]; row: unknown };
 type QueryModeResult<Mode extends QueryExecutionMode, Row> =
   Mode extends "many" ? Row[]
     : Mode extends "one" ? Row
@@ -32,22 +29,29 @@ export type QueryDefinition<
   readonly mode: Mode;
   readonly queryId: string;
   readonly queryName?: string;
-  run<Queries extends Record<Query, QueryEntry>, FileQueries>(
-    executor: TypedSql<Queries, FileQueries>,
-    ...params: ParamsOf<Queries[Query]>
-  ): Promise<QueryModeResult<Mode, RowOf<Queries[Query]>>>;
+  run<Registry extends { queries: Record<Query, NamedQueryEntry>; fileQueries: object }>(
+    executor: TypedSqlForRegistry<Registry>,
+    params: RegistryParams<Query, Registry>,
+  ): Promise<QueryResultFor<QueryDefinition<Query, Mode>, Registry>>;
+  run<Registry extends { queries: Record<Query, PositionalQueryEntry>; fileQueries: object }>(
+    executor: TypedSqlForRegistry<Registry>,
+    ...params: RegistryParams<Query, Registry> & readonly unknown[]
+  ): Promise<QueryResultFor<QueryDefinition<Query, Mode>, Registry>>;
 };
 
 type DefinitionQuery<Definition> = Definition extends QueryDefinition<infer Query, QueryExecutionMode> ? Query : never;
 type DefinitionMode<Definition> = Definition extends QueryDefinition<string, infer Mode> ? Mode : never;
-type RegistryQuery<Definition, Registry extends { queries: object }> =
-  DefinitionQuery<Definition> extends keyof Registry["queries"]
-    ? Registry["queries"][DefinitionQuery<Definition>]
-    : never;
+type RegistryQuery<Query extends string, Registry extends { queries: object }> =
+  Registry["queries"][Query & keyof Registry["queries"]];
+type RegistryParams<Query extends string, Registry extends { queries: object }> =
+  RegistryQuery<Query, Registry>["params" & keyof RegistryQuery<Query, Registry>];
+type RegistryRow<Query extends string, Registry extends { queries: object }> =
+  RegistryQuery<Query, Registry>["row" & keyof RegistryQuery<Query, Registry>];
 
 export type QueryParamsFor<Definition, Registry extends { queries: object }> =
-  RegistryQuery<Definition, Registry> extends { params: infer Params } ? Params : never;
-export type QueryRowFor<Definition, Registry extends { queries: object }> = RowOf<RegistryQuery<Definition, Registry>>;
+  RegistryParams<DefinitionQuery<Definition>, Registry>;
+export type QueryRowFor<Definition, Registry extends { queries: object }> =
+  RegistryRow<DefinitionQuery<Definition>, Registry>;
 export type QueryResultFor<Definition, Registry extends { queries: object }> = QueryModeResult<
   DefinitionMode<Definition>,
   QueryRowFor<Definition, Registry>
