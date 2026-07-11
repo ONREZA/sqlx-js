@@ -95,6 +95,7 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
       "sqlx:check": "sqlx-js prepare --check",
       "sqlx:offline": "sqlx-js prepare --offline",
       "sqlx:verify": "sqlx-js prepare --verify --strict-inference",
+      "sqlx:ci": "sqlx-js ci",
     });
 
     const r2 = spawnSync("bun", [binPath, "init", "--root", root], {

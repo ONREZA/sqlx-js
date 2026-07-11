@@ -425,6 +425,7 @@ In addition to `import { sql } from "@onreza/sqlx-js"`, the scanner recognises `
 ```
 sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]
 sqlx-js doctor [--root <dir>] [--dts <path>] [--json]
+sqlx-js ci [--root <dir>] [--json] [--shadow-url <url>] [--shadow-admin-url <url>]
 sqlx-js db install | check [--root <dir>]
 sqlx-js db plan | apply [--root <dir>] [-- <pgschema args>]
 sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
@@ -693,6 +694,14 @@ A column that doesn't satisfy the above is `T | null`. You can override:
 The runtime strips the `!`/`?` suffix from column keys so the row shape stays clean: `{ id: bigint }`, not `{ "id!": bigint }`.
 
 ## CI workflow
+
+The shortest production gate is provider-aware:
+
+```bash
+sqlx-js ci
+```
+
+For the built-in migration provider it runs shadow migration verification with strict inference, followed by the read-only offline artifact check. For pgschema it checks the configured provider, performs live `prepare --verify --strict-inference`, and then verifies committed artifacts offline. If a committed schema snapshot exists, both flows also run `schema check`. `--json` returns a versioned per-step report suitable for CI systems.
 
 Commit the generated `sqlx-js-env.d.ts` and the `.sqlx-js/` cache directory to your repo. In CI:
 
