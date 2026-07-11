@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/ONREZA/sqlx-js/compare/v0.7.0...v0.8.0) (2026-07-11)
+
+
+### Features
+
+* add named params and production CI ([#12](https://github.com/ONREZA/sqlx-js/issues/12)) ([312ef5a](https://github.com/ONREZA/sqlx-js/commit/312ef5a466f126063252d83137f68231005a00ce))
+
 ## [0.7.0](https://github.com/ONREZA/sqlx-js/compare/v0.6.0...v0.7.0) (2026-07-11)
 
 
