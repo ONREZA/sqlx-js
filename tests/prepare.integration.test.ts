@@ -201,6 +201,19 @@ if (!haveIntegrationDatabase) {
     expect(queryCacheFiles().length).toBeGreaterThan(0);
   });
 
+  test("prepare includes queries issued through createSqlClient", () => {
+    writeFile("a.ts",
+      "import { createSqlClient } from \"@onreza/sqlx-js\";\n" +
+      "const db = createSqlClient();\n" +
+      "await db.sql.one(\"SELECT id, name FROM tmp_users WHERE id = $1\", 1);\n",
+    );
+    const r = prepare();
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/a\.ts:3:18/);
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain("SELECT id, name FROM tmp_users WHERE id = $1");
+  });
+
   test("prepare publishes no partial artifacts when any query fails", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
@@ -478,9 +491,12 @@ if (!haveIntegrationDatabase) {
     expect(r.stdout).not.toMatch(/pruned/);
     const second = queryCacheFiles();
     expect(second.length).toBe(first.length + 1);
+
+    r = prepare(["--check"]);
+    expect(r.code).toBe(0);
   });
 
-  test("prepare --check emits all inline variants sharing one fingerprint", () => {
+  test("prepare --check is read-only and --offline regenerates inline variants", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT id FROM tmp_users WHERE id = $1\", 1);\n",
@@ -495,10 +511,75 @@ if (!haveIntegrationDatabase) {
       "await sql(\"SELECT  id  FROM tmp_users WHERE id = $1\", 1);\n",
     );
     r = prepare(["--check"]);
+    expect(r.code).toBe(1);
+    let dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).not.toContain('"SELECT  id  FROM tmp_users WHERE id = $1":');
+
+    r = prepare(["--offline"]);
     expect(r.code).toBe(0);
-    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain('"SELECT id FROM tmp_users WHERE id = $1":');
     expect(dts).toContain('"SELECT  id  FROM tmp_users WHERE id = $1":');
+  });
+
+  test("prepare --check reports a stale declaration without replacing it", () => {
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT id FROM tmp_users\");\n",
+    );
+    expect(prepare().code).toBe(0);
+    writeFile("sqlx-js-env.d.ts", "export {};\n");
+
+    const checked = prepare(["--check", "--json"]);
+    expect(checked.code).toBe(1);
+    expect(readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8")).toBe("export {};\n");
+    expect(JSON.parse(checked.stdout).diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: "generated declaration is stale or missing",
+        file: "sqlx-js-env.d.ts",
+      }),
+    ]));
+
+    expect(prepare(["--offline"]).code).toBe(0);
+    expect(readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8")).toContain("SELECT id FROM tmp_users");
+  });
+
+  test("unqualified DML parameters follow the prepare session search_path", async () => {
+    const root = isolatedRoot("search-path");
+    const client = new PgClient(parseDatabaseUrl(dbUrl));
+    await client.connect();
+    try {
+      await client.simpleQuery(`
+        DROP TABLE IF EXISTS public.tmp_search_path_target;
+        DROP SCHEMA IF EXISTS tmp_search_path CASCADE;
+        CREATE TABLE public.tmp_search_path_target (payload jsonb NOT NULL);
+        CREATE SCHEMA tmp_search_path;
+        CREATE TABLE tmp_search_path.tmp_search_path_target (payload jsonb);
+      `);
+      writeRootFile(root, "a.ts",
+        "import { sql } from \"@onreza/sqlx-js\";\n" +
+        "await sql(\"INSERT INTO tmp_search_path_target (payload) VALUES ($1)\", sql.json({ ok: true }));\n" +
+        "await sql(\"SELECT payload FROM tmp_search_path_target\");\n",
+      );
+      writeRootFile(root, "sqlx-js.config.ts", `export default {
+  jsonbTypes: { "tmp_search_path.tmp_search_path_target.payload": "SearchPathPayload" },
+};
+`);
+      const url = new URL(dbUrl);
+      url.searchParams.set("options", "-c search_path=tmp_search_path,public");
+      const result = spawnSync(
+        "bun",
+        [join(repoRoot, "bin/sqlx-js.ts"), "prepare", "--root", root],
+        { env: { ...process.env, DATABASE_URL: url.toString() }, encoding: "utf8" },
+      );
+      expect(result.status).toBe(0);
+      const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
+      expect(dts).toContain('JsonParameter<SearchPathPayload> | null');
+      expect(dts).toContain('"payload": SearchPathPayload | null');
+    } finally {
+      await client.simpleQuery("DROP TABLE IF EXISTS public.tmp_search_path_target; DROP SCHEMA IF EXISTS tmp_search_path CASCADE");
+      await client.end();
+    }
   });
 
   test("sql.file produces KnownFileQueries entry keyed by path", () => {
@@ -741,8 +822,7 @@ if (!haveIntegrationDatabase) {
 
       const r = migrateCommand(["verify"], root);
 
-      expect(r.code).toBe(0);
-      expect(r.stderr).toBe("");
+      expect({ code: r.code, stderr: r.stderr }).toEqual({ code: 0, stderr: "" });
       expect(r.stdout).toContain("shadow: created");
       expect(r.stdout).toContain("generated artifacts are current");
       expect(r.stdout).toContain("shadow: dropped");

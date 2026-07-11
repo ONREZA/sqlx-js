@@ -68,6 +68,45 @@ test("namespace import: bs.sql.transaction(tx => tx(...))", () => {
   expect(sites[0]!.query).toBe("SELECT inside");
 });
 
+test("createSqlClient: scoped sql surface is detected", () => {
+  setup({
+    "a.ts":
+      "import { createSqlClient as createDatabase } from \"@onreza/sqlx-js\";\n" +
+      "const db = createDatabase();\n" +
+      "await db.sql(\"SELECT scoped\");\n" +
+      "await db.sql.one(\"SELECT one\");\n" +
+      "await db.sql.file.optional(\"./q.sql\");\n" +
+      "await db.sql.transaction(async (tx) => {\n" +
+      "  await tx.execute(\"UPDATE jobs SET active = false\");\n" +
+      "});\n",
+    "q.sql": "SELECT from_file\n",
+  });
+
+  const sites = scanProject(tmp).slice().sort((a, b) => a.line - b.line);
+  expect(sites.map((site) => site.query)).toEqual([
+    "SELECT scoped",
+    "SELECT one",
+    "SELECT from_file\n",
+    "UPDATE jobs SET active = false",
+  ]);
+  expect(sites[2]!.kind).toBe("file");
+});
+
+test("namespace createSqlClient is detected and a local client shadow is ignored", () => {
+  setup({
+    "a.ts":
+      "import * as sqlx from \"@onreza/sqlx-js\";\n" +
+      "const db = sqlx.createSqlClient();\n" +
+      "await db.sql(\"SELECT scoped\");\n" +
+      "function inner(db: { sql: (...args: any[]) => unknown }) {\n" +
+      "  return db.sql(\"SHOULD NOT BE SCANNED\");\n" +
+      "}\n" +
+      "void inner;\n",
+  });
+
+  expect(scanProject(tmp).map((site) => site.query)).toEqual(["SELECT scoped"]);
+});
+
 test("alias shadowing: local `const sql = ...` removes alias inside the block", () => {
   setup({
     "a.ts":
@@ -204,4 +243,26 @@ test(".tsx file: sql() inside JSX is discovered", () => {
   });
   const sites = scanProject(tmp);
   expect(sites.map((s) => s.query)).toEqual(["SELECT 1 FROM jsx_users"]);
+});
+
+test(".ts file: angle-bracket type assertions do not hide later queries", () => {
+  setup({
+    "query.ts":
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "const value = <number>1;\n" +
+      "await sql(\"SELECT 1 FROM typed_users\");\n" +
+      "void value;\n",
+  });
+  const sites = scanProject(tmp);
+  expect(sites.map((s) => s.query)).toEqual(["SELECT 1 FROM typed_users"]);
+});
+
+test("syntax errors fail scanning before generated artifacts can be replaced", () => {
+  setup({
+    "broken.ts":
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT 1\");\n" +
+      "const broken = ;\n",
+  });
+  expect(() => scanProject(tmp)).toThrow(/broken\.ts:3:/);
 });

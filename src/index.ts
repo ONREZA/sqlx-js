@@ -19,13 +19,31 @@ export type { ScanConfig, SqlxJsConfig } from "./config";
 export type { SslMode, ConnConfig } from "./pg/wire";
 export { PgError, ConnectionLostError } from "./pg/wire";
 export { NoRowsError, TooManyRowsError } from "./runtime";
-export type { TransactionOptions, MigrateOptions, OnQueryEvent, OnQueryHook } from "./runtime";
+export type { TransactionOptions, MigrateOptions, OnQueryEvent, OnQueryHook, OnQueryHookError } from "./runtime";
 export type { ExecuteResult, JsonParameter, PgArrayParameter } from "./runtime";
 export type { PostgresClient, PostgresOptions, CreateClientOptions } from "./postgres-runtime";
 
 export type TypedFile = TypedFileFor<KnownFileQueries>;
 export type TypedSql = TypedSqlFor<KnownQueries, KnownFileQueries>;
 export type Typed = TypedFor<KnownQueries, KnownFileQueries, import("./runtime").TransactionOptions>;
+
+export type QueryRegistry = {
+  queries: object;
+  fileQueries: object;
+};
+
+export interface DefaultQueryRegistry {
+  queries: KnownQueries;
+  fileQueries: KnownFileQueries;
+  functions: KnownFunctions;
+}
+
+export type SqlClient<Registry extends QueryRegistry = DefaultQueryRegistry> = {
+  sql: TypedFor<Registry["queries"], Registry["fileQueries"], import("./runtime").TransactionOptions>;
+  unsafe: Unsafe;
+  client: import("./postgres-runtime").PostgresClient;
+  close: () => Promise<void>;
+};
 
 export const sql: Typed = rt.sql as unknown as Typed;
 
@@ -34,5 +52,11 @@ export const unsafe: Unsafe = rt.unsafe as Unsafe;
 export const getClient = rt.getClient;
 export const setClient = rt.setClient;
 export const createClient = rt.createClient;
+export function createSqlClient<Registry extends QueryRegistry = DefaultQueryRegistry>(
+  url?: string,
+  options?: import("./postgres-runtime").CreateClientOptions,
+): SqlClient<Registry> {
+  return rt.createSqlClient(url, options) as unknown as SqlClient<Registry>;
+}
 export const close = rt.close;
 export { migrate, clearSqlFileCache, encodePgArrayLiteral, id, json, array } from "./runtime";

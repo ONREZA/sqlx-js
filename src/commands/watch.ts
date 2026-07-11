@@ -1,7 +1,16 @@
-import { watch as fsWatch } from "node:fs";
-import { basename } from "node:path";
-import { openSession, prepareOnce, type PrepareOptions, type PrepareSession } from "./prepare";
+import { existsSync, watch as fsWatch } from "node:fs";
+import { basename, relative, resolve } from "node:path";
+import {
+  openSession,
+  prepareOnce,
+  PrepareFatalError,
+  type PrepareOptions,
+  type PrepareResult,
+  type PrepareSession,
+} from "./prepare";
 import { configHash, loadConfig } from "../config";
+import { fingerprint } from "../cache";
+import { findSourceFiles, scanFile, scanProject, type QueryCallSite } from "../scan/scanner";
 
 const EXT_RE = /\.(ts|tsx|mts|cts|sql)$/;
 const SKIP_DIRS = ["node_modules", ".git", ".sqlx-js", "dist", "build", ".next"];
@@ -30,18 +39,49 @@ export type WatchPrepareHookResult = {
 
 export type WatchOptions = PrepareOptions & {
   beforePrepare?: () => Promise<WatchPrepareHookResult | void>;
+  jsonl?: boolean;
 };
 
 export type WatchState = {
   session: PrepareSession | null;
+  sitesByFile?: Map<string, QueryCallSite[]>;
+  dirtyFiles?: Set<string>;
+  dirtyFps?: Set<string>;
 };
+
+export function formatWatchEvent(
+  name: string,
+  data: Record<string, unknown> = {},
+  timestamp = new Date().toISOString(),
+): string {
+  return JSON.stringify({ formatVersion: 1, event: name, timestamp, ...data });
+}
+
+export function watchErrorData(error: unknown): Record<string, unknown> {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!(error instanceof PrepareFatalError)) return { message };
+  return {
+    diagnostic: {
+      severity: "error",
+      phase: error.phase,
+      message,
+      ...(error.file === undefined ? {} : { file: error.file }),
+      ...(error.line === undefined ? {} : { line: error.line }),
+      ...(error.column === undefined ? {} : { column: error.column }),
+    },
+  };
+}
 
 type WatchDeps = {
   openSession: typeof openSession;
   prepareOnce: typeof prepareOnce;
+  loadConfig: typeof loadConfig;
+  scanProject: typeof scanProject;
+  scanFile: typeof scanFile;
+  findSourceFiles: typeof findSourceFiles;
 };
 
-const DEFAULT_DEPS: WatchDeps = { openSession, prepareOnce };
+const DEFAULT_DEPS: WatchDeps = { openSession, prepareOnce, loadConfig, scanProject, scanFile, findSourceFiles };
 
 async function closeSession(session: PrepareSession | null): Promise<void> {
   if (!session) return;
@@ -53,39 +93,155 @@ export async function prepareWatchedOnce(
   state: WatchState,
   log: (msg: string) => void,
   err: (msg: string) => void,
-  deps: WatchDeps = DEFAULT_DEPS,
-): Promise<{ entries: number; failures: number; pruned: number }> {
+  deps: Partial<WatchDeps> = {},
+  changedFiles: readonly string[] = [],
+): Promise<PrepareResult> {
+  const active = { ...DEFAULT_DEPS, ...deps };
   const hookResult = await opts.beforePrepare?.();
-  const currentConfig = await loadConfig(opts.root);
-  if (
-    hookResult?.resetSession === true ||
-    (state.session !== null && configHash(state.session.userCfg) !== configHash(currentConfig))
-  ) {
+  const currentConfig = await active.loadConfig(opts.root);
+  const configChanged = state.session !== null && configHash(state.session.userCfg) !== configHash(currentConfig);
+  const resetSession = hookResult?.resetSession === true || configChanged;
+  if (resetSession) {
     await closeSession(state.session);
     state.session = null;
   }
-  if (!state.session) state.session = await deps.openSession(opts);
-  return await deps.prepareOnce(opts, state.session, log, err, 1);
+  if (!state.session) state.session = await active.openSession(opts);
+
+  const full = resetSession || !state.sitesByFile || changedFiles.some(isProjectGraphFile);
+  let nextSites: Map<string, QueryCallSite[]>;
+  let changedFps = new Set<string>();
+  if (full) {
+    const sites = active.scanProject(opts.root, currentConfig.scan);
+    nextSites = groupSites(sites);
+    changedFps = new Set(sites.map((site) => fingerprint(site.query)));
+  } else {
+    const previousSites = state.sitesByFile!;
+    const dirtyFiles = state.dirtyFiles ?? new Set<string>();
+    const requested = new Set([...changedFiles, ...dirtyFiles].map((file) => projectPath(opts.root, file)));
+    const affectedSources = new Set<string>();
+    for (const changed of requested) {
+      if (/\.(ts|tsx|mts|cts)$/.test(changed)) affectedSources.add(changed);
+      if (changed.endsWith(".sql")) {
+        for (const [source, sites] of previousSites) {
+          if (sites.some((site) => site.sqlFilePath && projectPath(opts.root, site.sqlFilePath) === changed)) {
+            affectedSources.add(source);
+          }
+        }
+      }
+    }
+    nextSites = new Map(previousSites);
+    const allowed = new Set(active.findSourceFiles(opts.root, currentConfig.scan).map((file) => projectPath(opts.root, file)));
+    for (const source of nextSites.keys()) {
+      if (!allowed.has(source)) affectedSources.add(source);
+    }
+    try {
+      for (const source of affectedSources) {
+        const previous = nextSites.get(source) ?? [];
+        for (const site of previous) changedFps.add(fingerprint(site.query));
+        const absolute = resolve(opts.root, source);
+        if (!existsSync(absolute) || !allowed.has(source)) {
+          nextSites.delete(source);
+          continue;
+        }
+        const scanned = active.scanFile(absolute, opts.root, currentConfig.scan?.modules);
+        if (scanned.length > 0) nextSites.set(source, scanned);
+        else nextSites.delete(source);
+        for (const site of scanned) changedFps.add(fingerprint(site.query));
+      }
+      for (const source of affectedSources) dirtyFiles.delete(source);
+    } catch (error) {
+      for (const source of affectedSources) dirtyFiles.add(source);
+      state.dirtyFiles = dirtyFiles;
+      throw error;
+    }
+    state.dirtyFiles = dirtyFiles;
+  }
+
+  const sites = [...nextSites.values()].flat();
+  const dirtyFps = state.dirtyFps ?? new Set<string>();
+  const reuseCacheFps = new Set(
+    sites
+      .map((site) => fingerprint(site.query))
+      .filter((fp) => !changedFps.has(fp) && !dirtyFps.has(fp)),
+  );
+  const result = await active.prepareOnce(opts, state.session, log, err, 1, {
+    sites,
+    reuseCacheFps,
+    reuseFunctions: !full,
+  });
+  state.sitesByFile = nextSites;
+  if (result.failures === 0) {
+    state.dirtyFps = new Set();
+  } else {
+    state.dirtyFps = new Set([...dirtyFps, ...changedFps]);
+  }
+  return result;
+}
+
+function normalizePath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function projectPath(root: string, path: string): string {
+  return normalizePath(relative(resolve(root), resolve(root, path)));
+}
+
+function isProjectGraphFile(path: string): boolean {
+  const base = basename(path);
+  return CONFIG_FILES.has(base) || /^tsconfig(?:\.[^.]+)*\.json$/.test(base);
+}
+
+function groupSites(sites: QueryCallSite[]): Map<string, QueryCallSite[]> {
+  const grouped = new Map<string, QueryCallSite[]>();
+  for (const site of sites) {
+    const file = normalizePath(site.file);
+    const current = grouped.get(file) ?? [];
+    current.push(site);
+    grouped.set(file, current);
+  }
+  return grouped;
 }
 
 export async function runWatch(opts: WatchOptions): Promise<void> {
   const stamp = () => new Date().toTimeString().slice(0, 8);
-  const log = (m: string) => console.log(`[${stamp()}] ${m}`);
-  const err = (m: string) => console.error(`[${stamp()}] ${m}`);
+  const event = (name: string, data: Record<string, unknown> = {}) => {
+    console.log(formatWatchEvent(name, data));
+  };
+  const log = opts.jsonl ? () => {} : (m: string) => console.log(`[${stamp()}] ${m}`);
+  const err = opts.jsonl ? () => {} : (m: string) => console.error(`[${stamp()}] ${m}`);
   const state: WatchState = { session: null };
 
-  log("watch: initial prepare");
+  const report = (result: PrepareResult, durationMs?: number) => {
+    if (!opts.jsonl) return;
+    for (const diagnostic of result.diagnostics) event("diagnostic", { diagnostic });
+    event("prepared", {
+      ok: result.failures === 0,
+      sites: result.sites,
+      entries: result.entries,
+      failures: result.failures,
+      pruned: result.pruned,
+      functions: result.functions,
+      ...(durationMs === undefined ? {} : { durationMs }),
+    });
+  };
+
+  if (opts.jsonl) event("start", { root: opts.root });
+  else log("watch: initial prepare");
   try {
     const r = await prepareWatchedOnce(opts, state, log, err);
-    log(`watch: ready — ${r.entries} queries, ${r.failures} failures`);
+    if (opts.jsonl) report(r);
+    else log(`watch: ready — ${r.entries} queries, ${r.failures} failures`);
   } catch (e) {
-    err(`watch: initial prepare failed — ${(e as Error).message}`);
+    if (opts.jsonl) event("error", watchErrorData(e));
+    else err(`watch: initial prepare failed — ${(e as Error).message}`);
   }
-  log(`watch: monitoring ${opts.root}`);
+  if (opts.jsonl) event("watching", { root: opts.root });
+  else log(`watch: monitoring ${opts.root}`);
 
   let pending = false;
   let running: Promise<unknown> | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  const changedFiles = new Set<string>();
 
   const trigger = () => {
     if (timer) clearTimeout(timer);
@@ -96,12 +252,17 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
         return;
       }
       const start = Date.now();
+      const batch = [...changedFiles];
+      changedFiles.clear();
       running = (async () => {
         try {
-          const r = await prepareWatchedOnce(opts, state, log, err);
-          log(`watch: re-prepared in ${Date.now() - start}ms (${r.entries} queries, ${r.failures} failures)`);
+          const r = await prepareWatchedOnce(opts, state, log, err, {}, batch);
+          const durationMs = Date.now() - start;
+          if (opts.jsonl) report(r, durationMs);
+          else log(`watch: re-prepared in ${durationMs}ms (${r.entries} queries, ${r.failures} failures)`);
         } catch (e) {
-          err(`watch: prepare error — ${(e as Error).message}`);
+          if (opts.jsonl) event("error", watchErrorData(e));
+          else err(`watch: prepare error — ${(e as Error).message}`);
         }
       })();
       await running;
@@ -116,12 +277,16 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
   const watcher = fsWatch(opts.root, { recursive: true }, (_event, filename) => {
     if (!filename) return;
     if (!shouldWatchFile(filename.toString())) return;
+    changedFiles.add(normalizePath(filename.toString()));
     trigger();
   });
 
   const shutdown = async () => {
-    console.log();
-    log("watch: stopping");
+    if (opts.jsonl) event("stopping");
+    else {
+      console.log();
+      log("watch: stopping");
+    }
     watcher.close();
     await closeSession(state.session);
     process.exit(0);

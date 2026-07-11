@@ -26,8 +26,12 @@ type FunctionCacheFile = {
   functions: FunctionEntry[];
 };
 
-function cachePath(cacheDir: string): string {
+export function functionCachePath(cacheDir: string): string {
   return join(cacheDir, "functions", "functions.json");
+}
+
+export function functionCacheExists(cacheDir: string): boolean {
+  return existsSync(functionCachePath(cacheDir));
 }
 
 function parseFunctionCache(raw: unknown): FunctionEntry[] {
@@ -38,14 +42,14 @@ function parseFunctionCache(raw: unknown): FunctionEntry[] {
 }
 
 export function readFunctionCache(cacheDir: string): FunctionEntry[] {
-  const path = cachePath(cacheDir);
+  const path = functionCachePath(cacheDir);
   if (!existsSync(path)) return [];
   const text = readFileSync(path, "utf8");
   return parseFunctionCache(JSON.parse(text));
 }
 
 export function writeFunctionCache(cacheDir: string, functions: FunctionEntry[]): void {
-  const path = cachePath(cacheDir);
+  const path = functionCachePath(cacheDir);
   mkdirSync(dirname(path), { recursive: true });
   const payload: FunctionCacheFile = { version: 1, functions };
   const tmp = `${path}.tmp-${randomBytes(4).toString("hex")}`;

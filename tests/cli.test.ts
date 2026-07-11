@@ -25,6 +25,8 @@ test("CLI help prints package metadata version", () => {
   expect(r.stdout).toContain("sqlx-js db install");
   expect(r.stdout).toContain("sqlx-js doctor");
   expect(r.stdout).toContain("--verify");
+  expect(r.stdout).toContain("--offline");
+  expect(r.stdout).toContain("--jsonl");
   expect(r.stdout).toContain("--schema-provider");
   expect(r.stdout).toContain("check [--json]");
   expect(r.stdout).toContain("migrate dev");
@@ -91,6 +93,7 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
       test: "bun test",
       "sqlx:prepare": "sqlx-js prepare",
       "sqlx:check": "sqlx-js prepare --check",
+      "sqlx:offline": "sqlx-js prepare --offline",
       "sqlx:verify": "sqlx-js prepare --verify --strict-inference",
     });
 
@@ -385,6 +388,20 @@ test("prepare --json reports missing DATABASE_URL as one structured document", (
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("prepare --jsonl rejects non-watch mode with one structured event", () => {
+  const r = spawnSync("bun", [binPath, "prepare", "--jsonl"], {
+    encoding: "utf8",
+    env: { ...process.env, DATABASE_URL: "" },
+  });
+  expect(r.status).toBe(2);
+  expect(r.stderr).toBe("");
+  expect(JSON.parse(r.stdout)).toMatchObject({
+    formatVersion: 1,
+    event: "error",
+    diagnostic: { phase: "config" },
+  });
 });
 
 test("prepare --check --json classifies config loading failures", () => {

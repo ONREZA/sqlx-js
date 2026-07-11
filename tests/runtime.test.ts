@@ -199,6 +199,46 @@ describe("onQuery hook", () => {
     expect(events[0]!.error).toBeUndefined();
   });
 
+  test("observer failures do not replace successful query results", async () => {
+    const observerError = new Error("observer failed");
+    const hookErrors: unknown[] = [];
+    let calls = 0;
+    const base: RuntimeClient = {
+      query: async () => [{ id: 1 }],
+      transaction: async (fn) => fn(base),
+      close: async () => {},
+      onQuery: () => {
+        calls++;
+        throw observerError;
+      },
+      onQueryHookError: (error) => hookErrors.push(error),
+    };
+    const api = createSqlRuntime(() => base);
+    expect(await api.sql("SELECT 1")).toEqual([{ id: 1 }]);
+    expect(calls).toBe(1);
+    expect(hookErrors).toEqual([observerError]);
+  });
+
+  test("async observer rejections are isolated and reported", async () => {
+    const observerError = new Error("async observer failed");
+    const hookErrors: unknown[] = [];
+    const base: RuntimeClient = {
+      query: async () => [{ id: 1 }],
+      transaction: async (fn) => fn(base),
+      close: async () => {},
+      onQuery: async () => {
+        throw observerError;
+      },
+      onQueryHookError: async (error) => {
+        hookErrors.push(error);
+      },
+    };
+    const api = createSqlRuntime(() => base);
+    expect(await api.sql("SELECT 1")).toEqual([{ id: 1 }]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(hookErrors).toEqual([observerError]);
+  });
+
   test("uses driver affected-row count and exposes sql.execute metadata", async () => {
     const result = Object.assign([], { count: 3, command: "UPDATE" });
     const { events, api } = harness({ query: async () => result });
@@ -239,8 +279,8 @@ describe("onQuery hook", () => {
   });
 });
 
-describe("loadSqlFile + mtime cache", () => {
-  test("reads file and re-reads on mtime change", async () => {
+describe("loadSqlFile cache", () => {
+  test("keeps the hot path immutable until explicitly cleared", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sqlx-js-runtime-"));
     const path = join(dir, "q.sql");
     writeFileSync(path, "SELECT 1");
@@ -251,7 +291,21 @@ describe("loadSqlFile + mtime cache", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     writeFileSync(path, "SELECT 2");
     const b = _internal.loadSqlFile("q.sql", dir);
-    expect(b).toBe("SELECT 2");
+    expect(b).toBe("SELECT 1");
+
+    clearSqlFileCache();
+    expect(_internal.loadSqlFile("q.sql", dir)).toBe("SELECT 2");
+  });
+
+  test("reload mode re-reads a changed SQL file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sqlx-js-runtime-"));
+    const path = join(dir, "q.sql");
+    writeFileSync(path, "SELECT 1");
+    clearSqlFileCache();
+    expect(_internal.loadSqlFile("q.sql", dir, true)).toBe("SELECT 1");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    writeFileSync(path, "SELECT 2");
+    expect(_internal.loadSqlFile("q.sql", dir, true)).toBe("SELECT 2");
   });
 
   test("missing file throws with path context", () => {

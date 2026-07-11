@@ -1,6 +1,7 @@
 import { test, expect, afterAll } from "bun:test";
-import { readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { join, resolve } from "node:path";
 import { emitDts } from "../src/codegen";
 import type { CacheEntry } from "../src/cache";
 import type { FunctionEntry } from "../src/function-cache";
@@ -175,7 +176,10 @@ test("KnownFileQueries deduplicates paths across entries", () => {
       columns: [],
     },
   ]);
-  const rootBlock = dts.slice(dts.indexOf('declare module "@onreza/sqlx-js"'));
+  const rootBlock = dts.slice(
+    dts.indexOf("export interface SqlxJsGeneratedFileQueries"),
+    dts.indexOf("export interface SqlxJsGeneratedFunctions"),
+  );
   const matches = rootBlock.match(/"a\.sql":/g) ?? [];
   expect(matches).toHaveLength(1);
 });
@@ -234,4 +238,61 @@ test("KnownFunctions emits pg_proc catalog entries", () => {
   expect(dts).toContain("interface KnownFunctions");
   expect(dts).toContain('"public.slugify(value text)": { kind: "function"; params: [string]; returns: string | null; returnsSet: false }');
   expect(dts).toContain('"public.search_posts(query text)": { kind: "function"; params: [string]; returns: { slug: string | null; score: number | null }; returnsSet: true }');
+  expect(dts).toContain("export interface SqlxJsGeneratedRegistry");
+  expect(dts).toContain("interface KnownQueries extends SqlxJsGeneratedQueries");
+});
+
+test("two generated registries remain independently usable in one TypeScript program", () => {
+  const root = join(tmp, "isolated-registries");
+  mkdirSync(root, { recursive: true });
+  emitDts(join(root, "primary.d.ts"), [{
+    query: "SELECT primary",
+    paramOids: [],
+    paramTsTypes: [],
+    hasResultSet: true,
+    columns: [{ name: "primary", typeOid: 23, tsType: "number", nullable: false }],
+  }]);
+  emitDts(join(root, "replica.d.ts"), [{
+    query: "SELECT replica",
+    paramOids: [],
+    paramTsTypes: [],
+    hasResultSet: true,
+    columns: [{ name: "replica", typeOid: 25, tsType: "string", nullable: false }],
+  }]);
+  writeFileSync(join(root, "consumer.ts"), `
+import { createSqlClient } from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedRegistry as PrimaryRegistry } from "./primary";
+import type { SqlxJsGeneratedRegistry as ReplicaRegistry } from "./replica";
+
+const primaryKey: keyof PrimaryRegistry["queries"] = "SELECT primary";
+const replicaKey: keyof ReplicaRegistry["queries"] = "SELECT replica";
+const primaryOnly: "SELECT primary" = null as unknown as keyof PrimaryRegistry["queries"];
+const replicaOnly: "SELECT replica" = null as unknown as keyof ReplicaRegistry["queries"];
+
+const primary = createSqlClient<PrimaryRegistry>();
+const replica = createSqlClient<ReplicaRegistry>();
+void primary.sql(primaryKey);
+void replica.sql(replicaKey);
+void primaryOnly;
+void replicaOnly;
+`);
+  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
+    compilerOptions: {
+      strict: true,
+      noEmit: true,
+      module: "Preserve",
+      moduleResolution: "Bundler",
+      target: "ESNext",
+      types: ["bun-types"],
+      baseUrl: resolve(import.meta.dir, ".."),
+      paths: { "@onreza/sqlx-js": ["src/index.ts"] },
+    },
+    files: ["consumer.ts", "primary.d.ts", "replica.d.ts"],
+  }));
+
+  const checked = spawnSync("bunx", ["tsc", "-p", join(root, "tsconfig.json")], {
+    cwd: resolve(import.meta.dir, ".."),
+    encoding: "utf8",
+  });
+  expect(checked.status, checked.stdout + checked.stderr).toBe(0);
 });

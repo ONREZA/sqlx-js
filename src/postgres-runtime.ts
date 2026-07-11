@@ -8,6 +8,7 @@ import {
   parsePgArrayLiteral,
   type JsonParameter,
   type OnQueryHook,
+  type OnQueryHookError,
   type PgArrayParameter,
   type RuntimeClient,
   type RuntimeQueryResult,
@@ -18,13 +19,21 @@ export type PostgresClient = postgres.Sql<{ bigint: bigint }>;
 export type PostgresOptions = postgres.Options<Record<string, postgres.PostgresType>>;
 export type CreateClientOptions = PostgresOptions & {
   onQuery?: OnQueryHook;
+  onQueryHookError?: OnQueryHookError;
   statementTimeoutMs?: number;
   fileRoot?: string;
+  reloadSqlFiles?: boolean;
 };
 type PostgresQueryClient = PostgresClient | postgres.TransactionSql<{ bigint: bigint }>;
 
 const HOOKS = Symbol.for("sqlx-js.hooks");
-type AttachedHooks = { onQuery?: OnQueryHook; prepare: boolean; fileRoot: string };
+type AttachedHooks = {
+  onQuery?: OnQueryHook;
+  onQueryHookError?: OnQueryHookError;
+  prepare: boolean;
+  fileRoot: string;
+  reloadSqlFiles: boolean;
+};
 
 function resolvedFileRoot(value?: string): string {
   return resolve(value ?? process.env.SQLX_JS_FILE_ROOT ?? process.cwd());
@@ -34,8 +43,10 @@ class PostgresRuntimeClient implements RuntimeClient {
   constructor(
     public readonly client: PostgresQueryClient,
     public readonly onQuery?: OnQueryHook,
+    public readonly onQueryHookError?: OnQueryHookError,
     public readonly prepare = true,
     public readonly fileRoot = resolvedFileRoot(),
+    public readonly reloadSqlFiles = false,
   ) {}
 
   async query(query: string, params: unknown[]): Promise<RuntimeQueryResult> {
@@ -59,7 +70,14 @@ class PostgresRuntimeClient implements RuntimeClient {
   async transaction<R>(fn: (client: RuntimeClient) => Promise<R>): Promise<R> {
     if (!("begin" in this.client)) throw new Error("sqlx-js.transaction: nested transactions are not supported");
     return await this.client.begin(async (tx) => {
-      return await fn(new PostgresRuntimeClient(tx, this.onQuery, this.prepare, this.fileRoot));
+      return await fn(new PostgresRuntimeClient(
+        tx,
+        this.onQuery,
+        this.onQueryHookError,
+        this.prepare,
+        this.fileRoot,
+        this.reloadSqlFiles,
+      ));
     }) as R;
   }
 
@@ -186,7 +204,7 @@ function installJsonArrayCodecs(client: PostgresClient): void {
 
 export function createClient(url = process.env.DATABASE_URL, options: CreateClientOptions = {}): PostgresClient {
   if (!url) throw new Error("sqlx-js: DATABASE_URL is not set");
-  const { onQuery, statementTimeoutMs, fileRoot, ...pgOptions } = options;
+  const { onQuery, onQueryHookError, statementTimeoutMs, fileRoot, reloadSqlFiles, ...pgOptions } = options;
   const connection = statementTimeoutMs !== undefined
     ? { ...(pgOptions.connection ?? {}), statement_timeout: statementTimeoutMs }
     : pgOptions.connection;
@@ -197,8 +215,10 @@ export function createClient(url = process.env.DATABASE_URL, options: CreateClie
   }) as PostgresClient;
   (client as unknown as Record<symbol, unknown>)[HOOKS] = {
     onQuery,
+    onQueryHookError,
     prepare: pgOptions.prepare ?? true,
     fileRoot: resolvedFileRoot(fileRoot),
+    reloadSqlFiles: reloadSqlFiles ?? false,
   } satisfies AttachedHooks;
   return client;
 }
@@ -206,7 +226,14 @@ export function createClient(url = process.env.DATABASE_URL, options: CreateClie
 function createDefaultClient(): PostgresRuntimeClient {
   const client = createClient();
   const attached = (client as unknown as Record<symbol, unknown>)[HOOKS] as AttachedHooks;
-  return new PostgresRuntimeClient(client, attached.onQuery, attached.prepare, attached.fileRoot);
+  return new PostgresRuntimeClient(
+    client,
+    attached.onQuery,
+    attached.onQueryHookError,
+    attached.prepare,
+    attached.fileRoot,
+    attached.reloadSqlFiles,
+  );
 }
 
 function getRuntimeClient(): PostgresRuntimeClient {
@@ -220,15 +247,23 @@ export function getClient(): PostgresClient {
 
 export function setClient(
   client: PostgresClient,
-  options?: { onQuery?: OnQueryHook; prepare?: boolean; fileRoot?: string },
+  options?: {
+    onQuery?: OnQueryHook;
+    onQueryHookError?: OnQueryHookError;
+    prepare?: boolean;
+    fileRoot?: string;
+    reloadSqlFiles?: boolean;
+  },
 ): void {
   installJsonArrayCodecs(client);
   const attached = (client as unknown as Record<symbol, unknown>)[HOOKS] as AttachedHooks | undefined;
   defaultClient = new PostgresRuntimeClient(
     client,
     options?.onQuery ?? attached?.onQuery,
+    options?.onQueryHookError ?? attached?.onQueryHookError,
     options?.prepare ?? attached?.prepare ?? client.options?.prepare ?? true,
     resolvedFileRoot(options?.fileRoot ?? attached?.fileRoot),
+    options?.reloadSqlFiles ?? attached?.reloadSqlFiles ?? false,
   );
 }
 
@@ -237,6 +272,25 @@ export async function close(): Promise<void> {
     await defaultClient.close();
     defaultClient = null;
   }
+}
+
+export function createSqlClient(url = process.env.DATABASE_URL, options: CreateClientOptions = {}) {
+  const client = createClient(url, options);
+  const attached = (client as unknown as Record<symbol, unknown>)[HOOKS] as AttachedHooks;
+  const runtimeClient = new PostgresRuntimeClient(
+    client,
+    attached.onQuery,
+    attached.onQueryHookError,
+    attached.prepare,
+    attached.fileRoot,
+    attached.reloadSqlFiles,
+  );
+  const runtime = createSqlRuntime(() => runtimeClient);
+  return {
+    ...runtime,
+    client,
+    close: async () => runtimeClient.close(),
+  };
 }
 
 const runtime = createSqlRuntime(getRuntimeClient);
