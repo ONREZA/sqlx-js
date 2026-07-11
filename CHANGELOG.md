@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/ONREZA/sqlx-js/compare/v0.9.1...v0.9.2) (2026-07-11)
+
+
+### Bug Fixes
+
+* **prepare:** accept existential json params ([271500c](https://github.com/ONREZA/sqlx-js/commit/271500c9ef90d562960589b1554cbb167c0238b1))
+
 ## [0.9.1](https://github.com/ONREZA/sqlx-js/compare/v0.9.0...v0.9.1) (2026-07-11)
 
 
