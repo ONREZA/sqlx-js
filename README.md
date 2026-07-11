@@ -24,12 +24,13 @@ const rows = await sql(
 - **Precise nullability inference** through `libpg-query`: `JOIN` direction (LEFT/RIGHT/FULL), inner `JOIN ... ON` predicates, DML `RETURNING`, `COALESCE`, `CASE`, `COUNT`, expression propagation. Parameters become `T | null` when wrapped in `COALESCE`/`NULLIF`/`IS [NOT] NULL`/`IS [NOT] DISTINCT FROM`, or when bound to a nullable column in `INSERT`/`UPDATE`.
 - **WHERE narrowing**: `IS NOT NULL`, equality chains, `IN`, `LIKE`, `BETWEEN` make columns non-null. Tracks `AND`/`OR` semantics.
 - **PostgreSQL enums** generated as TypeScript literal unions (read + write side).
-- **Schema-aware `jsonb`** via a `SqlxJsJson` global namespace and a config-driven column → type mapping. Works for both result columns and `INSERT`/`UPDATE`/`WHERE` parameters. Unmapped `json`/`jsonb` falls back to `JsonValue` for rows and `JsonInput` for parameters instead of `unknown`.
+- **Schema-aware `jsonb`** via a `SqlxJsJson` global namespace and a config-driven column → type mapping. Works for both result columns and `INSERT`/`UPDATE`/`WHERE` parameters. Unmapped `json`/`jsonb` falls back to `JsonValue` for rows and an explicitly wrapped, structurally checked JSON parameter.
 - **Extension types out of the box**: `pgvector` (`vector`, `halfvec`, `sparsevec`), `hstore`, `citext`, `ltree`/`lquery`/`ltxtquery`. Add your own through `customTypes` config.
 - **Domains** resolve to their base TypeScript type (`CREATE DOMAIN email AS text` → `string`), including domains over extension types or other domains.
 - **Wide built-in type coverage**: numeric, text, date/time, UUID, json/jsonb, network (inet/cidr/macaddr/macaddr8), bit strings, ranges/multiranges, geometric, money, tsvector/tsquery, xml — and the matching array variants.
 - **External SQL files** via `sql.file("queries/foo.sql", ...)` — prepared and typed through `KnownFileQueries`. Watch mode re-prepares on `.sql` edits too.
 - **One-row helpers**: `sql.one(...)`, `sql.optional(...)`, `sql.file.one(...)`, `sql.file.optional(...)`, and the same chain on the `tx` callback — friendly with `noUncheckedIndexedAccess: true`. The scanner walks all of them.
+- **Reusable query definitions** via `defineQuery`: declare one typed SQL contract and execute it through either a root client or transaction-scoped executor. `QueryParams`, `QueryRow`, and `QueryResult` expose its generated types without indexing a registry by SQL text.
 - **Unambiguous JSON and PostgreSQL array params** through `sql.json(...)` and `sql.array(...)`. Primitive JSON arrays cannot be silently encoded as PostgreSQL array literals.
 - **Typed transactions** via `sql.transaction(async tx => …)` — the `tx` callback parameter is recognized by the scanner, so queries inside the block keep full type checking.
 - **Sourcemap-accurate error reporting**: every prepare failure points to `file:line:column` of the originating `sql(...)` call site, with PG error code, position, and hint.
@@ -39,7 +40,7 @@ const rows = await sql(
 - **Optional pgschema workflow** via `init --schema-provider pgschema` and `sqlx-js db install|check|plan|apply` for PostgreSQL schema-as-code projects.
 - **Versioned offline cache** committed to your repo. `prepare --check` validates fingerprints, generator revision, and type-affecting config without a database; `prepare --verify` compares fresh live/shadow artifacts without writing.
 - **Schema snapshot + LLM manifest** via `schema dump` / `schema check`: tables, columns, constraints, indexes, types, and function/procedure metadata are introspected from PostgreSQL.
-- **Generated function catalog** via `KnownFunctions`: `prepare` records user-schema PostgreSQL functions/procedures from `pg_proc` with approximate parameter and return TypeScript types.
+- **Generated function catalog** via `KnownFunctions`: `prepare` records application-owned PostgreSQL functions/procedures from `pg_proc` with approximate parameter and return TypeScript types while excluding extension-owned internals by default.
 - **Shadow database validation** via `migrate dev` / `migrate verify`: auto-create a disposable shadow DB, apply migrations, validate SQL, and drop it afterwards.
 - **Safe identifier quoting** via `sql.id(...)`, backed by the committed schema snapshot whitelist.
 - **Single runtime adapter**: Postgres.js backs the runtime on Node/Bun-compatible environments — no Bun.SQL-specific adapter to choose.
@@ -48,6 +49,7 @@ const rows = await sql(
 - **Environment doctor** checks runtime versions, config loading, `.env`, database connectivity/permissions, cache metadata, tsconfig inclusion, and pgschema availability.
 - **Strict inference gate** promotes degraded nullability analysis and generated `unknown` query types to CI errors.
 - **GitHub/editor diagnostics adapter** converts versioned prepare JSON into workflow annotations or Unix problem-matcher output.
+- **Versioned query inventory** via `queries --json`, including stable query IDs, definition names, cardinality, call sites, SQL files, and cache state. The same command can emit a deterministic embedded-SQL module for bundled applications.
 
 ## Install
 
@@ -59,7 +61,7 @@ bun add @onreza/sqlx-js
 bun add --dev typescript
 ```
 
-Node.js 24 or newer is required. Bun users need Bun 1.3 or newer. TypeScript is an optional peer so production-only installs do not pull the compiler and its platform package into the application image; source scanning commands (`prepare`, `doctor`, `ci`, and migration development/verification) require it in development dependencies.
+Node.js 24 or newer is required. Bun users need Bun 1.3 or newer. TypeScript is an optional peer so production-only installs do not pull the compiler and its platform package into the application image; source scanning commands (`prepare`, `queries`, `doctor`, `ci`, and migration development/verification) require it in development dependencies.
 
 The package installs `sqlx-js` and `sqlx-js-diagnostics` binaries. The CLI examples below use `npx @onreza/sqlx-js`; `bunx @onreza/sqlx-js ...` works the same if your project uses Bun.
 
@@ -128,6 +130,8 @@ const rows = await sql(
 
 Named parameters use ASCII identifier names (`$user_id`), are numbered by first appearance before PostgreSQL sees the query, and repeated names reuse the same positional parameter. The generated object contract rejects missing, extra, and incorrectly typed properties. Named `$name` and positional `$1` parameters cannot be mixed in one query. Quoted strings, comments, dollar-quoted bodies, and `$` inside PostgreSQL identifiers are left unchanged. Positional parameters remain supported and are still the shortest form for simple queries.
 
+PostgreSQL describes an uncast `LIMIT $limit` or `OFFSET $offset` parameter as `int8`, so its TypeScript type is `bigint`. Use `LIMIT $limit::int` / `OFFSET $offset::int` when the application pagination API uses JavaScript `number` values.
+
 During local development, validate the migration and regenerate query artifacts against a disposable shadow database:
 
 ```bash
@@ -185,6 +189,39 @@ const rows = await sql(`SELECT id FROM users WHERE name = $1`, "alice");
 
 Unknown queries, wrong parameter types, and dynamic strings are compile errors. For genuinely dynamic SQL, use `unsafe`.
 
+### `defineQuery`
+
+Define a query once without closing over a global client, then run the same generated contract through a root or transaction executor:
+
+```ts
+import {
+  defineQuery,
+  sql,
+  type QueryParams,
+  type QueryResult,
+  type QueryRow,
+  type SqlExecutor,
+} from "@onreza/sqlx-js";
+
+export const findUser = defineQuery.optional(
+  "users.findById",
+  `SELECT id, email FROM users WHERE id = $id`,
+);
+
+type FindUserParams = QueryParams<typeof findUser>;
+type FindUserRow = QueryRow<typeof findUser>;
+type FindUserResult = QueryResult<typeof findUser>; // FindUserRow | null
+
+await findUser.run(sql, { id: userId });
+await sql.transaction((tx) => findUser.run(tx, { id: userId }));
+
+async function loadUser(executor: SqlExecutor, params: FindUserParams) {
+  return findUser.run(executor, params);
+}
+```
+
+The optional definition name is included in query observer and inventory metadata. The stable `queryId` is derived from the same lexical SQL fingerprint used by prepare/cache. `defineQuery.one`, `.optional`, and `.execute` mirror the cardinality contracts of the corresponding `sql` helpers.
+
 ### `sql.file(path, ...params)`
 
 Load SQL from an external file. The path is root-relative everywhere: prepare resolves it against `--root`, codegen keeps the exact string literal as the `KnownFileQueries` key, and runtime resolves it against `fileRoot` (default: `process.cwd()`). Absolute paths and paths escaping the root are rejected.
@@ -201,6 +238,20 @@ const admins = await sql.file("queries/top_admins.sql", "admin", 5);
 ```
 
 File-backed queries are emitted into a separate `KnownFileQueries` interface. A call from any nested source directory still uses the same project-root-relative literal.
+
+For a compiled or bundled application, emit a TypeScript asset module and pass it to the client:
+
+```bash
+sqlx-js queries --embed src/sqlx-js-files.generated.ts
+```
+
+```ts
+import { sqlxJsEmbeddedSql } from "./sqlx-js-files.generated";
+
+const db = createSqlClient(databaseUrl, { sqlFiles: sqlxJsEmbeddedSql });
+```
+
+Embedded entries take precedence over filesystem reads. The module contains only referenced external SQL files; inline SQL remains in application code.
 
 ### `sql.one(query, ...params)` and `sql.optional(query, ...params)`
 
@@ -254,6 +305,8 @@ await sql(
 ```
 
 Generated parameter types require `PgArrayParameter<T>` or `JsonParameter<T>`, so mixing the two representations is a TypeScript error. A PostgreSQL `json[]` / `jsonb[]` composes both wrappers: the outer `sql.array(...)` selects the PostgreSQL array representation and each non-SQL-NULL element uses `sql.json(...)`. `sql.json(null)` represents JSON `null`; a bare `null` remains SQL `NULL` when the database parameter is nullable.
+
+`sql.json()` accepts ordinary structurally JSON-compatible interfaces and preserves their concrete type in `JsonParameter<T>`. It rejects known non-JSON values such as `Date`, `bigint`, functions, and `undefined` array elements. TypeScript is structurally typed, so it cannot identify every user-defined class solely because it was constructed with `new`; runtime JSON semantics still belong to `JSON.stringify`.
 
 Both helpers also work with `unsafe(...)`. `encodePgArrayLiteral(arr)` remains exported for code that explicitly needs a PostgreSQL array literal string.
 
@@ -357,6 +410,8 @@ await Promise.all([primary.close(), replica.close()]);
 
 Each generated `sqlx-js-env.d.ts` exports its own `SqlxJsGeneratedRegistry`. Passing it to `createSqlClient<...>()` keeps a scoped client on that project's query contract even when a monorepo TypeScript program includes declarations for several databases. The global `sql` export remains available for the single-client convenience path.
 
+When a workspace package exports database source to other TypeScript programs, bind `SqlxJsGeneratedRegistry` at that package's client boundary. A consumer does not automatically include the database package's ambient `.d.ts`; exporting an unscoped client can therefore collapse its literal parameters to `never` outside the package.
+
 The scanner recognizes clients assigned directly from an imported `createSqlClient(...)` (including aliased and namespace imports), so `client.sql(...)`, its cardinality helpers, file queries, and transactions participate in `prepare` exactly like the global `sql` surface.
 
 `createClient(url, options)` accepts every Postgres.js option plus sqlx-js runtime options:
@@ -371,19 +426,22 @@ setClient(createClient(process.env.DATABASE_URL, {
   // Development-only: re-stat sql.file() files on every call. The default
   // immutable cache avoids synchronous filesystem work in the query hot path.
   reloadSqlFiles: true,
+  // Optional generated map from `sqlx-js queries --embed ...`. When present,
+  // sql.file() needs no runtime filesystem asset for those paths.
+  sqlFiles: sqlxJsEmbeddedSql,
   // Honored for every unsafe call. Set false for PgBouncer transaction mode
   // unless protocol-level prepared statements are configured there.
   prepare: false,
   // Fires after every query/transaction statement, success or failure.
-  onQuery: ({ query, params, durationMs, rowCount, error }) => {
-    if (error) logger.error({ query, error });        // database errors are PgError
-    else if (durationMs > 200) logger.warn({ slow: query, durationMs, rowCount });
+  onQuery: ({ queryId, queryName, query, params, durationMs, rowCount, error }) => {
+    if (error) logger.error({ queryId, queryName, query, error });
+    else if (durationMs > 200) logger.warn({ queryId, queryName, durationMs, rowCount });
   },
   onQueryHookError: (error) => logger.error({ error }, "query observer failed"),
 }));
 ```
 
-The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. It is a non-blocking observer: synchronous throws and asynchronous rejections preserve the database result/error and are passed to `onQueryHookError` when configured. The event carries the raw `params`, which may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
+The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. `queryId` is the stable prepare/cache fingerprint and is suitable for metric labels; `queryName` is present for named `defineQuery` calls. The hook is a non-blocking observer: synchronous throws and asynchronous rejections preserve the database result/error and are passed to `onQueryHookError` when configured. The event carries the raw `params`, which may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
 
 ### `clearSqlFileCache()`
 
@@ -392,19 +450,19 @@ Drops the in-memory cache used by `sql.file(...)`. Files are immutable after the
 ### Typed errors
 
 ```ts
-import { NoRowsError, TooManyRowsError, PgError } from "@onreza/sqlx-js";
+import { NoRowsError, TooManyRowsError, SQLSTATE, isPgError } from "@onreza/sqlx-js";
 
 try {
   const u = await sql.one(`SELECT id FROM users WHERE id = $1`, 99);
 } catch (e) {
   if (e instanceof NoRowsError) return null;
   if (e instanceof TooManyRowsError) console.error("ambiguous query, got", e.actual);
-  if (e instanceof PgError) console.error("pg code:", e.code, "position:", e.position);
+  if (isPgError(e, SQLSTATE.uniqueViolation)) console.error("duplicate:", e.constraint);
   throw e;
 }
 ```
 
-`sql.one` throws `NoRowsError` on 0 rows and `TooManyRowsError` (with `.actual`) on >1. Any database error raised by the default runtime is normalized into a `PgError`, so `e instanceof PgError` works the same in `prepare`, `migrate`, and ordinary `sql(...)` calls. `PgError` exposes `.code`, `.position`, `.hint`, `.detail`, `.severity`, `.schema`, `.table`, `.column`, `.constraint`, and the original driver error on `.cause`. Non-database failures (e.g. a dropped connection) are rethrown unchanged.
+`sql.one` throws `NoRowsError` on 0 rows and `TooManyRowsError` (with `.actual`) on >1. Any database error raised by the default runtime is normalized into a `PgError`; `isPgError(error, code?)` is the concise type guard for SQLSTATE handling. `SQLSTATE` contains the common unique, foreign-key, not-null, check, serialization, and deadlock codes. `PgError` exposes `.code`, `.position`, `.hint`, `.detail`, `.severity`, `.schema`, `.table`, `.column`, `.constraint`, and the original driver error on `.cause`. A zero-row update/delete is not a PostgreSQL error: use `sql.execute(...).rowCount`, `sql.optional`, or `sql.one` for that invariant. Non-database failures are rethrown unchanged.
 
 ### Transactions with options
 
@@ -431,6 +489,7 @@ sqlx-js ci [--root <dir>] [--dts <path>] [--schema <path>] [--json] [--shadow-ur
 sqlx-js db install | check [--root <dir>]
 sqlx-js db plan | apply [--root <dir>] [-- <pgschema args>]
 sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
+sqlx-js queries [--json] [--embed <path>] [--root <dir>]
 sqlx-js migrate dev [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | verify [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
 sqlx-js schema dump [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
 sqlx-js schema check [--schema <path>] [--shadow-url <url>]
@@ -451,6 +510,7 @@ Regular `prepare` describes queries across a small connection pool (default 8, o
 | `--migrations <dir>`  | Root-relative migrations directory (default: `<root>/migrations`).                   |
 | `--dry-run`           | For `migrate run` / `migrate revert`: validate without applying to the target DB.   |
 | `--json`              | Machine-readable prepare diagnostics, doctor output, migration inspection and dry-runs. |
+| `--embed <path>`      | For `queries`: write a deterministic TypeScript map of referenced external SQL files. |
 | `--jsonl`             | Versioned streaming events for `prepare --watch`.                                     |
 | `--strict-inference`  | Fail prepare/dev/verify when nullability degrades or a generated query type contains `unknown`. |
 | `--force`             | For `migrate archive restore`: allow overwriting existing migration files.           |
@@ -466,7 +526,9 @@ Regular `prepare` describes queries across a small connection pool (default 8, o
 
 Flags that take a value accept both `--flag value` and `--flag=value` forms.
 
-Prepare and doctor JSON use `formatVersion: 1`. Prepare diagnostics include a stable phase plus root-relative file, 1-based line/column, PostgreSQL code/position/hint when available, and the query text. Degraded inference and generated `unknown` types appear as warnings by default; `--strict-inference` promotes them to errors. This is intended for CI annotations and editor integrations; stdout contains one JSON document and human progress is suppressed. `prepare --watch --jsonl` emits one `start`, `diagnostic`, `prepared`, `error`, `watching`, or `stopping` event per line so an editor can consume diagnostics without waiting for the watch process to exit. Fatal `error` events include the same structured `diagnostic` object as CLI preflight failures, preserving the prepare phase and source location when available.
+Prepare and doctor JSON use `formatVersion: 1`. Prepare diagnostics include a stable phase plus root-relative file, 1-based line/column, query ID/name, PostgreSQL code/position/hint when available, and the query text. Degraded inference and generated `unknown` types appear as warnings by default; `--strict-inference` promotes them to errors. This is intended for CI annotations and editor integrations; stdout contains one JSON document and human progress is suppressed. `prepare --watch --jsonl` emits one `start`, `diagnostic`, `prepared`, `error`, `watching`, or `stopping` event per line so an editor can consume diagnostics without waiting for the watch process to exit. Fatal `error` events include the same structured `diagnostic` object as CLI preflight failures, preserving the prepare phase and source location when available.
+
+`queries --json` is database-free and read-only. It emits `formatVersion: 1` inventory entries with `queryId`, optional definition names, cardinalities, root-relative call sites, SQL file paths, and `current`/`stale`/`missing` cache status, plus orphaned cache IDs. Config, scan, cache, and embed failures use versioned structured diagnostics with source location when available. Adding `--embed` writes the external-SQL module only after a successful scan.
 
 `DATABASE_URL` must be set for any command that touches the application database or auto-creates a shadow database. `SHADOW_ADMIN_DATABASE_URL` can point at a maintenance/admin database when the application user cannot `CREATE DATABASE`; `SHADOW_DATABASE_URL` can point at a pre-created disposable shadow database. The internal wire client understands `sslmode`, `sslrootcert`, `sslcert`, `sslkey`, `application_name`, `options` (PostgreSQL startup options such as `-c search_path=app,public`), `connect_timeout` (seconds), and `statement_timeout` (milliseconds). Unqualified relations are resolved using the prepare session's real `search_path`; they are not assumed to live in `public`.
 
@@ -619,6 +681,14 @@ export default defineConfig({
     "posts.meta":         "SqlxJsJson.PostMeta",
     "posts.attachments":  "SqlxJsJson.Attachment",
   },
+  // Explicit application-owned assertions for direct scalar columns only.
+  columnTypes: {
+    "analytics_event.action": "AnalyticsAction",
+  },
+  functionCatalog: {
+    // Extension-owned functions are excluded by default.
+    includeExtensionOwned: false,
+  },
 });
 ```
 
@@ -644,7 +714,17 @@ declare global {
 export {};
 ```
 
-After re-running `prepare`, every `jsonb` column or parameter declared in `jsonbTypes` is checked against the corresponding TypeScript type. Columns without a custom mapping use `JsonValue` for result rows and `JsonInput` inside `JsonParameter` for parameters, both exported by `@onreza/sqlx-js`. Pass JSON parameters through `sql.json(value)`: non-JSON inputs such as `Date`, functions, and `bigint` are rejected by TypeScript while plain JSON objects, arrays, strings, numbers, booleans, and nested JSON `null` values are accepted. A bare top-level `null` remains SQL `NULL` and is allowed only when the mapped database parameter is nullable; use `sql.json(null)` for JSON `null`.
+After re-running `prepare`, every `jsonb` column or parameter declared in `jsonbTypes` is checked against the corresponding TypeScript type. Columns without a custom mapping use `JsonValue` for result rows and `JsonParameter<unknown>` for parameters: the existential parameter type accepts any wrapper already proven JSON-safe by `sql.json(value)` without requiring domain interfaces to declare a string index signature. Non-JSON inputs such as `Date`, functions, and `bigint` are rejected by TypeScript while plain JSON objects, arrays, strings, numbers, booleans, and nested JSON `null` values are accepted. A bare top-level `null` remains SQL `NULL` and is allowed only when the mapped database parameter is nullable; use `sql.json(null)` for JSON `null`.
+
+### Direct scalar `columnTypes`
+
+`columnTypes` is an explicit application-owned type assertion for a direct scalar table column. It affects result fields that PostgreSQL attributes to that exact column and parameters that sqlx-js maps back to it through `INSERT`, `UPDATE`, `WHERE`, or `JOIN` analysis. It never changes arbitrary expressions such as `upper(action)`, and it does not apply to PostgreSQL/JSON array columns. Use a schema-qualified key when table names can collide. Mapping the same logical column through both `jsonbTypes` and `columnTypes` is rejected.
+
+This assertion does not validate stored values at runtime. Prefer a PostgreSQL enum/domain when the database truly owns a closed value set; use `columnTypes` when the database deliberately stores a broader scalar such as `text` and the application accepts responsibility for the narrower TypeScript contract.
+
+### Function catalog scope
+
+Application-owned functions and procedures from non-system schemas are generated into `KnownFunctions`. Objects owned by installed extensions are excluded through `pg_depend`, preventing extension internals from dominating committed artifacts. Set `functionCatalog.includeExtensionOwned: true` only when those approximate signatures are needed, or set `functionCatalog: false` to disable catalog generation entirely.
 
 ### Extension types and `customTypes`
 
@@ -726,6 +806,8 @@ The `migrate verify` step needs `DATABASE_URL` credentials that can either creat
 
 The managed pgschema binary is installed under `node_modules/.cache/sqlx-js/pgschema/`, not `.sqlx-js/`, so it is not part of the committed offline cache.
 
+Generated declarations and cache files should be excluded from formatters and linters. They remain included in `tsconfig.json` for type checking, but rules such as Biome's empty-interface or confusing-void checks are not meaningful for declaration-merging points and PostgreSQL procedure contracts.
+
 ## Contributing
 
 The project uses [conventional commits](https://www.conventionalcommits.org/), validated locally by `cocogitto` through `lefthook` hooks. Install both before contributing:
@@ -751,7 +833,7 @@ Releases are automated via `release-please`: pushes to `main` accumulate into a 
 - Migrations run inside `BEGIN/COMMIT`. DDL that disallows transactions (`CREATE INDEX CONCURRENTLY`, `VACUUM`, `REINDEX CONCURRENTLY`, …) will fail; split such operations into separate migrations executed outside the runner.
 - The **internal** wire client (used by `migrate run`, `prepare`, and the runtime `migrate()` helper) reads `sslmode`, `sslrootcert`/`sslcert`/`sslkey`, `application_name`, `options`, `connect_timeout`, and `statement_timeout` from `DATABASE_URL`. The default runtime `sql()` path delegates connection handling to Postgres.js; configure TLS, pooling, and timeouts through the `DATABASE_URL` and `createClient(...)` options it understands (`statementTimeoutMs` is a convenience that maps to a per-connection `statement_timeout`).
 - `connect_timeout` bounds the entire internal-client connect, including the TLS handshake and SCRAM authentication.
-- Runtime `sql.file(path)` resolves against `fileRoot` while prepare resolves against `--root`. They are both root-relative, but applications started outside the project root must set `fileRoot` explicitly.
+- Runtime `sql.file(path)` resolves against `fileRoot` while prepare resolves against `--root`. They are both root-relative, but applications started outside the project root must set `fileRoot` explicitly or provide the generated `sqlFiles` map.
 
 See [ROADMAP.md](./ROADMAP.md) for what's planned.
 
@@ -759,13 +841,15 @@ See [ROADMAP.md](./ROADMAP.md) for what's planned.
 
 ### Cache, codegen, and parameter contract changes (pre-1.0)
 
-Generated cache now includes `.sqlx-js/cache-manifest.json` with an explicit cache format, generator revision, and hash of `jsonbTypes` / `customTypes`. Cache without this manifest is rejected. Delete `.sqlx-js/` and re-run `sqlx-js prepare` against your database — there is no data loss because the cache is generated.
+Generated cache includes `.sqlx-js/cache-manifest.json` with an explicit cache format, generator revision, and hash of type/function-catalog settings. Cache without this manifest is rejected. Delete `.sqlx-js/` and re-run `sqlx-js prepare` against your database — there is no data loss because the cache is generated.
 
 Generated JSON and PostgreSQL array parameters now require `sql.json(...)` and `sql.array(...)`. This removes the ambiguous runtime guess where a JavaScript array could mean either a PostgreSQL array or a JSON array. Replace raw array JSON params with `sql.json(value)` and PostgreSQL arrays with `sql.array(value)` before regenerating declarations.
 
 CI (`prepare --check`) will also fail loudly until the cache is regenerated; this is intentional so a stale schema can't silently emit incorrect `.d.ts`.
 
 Generator revision 4 changes the declaration layout so it exports `SqlxJsGeneratedRegistry` for scoped clients while continuing to augment the global `KnownQueries` convenience API. Re-run live `sqlx-js prepare` after upgrading. `prepare --check` is now strictly read-only; use `prepare --offline` when deliberate cache-to-declaration regeneration is required.
+
+Generator revision 6 adds `columnTypes` and function-catalog scope to the generated contract. Extension-owned functions are no longer emitted by default. Re-run live `sqlx-js prepare`; set `functionCatalog.includeExtensionOwned: true` only if application code intentionally indexes those signatures.
 
 Runtime observers and SQL-file caching are also stricter production boundaries. An exception from `onQuery` no longer replaces a successful query result; handle it through `onQueryHookError`. `sql.file()` no longer performs an mtime check on every call—use `reloadSqlFiles: true` during development or call `clearSqlFileCache()` explicitly after changing a file.
 

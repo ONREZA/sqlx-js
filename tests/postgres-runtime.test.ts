@@ -115,6 +115,24 @@ test("setClient applies fileRoot to sql.file.execute", async () => {
   expect(calls).toEqual(["UPDATE jobs SET active = false"]);
 });
 
+test("embedded SQL files execute without a filesystem asset", async () => {
+  const calls: string[] = [];
+  const fake = {
+    options: { prepare: true },
+    unsafe: async (query: string) => {
+      calls.push(query);
+      return Object.assign([], { count: 1, command: "SELECT" });
+    },
+    array: (value: unknown[], oid?: number) => ({ kind: "array", value, oid }),
+    json: (value: unknown) => ({ kind: "json", value }),
+    end: async () => {},
+  } as unknown as PostgresClient;
+
+  setClient(fake, { sqlFiles: { "queries/embedded.sql": "SELECT 42 AS answer" } });
+  await sql.file("queries/embedded.sql");
+  expect(calls).toEqual(["SELECT 42 AS answer"]);
+});
+
 test("createSqlClient returns independent scoped runtimes", async () => {
   const first = createSqlClient("postgres://postgres:postgres@127.0.0.1:1/first", { connect_timeout: 1 });
   const second = createSqlClient("postgres://postgres:postgres@127.0.0.1:1/second", { connect_timeout: 1 });

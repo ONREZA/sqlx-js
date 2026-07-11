@@ -1,0 +1,46 @@
+{
+  "query": "SELECT id, name, email, role\n   FROM users\n   WHERE email = $email",
+  "hasInline": true,
+  "inlineQueries": [
+    "SELECT id, name, email, role\n   FROM users\n   WHERE email = $email"
+  ],
+  "paramOids": [
+    25
+  ],
+  "paramTsTypes": [
+    "string"
+  ],
+  "paramNullable": [
+    false
+  ],
+  "paramNames": [
+    "email"
+  ],
+  "columns": [
+    {
+      "name": "id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": false
+    },
+    {
+      "name": "name",
+      "typeOid": 25,
+      "tsType": "string",
+      "nullable": false
+    },
+    {
+      "name": "email",
+      "typeOid": 25,
+      "tsType": "string",
+      "nullable": false
+    },
+    {
+      "name": "role",
+      "typeOid": 0,
+      "tsType": "\"admin\" | \"editor\" | \"viewer\"",
+      "nullable": false
+    }
+  ],
+  "hasResultSet": true
+}

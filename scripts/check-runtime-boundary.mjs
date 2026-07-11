@@ -8,6 +8,8 @@ const allowedRuntimeFiles = new Set([
   "dist/src/index.js",
   "dist/src/config.js",
   "dist/src/postgres-runtime.js",
+  "dist/src/query.js",
+  "dist/src/query-id.js",
   "dist/src/runtime.js",
   "dist/src/sql-params.js",
   "dist/src/sql-lex.js",

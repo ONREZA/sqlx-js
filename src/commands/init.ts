@@ -7,9 +7,14 @@ export default defineConfig({
   // Map jsonb columns/params to TypeScript types declared in a .d.ts, e.g.
   //   "users.settings": "SqlxJsJson.UserSettings",
   jsonbTypes: {},
+  // Assert narrower TypeScript types for direct scalar columns.
+  columnTypes: {},
   // Map PostgreSQL type names to TypeScript types, e.g.
   //   geometry: "GeoJSON.Geometry",
   customTypes: {},
+  // Extension-owned functions are excluded by default. Set false to disable
+  // the generated function catalog entirely.
+  functionCatalog: {},
 });
 `;
 
@@ -22,7 +27,9 @@ export default defineConfig({
     schemas: ["public"],
   },
   jsonbTypes: {},
+  columnTypes: {},
   customTypes: {},
+  functionCatalog: {},
 });
 `;
 
@@ -154,6 +161,7 @@ export function runInit(opts: InitOptions): void {
       "sqlx:offline": "sqlx-js prepare --offline",
       "sqlx:verify": "sqlx-js prepare --verify --strict-inference",
       "sqlx:ci": "sqlx-js ci",
+      "sqlx:queries": "sqlx-js queries --json",
     };
     let changed = false;
     for (const [name, command] of Object.entries(defaults)) {

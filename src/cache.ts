@@ -1,21 +1,20 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { isBuiltinOid } from "./pg/oids";
-import {
-  isEscapeStringPrefix,
-  isIdentifierContinuation,
-  readBlockComment,
-  readDollarQuoted,
-  readLineComment,
-  readQuotedIdentifier,
-  readSingleQuoted,
-} from "./sql-lex";
+import { queryId } from "./query-id";
 import { rewriteNamedParameters } from "./sql-params";
 
 export const CACHE_FORMAT_VERSION = 3;
-export const GENERATOR_REVISION = 5;
+export const GENERATOR_REVISION = 6;
 export const CACHE_MANIFEST_FILE = "cache-manifest.json";
+
+export class CacheManifestStaleError extends Error {
+  constructor(path: string) {
+    super(`sqlx-js: cache manifest is stale: ${path}. Run \`sqlx-js prepare\`.`);
+    this.name = "CacheManifestStaleError";
+  }
+}
 
 export type CacheManifest = {
   cacheFormat: typeof CACHE_FORMAT_VERSION;
@@ -50,66 +49,7 @@ export function portableCacheOid(oid: number): number {
 }
 
 export function fingerprint(query: string): string {
-  const norm = normalizeForFingerprint(query);
-  return createHash("sha256").update(norm).digest("hex").slice(0, 16);
-}
-
-function normalizeForFingerprint(query: string): string {
-  let out = "";
-  let pendingSpace = false;
-  let i = 0;
-
-  const emit = (text: string) => {
-    if (pendingSpace && out.length > 0) out += " ";
-    out += text;
-    pendingSpace = false;
-  };
-
-  const markSpace = () => {
-    if (out.length > 0) pendingSpace = true;
-  };
-
-  while (i < query.length) {
-    const ch = query[i]!;
-    if (/\s/.test(ch)) {
-      markSpace();
-      i++;
-      continue;
-    }
-    if (ch === "-" && query[i + 1] === "-") {
-      i = readLineComment(query, i);
-      markSpace();
-      continue;
-    }
-    if (ch === "/" && query[i + 1] === "*") {
-      i = readBlockComment(query, i);
-      markSpace();
-      continue;
-    }
-    if (ch === "'") {
-      const next = readSingleQuoted(query, i, isEscapeStringPrefix(query, i));
-      emit(query.slice(i, next));
-      i = next;
-      continue;
-    }
-    if (ch === "\"") {
-      const next = readQuotedIdentifier(query, i);
-      emit(query.slice(i, next));
-      i = next;
-      continue;
-    }
-    if (ch === "$") {
-      const next = i === 0 || !isIdentifierContinuation(query[i - 1]!) ? readDollarQuoted(query, i) : null;
-      if (next !== null) {
-        emit(query.slice(i, next));
-        i = next;
-        continue;
-      }
-    }
-    emit(ch);
-    i++;
-  }
-  return out;
+  return queryId(query);
 }
 
 
@@ -284,7 +224,7 @@ export function readCacheManifest(cacheDir: string): CacheManifest | null {
     value.generatorRevision !== GENERATOR_REVISION ||
     typeof value.configHash !== "string"
   ) {
-    throw new Error(`sqlx-js: cache manifest is stale: ${path}. Run \`sqlx-js prepare\`.`);
+    throw new CacheManifestStaleError(path);
   }
   return value as CacheManifest;
 }
@@ -295,7 +235,7 @@ export function assertCacheManifest(cacheDir: string, configHash: string): Cache
     throw new Error(`sqlx-js: cache manifest is missing. Run \`sqlx-js prepare\` to regenerate the cache.`);
   }
   if (manifest.configHash !== configHash) {
-    throw new Error("sqlx-js: cache was generated with a different jsonbTypes/customTypes config. Run `sqlx-js prepare`.");
+    throw new Error("sqlx-js: cache was generated with a different jsonbTypes/customTypes config or other type/function catalog settings. Run `sqlx-js prepare`.");
   }
   return manifest;
 }

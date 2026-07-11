@@ -71,6 +71,33 @@ test("prepare config hash is independent of object key order", () => {
   }));
 });
 
+test("prepare config hash includes column and function catalog contracts", () => {
+  const base = prepareConfigHash({});
+  expect(prepareConfigHash({ functionCatalog: { includeExtensionOwned: false } })).toBe(base);
+  expect(prepareConfigHash({ columnTypes: { "users.status": "Status" } })).not.toBe(base);
+  expect(prepareConfigHash({ functionCatalog: false })).not.toBe(base);
+  expect(prepareConfigHash({ functionCatalog: { includeExtensionOwned: true } })).not.toBe(base);
+});
+
+test("loadConfig rejects conflicting column type assertions", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sqlx-js-config-conflict-"));
+  roots.push(dir);
+  writeFileSync(join(dir, "sqlx-js.config.mjs"), `export default {
+    jsonbTypes: { "public.users.payload": "Payload" },
+    columnTypes: { "users.payload": "Payload" },
+  };\n`);
+  await expect(loadConfig(dir)).rejects.toThrow(/same column/);
+});
+
+test("loadConfig validates function catalog settings", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sqlx-js-config-functions-"));
+  roots.push(dir);
+  writeFileSync(join(dir, "sqlx-js.config.mjs"), `export default {
+    functionCatalog: { includeExtensionOwned: "yes" },
+  };\n`);
+  await expect(loadConfig(dir)).rejects.toThrow(/includeExtensionOwned must be a boolean/);
+});
+
 test("current development runtime satisfies the supported baseline", () => {
   expect(() => assertSupportedRuntime()).not.toThrow();
 });

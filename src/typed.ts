@@ -1,13 +1,15 @@
+import type { QUERY_EXECUTOR, QueryExecutorMethod } from "./query";
+
 type ParamsOf<T> = T extends { params: infer P }
   ? P extends readonly unknown[] ? P : [P]
   : never[];
 type RowOf<T> = T extends { row: infer R } ? R : never;
 type ExecuteResult = import("./runtime").ExecuteResult;
-type JsonInputValue = import("./runtime").JsonInputValue;
+type JsonCompatible<T> = import("./runtime").JsonCompatible<T>;
 type JsonParameter<T> = import("./runtime").JsonParameter<T>;
 type PgArrayParameter<T> = import("./runtime").PgArrayParameter<T>;
 
-type JsonFn = <T extends JsonInputValue>(value: T) => JsonParameter<T>;
+type JsonFn = <T>(value: T & JsonCompatible<T>) => JsonParameter<T>;
 type ArrayFn = <T>(value: readonly (T | null)[]) => PgArrayParameter<T>;
 
 export type TypedFile<TFileQueries> = {
@@ -26,6 +28,7 @@ export type TypedSql<TQueries, TFileQueries> = {
   id: (...parts: string[]) => string;
   json: JsonFn;
   array: ArrayFn;
+  readonly [QUERY_EXECUTOR]?: QueryExecutorMethod;
 };
 
 export type Typed<TQueries, TFileQueries, TTransactionOptions> = TypedSql<TQueries, TFileQueries> & {

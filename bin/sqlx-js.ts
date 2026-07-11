@@ -19,7 +19,7 @@ function packageVersion(): string {
 
 const VERSION = packageVersion();
 
-type HelpScope = "root" | "init" | "doctor" | "ci" | "db" | "prepare" | "migrate" | "schema";
+type HelpScope = "root" | "init" | "doctor" | "ci" | "db" | "prepare" | "queries" | "migrate" | "schema";
 
 const HELP: Record<HelpScope, string> = {
   root: `sqlx-js — compile-time-checked SQL for TypeScript + Postgres (v${VERSION})
@@ -31,6 +31,7 @@ usage:
   sqlx-js db install | check [--root <dir>]
   sqlx-js db plan | apply [--root <dir>] [-- <pgschema args>]
   sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
+  sqlx-js queries [--json] [--embed <path>] [--root <dir>]
   sqlx-js migrate dev [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | verify [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
   sqlx-js schema dump [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
   sqlx-js schema check [--schema <path>] [--shadow-url <url>]
@@ -54,6 +55,7 @@ flags:
   --dry-run                validate and print migrate run/revert plan without applying migrations
   --json                   machine-readable output for prepare and migration inspection/dry-run commands
   --jsonl                  streaming machine-readable output for prepare --watch
+  --embed <path>           emit a deterministic TypeScript map of referenced SQL files
   --strict-inference       fail when query inference degrades or emits unknown types
   --force                  allow archive restore to overwrite existing migration files
   --lock-timeout <ms>      advisory-lock acquisition timeout for migrate run/revert/dev/verify/squash
@@ -71,6 +73,7 @@ flags:
   ci: `usage: sqlx-js ci [--root <dir>] [--dts <path>] [--schema <path>] [--json] [--shadow-url <url>] [--shadow-admin-url <url>] [--migrations <dir>]`,
   db: `usage: sqlx-js db install | check [--root <dir>] | plan | apply [--root <dir>] [-- <pgschema args>]`,
   prepare: `usage: sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]`,
+  queries: `usage: sqlx-js queries [--json] [--embed <path>] [--root <dir>]`,
   migrate: `usage: sqlx-js migrate dev [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | verify [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]`,
   schema: `usage: sqlx-js schema dump [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>] | check [--schema <path>] [--shadow-url <url>]`,
 };
@@ -96,7 +99,7 @@ const cliArgv = passthroughIndex >= 0 ? rawArgv.slice(0, passthroughIndex) : raw
 const passthroughArgs = passthroughIndex >= 0 ? rawArgv.slice(passthroughIndex + 1) : [];
 const cmd = cliArgv[0];
 
-const scopes = new Set<HelpScope>(["init", "doctor", "ci", "db", "prepare", "migrate", "schema"]);
+const scopes = new Set<HelpScope>(["init", "doctor", "ci", "db", "prepare", "queries", "migrate", "schema"]);
 
 if (cmd === "--version" || cmd === "-v") {
   console.log(VERSION);
@@ -142,6 +145,7 @@ function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfi
       "strict-inference": { type: "boolean" },
     };
   }
+  if (command === "queries") return { ...ROOT_OPTIONS, json: { type: "boolean" }, embed: { type: "string" } };
   if (command === "schema") {
     const common = {
       ...ROOT_OPTIONS,
@@ -235,7 +239,7 @@ function requirePositionals(min: number, max: number, label: string): void {
 }
 
 function validateInvocation(): void {
-  if (cmd === "init" || cmd === "doctor" || cmd === "ci" || cmd === "prepare") {
+  if (cmd === "init" || cmd === "doctor" || cmd === "ci" || cmd === "prepare" || cmd === "queries") {
     requirePositionals(0, 0, cmd);
     return;
   }
@@ -304,6 +308,7 @@ const needsTypeScript =
   cmd === "doctor" ||
   cmd === "ci" ||
   cmd === "prepare" ||
+  cmd === "queries" ||
   (cmd === "migrate" && (positionals[0] === "dev" || positionals[0] === "verify"));
 if (needsTypeScript) {
   try {
@@ -533,6 +538,34 @@ if (cmd === "init") {
           : {},
       );
     }
+  }
+} else if (cmd === "queries") {
+  const { QueriesError, runQueries } = await import("../src/commands/queries");
+  const embed = arg("--embed");
+  try {
+    await runQueries({
+      root,
+      cacheDir,
+      json: flag("--json"),
+      embedPath: embed ? resolve(root, embed) : undefined,
+    });
+  } catch (error) {
+    if (flag("--json")) {
+      const diagnostic = error instanceof QueriesError
+        ? {
+            severity: "error",
+            phase: error.phase,
+            message: error.message,
+            ...(error.file === undefined ? {} : { file: error.file }),
+            ...(error.line === undefined ? {} : { line: error.line }),
+            ...(error.column === undefined ? {} : { column: error.column }),
+          }
+        : { severity: "error", phase: "scan", message: (error as Error).message };
+      console.log(JSON.stringify({ formatVersion: 1, ok: false, diagnostics: [diagnostic] }, null, 2));
+    } else {
+      console.error((error as Error).message);
+    }
+    process.exit(2);
   }
 } else if (cmd === "schema") {
   const { runSchemaCheck, runSchemaDump } = await import("../src/commands/schema");

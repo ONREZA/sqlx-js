@@ -32,10 +32,15 @@ try {
   }
   writeFileSync(join(temp, "app.mjs"), `
     import assert from "node:assert/strict";
-    import { close, createClient, setClient, sql } from "@onreza/sqlx-js";
+    import { close, createClient, defineQuery, queryId, setClient, sql } from "@onreza/sqlx-js";
 
     try {
-      setClient(createClient(process.env.DATABASE_URL, { max: 1 }));
+      const events = [];
+      setClient(createClient(process.env.DATABASE_URL, {
+        max: 1,
+        onQuery: (event) => events.push(event),
+        sqlFiles: { "queries/embedded.sql": "SELECT 9::int4 AS value" },
+      }));
       const row = await sql.one(
         "SELECT 42::int4 AS value, $1::jsonb AS payload, $2::int4[] AS numbers",
         sql.json({ ok: true }),
@@ -49,6 +54,12 @@ try {
         return await tx.one("SELECT value FROM node_package_smoke");
       });
       assert.deepEqual(transactionValue, { value: 7 });
+
+      const answerQuery = defineQuery.one("smoke.answer", "SELECT 43::int4 AS value");
+      assert.deepEqual(await answerQuery.run(sql), { value: 43 });
+      assert.deepEqual(await sql.file.one("queries/embedded.sql"), { value: 9 });
+      assert.equal(answerQuery.queryId, queryId(answerQuery.query));
+      assert.ok(events.some((event) => event.queryId === answerQuery.queryId && event.queryName === "smoke.answer"));
     } finally {
       await close();
     }

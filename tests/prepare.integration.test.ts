@@ -67,6 +67,15 @@ if (!haveIntegrationDatabase) {
     return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   }
 
+  function prepareRoot(root: string, args: string[] = []): { code: number; stdout: string; stderr: string } {
+    const r = spawnSync(
+      "bun",
+      [join(repoRoot, "bin/sqlx-js.ts"), "prepare", "--root", root, ...args],
+      { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
+    );
+    return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  }
+
   function migrate(): { code: number; stdout: string; stderr: string } {
     const r = spawnSync(
       "bun",
@@ -223,6 +232,18 @@ if (!haveIntegrationDatabase) {
     }
   });
 
+  test("prepare discovers named query definitions", () => {
+    writeFile("a.ts",
+      "import { defineQuery } from \"@onreza/sqlx-js\";\n" +
+      "export const findUser = defineQuery.optional(\"users.findById\", \"SELECT id, name FROM tmp_users WHERE id = $id\");\n",
+    );
+    const r = prepare();
+    expect(r.code, r.stderr).toBe(0);
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain("SELECT id, name FROM tmp_users WHERE id = $id");
+    expect(dts).toContain('params: { "id": bigint }');
+  });
+
   test("named and positional forms keep independent generated contracts", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
@@ -352,10 +373,11 @@ if (!haveIntegrationDatabase) {
     expect(result.stderr).toBe("");
     const payload = JSON.parse(result.stdout) as {
       ok: boolean;
-      diagnostics: { phase: string; file: string; line: number; code?: string }[];
+      diagnostics: { phase: string; file: string; line: number; queryId?: string; code?: string }[];
     };
     expect(payload.ok).toBe(false);
     expect(payload.diagnostics[0]).toMatchObject({ phase: "describe", file: "a.ts", line: 2, code: "42P01" });
+    expect(payload.diagnostics[0]!.queryId).toMatch(/^[0-9a-f]{16}$/);
   });
 
   test("prepare emits KnownFunctions from pg_proc and keeps them in --check", async () => {
@@ -363,6 +385,7 @@ if (!haveIntegrationDatabase) {
     await setup.connect();
     try {
       await setup.simpleQuery(`
+        CREATE EXTENSION IF NOT EXISTS hstore;
         DROP FUNCTION IF EXISTS tmp_catalog_slug(text);
         DROP FUNCTION IF EXISTS tmp_catalog_pair(text);
         DROP FUNCTION IF EXISTS tmp_catalog_json_table(jsonb);
@@ -396,11 +419,68 @@ if (!haveIntegrationDatabase) {
     expect(dts).toContain('"public.tmp_catalog_json_table(value jsonb)": { kind: "function"; params: [import("@onreza/sqlx-js").JsonInput]; returns: { payload: import("@onreza/sqlx-js").JsonValue | null }; returnsSet: true }');
     expect(dts).toContain('"public.tmp_catalog_json_out(value text, OUT payload jsonb)": { kind: "function"; params: [string]; returns: { payload: import("@onreza/sqlx-js").JsonValue | null }; returnsSet: false }');
     expect(dts).toMatch(/"public\.tmp_catalog_json_inout\([^"]*jsonb\)": \{ kind: "function"; params: \[import\("@onreza\/sqlx-js"\)\.JsonInput\]; returns: \{ payload: import\("@onreza\/sqlx-js"\)\.JsonValue \| null \}; returnsSet: false \}/);
+    expect(dts).not.toContain('"public.hstore(');
 
     r = prepare(["--check"]);
     expect(r.code).toBe(0);
     dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain('"public.tmp_catalog_slug(value text)":');
+
+    const fullCatalogRoot = isolatedRoot("function-catalog-extensions");
+    writeRootFile(fullCatalogRoot, "sqlx-js.config.ts", `export default {
+      functionCatalog: { includeExtensionOwned: true },
+    };\n`);
+    writeRootFile(fullCatalogRoot, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT tmp_catalog_slug($1) AS slug\", \"Hello\");\n",
+    );
+    r = prepareRoot(fullCatalogRoot);
+    expect(r.code, r.stderr).toBe(0);
+    dts = readFileSync(join(fullCatalogRoot, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain('"public.hstore(');
+
+    const disabledCatalogRoot = isolatedRoot("function-catalog-disabled");
+    writeRootFile(disabledCatalogRoot, "sqlx-js.config.ts", "export default { functionCatalog: false };\n");
+    writeRootFile(disabledCatalogRoot, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT tmp_catalog_slug($1) AS slug\", \"Hello\");\n",
+    );
+    r = prepareRoot(disabledCatalogRoot);
+    expect(r.code, r.stderr).toBe(0);
+    dts = readFileSync(join(disabledCatalogRoot, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).not.toContain('"public.tmp_catalog_slug(value text)":');
+    r = prepareRoot(disabledCatalogRoot, ["--check"]);
+    expect(r.code, r.stderr).toBe(0);
+  });
+
+  test("columnTypes override direct scalar results and mapped parameters only", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        CREATE TABLE IF NOT EXISTS tmp_column_types (
+          id bigint PRIMARY KEY,
+          action text NOT NULL
+        )
+      `);
+    } finally {
+      await setup.end();
+    }
+    const root = isolatedRoot("column-types");
+    writeRootFile(root, "sqlx-js.config.ts", `export default {
+      columnTypes: { "public.tmp_column_types.action": '\"created\" | \"deleted\"' },
+    };\n`);
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT action, upper(action) AS derived FROM tmp_column_types WHERE action = $action\", { action: \"created\" });\n" +
+      "await sql(\"INSERT INTO tmp_column_types (id, action) VALUES ($id, $action) RETURNING action\", { id: 1n, action: \"created\" });\n",
+    );
+    const r = prepareRoot(root);
+    expect(r.code, r.stderr).toBe(0);
+    const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain('"action": "created" | "deleted"');
+    expect(dts).toContain('"derived": string');
+    expect(dts).toContain('"action": "created" | "deleted" }');
   });
 
   test("describeAll resolves every query across a connection pool", async () => {
@@ -1049,7 +1129,7 @@ if (!haveIntegrationDatabase) {
     expect(dts).toMatch(/table\.dot.*params: \[bigint, string \| null\]/);
   });
 
-  test("unconfigured jsonb params use explicit JsonParameter<JsonInputValue>", () => {
+  test("unconfigured jsonb params accept any structurally checked JsonParameter", () => {
     writeFile("migrations/0006_json_fallback.up.sql",
       "CREATE TABLE IF NOT EXISTS tmp_json_fallback (\n" +
       "  id BIGSERIAL PRIMARY KEY,\n" +
@@ -1070,7 +1150,7 @@ if (!haveIntegrationDatabase) {
     const r = prepare();
     expect(r.code).toBe(0);
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
-    expect(dts).toMatch(/tmp_json_fallback.*params: \[import\("@onreza\/sqlx-js"\)\.JsonParameter<import\("@onreza\/sqlx-js"\)\.JsonInputValue>, import\("@onreza\/sqlx-js"\)\.JsonParameter<import\("@onreza\/sqlx-js"\)\.JsonInputValue> \| null\]/);
+    expect(dts).toMatch(/tmp_json_fallback.*params: \[import\("@onreza\/sqlx-js"\)\.JsonParameter<unknown>, import\("@onreza\/sqlx-js"\)\.JsonParameter<unknown> \| null\]/);
     expect(dts).toContain('"payload": import("@onreza/sqlx-js").JsonValue');
     expect(dts).toContain('"maybe_payload": import("@onreza/sqlx-js").JsonValue | null');
   });
@@ -1092,7 +1172,7 @@ if (!haveIntegrationDatabase) {
     const jsonResult = prepare();
     expect(jsonResult.code).toBe(0);
     const jsonDts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
-    expect(jsonDts).toContain('PgArrayParameter<import("@onreza/sqlx-js").JsonParameter<import("@onreza/sqlx-js").JsonInputValue>>');
+    expect(jsonDts).toContain('PgArrayParameter<import("@onreza/sqlx-js").JsonParameter<unknown>>');
   });
 
   test("$N IS NULL OR col = $N pattern makes the param nullable", () => {

@@ -34,6 +34,7 @@ test("CLI help prints package metadata version", () => {
   expect(r.stdout).toContain("--shadow-admin-url");
   expect(r.stdout).toContain("revert [--dry-run]");
   expect(r.stdout).toContain("archive restore");
+  expect(r.stdout).toContain("sqlx-js queries");
 });
 
 test("CLI help lists the init command", () => {
@@ -96,6 +97,7 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
       "sqlx:offline": "sqlx-js prepare --offline",
       "sqlx:verify": "sqlx-js prepare --verify --strict-inference",
       "sqlx:ci": "sqlx-js ci",
+      "sqlx:queries": "sqlx-js queries --json",
     });
 
     const r2 = spawnSync("bun", [binPath, "init", "--root", root], {

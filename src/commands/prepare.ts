@@ -16,7 +16,7 @@ import {
   type CacheEntry,
 } from "../cache";
 import { emitDts } from "../codegen";
-import { loadConfig, lookupJsonbType, prepareConfigHash, type SqlxJsConfig } from "../config";
+import { loadConfig, lookupColumnType, lookupJsonbType, prepareConfigHash, type SqlxJsConfig } from "../config";
 import { functionCacheExists, readFunctionCache, writeFunctionCache, type FunctionEntry } from "../function-cache";
 import { introspectFunctions } from "../pg/functions";
 import { buildParamMap, type ParamMap, type ParamMapResult } from "../pg/param-map";
@@ -27,7 +27,7 @@ import { originalPosition, rewriteNamedParameters } from "../sql-params";
 
 const JSON_OIDS = new Set([114, 3802]);
 const JSON_ARRAY_OIDS = new Set([199, 3807]);
-const JSON_INPUT_VALUE = 'import("@onreza/sqlx-js").JsonInputValue';
+const JSON_INPUT_VALUE = "unknown";
 
 function jsonParameter(type: string): string {
   return `import("@onreza/sqlx-js").JsonParameter<${type}>`;
@@ -55,6 +55,12 @@ function resolveTs(oid: number, customLookup: (o: number) => CustomTypeInfo | un
   return oidToTs(oid).ts;
 }
 
+function isScalarColumnType(oid: number, schema: SchemaCache): boolean {
+  if (JSON_OIDS.has(oid) || JSON_ARRAY_OIDS.has(oid) || arrayElementOid(oid) !== undefined) return false;
+  const custom = schema.customType(oid);
+  return custom?.kind !== "enumArray" && custom?.kind !== "scalarArray" && custom?.kind !== "compositeArray";
+}
+
 function resolveColumnTs(
   f: FieldDescription,
   schema: SchemaCache,
@@ -72,6 +78,10 @@ function resolveColumnTs(
         const decl = lookupJsonbType(cfg, tbl.schema, tbl.name, colName);
         if (decl) return `(${decl})[]`;
       }
+      if (isScalarColumnType(f.typeOid, schema)) {
+        const decl = lookupColumnType(cfg, tbl.schema, tbl.name, colName);
+        if (decl) return decl;
+      }
     }
   }
   return resolveTs(f.typeOid, (oid) => schema.customType(oid));
@@ -84,8 +94,14 @@ function resolveParamTs(
   schema: SchemaCache,
   cfg: SqlxJsConfig,
 ): string {
+  const target = paramMap.get(paramIndex);
+  if (isScalarColumnType(paramOid, schema) && target) {
+    const column = resolveTargetColumn(target, schema);
+    const table = resolvedTargetTable(target, schema);
+    const decl = column && table ? lookupColumnType(cfg, table.schema, table.name, column) : undefined;
+    if (decl) return decl;
+  }
   if (JSON_OIDS.has(paramOid)) {
-    const target = paramMap.get(paramIndex);
     if (target) {
       const column = resolveTargetColumn(target, schema);
       const table = resolvedTargetTable(target, schema);
@@ -95,7 +111,6 @@ function resolveParamTs(
     return jsonParameter(JSON_INPUT_VALUE);
   }
   if (JSON_ARRAY_OIDS.has(paramOid)) {
-    const target = paramMap.get(paramIndex);
     if (target) {
       const column = resolveTargetColumn(target, schema);
       const table = resolvedTargetTable(target, schema);
@@ -242,6 +257,8 @@ export type PrepareDiagnostic = {
   line?: number;
   column?: number;
   query?: string;
+  queryId?: string;
+  queryName?: string;
   code?: string;
   position?: number;
   hint?: string;
@@ -257,7 +274,21 @@ export type PrepareResult = {
 };
 
 function formatSite(s: QueryCallSite): string {
-  return `${s.file}:${s.line}:${s.column}`;
+  return `${s.file}:${s.line}:${s.column}${s.queryName ? ` [${s.queryName}]` : ""}`;
+}
+
+function siteDiagnostic(site: QueryCallSite): Pick<
+  PrepareDiagnostic,
+  "file" | "line" | "column" | "query" | "queryId" | "queryName"
+> {
+  return {
+    file: site.file,
+    line: site.line,
+    column: site.column,
+    query: site.query,
+    queryId: fingerprint(site.query),
+    ...(site.queryName ? { queryName: site.queryName } : {}),
+  };
 }
 
 function snippet(query: string, max = 80): string {
@@ -303,10 +334,7 @@ function inferenceDiagnostics(
     severity: strict ? "error" : "warning",
     phase: "inference",
     message,
-    file: site.file,
-    line: site.line,
-    column: site.column,
-    query: site.query,
+    ...siteDiagnostic(site),
   }));
 }
 
@@ -484,10 +512,7 @@ export async function prepareOnce(
           severity: "error",
           phase: "result-shape",
           message,
-          file: site.file,
-          line: site.line,
-          column: site.column,
-          query: site.query,
+          ...siteDiagnostic(site),
         });
         err(`  ✗ ${formatSite(site)} — ${message}`);
         err(`      query: ${snippet(site.query)}`);
@@ -504,10 +529,7 @@ export async function prepareOnce(
         severity: "error",
         phase: "describe",
         message: e.message,
-        file: site.file,
-        line: site.line,
-        column: site.column,
-        query: site.query,
+        ...siteDiagnostic(site),
         ...(e.code ? { code: e.code } : {}),
         ...(position ? { position } : {}),
         ...(e.hint ? { hint: e.hint } : {}),
@@ -524,10 +546,7 @@ export async function prepareOnce(
         severity: "error",
         phase: "describe",
         message: (e as Error).message,
-        file: site.file,
-        line: site.line,
-        column: site.column,
-        query: site.query,
+        ...siteDiagnostic(site),
       });
       err(`  ✗ ${formatSite(site)} — describe failed: ${(e as Error).message}`);
       err(`      query: ${snippet(site.query)}`);
@@ -565,10 +584,7 @@ export async function prepareOnce(
         severity: "error",
         phase: "analyze",
         message: (e as Error).message,
-        file: site.file,
-        line: site.line,
-        column: site.column,
-        query: site.query,
+        ...siteDiagnostic(site),
       });
       err(`  ✗ ${formatSite(site)} — analyze failed: ${(e as Error).message}`);
       err(`      query: ${snippet(site.query)}`);
@@ -583,10 +599,7 @@ export async function prepareOnce(
         severity: "error",
         phase: "param-map",
         message: (e as Error).message,
-        file: site.file,
-        line: site.line,
-        column: site.column,
-        query: site.query,
+        ...siteDiagnostic(site),
       });
       err(`  ✗ ${formatSite(site)} — paramMap failed: ${(e as Error).message}`);
       err(`      query: ${snippet(site.query)}`);
@@ -684,11 +697,15 @@ export async function prepareOnce(
   }
 
   let functions: FunctionEntry[];
-  if (input.reuseFunctions && functionCacheExists(opts.cacheDir)) {
+  if (userCfg.functionCatalog === false) {
+    functions = [];
+  } else if (input.reuseFunctions && functionCacheExists(opts.cacheDir)) {
     functions = readFunctionCache(opts.cacheDir);
   } else {
     try {
-      functions = await introspectFunctions(client, schema);
+      functions = await introspectFunctions(client, schema, {
+        includeExtensionOwned: userCfg.functionCatalog?.includeExtensionOwned === true,
+      });
     } catch (error) {
       throw fatal("introspect", error);
     }
@@ -761,10 +778,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
           severity: "error",
           phase: "cache",
           message: "query is not in the offline cache",
-          file: site.file,
-          line: site.line,
-          column: site.column,
-          query,
+          ...siteDiagnostic(site),
         });
         if (!opts.json) {
           console.error(`stale: ${formatSite(site)} — query not in cache`);

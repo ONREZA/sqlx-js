@@ -3,8 +3,17 @@ import { isAbsolute, relative, resolve } from "node:path";
 import { PgClient, parseDatabaseUrl, PgError } from "./pg/wire";
 import { applyPending, acquireMigrateLock, releaseMigrateLock, DEFAULT_MIGRATE_LOCK_KEY } from "./migration-core";
 import { bindNamedParameters, rewriteNamedParameters } from "./sql-params";
+import { queryId } from "./query-id";
+import {
+  QUERY_EXECUTOR,
+  type QueryExecutionMetadata,
+  type QueryExecutionMode,
+  type QueryExecutorMethod,
+} from "./query";
 
 export type OnQueryEvent = {
+  queryId: string;
+  queryName?: string;
   query: string;
   params: unknown[];
   durationMs: number;
@@ -29,6 +38,7 @@ export type RuntimeClient = {
   onQueryHookError?: OnQueryHookError;
   fileRoot?: string;
   reloadSqlFiles?: boolean;
+  sqlFiles?: Readonly<Record<string, string>>;
 };
 
 type AnyFn = (...args: unknown[]) => Promise<unknown[]>;
@@ -39,7 +49,7 @@ type IdentifierFn = (...parts: string[]) => string;
 
 const PARAMETER_KIND = Symbol("sqlx-js.parameter");
 
-export type JsonParameter<T = JsonInputValue> = {
+export type JsonParameter<T = unknown> = {
   readonly [PARAMETER_KIND]: "json";
   readonly value: T;
 };
@@ -53,13 +63,30 @@ export type JsonPrimitive = string | number | boolean | null;
 export type JsonInputValue = JsonPrimitive | JsonInputObject | JsonInputArray;
 export type JsonInputObject = { readonly [key: string]: JsonInputValue | undefined };
 export type JsonInputArray = readonly JsonInputValue[];
+type NonJsonValue = bigint | symbol | Date | Uint8Array | ((...args: never[]) => unknown);
+export type JsonCompatible<T> =
+  T extends JsonPrimitive ? T
+    : T extends NonJsonValue ? never
+      : T extends readonly unknown[] ? T extends JsonInputArray
+        ? T
+        : { readonly [K in keyof T]: JsonCompatible<T[K]> }
+        : T extends object ? Extract<keyof T, symbol> extends never
+          ? T extends JsonInputObject
+            ? T
+            : {
+                readonly [K in keyof T]: undefined extends T[K]
+                  ? JsonCompatible<Exclude<T[K], undefined>> | undefined
+                  : JsonCompatible<T[K]>;
+              }
+          : never
+          : never;
 
 export type ExecuteResult = {
   rowCount: number;
   command: string;
 };
 
-export function json<T extends JsonInputValue>(value: T): JsonParameter<T> {
+export function json<T>(value: T & JsonCompatible<T>): JsonParameter<T> {
   return { [PARAMETER_KIND]: "json", value };
 }
 
@@ -234,7 +261,7 @@ export class TooManyRowsError extends Error {
 
 // SQLSTATE is exactly five characters from [0-9A-Z]; lowercase or other shapes
 // are never valid, so transport codes like "EPIPE" must not match on shape alone.
-const SQLSTATE = /^[0-9A-Z]{5}$/;
+const SQLSTATE_PATTERN = /^[0-9A-Z]{5}$/;
 
 function firstString(...candidates: unknown[]): string | undefined {
   for (const value of candidates) {
@@ -258,7 +285,7 @@ export function toPgError(e: unknown): PgError | null {
   // they pass through untouched instead of masquerading as a PgError.
   const isDatabaseError =
     o.name === "PostgresError" ||
-    (code !== undefined && SQLSTATE.test(code) && severity !== undefined);
+    (code !== undefined && SQLSTATE_PATTERN.test(code) && severity !== undefined);
   if (!isDatabaseError) return null;
 
   const fields: Record<string, string> = {};
@@ -280,6 +307,23 @@ export function toPgError(e: unknown): PgError | null {
   return new PgError(fields, { cause: e });
 }
 
+export const SQLSTATE = {
+  notNullViolation: "23502",
+  foreignKeyViolation: "23503",
+  uniqueViolation: "23505",
+  checkViolation: "23514",
+  serializationFailure: "40001",
+  deadlockDetected: "40P01",
+} as const;
+
+export type KnownSqlState = (typeof SQLSTATE)[keyof typeof SQLSTATE];
+
+export function isPgError(error: unknown): error is PgError;
+export function isPgError<const Code extends string>(error: unknown, code: Code): error is PgError & { readonly code: Code };
+export function isPgError(error: unknown, code?: string): error is PgError {
+  return error instanceof PgError && (code === undefined || error.code === code);
+}
+
 export const _internal = {
   renameRows,
   encodeParam,
@@ -292,7 +336,26 @@ export const _internal = {
   toPgError,
 };
 
-async function runRawQuery(client: RuntimeClient, query: string, params: unknown[]): Promise<RuntimeQueryResult> {
+const runtimeQueryIds = new Map<string, string>();
+const MAX_RUNTIME_QUERY_IDS = 1024;
+
+function observedMetadata(query: string, metadata?: QueryExecutionMetadata): QueryExecutionMetadata {
+  if (metadata) return metadata;
+  let id = runtimeQueryIds.get(query);
+  if (!id) {
+    id = queryId(query);
+    if (runtimeQueryIds.size >= MAX_RUNTIME_QUERY_IDS) runtimeQueryIds.clear();
+    runtimeQueryIds.set(query, id);
+  }
+  return { queryId: id };
+}
+
+async function runRawQuery(
+  client: RuntimeClient,
+  query: string,
+  params: unknown[],
+  metadata?: QueryExecutionMetadata,
+): Promise<RuntimeQueryResult> {
   const observedQuery = query;
   const observedParams = params;
   const bound = bindNamedParameters(rewriteNamedParameters(query), params);
@@ -309,10 +372,12 @@ async function runRawQuery(client: RuntimeClient, query: string, params: unknown
       throw toPgError(e) ?? e;
     }
   }
+  const observed = observedMetadata(observedQuery, metadata);
   const start = performance.now();
   try {
     const result = await client.query(query, encoded);
     notifyQuery(client, {
+      ...observed,
       query: observedQuery,
       params: observedParams,
       durationMs: performance.now() - start,
@@ -321,7 +386,7 @@ async function runRawQuery(client: RuntimeClient, query: string, params: unknown
     return result;
   } catch (e) {
     const error = toPgError(e) ?? e;
-    notifyQuery(client, { query: observedQuery, params: observedParams, durationMs: performance.now() - start, error });
+    notifyQuery(client, { ...observed, query: observedQuery, params: observedParams, durationMs: performance.now() - start, error });
     throw error;
   }
 }
@@ -343,27 +408,47 @@ function notifyQueryHookError(client: RuntimeClient, error: unknown, event: OnQu
   }
 }
 
-async function runQuery(client: RuntimeClient, query: string, params: unknown[]): Promise<unknown[]> {
-  return renameRows(await runRawQuery(client, query, params));
+async function runQuery(
+  client: RuntimeClient,
+  query: string,
+  params: unknown[],
+  metadata?: QueryExecutionMetadata,
+): Promise<unknown[]> {
+  return renameRows(await runRawQuery(client, query, params, metadata));
 }
 
-async function runExecute(client: RuntimeClient, query: string, params: unknown[]): Promise<ExecuteResult> {
-  const result = await runRawQuery(client, query, params);
+async function runExecute(
+  client: RuntimeClient,
+  query: string,
+  params: unknown[],
+  metadata?: QueryExecutionMetadata,
+): Promise<ExecuteResult> {
+  const result = await runRawQuery(client, query, params, metadata);
   return {
     rowCount: result.count ?? result.length,
     command: result.command ?? "",
   };
 }
 
-async function runOne(client: RuntimeClient, query: string, params: unknown[]): Promise<unknown> {
-  const rows = await runQuery(client, query, params);
+async function runOne(
+  client: RuntimeClient,
+  query: string,
+  params: unknown[],
+  metadata?: QueryExecutionMetadata,
+): Promise<unknown> {
+  const rows = await runQuery(client, query, params, metadata);
   if (rows.length === 1) return rows[0];
   if (rows.length === 0) throw new NoRowsError();
   throw new TooManyRowsError(rows.length, "1");
 }
 
-async function runOptional(client: RuntimeClient, query: string, params: unknown[]): Promise<unknown | null> {
-  const rows = await runQuery(client, query, params);
+async function runOptional(
+  client: RuntimeClient,
+  query: string,
+  params: unknown[],
+  metadata?: QueryExecutionMetadata,
+): Promise<unknown | null> {
+  const rows = await runQuery(client, query, params, metadata);
   if (rows.length === 0) return null;
   if (rows.length === 1) return rows[0];
   throw new TooManyRowsError(rows.length, "0 or 1");
@@ -375,6 +460,7 @@ function loadSqlFile(
   path: string,
   fileRoot = process.env.SQLX_JS_FILE_ROOT ?? process.cwd(),
   reload = false,
+  embedded?: Readonly<Record<string, string>>,
 ): string {
   const root = resolve(fileRoot);
   if (isAbsolute(path)) {
@@ -385,6 +471,7 @@ function loadSqlFile(
   if (rel === ".." || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(rel)) {
     throw new Error(`sqlx-js.sql.file: path escapes fileRoot: ${path}`);
   }
+  if (embedded && Object.hasOwn(embedded, path)) return embedded[path]!;
   try {
     const cached = sqlFileCache.get(full);
     if (cached && !reload) return cached.content;
@@ -537,23 +624,37 @@ type SqlCallable = AnyFn & {
   id: IdentifierFn;
   json: typeof json;
   array: typeof array;
+  [QUERY_EXECUTOR]: QueryExecutorMethod;
 };
+
+function executeDefinedQuery(
+  client: RuntimeClient,
+  mode: QueryExecutionMode,
+  query: string,
+  params: unknown[],
+  metadata: QueryExecutionMetadata,
+): Promise<unknown> {
+  if (mode === "one") return runOne(client, query, params, metadata);
+  if (mode === "optional") return runOptional(client, query, params, metadata);
+  if (mode === "execute") return runExecute(client, query, params, metadata);
+  return runQuery(client, query, params, metadata);
+}
 
 function makeBoundCallable(client: RuntimeClient): SqlCallable {
   const fn: AnyFn = (async (query: string, ...params: unknown[]) => {
     return runQuery(client, query, params);
   }) as AnyFn;
   const file: AnyFn = (async (path: string, ...params: unknown[]) => {
-    return runQuery(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles), params);
+    return runQuery(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
   }) as AnyFn;
   (file as FileCallable).one = (async (path: string, ...params: unknown[]) => {
-    return runOne(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles), params);
+    return runOne(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
   }) as AnyOneFn;
   (file as FileCallable).optional = (async (path: string, ...params: unknown[]) => {
-    return runOptional(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles), params);
+    return runOptional(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
   }) as AnyOptionalFn;
   (file as FileCallable).execute = (async (path: string, ...params: unknown[]) => {
-    return runExecute(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles), params);
+    return runExecute(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
   }) as AnyExecuteFn;
   (fn as SqlCallable).file = file as FileCallable;
   (fn as SqlCallable).one = (async (query: string, ...params: unknown[]) => {
@@ -568,6 +669,9 @@ function makeBoundCallable(client: RuntimeClient): SqlCallable {
   (fn as SqlCallable).id = id;
   (fn as SqlCallable).json = json;
   (fn as SqlCallable).array = array;
+  (fn as SqlCallable)[QUERY_EXECUTOR] = (mode, query, params, metadata) => {
+    return executeDefinedQuery(client, mode, query, params, metadata);
+  };
   return fn as SqlCallable;
 }
 
@@ -605,19 +709,19 @@ export function createSqlRuntime(getClient: () => RuntimeClient): RuntimeApi {
 
   const rootFile: AnyFn = (async (path: string, ...params: unknown[]) => {
     const client = getClient();
-    return runQuery(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles), params);
+    return runQuery(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
   }) as AnyFn;
   (rootFile as FileCallable).one = (async (path: string, ...params: unknown[]) => {
     const client = getClient();
-    return runOne(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles), params);
+    return runOne(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
   }) as AnyOneFn;
   (rootFile as FileCallable).optional = (async (path: string, ...params: unknown[]) => {
     const client = getClient();
-    return runOptional(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles), params);
+    return runOptional(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
   }) as AnyOptionalFn;
   (rootFile as FileCallable).execute = (async (path: string, ...params: unknown[]) => {
     const client = getClient();
-    return runExecute(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles), params);
+    return runExecute(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
   }) as AnyExecuteFn;
   root.file = rootFile as FileCallable;
 
@@ -633,6 +737,9 @@ export function createSqlRuntime(getClient: () => RuntimeClient): RuntimeApi {
   root.id = id;
   root.json = json;
   root.array = array;
+  root[QUERY_EXECUTOR] = (mode, query, params, metadata) => {
+    return executeDefinedQuery(getClient(), mode, query, params, metadata);
+  };
 
   root.transaction = (async <R>(
     fnOrOpts: TransactionOptions | ((tx: SqlCallable) => Promise<R>),

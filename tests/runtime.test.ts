@@ -16,6 +16,8 @@ import {
   TooManyRowsError,
 } from "../src/runtime";
 import { PgError } from "../src/pg/wire";
+import { defineQuery } from "../src/query";
+import { SQLSTATE, isPgError } from "../src/runtime";
 
 describe("renameRows", () => {
   test("returns same array when no rows", () => {
@@ -110,7 +112,26 @@ test("named parameters preserve the source query and object for observers", asyn
   const runtime = createSqlRuntime(() => client);
   const params = { id: 7 };
   await runtime.sql("SELECT $id", params);
-  expect(event).toMatchObject({ query: "SELECT $id", params: [params] });
+  expect(event).toMatchObject({ queryId: expect.any(String), query: "SELECT $id", params: [params] });
+});
+
+test("query definitions execute through root and transaction executors with stable metadata", async () => {
+  const events: OnQueryEvent[] = [];
+  const client: RuntimeClient = {
+    query: async () => [{ id: 7 }],
+    transaction: async (fn) => fn(client),
+    close: async () => {},
+    onQuery: (event) => events.push(event),
+  };
+  const runtime = createSqlRuntime(() => client);
+  const findUser = defineQuery.optional("users.findById", "SELECT id FROM users WHERE id = $id");
+  expect(await findUser.run(runtime.sql as never, { id: 7 })).toEqual({ id: 7 });
+  await runtime.sql.transaction(async (tx) => {
+    expect(await findUser.run(tx as never, { id: 7 })).toEqual({ id: 7 });
+  });
+  expect(events).toHaveLength(2);
+  expect(events[0]).toMatchObject({ queryId: findUser.queryId, queryName: "users.findById" });
+  expect(events[1]).toMatchObject({ queryId: findUser.queryId, queryName: "users.findById" });
 });
 
 test("named parameters preserve explicit JSON and array encoding", async () => {
@@ -159,6 +180,14 @@ describe("typed errors", () => {
     expect(e.name).toBe("TooManyRowsError");
     expect(e.actual).toBe(5);
     expect(e.message).toContain("5");
+  });
+
+  test("isPgError narrows normalized errors by SQLSTATE", () => {
+    const error = new PgError({ C: SQLSTATE.uniqueViolation, M: "duplicate" });
+    expect(isPgError(error)).toBe(true);
+    expect(isPgError(error, SQLSTATE.uniqueViolation)).toBe(true);
+    expect(isPgError(error, SQLSTATE.foreignKeyViolation)).toBe(false);
+    expect(isPgError(new Error("duplicate"), SQLSTATE.uniqueViolation)).toBe(false);
   });
 });
 
@@ -324,6 +353,12 @@ describe("onQuery hook", () => {
 });
 
 describe("loadSqlFile cache", () => {
+  test("embedded SQL cannot bypass fileRoot path validation", () => {
+    expect(() => _internal.loadSqlFile("../secret.sql", "/tmp/app", false, {
+      "../secret.sql": "SELECT 'secret'",
+    })).toThrow(/path escapes fileRoot/);
+  });
+
   test("keeps the hot path immutable until explicitly cleared", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sqlx-js-runtime-"));
     const path = join(dir, "q.sql");

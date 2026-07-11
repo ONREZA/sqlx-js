@@ -191,6 +191,61 @@ test("sql.one, sql.optional, and sql.execute are scanned as inline queries", () 
   expect(sites[2]!.query).toBe("UPDATE users SET active = false WHERE id = $1");
 });
 
+test("defineQuery definitions are scanned with names and cardinality", () => {
+  setup({
+    "queries.ts": `
+      import { defineQuery as query } from "@onreza/sqlx-js";
+      export const allUsers = query("SELECT id FROM users");
+      export const findUser = query.optional("users.findById", "SELECT id FROM users WHERE id = $id");
+      export const updateUser = query.execute("UPDATE users SET active = false WHERE id = $id");
+    `,
+  });
+  const sites = scanProject(tmp).slice().sort((a, b) => a.line - b.line);
+  expect(sites).toHaveLength(3);
+  expect(sites[0]).toMatchObject({ cardinality: "many", query: "SELECT id FROM users" });
+  expect(sites[1]).toMatchObject({
+    cardinality: "optional",
+    queryName: "users.findById",
+    query: "SELECT id FROM users WHERE id = $id",
+    paramCount: 1,
+  });
+  expect(sites[2]).toMatchObject({ cardinality: "execute" });
+});
+
+test("namespace defineQuery and configured query modules are scanned", () => {
+  setup({
+    "queries.ts": `
+      import * as db from "@app/database";
+      export const user = db.defineQuery.one("users.one", "SELECT id FROM users WHERE id = $id");
+    `,
+  });
+  expect(scanProject(tmp, { modules: ["@app/database"] })[0]).toMatchObject({
+    cardinality: "one",
+    queryName: "users.one",
+  });
+});
+
+test("defineQuery rejects dynamic SQL", () => {
+  setup({
+    "queries.ts": `
+      import { defineQuery } from "@onreza/sqlx-js";
+      const text = "SELECT 1";
+      export const query = defineQuery(text);
+    `,
+  });
+  expect(() => scanProject(tmp)).toThrow(/requires string literals/);
+});
+
+test("defineQuery rejects an empty observability name", () => {
+  setup({
+    "queries.ts": `
+      import { defineQuery } from "@onreza/sqlx-js";
+      export const query = defineQuery("", "SELECT 1");
+    `,
+  });
+  expect(() => scanProject(tmp)).toThrow(/name must not be empty/);
+});
+
 test("sql.file one, optional, and execute are scanned as file queries", () => {
   setup({
     "a.ts":

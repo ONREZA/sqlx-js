@@ -310,3 +310,105 @@ void replicaOnly;
   });
   expect(checked.status, checked.stdout + checked.stderr).toBe(0);
 });
+
+test("query definitions, executor helpers, and structural JSON compile together", () => {
+  const root = join(tmp, "query-definitions");
+  mkdirSync(root, { recursive: true });
+  const query = "SELECT id, email FROM users WHERE id = $id";
+  const jsonQuery = "SELECT $payload::jsonb AS payload";
+  emitDts(join(root, "generated.d.ts"), [
+    {
+      query,
+      paramOids: [2950],
+      paramTsTypes: ["string"],
+      paramNames: ["id"],
+      hasResultSet: true,
+      columns: [
+        { name: "id", typeOid: 2950, tsType: "string", nullable: false },
+        { name: "email", typeOid: 25, tsType: "string", nullable: false },
+      ],
+    },
+    {
+      query: jsonQuery,
+      paramOids: [3802],
+      paramTsTypes: ['import("@onreza/sqlx-js").JsonParameter<unknown>'],
+      paramNames: ["payload"],
+      hasResultSet: true,
+      columns: [{ name: "payload", typeOid: 3802, tsType: 'import("@onreza/sqlx-js").JsonValue', nullable: false }],
+    },
+  ]);
+  writeFileSync(join(root, "consumer.ts"), `
+import {
+  defineQuery,
+  json,
+  type QueryParams,
+  type QueryResult,
+  type QueryRow,
+  type SqlExecutor,
+} from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedRegistry } from "./generated";
+
+const findUser = defineQuery.optional("users.findById", ${JSON.stringify(query)});
+type Params = QueryParams<typeof findUser, SqlxJsGeneratedRegistry>;
+type AmbientParams = QueryParams<typeof findUser>;
+type Row = QueryRow<typeof findUser, SqlxJsGeneratedRegistry>;
+type Result = QueryResult<typeof findUser, SqlxJsGeneratedRegistry>;
+const params: Params = { id: "00000000-0000-0000-0000-000000000000" };
+const ambientParams: AmbientParams = params;
+const row: Row = { id: params.id, email: "user@example.com" };
+const result: Result = row;
+declare const executor: SqlExecutor<SqlxJsGeneratedRegistry>;
+void findUser.run(executor, params);
+void ambientParams;
+void result;
+
+interface Payload {
+  id: string;
+  nested: { count: number };
+  optional?: string;
+}
+declare const payload: Payload;
+const encoded = json(payload);
+const preserved: Payload = encoded.value;
+void executor(${JSON.stringify(jsonQuery)}, { payload: encoded });
+void preserved;
+declare const batch: readonly import("@onreza/sqlx-js").JsonInputObject[];
+json(batch);
+interface TreeNode {
+  value: string;
+  children: TreeNode[];
+}
+declare const tree: TreeNode;
+json(tree);
+// @ts-expect-error Date is not JSON-safe
+json({ createdAt: new Date() });
+// @ts-expect-error bigint is not JSON-safe
+json({ count: 1n });
+// @ts-expect-error functions are not JSON-safe
+json({ callback: () => "done" });
+// @ts-expect-error undefined array elements are not JSON-safe
+json(["ok", undefined]);
+const metadata = Symbol("metadata");
+// @ts-expect-error symbol-keyed fields are not serialized by JSON.stringify
+json({ id: "visible", [metadata]: "hidden" });
+`);
+  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
+    compilerOptions: {
+      strict: true,
+      noEmit: true,
+      module: "Preserve",
+      moduleResolution: "Bundler",
+      target: "ESNext",
+      types: ["bun-types"],
+      baseUrl: resolve(import.meta.dir, ".."),
+      paths: { "@onreza/sqlx-js": ["src/index.ts"] },
+    },
+    files: ["consumer.ts", "generated.d.ts"],
+  }));
+
+  const checked = spawnSync("bunx", ["tsc", "-p", join(root, "tsconfig.json")], {
+    cwd: resolve(import.meta.dir, ".."),
+    encoding: "utf8",
+  });
+  expect(checked.status, checked.stdout + checked.stderr).toBe(0);
+});

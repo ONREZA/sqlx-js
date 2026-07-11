@@ -1,5 +1,10 @@
 import * as rt from "./postgres-runtime";
 import type { Typed as TypedFor, TypedFile as TypedFileFor, TypedSql as TypedSqlFor } from "./typed";
+import type {
+  QueryParamsFor,
+  QueryResultFor,
+  QueryRowFor,
+} from "./query";
 
 export interface KnownQueries {}
 export interface KnownFileQueries {}
@@ -18,9 +23,9 @@ export { defineConfig } from "./config";
 export type { ScanConfig, SqlxJsConfig } from "./config";
 export type { SslMode, ConnConfig } from "./pg/wire";
 export { PgError, ConnectionLostError } from "./pg/wire";
-export { NoRowsError, TooManyRowsError } from "./runtime";
+export { NoRowsError, TooManyRowsError, SQLSTATE, isPgError } from "./runtime";
 export type { TransactionOptions, MigrateOptions, OnQueryEvent, OnQueryHook, OnQueryHookError } from "./runtime";
-export type { ExecuteResult, JsonParameter, PgArrayParameter } from "./runtime";
+export type { ExecuteResult, JsonParameter, PgArrayParameter, JsonCompatible, KnownSqlState } from "./runtime";
 export type { PostgresClient, PostgresOptions, CreateClientOptions } from "./postgres-runtime";
 
 export type TypedFile = TypedFileFor<KnownFileQueries>;
@@ -44,6 +49,18 @@ export type SqlClient<Registry extends QueryRegistry = DefaultQueryRegistry> = {
   client: import("./postgres-runtime").PostgresClient;
   close: () => Promise<void>;
 };
+
+export type SqlExecutor<Registry extends QueryRegistry = DefaultQueryRegistry> =
+  TypedSqlFor<Registry["queries"], Registry["fileQueries"]>;
+export type QueryParams<Definition, Registry extends QueryRegistry = DefaultQueryRegistry> =
+  QueryParamsFor<Definition, Registry>;
+export type QueryRow<Definition, Registry extends QueryRegistry = DefaultQueryRegistry> =
+  QueryRowFor<Definition, Registry>;
+export type QueryResult<Definition, Registry extends QueryRegistry = DefaultQueryRegistry> =
+  QueryResultFor<Definition, Registry>;
+export type { QueryDefinition, QueryExecutionMode } from "./query";
+export { defineQuery } from "./query";
+export { queryId } from "./query-id";
 
 export const sql: Typed = rt.sql as unknown as Typed;
 

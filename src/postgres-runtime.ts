@@ -23,6 +23,7 @@ export type CreateClientOptions = PostgresOptions & {
   statementTimeoutMs?: number;
   fileRoot?: string;
   reloadSqlFiles?: boolean;
+  sqlFiles?: Readonly<Record<string, string>>;
 };
 type PostgresQueryClient = PostgresClient | postgres.TransactionSql<{ bigint: bigint }>;
 
@@ -33,6 +34,7 @@ type AttachedHooks = {
   prepare: boolean;
   fileRoot: string;
   reloadSqlFiles: boolean;
+  sqlFiles?: Readonly<Record<string, string>>;
 };
 
 function resolvedFileRoot(value?: string): string {
@@ -47,6 +49,7 @@ class PostgresRuntimeClient implements RuntimeClient {
     public readonly prepare = true,
     public readonly fileRoot = resolvedFileRoot(),
     public readonly reloadSqlFiles = false,
+    public readonly sqlFiles?: Readonly<Record<string, string>>,
   ) {}
 
   async query(query: string, params: unknown[]): Promise<RuntimeQueryResult> {
@@ -77,6 +80,7 @@ class PostgresRuntimeClient implements RuntimeClient {
         this.prepare,
         this.fileRoot,
         this.reloadSqlFiles,
+        this.sqlFiles,
       ));
     }) as R;
   }
@@ -204,7 +208,7 @@ function installJsonArrayCodecs(client: PostgresClient): void {
 
 export function createClient(url = process.env.DATABASE_URL, options: CreateClientOptions = {}): PostgresClient {
   if (!url) throw new Error("sqlx-js: DATABASE_URL is not set");
-  const { onQuery, onQueryHookError, statementTimeoutMs, fileRoot, reloadSqlFiles, ...pgOptions } = options;
+  const { onQuery, onQueryHookError, statementTimeoutMs, fileRoot, reloadSqlFiles, sqlFiles, ...pgOptions } = options;
   const connection = statementTimeoutMs !== undefined
     ? { ...(pgOptions.connection ?? {}), statement_timeout: statementTimeoutMs }
     : pgOptions.connection;
@@ -219,6 +223,7 @@ export function createClient(url = process.env.DATABASE_URL, options: CreateClie
     prepare: pgOptions.prepare ?? true,
     fileRoot: resolvedFileRoot(fileRoot),
     reloadSqlFiles: reloadSqlFiles ?? false,
+    sqlFiles,
   } satisfies AttachedHooks;
   return client;
 }
@@ -233,6 +238,7 @@ function createDefaultClient(): PostgresRuntimeClient {
     attached.prepare,
     attached.fileRoot,
     attached.reloadSqlFiles,
+    attached.sqlFiles,
   );
 }
 
@@ -253,6 +259,7 @@ export function setClient(
     prepare?: boolean;
     fileRoot?: string;
     reloadSqlFiles?: boolean;
+    sqlFiles?: Readonly<Record<string, string>>;
   },
 ): void {
   installJsonArrayCodecs(client);
@@ -264,6 +271,7 @@ export function setClient(
     options?.prepare ?? attached?.prepare ?? client.options?.prepare ?? true,
     resolvedFileRoot(options?.fileRoot ?? attached?.fileRoot),
     options?.reloadSqlFiles ?? attached?.reloadSqlFiles ?? false,
+    options?.sqlFiles ?? attached?.sqlFiles,
   );
 }
 
@@ -284,6 +292,7 @@ export function createSqlClient(url = process.env.DATABASE_URL, options: CreateC
     attached.prepare,
     attached.fileRoot,
     attached.reloadSqlFiles,
+    attached.sqlFiles,
   );
   const runtime = createSqlRuntime(() => runtimeClient);
   return {

@@ -28,6 +28,7 @@ export interface SqlxJsGeneratedQueries {
   "SELECT id, COALESCE(bio, 'no bio') AS bio_or_default, COALESCE(age, 0) AS age_or_zero FROM users WHERE id = $1": { params: [bigint]; row: { "id": bigint; "bio_or_default": string; "age_or_zero": number } };
   "SELECT id, COALESCE(bio, 'none') AS bio_or_default, length(bio) AS bio_len FROM users WHERE bio IS NOT NULL AND id = $1": { params: [bigint]; row: { "id": bigint; "bio_or_default": string; "bio_len": number } };
   "SELECT id, name, email, age, bio FROM users WHERE id = $1": { params: [bigint]; row: { "id": bigint; "name": string; "email": string; "age": number | null; "bio": string | null } };
+  "SELECT id, name, email, role\n   FROM users\n   WHERE email = $email": { params: { "email": string }; row: { "id": bigint; "name": string; "email": string; "role": "admin" | "editor" | "viewer" } };
   "SELECT id, name, role FROM users WHERE id = $1": { params: [bigint]; row: { "id": bigint; "name": string; "role": "admin" | "editor" | "viewer" } };
   "SELECT id, name, settings FROM users WHERE id = $1": { params: [bigint]; row: { "id": bigint; "name": string; "settings": SqlxJsJson.UserSettings } };
   "SELECT id, settings FROM users WHERE settings = $1 LIMIT 1": { params: [import("@onreza/sqlx-js").JsonParameter<SqlxJsJson.UserSettings>]; row: { "id": bigint; "settings": SqlxJsJson.UserSettings } };

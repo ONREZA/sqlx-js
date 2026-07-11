@@ -23,8 +23,12 @@ type CatalogParamEntry = FunctionParamEntry & {
   resultTsType?: string;
 };
 
-export async function introspectFunctions(client: PgClient, schema: SchemaCache): Promise<FunctionEntry[]> {
-  const rows = await loadFunctionRows(client);
+export async function introspectFunctions(
+  client: PgClient,
+  schema: SchemaCache,
+  options: { includeExtensionOwned?: boolean } = {},
+): Promise<FunctionEntry[]> {
+  const rows = await loadFunctionRows(client, options.includeExtensionOwned === true);
   const typeOids = new Set<number>();
   for (const row of rows) {
     typeOids.add(row.returnOid);
@@ -35,7 +39,7 @@ export async function introspectFunctions(client: PgClient, schema: SchemaCache)
   return rows.map((row) => toEntry(row, schema)).sort((a, b) => a.signature.localeCompare(b.signature));
 }
 
-async function loadFunctionRows(client: PgClient): Promise<FunctionRow[]> {
+async function loadFunctionRows(client: PgClient, includeExtensionOwned: boolean): Promise<FunctionRow[]> {
   const result = await client.simpleQueryAll(`
     SELECT
       n.nspname,
@@ -56,6 +60,14 @@ async function loadFunctionRows(client: PgClient): Promise<FunctionRow[]> {
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
     WHERE ${userSchemaFilter("n")}
+      ${includeExtensionOwned ? "" : `AND NOT EXISTS (
+        SELECT 1
+        FROM pg_depend d
+        WHERE d.classid = 'pg_proc'::regclass
+          AND d.objid = p.oid
+          AND d.refclassid = 'pg_extension'::regclass
+          AND d.deptype = 'e'
+      )`}
     ORDER BY n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)
   `);
   return result.rows.map((row) => ({

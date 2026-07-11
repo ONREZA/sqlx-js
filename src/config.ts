@@ -12,7 +12,11 @@ export type ScanConfig = {
 
 export type SqlxJsConfig = {
   jsonbTypes?: Record<string, string>;
+  columnTypes?: Record<string, string>;
   customTypes?: Record<string, string>;
+  functionCatalog?: false | {
+    includeExtensionOwned?: boolean;
+  };
   scan?: ScanConfig;
   schema?: {
     provider?: "builtin" | "pgschema";
@@ -86,7 +90,27 @@ function validateConfig(value: unknown, path: string): SqlxJsConfig {
   }
   const config = value as Record<string, unknown>;
   if (config.jsonbTypes !== undefined) validateStringRecord(config.jsonbTypes, "jsonbTypes", path);
+  if (config.columnTypes !== undefined) validateStringRecord(config.columnTypes, "columnTypes", path);
   if (config.customTypes !== undefined) validateStringRecord(config.customTypes, "customTypes", path);
+  if (config.jsonbTypes && config.columnTypes) {
+    const jsonKeys = Object.keys(config.jsonbTypes as Record<string, string>);
+    const columnKeys = Object.keys(config.columnTypes as Record<string, string>);
+    const conflicts = jsonKeys.filter((jsonKey) => columnKeys.some((columnKey) =>
+      jsonKey === columnKey || jsonKey.endsWith(`.${columnKey}`) || columnKey.endsWith(`.${jsonKey}`)
+    ));
+    if (conflicts.length > 0) {
+      throw new Error(`sqlx-js: ${path} maps the same column in jsonbTypes and columnTypes: ${conflicts.join(", ")}`);
+    }
+  }
+  if (config.functionCatalog !== undefined && config.functionCatalog !== false) {
+    if (!config.functionCatalog || typeof config.functionCatalog !== "object" || Array.isArray(config.functionCatalog)) {
+      throw new Error(`sqlx-js: ${path} functionCatalog must be false or an object`);
+    }
+    const functionCatalog = config.functionCatalog as Record<string, unknown>;
+    if (functionCatalog.includeExtensionOwned !== undefined && typeof functionCatalog.includeExtensionOwned !== "boolean") {
+      throw new Error(`sqlx-js: ${path} functionCatalog.includeExtensionOwned must be a boolean`);
+    }
+  }
   if (config.scan !== undefined) {
     if (!config.scan || typeof config.scan !== "object" || Array.isArray(config.scan)) {
       throw new Error(`sqlx-js: ${path} scan must be an object`);
@@ -117,7 +141,11 @@ function validateConfig(value: unknown, path: string): SqlxJsConfig {
 export function prepareConfigHash(cfg: SqlxJsConfig): string {
   const value = stableValue({
     jsonbTypes: cfg.jsonbTypes ?? {},
+    columnTypes: cfg.columnTypes ?? {},
     customTypes: cfg.customTypes ?? {},
+    functionCatalog: cfg.functionCatalog === false
+      ? false
+      : { includeExtensionOwned: cfg.functionCatalog?.includeExtensionOwned === true },
   });
   return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
 }
@@ -188,4 +216,15 @@ export function lookupJsonbType(
     types[`${schema}.${table}.${column}`] ??
     types[`${table}.${column}`]
   );
+}
+
+export function lookupColumnType(
+  cfg: SqlxJsConfig,
+  schema: string,
+  table: string,
+  column: string,
+): string | undefined {
+  const types = cfg.columnTypes;
+  if (!types) return undefined;
+  return types[`${schema}.${table}.${column}`] ?? types[`${table}.${column}`];
 }
