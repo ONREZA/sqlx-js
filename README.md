@@ -126,7 +126,7 @@ const rows = await sql(
 );
 ```
 
-Named parameters are numbered by first appearance before PostgreSQL sees the query, and repeated names reuse the same positional parameter. The generated object contract rejects missing, extra, and incorrectly typed properties. Named `$name` and positional `$1` parameters cannot be mixed in one query. Positional parameters remain supported and are still the shortest form for simple queries.
+Named parameters use ASCII identifier names (`$user_id`), are numbered by first appearance before PostgreSQL sees the query, and repeated names reuse the same positional parameter. The generated object contract rejects missing, extra, and incorrectly typed properties. Named `$name` and positional `$1` parameters cannot be mixed in one query. Quoted strings, comments, dollar-quoted bodies, and `$` inside PostgreSQL identifiers are left unchanged. Positional parameters remain supported and are still the shortest form for simple queries.
 
 During local development, validate the migration and regenerate query artifacts against a disposable shadow database:
 
@@ -427,11 +427,11 @@ In addition to `import { sql } from "@onreza/sqlx-js"`, the scanner recognises `
 ```
 sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]
 sqlx-js doctor [--root <dir>] [--dts <path>] [--json]
-sqlx-js ci [--root <dir>] [--json] [--shadow-url <url>] [--shadow-admin-url <url>]
+sqlx-js ci [--root <dir>] [--dts <path>] [--schema <path>] [--json] [--shadow-url <url>] [--shadow-admin-url <url>]
 sqlx-js db install | check [--root <dir>]
 sqlx-js db plan | apply [--root <dir>] [-- <pgschema args>]
 sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
-sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | verify [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
+sqlx-js migrate dev [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | verify [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
 sqlx-js schema dump [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
 sqlx-js schema check [--schema <path>] [--shadow-url <url>]
 sqlx-js --version | --help
@@ -703,7 +703,7 @@ The shortest production gate is provider-aware:
 sqlx-js ci
 ```
 
-For the built-in migration provider it runs shadow migration verification with strict inference, followed by the read-only offline artifact check. For pgschema it checks the configured provider, performs live `prepare --verify --strict-inference`, and then verifies committed artifacts offline. If a committed schema snapshot exists, both flows also run `schema check`. `--json` returns a versioned per-step report suitable for CI systems.
+For the built-in migration provider it runs shadow migration verification with strict inference, followed by the read-only offline artifact check. For pgschema it checks the configured provider, fails when the desired schema produces an unapplied plan, performs live `prepare --verify --strict-inference`, and then verifies committed artifacts offline. If a committed schema snapshot exists, both flows also run `schema check`. `--json` returns a versioned per-step report suitable for CI systems.
 
 Commit the generated `sqlx-js-env.d.ts` and the `.sqlx-js/` cache directory to your repo. In CI:
 

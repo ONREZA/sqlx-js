@@ -129,6 +129,18 @@ test("sql.file() resolves paths relative to the project root", () => {
   expect(s.paramCount).toBe(1);
 });
 
+test("sql.file() accepts one object for named parameters", () => {
+  setup({
+    "src/a.ts": 'import { sql } from "@onreza/sqlx-js"; sql.file("queries/user.sql", { id: 1 });',
+    "queries/user.sql": "SELECT id FROM users WHERE id = $id\n",
+  });
+  expect(scanProject(tmp)[0]).toMatchObject({
+    kind: "file",
+    query: "SELECT id FROM users WHERE id = $id\n",
+    paramCount: 1,
+  });
+});
+
 test("sql.file() missing path throws with file:line:column", () => {
   setup({
     "a.ts":

@@ -30,7 +30,7 @@ test("CLI help prints package metadata version", () => {
   expect(r.stdout).toContain("--schema-provider");
   expect(r.stdout).toContain("check [--json]");
   expect(r.stdout).toContain("migrate dev");
-  expect(r.stdout).toContain("verify [--shadow-admin-url");
+  expect(r.stdout).toContain("verify [--dts <path>] [--shadow-admin-url");
   expect(r.stdout).toContain("--shadow-admin-url");
   expect(r.stdout).toContain("revert [--dry-run]");
   expect(r.stdout).toContain("archive restore");
@@ -442,6 +442,27 @@ test("prepare --check --json preserves scanner source location", () => {
     expect(r.stderr).toBe("");
     expect(JSON.parse(r.stdout)).toMatchObject({
       diagnostics: [{ phase: "scan", file: "a.ts", line: 3, column: 11 }],
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ci --json keeps config preflight failures machine-readable", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-ci-json-"));
+  try {
+    writeFileSync(join(root, "package.json"), '{"type":"module"}');
+    writeFileSync(join(root, "sqlx-js.config.js"), "export default null;\n");
+    const r = spawnSync("bun", [binPath, "ci", "--json", "--root", root], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: "" },
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toBe("");
+    expect(JSON.parse(r.stdout)).toMatchObject({
+      formatVersion: 1,
+      ok: false,
+      results: [{ name: "preflight", ok: false, exitCode: 2 }],
     });
   } finally {
     rmSync(root, { recursive: true, force: true });

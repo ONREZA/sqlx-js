@@ -2,6 +2,15 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { isBuiltinOid } from "./pg/oids";
+import {
+  isEscapeStringPrefix,
+  isIdentifierContinuation,
+  readBlockComment,
+  readDollarQuoted,
+  readLineComment,
+  readQuotedIdentifier,
+  readSingleQuoted,
+} from "./sql-lex";
 import { rewriteNamedParameters } from "./sql-params";
 
 export const CACHE_FORMAT_VERSION = 3;
@@ -41,7 +50,7 @@ export function portableCacheOid(oid: number): number {
 }
 
 export function fingerprint(query: string): string {
-  const norm = normalizeForFingerprint(rewriteNamedParameters(query).query);
+  const norm = normalizeForFingerprint(query);
   return createHash("sha256").update(norm).digest("hex").slice(0, 16);
 }
 
@@ -90,7 +99,7 @@ function normalizeForFingerprint(query: string): string {
       continue;
     }
     if (ch === "$") {
-      const next = readDollarQuoted(query, i);
+      const next = i === 0 || !isIdentifierContinuation(query[i - 1]!) ? readDollarQuoted(query, i) : null;
       if (next !== null) {
         emit(query.slice(i, next));
         i = next;
@@ -103,79 +112,6 @@ function normalizeForFingerprint(query: string): string {
   return out;
 }
 
-function readSingleQuoted(query: string, start: number, escapeBackslash: boolean): number {
-  let i = start + 1;
-  while (i < query.length) {
-    const ch = query[i]!;
-    if (escapeBackslash && ch === "\\") {
-      i += 2;
-      continue;
-    }
-    if (ch === "'") {
-      if (query[i + 1] === "'") {
-        i += 2;
-        continue;
-      }
-      return i + 1;
-    }
-    i++;
-  }
-  return query.length;
-}
-
-function readQuotedIdentifier(query: string, start: number): number {
-  let i = start + 1;
-  while (i < query.length) {
-    if (query[i] === "\"") {
-      if (query[i + 1] === "\"") {
-        i += 2;
-        continue;
-      }
-      return i + 1;
-    }
-    i++;
-  }
-  return query.length;
-}
-
-function readDollarQuoted(query: string, start: number): number | null {
-  let tagEnd = start + 1;
-  while (tagEnd < query.length && /[A-Za-z0-9_]/.test(query[tagEnd]!)) tagEnd++;
-  if (query[tagEnd] !== "$") return null;
-  const tag = query.slice(start, tagEnd + 1);
-  const end = query.indexOf(tag, tagEnd + 1);
-  return end === -1 ? query.length : end + tag.length;
-}
-
-function readLineComment(query: string, start: number): number {
-  const end = query.indexOf("\n", start + 2);
-  return end === -1 ? query.length : end + 1;
-}
-
-function readBlockComment(query: string, start: number): number {
-  let depth = 1;
-  let i = start + 2;
-  while (i < query.length && depth > 0) {
-    if (query[i] === "/" && query[i + 1] === "*") {
-      depth++;
-      i += 2;
-      continue;
-    }
-    if (query[i] === "*" && query[i + 1] === "/") {
-      depth--;
-      i += 2;
-      continue;
-    }
-    i++;
-  }
-  return i;
-}
-
-function isEscapeStringPrefix(query: string, quoteIndex: number): boolean {
-  if (quoteIndex === 0 || query[quoteIndex - 1]?.toLowerCase() !== "e") return false;
-  const beforePrefix = query[quoteIndex - 2];
-  return beforePrefix === undefined || !/[A-Za-z0-9_$]/.test(beforePrefix);
-}
 
 export function effectiveNullable(c: CacheColumn): boolean {
   if (c.override === "non-null") return false;
@@ -202,6 +138,27 @@ function assertEntryShape(fp: string, raw: unknown): CacheEntry {
     throw new Error(`sqlx-js: cache entry ${fp}.json is malformed`);
   }
   const cols = (raw as { columns: unknown[] }).columns;
+  const entry = raw as Record<string, unknown>;
+  let expectedNames: string[];
+  try {
+    if (typeof entry.query !== "string") throw new Error("query must be a string");
+    expectedNames = rewriteNamedParameters(entry.query).names;
+  } catch {
+    throw new Error(`sqlx-js: cache entry ${fp}.json has malformed named parameter metadata. Run \`sqlx-js prepare\`.`);
+  }
+  if (entry.paramNames !== undefined || expectedNames.length > 0) {
+    if (
+      !Array.isArray(entry.paramNames) ||
+      !entry.paramNames.every((name) => typeof name === "string") ||
+      !Array.isArray(entry.paramTsTypes) ||
+      entry.paramNames.length !== entry.paramTsTypes.length ||
+      new Set(entry.paramNames).size !== entry.paramNames.length ||
+      entry.paramNames.length !== expectedNames.length ||
+      entry.paramNames.some((name, index) => name !== expectedNames[index])
+    ) {
+      throw new Error(`sqlx-js: cache entry ${fp}.json has malformed named parameter metadata. Run \`sqlx-js prepare\`.`);
+    }
+  }
   if (cols.length > 0) {
     const c = cols[0] as Record<string, unknown>;
     if ("forceNonNull" in c || "forceNullable" in c) {

@@ -21,6 +21,13 @@ test("SQL strings, identifiers, comments, and dollar quotes are not rewritten", 
   expect(rewritten.names).toEqual(["value"]);
 });
 
+test("dollar signs inside unquoted PostgreSQL identifiers are not parameters", () => {
+  const query = "SELECT foo$bar, foo$1, $actual FROM table$name";
+  const rewritten = rewriteNamedParameters(query);
+  expect(rewritten.query).toBe("SELECT foo$bar, foo$1, $1 FROM table$name");
+  expect(rewritten.names).toEqual(["actual"]);
+});
+
 test("named binding rejects missing and unknown keys", () => {
   const rewritten = rewriteNamedParameters("SELECT $id");
   expect(() => bindNamedParameters(rewritten, [{}])).toThrow(/missing named parameter.*id/);
@@ -34,4 +41,5 @@ test("named and positional parameters cannot be mixed", () => {
 test("rewritten PostgreSQL positions map back to the source query", () => {
   const rewritten = rewriteNamedParameters("SELECT $long_name + broken");
   expect(originalPosition(rewritten, rewritten.query.indexOf("broken") + 1)).toBe(21);
+  expect(originalPosition(rewritten, rewritten.query.length + 1)).toBe("SELECT $long_name + broken".length + 1);
 });

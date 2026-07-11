@@ -283,7 +283,8 @@ function inferenceIssues(entry: CacheEntry): string[] {
   const issues: string[] = [];
   if (entry.degraded) issues.push(`nullability inference degraded: ${entry.degraded.reason}`);
   entry.paramTsTypes.forEach((type, index) => {
-    if (containsUnknownType(type)) issues.push(`parameter $${index + 1} resolved to ${type}`);
+    const parameter = entry.paramNames?.[index] ? `$${entry.paramNames[index]}` : `$${index + 1}`;
+    if (containsUnknownType(type)) issues.push(`parameter ${parameter} resolved to ${type}`);
   });
   for (const column of entry.columns) {
     if (containsUnknownType(column.tsType)) {
@@ -305,7 +306,7 @@ function inferenceDiagnostics(
     file: site.file,
     line: site.line,
     column: site.column,
-    query: entry.query,
+    query: site.query,
   }));
 }
 
@@ -431,7 +432,7 @@ export async function prepareOnce(
   const unique = new Map<string, { fp: string; query: string; paramNames: string[]; sites: QueryCallSite[] }>();
   for (const s of sites) {
     const rewritten = rewriteNamedParameters(s.query);
-    const fp = fingerprint(rewritten.query);
+    const fp = fingerprint(s.query);
     const existing = unique.get(fp);
     if (existing) existing.sites.push(s);
     else unique.set(fp, { fp, query: rewritten.query, paramNames: rewritten.names, sites: [s] });
@@ -486,10 +487,10 @@ export async function prepareOnce(
           file: site.file,
           line: site.line,
           column: site.column,
-          query,
+          query: site.query,
         });
         err(`  ✗ ${formatSite(site)} — ${message}`);
-        err(`      query: ${snippet(query)}`);
+        err(`      query: ${snippet(site.query)}`);
         continue;
       }
       raw.push({ fp, query, sites: ss, paramOids: outcome.paramOids, fields: outcome.fields, paramNames: toPrepare.get(fp)!.paramNames });
@@ -498,6 +499,7 @@ export async function prepareOnce(
     failures++;
     const e = outcome.error;
     if (e instanceof PgError) {
+      const position = e.position ? originalPosition(rewriteNamedParameters(site.query), e.position) : undefined;
       diagnostics.push({
         severity: "error",
         phase: "describe",
@@ -505,18 +507,18 @@ export async function prepareOnce(
         file: site.file,
         line: site.line,
         column: site.column,
-        query,
+        query: site.query,
         ...(e.code ? { code: e.code } : {}),
-        ...(e.position ? { position: originalPosition(rewriteNamedParameters(site.query), e.position) } : {}),
+        ...(position ? { position } : {}),
         ...(e.hint ? { hint: e.hint } : {}),
       });
       const extras: string[] = [];
-      if (e.position) extras.push(`pos ${e.position}`);
+      if (position) extras.push(`pos ${position}`);
       if (e.code) extras.push(`code ${e.code}`);
       const tail = extras.length > 0 ? ` (${extras.join(", ")})` : "";
       err(`  ✗ ${formatSite(site)} — describe failed: ${e.message}${tail}`);
       if (e.hint) err(`      hint: ${e.hint}`);
-      err(`      query: ${snippet(query)}`);
+      err(`      query: ${snippet(site.query)}`);
     } else {
       diagnostics.push({
         severity: "error",
@@ -525,10 +527,10 @@ export async function prepareOnce(
         file: site.file,
         line: site.line,
         column: site.column,
-        query,
+        query: site.query,
       });
       err(`  ✗ ${formatSite(site)} — describe failed: ${(e as Error).message}`);
-      err(`      query: ${snippet(query)}`);
+      err(`      query: ${snippet(site.query)}`);
     }
   }
 
@@ -566,10 +568,10 @@ export async function prepareOnce(
         file: site.file,
         line: site.line,
         column: site.column,
-        query: r.query,
+        query: site.query,
       });
       err(`  ✗ ${formatSite(site)} — analyze failed: ${(e as Error).message}`);
-      err(`      query: ${snippet(r.query)}`);
+      err(`      query: ${snippet(site.query)}`);
       continue;
     }
     try {
@@ -584,10 +586,10 @@ export async function prepareOnce(
         file: site.file,
         line: site.line,
         column: site.column,
-        query: r.query,
+        query: site.query,
       });
       err(`  ✗ ${formatSite(site)} — paramMap failed: ${(e as Error).message}`);
-      err(`      query: ${snippet(r.query)}`);
+      err(`      query: ${snippet(site.query)}`);
     }
   }
 
@@ -638,7 +640,7 @@ export async function prepareOnce(
       dmlBound: new Set(),
     };
     const entry: CacheEntry = {
-      query: r.query,
+      query: r.sites[0]!.query,
       ...siteUsage(r.sites),
       paramOids: r.paramOids.map(portableCacheOid),
       paramTsTypes: r.paramOids.map((o, idx) => resolveParamTs(idx + 1, o, pm.targets, schema, userCfg)),

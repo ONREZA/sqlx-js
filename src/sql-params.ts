@@ -1,3 +1,13 @@
+import {
+  isEscapeStringPrefix,
+  isIdentifierContinuation,
+  readBlockComment,
+  readDollarQuoted,
+  readLineComment,
+  readQuotedIdentifier,
+  readSingleQuoted,
+} from "./sql-lex";
+
 export type RewrittenSql = {
   query: string;
   names: string[];
@@ -41,6 +51,11 @@ export function rewriteNamedParameters(query: string): RewrittenSql {
       continue;
     }
     if (ch === "$") {
+      if (i > 0 && isIdentifierContinuation(query[i - 1]!)) {
+        append(ch, i);
+        i++;
+        continue;
+      }
       const quotedEnd = readDollarQuoted(query, i);
       if (quotedEnd !== null) {
         i = quotedEnd;
@@ -76,6 +91,7 @@ export function rewriteNamedParameters(query: string): RewrittenSql {
   if (positional && names.length > 0) {
     throw new Error("sqlx-js: named and positional parameters cannot be mixed in one query");
   }
+  positionMap.push(query.length);
   return { query: out, names, positionMap };
 }
 
@@ -100,61 +116,4 @@ export function originalPosition(rewritten: RewrittenSql, oneBasedPosition: numb
   const position = Number(oneBasedPosition);
   if (!Number.isInteger(position) || position < 1) return oneBasedPosition;
   return (rewritten.positionMap[position - 1] ?? position - 1) + 1;
-}
-
-function isEscapeStringPrefix(query: string, quote: number): boolean {
-  const prefix = query[quote - 1];
-  if (prefix !== "e" && prefix !== "E") return false;
-  const before = query[quote - 2];
-  return before === undefined || !/[A-Za-z0-9_$]/.test(before);
-}
-
-function readSingleQuoted(query: string, start: number, escapeBackslash: boolean): number {
-  let i = start + 1;
-  while (i < query.length) {
-    if (escapeBackslash && query[i] === "\\") { i += 2; continue; }
-    if (query[i] === "'") {
-      if (query[i + 1] === "'") { i += 2; continue; }
-      return i + 1;
-    }
-    i++;
-  }
-  return query.length;
-}
-
-function readQuotedIdentifier(query: string, start: number): number {
-  let i = start + 1;
-  while (i < query.length) {
-    if (query[i] === '"') {
-      if (query[i + 1] === '"') { i += 2; continue; }
-      return i + 1;
-    }
-    i++;
-  }
-  return query.length;
-}
-
-function readDollarQuoted(query: string, start: number): number | null {
-  let end = start + 1;
-  while (end < query.length && /[A-Za-z0-9_]/.test(query[end]!)) end++;
-  if (query[end] !== "$") return null;
-  const tag = query.slice(start, end + 1);
-  const close = query.indexOf(tag, end + 1);
-  return close === -1 ? query.length : close + tag.length;
-}
-
-function readLineComment(query: string, start: number): number {
-  const end = query.indexOf("\n", start + 2);
-  return end === -1 ? query.length : end + 1;
-}
-
-function readBlockComment(query: string, start: number): number {
-  let depth = 1;
-  let i = start + 2;
-  while (i < query.length && depth > 0) {
-    if (query[i] === "/" && query[i + 1] === "*") { depth++; i += 2; continue; }
-    if (query[i] === "*" && query[i + 1] === "/") { depth--; i += 2; continue; }
-    i++;
-  }
-  return i;
 }
