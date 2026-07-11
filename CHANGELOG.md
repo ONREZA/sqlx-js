@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/ONREZA/sqlx-js/compare/v0.6.0...v0.7.0) (2026-07-11)
+
+
+### Features
+
+* **dx:** improve production readiness ([#10](https://github.com/ONREZA/sqlx-js/issues/10)) ([99de05e](https://github.com/ONREZA/sqlx-js/commit/99de05e9334e839d4becbd5bf9a8a47a14da9f3d))
+
 ## [0.6.0](https://github.com/ONREZA/sqlx-js/compare/v0.5.0...v0.6.0) (2026-07-10)
 
 
