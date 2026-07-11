@@ -23,6 +23,7 @@ import { buildParamMap, type ParamMap, type ParamMapResult } from "../pg/param-m
 import { mergeExtensionTypes } from "../pg/extensions";
 import { compareArtifacts } from "../artifacts";
 import { containsUnknownType } from "../type-inspection";
+import { originalPosition, rewriteNamedParameters } from "../sql-params";
 
 const JSON_OIDS = new Set([114, 3802]);
 const JSON_ARRAY_OIDS = new Set([199, 3807]);
@@ -427,12 +428,13 @@ export async function prepareOnce(
   const cache = new Cache(opts.cacheDir);
   let failures = 0;
 
-  const unique = new Map<string, { fp: string; query: string; sites: QueryCallSite[] }>();
+  const unique = new Map<string, { fp: string; query: string; paramNames: string[]; sites: QueryCallSite[] }>();
   for (const s of sites) {
-    const fp = fingerprint(s.query);
+    const rewritten = rewriteNamedParameters(s.query);
+    const fp = fingerprint(rewritten.query);
     const existing = unique.get(fp);
     if (existing) existing.sites.push(s);
-    else unique.set(fp, { fp, query: s.query, sites: [s] });
+    else unique.set(fp, { fp, query: rewritten.query, paramNames: rewritten.names, sites: [s] });
   }
 
   type Raw = {
@@ -441,6 +443,7 @@ export async function prepareOnce(
     sites: QueryCallSite[];
     paramOids: number[];
     fields: FieldDescription[];
+    paramNames: string[];
   };
   const raw: Raw[] = [];
   const reusedEntries: CacheEntry[] = [];
@@ -489,7 +492,7 @@ export async function prepareOnce(
         err(`      query: ${snippet(query)}`);
         continue;
       }
-      raw.push({ fp, query, sites: ss, paramOids: outcome.paramOids, fields: outcome.fields });
+      raw.push({ fp, query, sites: ss, paramOids: outcome.paramOids, fields: outcome.fields, paramNames: toPrepare.get(fp)!.paramNames });
       continue;
     }
     failures++;
@@ -504,7 +507,7 @@ export async function prepareOnce(
         column: site.column,
         query,
         ...(e.code ? { code: e.code } : {}),
-        ...(e.position ? { position: e.position } : {}),
+        ...(e.position ? { position: originalPosition(rewriteNamedParameters(site.query), e.position) } : {}),
         ...(e.hint ? { hint: e.hint } : {}),
       });
       const extras: string[] = [];
@@ -640,6 +643,7 @@ export async function prepareOnce(
       paramOids: r.paramOids.map(portableCacheOid),
       paramTsTypes: r.paramOids.map((o, idx) => resolveParamTs(idx + 1, o, pm.targets, schema, userCfg)),
       paramNullable: r.paramOids.map((_o, idx) => resolveParamNullable(idx + 1, pm, schema)),
+      ...(r.paramNames.length > 0 ? { paramNames: r.paramNames } : {}),
       columns: r.fields.map((f, i) => {
         const parsed = parseColumnOverride(f.name);
         const treatAsOverride = parsed.override !== undefined && isAliasOrExpression(f, schema);

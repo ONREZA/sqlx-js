@@ -78,6 +78,20 @@ test("hasResultSet=false emits row: never", () => {
   expect(dts).toContain("row: never");
 });
 
+test("named parameters emit a strictly typed object", () => {
+  const dts = write([{
+    query: "SELECT * FROM users WHERE email = $1 AND age = $2",
+    inlineQueries: ["SELECT * FROM users WHERE email = $email AND age = $age"],
+    paramOids: [25, 23],
+    paramTsTypes: ["string", "number"],
+    paramNullable: [false, true],
+    paramNames: ["email", "age"],
+    hasResultSet: true,
+    columns: [],
+  }]);
+  expect(dts).toContain('params: { "email": string; "age": number | null }');
+});
+
 test("non-nullable column stays non-null, nullable stays nullable when no overrides", () => {
   const dts = write([
     {

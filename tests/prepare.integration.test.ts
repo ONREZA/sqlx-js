@@ -201,6 +201,23 @@ if (!haveIntegrationDatabase) {
     expect(queryCacheFiles().length).toBeGreaterThan(0);
   });
 
+  test("prepare describes named parameters and emits an object contract", () => {
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT id, name FROM tmp_users WHERE id = $id OR name = $name\", { name: \"a\", id: 1 });\n",
+    );
+    const r = prepare();
+    expect(r.code).toBe(0);
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain("WHERE id = $id OR name = $name");
+    expect(dts).toContain('params: { "id": bigint; "name": string }');
+    const entries = queryCacheFiles().map((file) => JSON.parse(readFileSync(join(tmp, ".sqlx-js", file), "utf8")));
+    expect(entries).toContainEqual(expect.objectContaining({
+      query: "SELECT id, name FROM tmp_users WHERE id = $1 OR name = $2",
+      paramNames: ["id", "name"],
+    }));
+  });
+
   test("prepare includes queries issued through createSqlClient", () => {
     writeFile("a.ts",
       "import { createSqlClient } from \"@onreza/sqlx-js\";\n" +

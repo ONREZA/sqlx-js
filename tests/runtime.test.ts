@@ -84,6 +84,21 @@ describe("encodeParam", () => {
   });
 });
 
+test("runtime rewrites and binds named parameters", async () => {
+  let received: { query: string; params: unknown[] } | undefined;
+  const client: RuntimeClient = {
+    query: async (query, params) => {
+      received = { query, params };
+      return [];
+    },
+    transaction: async (fn) => fn(client),
+    close: async () => {},
+  };
+  const runtime = createSqlRuntime(() => client);
+  await runtime.sql("SELECT $email, $id, $email", { id: 7, email: "a@b" });
+  expect(received).toEqual({ query: "SELECT $1, $2, $1", params: ["a@b", 7] });
+});
+
 describe("isPrimitiveArrayElement", () => {
   test("primitives + null/undefined are primitive", () => {
     expect(_internal.isPrimitiveArrayElement(1)).toBe(true);

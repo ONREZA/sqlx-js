@@ -2,9 +2,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { isBuiltinOid } from "./pg/oids";
+import { rewriteNamedParameters } from "./sql-params";
 
-export const CACHE_FORMAT_VERSION = 2;
-export const GENERATOR_REVISION = 4;
+export const CACHE_FORMAT_VERSION = 3;
+export const GENERATOR_REVISION = 5;
 export const CACHE_MANIFEST_FILE = "cache-manifest.json";
 
 export type CacheManifest = {
@@ -27,6 +28,7 @@ export type CacheEntry = {
   paramOids: number[];
   paramTsTypes: string[];
   paramNullable?: boolean[];
+  paramNames?: string[];
   columns: CacheColumn[];
   hasResultSet: boolean;
   hasInline?: boolean;
@@ -39,7 +41,7 @@ export function portableCacheOid(oid: number): number {
 }
 
 export function fingerprint(query: string): string {
-  const norm = normalizeForFingerprint(query);
+  const norm = normalizeForFingerprint(rewriteNamedParameters(query).query);
   return createHash("sha256").update(norm).digest("hex").slice(0, 16);
 }
 

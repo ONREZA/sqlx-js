@@ -112,6 +112,20 @@ CREATE TABLE users (
 );
 ```
 
+For queries with several values, named parameters keep the SQL and arguments aligned:
+
+```ts
+const rows = await sql(
+  `SELECT id, name
+   FROM users
+   WHERE email = $email OR recovery_email = $email
+   LIMIT $limit`,
+  { email: "user@example.com", limit: 10 },
+);
+```
+
+Named parameters are numbered by first appearance before PostgreSQL sees the query, and repeated names reuse the same positional parameter. The generated object contract rejects missing, extra, and incorrectly typed properties. Named `$name` and positional `$1` parameters cannot be mixed in one query. Positional parameters remain supported and are still the shortest form for simple queries.
+
 During local development, validate the migration and regenerate query artifacts against a disposable shadow database:
 
 ```bash

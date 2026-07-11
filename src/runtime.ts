@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { PgClient, parseDatabaseUrl, PgError } from "./pg/wire";
 import { applyPending, acquireMigrateLock, releaseMigrateLock, DEFAULT_MIGRATE_LOCK_KEY } from "./migration-core";
+import { bindNamedParameters, rewriteNamedParameters } from "./sql-params";
 
 export type OnQueryEvent = {
   query: string;
@@ -292,6 +293,9 @@ export const _internal = {
 };
 
 async function runRawQuery(client: RuntimeClient, query: string, params: unknown[]): Promise<RuntimeQueryResult> {
+  const bound = bindNamedParameters(rewriteNamedParameters(query), params);
+  query = bound.query;
+  params = bound.params;
   const encoded = params.length === 0
     ? params
     : params.map((p) => client.transformParam ? client.transformParam(p) : encodeParam(p));

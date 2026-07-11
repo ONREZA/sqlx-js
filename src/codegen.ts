@@ -9,7 +9,9 @@ function entrySignature(e: CacheEntry): { params: string; row: string } {
     const nullable = e.paramNullable?.[i] === true;
     return nullable ? `${t} | null` : t;
   });
-  const params = paramTypes.length === 0 ? "[]" : `[${paramTypes.join(", ")}]`;
+  const params = e.paramNames && e.paramNames.length > 0
+    ? `{ ${e.paramNames.map((name, index) => `${JSON.stringify(name)}: ${paramTypes[index]}`).join("; ")} }`
+    : paramTypes.length === 0 ? "[]" : `[${paramTypes.join(", ")}]`;
   if (!e.hasResultSet) return { params, row: "never" };
   const cols = e.columns.map((c) => {
     const nullable = effectiveNullable(c);
