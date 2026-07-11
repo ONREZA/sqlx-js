@@ -285,6 +285,28 @@ if (cmd !== "doctor") {
     process.exit(2);
   }
 }
+const needsTypeScript =
+  cmd === "doctor" ||
+  cmd === "ci" ||
+  cmd === "prepare" ||
+  (cmd === "migrate" && (positionals[0] === "dev" || positionals[0] === "verify"));
+if (needsTypeScript) {
+  try {
+    import.meta.resolve("typescript");
+  } catch {
+    const message = "sqlx-js: TypeScript is required for source scanning. Install it with `npm install --save-dev typescript` or `bun add --dev typescript`.";
+    if (cmd === "doctor" && flag("--json")) {
+      console.log(JSON.stringify({
+        formatVersion: 1,
+        ok: false,
+        checks: [{ name: "typescript", status: "error", message }],
+      }, null, 2));
+    } else {
+      console.error(message);
+    }
+    process.exit(2);
+  }
+}
 let envError: string | undefined;
 const needsEnvironment =
   cmd === "doctor" ||

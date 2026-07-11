@@ -53,11 +53,13 @@ const rows = await sql(
 
 ```bash
 npm install @onreza/sqlx-js
+npm install --save-dev typescript
 # or
 bun add @onreza/sqlx-js
+bun add --dev typescript
 ```
 
-Node.js 24 or newer is required. Bun users need Bun 1.3 or newer.
+Node.js 24 or newer is required. Bun users need Bun 1.3 or newer. TypeScript is an optional peer so production-only installs do not pull the compiler and its platform package into the application image; source scanning commands (`prepare`, `doctor`, `ci`, and migration development/verification) require it in development dependencies.
 
 The package installs `sqlx-js` and `sqlx-js-diagnostics` binaries. The CLI examples below use `npx @onreza/sqlx-js`; `bunx @onreza/sqlx-js ...` works the same if your project uses Bun.
 
