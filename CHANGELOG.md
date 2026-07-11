@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/ONREZA/sqlx-js/compare/v0.9.0...v0.9.1) (2026-07-11)
+
+
+### Bug Fixes
+
+* **types:** preserve query result inference ([b361854](https://github.com/ONREZA/sqlx-js/commit/b361854eb06cc012a440fdde88ff439f622af253))
+
 ## [0.9.0](https://github.com/ONREZA/sqlx-js/compare/v0.8.0...v0.9.0) (2026-07-11)
 
 
