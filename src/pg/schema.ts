@@ -71,25 +71,28 @@ export class SchemaCache {
   }
 
   async loadTableNames(names: { schema?: string; name: string }[]): Promise<void> {
-    const need: { schema: string; name: string }[] = [];
+    const explicit: { schema: string; name: string }[] = [];
+    const visible: string[] = [];
     for (const n of names) {
-      const schema = n.schema ?? "public";
-      const key = `${schema}.${n.name}`;
-      if (!this.nameToOid.has(key)) need.push({ schema, name: n.name });
+      if (n.schema) {
+        if (!this.nameToOid.has(`${n.schema}.${n.name}`)) explicit.push({ schema: n.schema, name: n.name });
+      } else if (!this.nameToOid.has(unqualifiedKey(n.name))) {
+        visible.push(n.name);
+      }
     }
-    if (need.length === 0) return;
-    const where = need.map((n) => `(n.nspname = ${quote(n.schema)} AND c.relname = ${quote(n.name)})`).join(" OR ");
-    const sql = `SELECT c.oid::int8, n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE ${where}`;
-    const r = await this.client.simpleQueryAll(sql);
-    for (const row of r.rows) {
-      const oid = Number(decodeText(row[0]!));
-      const schema = decodeText(row[1]!)!;
-      const name = decodeText(row[2]!)!;
-      const k = `${schema}.${name}`;
-      const arr = this.nameToOid.get(k) ?? [];
-      arr.push(oid);
-      this.nameToOid.set(k, arr);
-      this.oidToName.set(oid, { schema, name });
+    if (explicit.length > 0) {
+      const where = explicit.map((n) => `(n.nspname = ${quote(n.schema)} AND c.relname = ${quote(n.name)})`).join(" OR ");
+      const sql = `SELECT c.oid::int8, n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE ${where}`;
+      const result = await this.client.simpleQueryAll(sql);
+      for (const row of result.rows) this.recordTable(row);
+    }
+    if (visible.length > 0) {
+      const requested = [...new Set(visible)].map(quote).join(",");
+      const sql = `SELECT c.oid::int8, n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname IN (${requested}) AND pg_table_is_visible(c.oid)`;
+      const result = await this.client.simpleQueryAll(sql);
+      for (const row of result.rows) {
+        this.recordTable(row, true);
+      }
     }
   }
 
@@ -98,7 +101,7 @@ export class SchemaCache {
   }
 
   resolveTable(schema: string | undefined, name: string): number | undefined {
-    const k = `${schema ?? "public"}.${name}`;
+    const k = schema ? `${schema}.${name}` : unqualifiedKey(name);
     const arr = this.nameToOid.get(k);
     return arr?.[0];
   }
@@ -112,16 +115,19 @@ export class SchemaCache {
     if (need.length === 0) return;
     const sql = `SELECT c.oid::int8, n.nspname, c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid IN (${need.join(",")})`;
     const r = await this.client.simpleQueryAll(sql);
-    for (const row of r.rows) {
-      const oid = Number(decodeText(row[0]!));
-      const schema = decodeText(row[1]!)!;
-      const name = decodeText(row[2]!)!;
-      const k = `${schema}.${name}`;
-      const arr = this.nameToOid.get(k) ?? [];
-      if (!arr.includes(oid)) arr.push(oid);
-      this.nameToOid.set(k, arr);
-      this.oidToName.set(oid, { schema, name });
-    }
+    for (const row of r.rows) this.recordTable(row);
+  }
+
+  private recordTable(row: (Uint8Array | null)[], visible = false): void {
+    const oid = Number(decodeText(row[0]!));
+    const schema = decodeText(row[1]!)!;
+    const name = decodeText(row[2]!)!;
+    const key = `${schema}.${name}`;
+    const arr = this.nameToOid.get(key) ?? [];
+    if (!arr.includes(oid)) arr.push(oid);
+    this.nameToOid.set(key, arr);
+    if (visible) this.nameToOid.set(unqualifiedKey(name), [oid]);
+    this.oidToName.set(oid, { schema, name });
   }
 
   columnNameByAttno(tableOid: number, attno: number): string | undefined {
@@ -288,6 +294,10 @@ export class SchemaCache {
 
 function key(oid: number, attno: number): string {
   return `${oid}/${attno}`;
+}
+
+function unqualifiedKey(name: string): string {
+  return `\0${name}`;
 }
 
 function quote(s: string): string {

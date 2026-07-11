@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { isBuiltinOid } from "./pg/oids";
 
 export const CACHE_FORMAT_VERSION = 2;
-export const GENERATOR_REVISION = 3;
+export const GENERATOR_REVISION = 4;
 export const CACHE_MANIFEST_FILE = "cache-manifest.json";
 
 export type CacheManifest = {

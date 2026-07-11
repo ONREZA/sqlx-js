@@ -16,6 +16,7 @@ export type ConnConfig = {
   database: string;
   sslmode?: SslMode;
   applicationName?: string;
+  startupOptions?: string;
   connectTimeoutMs?: number;
   statementTimeoutMs?: number;
   sslRootCert?: string;
@@ -43,6 +44,8 @@ export function parseDatabaseUrl(url: string): ConnConfig {
   if (sslmodeRaw !== undefined) cfg.sslmode = sslmodeRaw as SslMode;
   const appName = params.get("application_name");
   if (appName) cfg.applicationName = appName;
+  const startupOptions = params.get("options");
+  if (startupOptions) cfg.startupOptions = startupOptions;
   const ct = params.get("connect_timeout");
   if (ct) {
     const n = Number(ct);
@@ -492,6 +495,9 @@ export class PgClient {
     ];
     if (this.cfg.applicationName) {
       pairs.push(cstr("application_name"), cstr(this.cfg.applicationName));
+    }
+    if (this.cfg.startupOptions) {
+      pairs.push(cstr("options"), cstr(this.cfg.startupOptions));
     }
     if (this.cfg.statementTimeoutMs !== undefined) {
       pairs.push(cstr("statement_timeout"), cstr(String(this.cfg.statementTimeoutMs)));

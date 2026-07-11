@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { close, setClient, sql, unsafe, type PostgresClient } from "../src/index";
+import { close, createSqlClient, setClient, sql, unsafe, type PostgresClient } from "../src/index";
 
 afterEach(async () => {
   await close();
@@ -113,4 +113,16 @@ test("setClient applies fileRoot to sql.file.execute", async () => {
   setClient(fake, { fileRoot: root });
   expect(await sql.file.execute("update.sql")).toEqual({ rowCount: 2, command: "UPDATE" });
   expect(calls).toEqual(["UPDATE jobs SET active = false"]);
+});
+
+test("createSqlClient returns independent scoped runtimes", async () => {
+  const first = createSqlClient("postgres://postgres:postgres@127.0.0.1:1/first", { connect_timeout: 1 });
+  const second = createSqlClient("postgres://postgres:postgres@127.0.0.1:1/second", { connect_timeout: 1 });
+  try {
+    expect(first.client).not.toBe(second.client);
+    expect(first.sql).not.toBe(second.sql);
+    expect(first.unsafe).not.toBe(second.unsafe);
+  } finally {
+    await Promise.all([first.close(), second.close()]);
+  }
 });

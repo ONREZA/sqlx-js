@@ -29,7 +29,7 @@ usage:
   sqlx-js doctor [--root <dir>] [--dts <path>] [--json]
   sqlx-js db install | check [--root <dir>]
   sqlx-js db plan | apply [--root <dir>] [-- <pgschema args>]
-  sqlx-js prepare [--check | --verify | --watch] [--json] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
+  sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
   sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | verify [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
   sqlx-js schema dump [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
   sqlx-js schema check [--schema <path>] [--shadow-url <url>]
@@ -37,20 +37,22 @@ usage:
   sqlx-js-diagnostics github|unix < prepare-diagnostics.json
 
 env:
-  DATABASE_URL=postgres://...  (supports sslmode, cert paths, application_name, connect_timeout, statement_timeout)
+  DATABASE_URL=postgres://...  (supports sslmode, cert paths, application_name, options, connect_timeout, statement_timeout)
   SHADOW_DATABASE_URL=postgres://...  (optional pre-created disposable shadow DB)
   SHADOW_ADMIN_DATABASE_URL=postgres://...  (optional admin URL for auto-created shadow DBs)
 
 flags:
   --root <dir>             scan root (default: cwd)
   --dts <path>             declarations output (default: <root>/sqlx-js-env.d.ts)
-  --check                  offline mode: verify scanned queries exist in cache, no DB
+  --check                  read-only offline verification of cache and declarations
+  --offline                regenerate declarations from committed cache, no DB
   --verify                 prepare against DB/shadow and compare committed generated artifacts
   --watch                  re-prepare on file change (persistent PG connection)
   --no-prune               keep orphaned cache entries (default: remove)
   --migrations <dir>       migrations directory (default: <root>/migrations)
   --dry-run                validate and print migrate run/revert plan without applying migrations
   --json                   machine-readable output for prepare and migration inspection/dry-run commands
+  --jsonl                  streaming machine-readable output for prepare --watch
   --strict-inference       fail when query inference degrades or emits unknown types
   --force                  allow archive restore to overwrite existing migration files
   --lock-timeout <ms>      advisory-lock acquisition timeout for migrate run/revert/dev/verify/squash
@@ -66,7 +68,7 @@ flags:
   init: `usage: sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]`,
   doctor: `usage: sqlx-js doctor [--root <dir>] [--dts <path>] [--json]`,
   db: `usage: sqlx-js db install | check [--root <dir>] | plan | apply [--root <dir>] [-- <pgschema args>]`,
-  prepare: `usage: sqlx-js prepare [--check | --verify | --watch] [--json] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]`,
+  prepare: `usage: sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]`,
   migrate: `usage: sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | verify [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]`,
   schema: `usage: sqlx-js schema dump [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>] | check [--schema <path>] [--shadow-url <url>]`,
 };
@@ -118,9 +120,11 @@ function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfi
       ...ROOT_OPTIONS,
       dts: { type: "string" },
       check: { type: "boolean" },
+      offline: { type: "boolean" },
       verify: { type: "boolean" },
       watch: { type: "boolean" },
       json: { type: "boolean" },
+      jsonl: { type: "boolean" },
       "no-prune": { type: "boolean" },
       "shadow-url": { type: "string" },
       migrations: { type: "string" },
@@ -277,7 +281,7 @@ const needsEnvironment =
   cmd === "doctor" ||
   cmd === "schema" ||
   (cmd === "db" && (positionals[0] === "plan" || positionals[0] === "apply")) ||
-  (cmd === "prepare" && !flag("--check")) ||
+  (cmd === "prepare" && !flag("--check") && !flag("--offline")) ||
   (cmd === "migrate" && !["add", "check", "archive"].includes(positionals[0]!));
 if (needsEnvironment) {
   try {
@@ -341,17 +345,26 @@ if (cmd === "init") {
 } else if (cmd === "prepare") {
   const { PrepareFatalError, runPrepare } = await import("../src/commands/prepare");
   const prepareCheck = flag("--check");
+  const prepareOffline = flag("--offline");
   const prepareVerify = flag("--verify");
   const prepareWatch = flag("--watch");
   const prepareJson = flag("--json");
-  const prepareMode = prepareVerify ? "verify" : prepareCheck ? "check" : "prepare";
+  const prepareJsonl = flag("--jsonl");
+  const prepareMode = prepareVerify ? "verify" : prepareCheck ? "check" : prepareOffline ? "offline" : "prepare";
   const failPrepare = (
     message: string,
     phase: PrepareDiagnosticPhase,
     exitCode = 2,
     location: { file?: string; line?: number; column?: number } = {},
   ): never => {
-    if (prepareJson) {
+    if (prepareJsonl) {
+      console.log(JSON.stringify({
+        formatVersion: 1,
+        event: "error",
+        timestamp: new Date().toISOString(),
+        diagnostic: { severity: "error", phase, message, ...location },
+      }));
+    } else if (prepareJson) {
       console.log(JSON.stringify({
         formatVersion: 1,
         ok: false,
@@ -368,25 +381,31 @@ if (cmd === "init") {
     }
     process.exit(exitCode);
   };
-  if ([prepareCheck, prepareVerify, prepareWatch].filter(Boolean).length > 1) {
-    failPrepare("--check, --verify, and --watch are mutually exclusive", "config");
+  if ([prepareCheck, prepareOffline, prepareVerify, prepareWatch].filter(Boolean).length > 1) {
+    failPrepare("--check, --offline, --verify, and --watch are mutually exclusive", "config");
   }
-  if (prepareCheck && shadowUrlArg) {
+  if ((prepareCheck || prepareOffline) && shadowUrlArg) {
     failPrepare(
-      "--shadow-url cannot be used with prepare --check; use live prepare or schema check --shadow-url",
+      "--shadow-url cannot be used with offline prepare modes; use live prepare or schema check --shadow-url",
       "config",
     );
   }
   if (prepareWatch && prepareJson) {
     failPrepare("--watch and --json are mutually exclusive", "config");
   }
-  if ((prepareCheck || prepareVerify) && flag("--no-prune")) {
-    failPrepare("--no-prune is only supported by prepare and prepare --watch", "config");
+  if (prepareJson && prepareJsonl) {
+    failPrepare("--json and --jsonl are mutually exclusive", "config");
   }
-  const prepareShadowUrl = prepareCheck ? undefined : shadowUrl;
+  if (prepareJsonl && !prepareWatch) {
+    failPrepare("--jsonl is only supported by prepare --watch", "config");
+  }
+  if ((prepareCheck || prepareOffline || prepareVerify) && flag("--no-prune")) {
+    failPrepare("--no-prune is only supported by live prepare and prepare --watch", "config");
+  }
+  const prepareShadowUrl = prepareCheck || prepareOffline ? undefined : shadowUrl;
   const prepareDatabaseUrl = prepareShadowUrl ?? databaseUrl;
-  if (!prepareCheck && !prepareDatabaseUrl) {
-    failPrepare("DATABASE_URL is required for prepare (use --check for offline)", "connect");
+  if (!prepareCheck && !prepareOffline && !prepareDatabaseUrl) {
+    failPrepare("DATABASE_URL is required for prepare (use --check or --offline without a database)", "connect");
   }
   const opts = {
     root,
@@ -394,6 +413,7 @@ if (cmd === "init") {
     cacheDir,
     dtsPath,
     check: prepareCheck,
+    offline: prepareOffline,
     verify: prepareVerify,
     json: prepareJson,
     prune: !flag("--no-prune"),
@@ -406,6 +426,7 @@ if (cmd === "init") {
     const { runWatch } = await import("../src/commands/watch");
     await runWatch({
       ...opts,
+      jsonl: prepareJsonl,
       ...(prepareShadowUrl
         ? {
             beforePrepare: async () => {

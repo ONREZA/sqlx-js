@@ -55,7 +55,7 @@ The library is **PostgreSQL-only** and **compile-time-only by design** — no ru
 
 A `prepare` run executes the following pipeline:
 
-1. **Scan** (`src/scan/scanner.ts`) — TypeScript AST walk over files selected by the root `tsconfig.json` and its project references, with optional `scan.include` / `scan.exclude` overrides. Finds direct named imports and namespace imports from `@onreza/sqlx-js`, including `sql(...)`, `sql.one(...)`, `sql.optional(...)`, `sql.execute(...)`, `sql.file(...)`, and the same surface inside recognized transaction callbacks. Refuses non-literal query/file arguments.
+1. **Scan** (`src/scan/scanner.ts`) — TypeScript AST walk over files selected by the root `tsconfig.json` and its project references, with optional `scan.include` / `scan.exclude` overrides. Finds direct named imports and namespace imports from `@onreza/sqlx-js`, including `sql(...)`, `sql.one(...)`, `sql.optional(...)`, `sql.execute(...)`, `sql.file(...)`, direct bindings returned by imported `createSqlClient(...)`, and the same surface inside recognized transaction callbacks. Refuses non-literal query/file arguments.
 2. **Describe** (`src/pg/wire.ts`) — for each unique query, sends `Parse` + `Describe Statement` + `Sync` to PostgreSQL. Returns parameter OIDs and `RowDescription` (column name, type OID, source table OID, source column attno).
 3. **Schema introspection** (`src/pg/schema.ts`) — batch-loads `pg_class`, `pg_attribute`, `pg_type`, `pg_enum` for everything touched by the queries. Cached per-session.
 4. **AST analysis** (`src/pg/analyze.ts`) — parses each query via `libpg-query`, builds a scope of aliases with their join-nullability, walks each target to determine per-column nullability. Calls into `src/pg/narrow.ts` for WHERE-clause forced-non-null tracking.
@@ -63,11 +63,11 @@ A `prepare` run executes the following pipeline:
 6. **Type resolution** — combines OID, custom enum/array info, schema's `jsonbTypes` config, and analysis output into the final TS type strings for every column and parameter.
 7. **Persistence** — after every query validates successfully, publishes the complete query set through atomic per-file replacement, writes the version/config manifest, and emits `sqlx-js-env.d.ts` with `KnownQueries` / `KnownFileQueries` declarations for `@onreza/sqlx-js`.
 
-`prepare --check` skips steps 2–6 and verifies cache/generator versions, the type-affecting config hash, and every scanned fingerprint. `prepare --verify` performs a fresh live prepare in a temporary directory and compares all generated artifacts without modifying the worktree.
+`prepare --check` skips steps 2–6 and read-only verifies cache/generator versions, the type-affecting config hash, every scanned fingerprint, the function cache, and the generated declaration. `prepare --offline` deliberately regenerates the declaration from committed cache. `prepare --verify` performs a fresh live prepare in a temporary directory and compares all generated artifacts without modifying the worktree.
 
 `prepare --watch` keeps the `PgClient` + `SchemaCache` warm and re-runs steps 1–7 on every debounced filesystem event.
 
-The runtime (`src/index.ts` + `src/runtime.ts` + `src/postgres-runtime.ts`) is a thin layer over `client.unsafe(query, params)` using Postgres.js with prepared `unsafe` calls. Strict typing comes from a single overload keyed on `keyof KnownQueries` — TypeScript narrows the first string literal argument to a known query, then resolves `params` and the result row type from the registered entry.
+The runtime (`src/index.ts` + `src/runtime.ts` + `src/postgres-runtime.ts`) is a thin layer over `client.unsafe(query, params)` using Postgres.js with prepared `unsafe` calls. Strict typing comes from an overload keyed on the active query registry — the global convenience API uses `KnownQueries`, while `createSqlClient<SqlxJsGeneratedRegistry>()` can bind an independent pool to one generated project contract.
 
 ## Common development tasks
 
@@ -184,8 +184,8 @@ Skipping hooks for a single commit: `LEFTHOOK=0 git commit ...`. Don't make a ha
 - The codegen writes literal SQL strings as keys in `KnownQueries`. Whitespace in the source must match exactly when the query is rewritten — the runtime sees the user's literal, then `KnownQueries` is looked up by that literal. The fingerprint normalization is only for cache deduplication, not type lookup.
 - JSON and PostgreSQL arrays are explicit parameter representations. Generated parameter types require `sql.json(...)` and `sql.array(...)`; do not reintroduce runtime array guessing.
 - `bun install` runs `prepare` lifecycle scripts. Don't name a script `prepare` in `package.json`; it'll loop. We use `sqlx:prepare`.
-- Watch mode depends on recursive `fs.watch` support from the active runtime. Don't use chokidar; it adds dependencies for no real gain here.
-- `sql.file(path)` is root-relative. Prepare resolves against `--root`; runtime resolves against `fileRoot` (default: `process.cwd()`). Keep those roots aligned in embedded/package layouts.
+- Watch mode depends on recursive `fs.watch` support from the active runtime. It incrementally rescans affected files and reuses unchanged cache fingerprints; config/tsconfig/schema resets must keep forcing a full prepare. Don't use chokidar; it adds dependencies for no real gain here.
+- `sql.file(path)` is root-relative. Prepare resolves against `--root`; runtime resolves against `fileRoot` (default: `process.cwd()`). Runtime file contents are immutable-cached by default; `reloadSqlFiles: true` restores development mtime checks. Keep roots aligned in embedded/package layouts.
 
 ## Where to start if you're new
 

@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ScanConfig } from "../config";
 
 export type QueryCallSite = {
@@ -82,6 +82,8 @@ export function findSourceFiles(root: string, scan: ScanConfig = {}): string[] {
 type ScopeState = {
   sqlAliases: Set<string>;
   namespaces: Set<string>;
+  clientFactories: Set<string>;
+  clients: Set<string>;
 };
 
 type CalleeKind = "inline" | "file" | "transaction" | null;
@@ -101,7 +103,7 @@ function classifyCallee(
 
   if (ts.isIdentifier(callee.expression)) {
     const id = callee.expression.text;
-    if (scope.namespaces.has(id)) {
+    if (scope.namespaces.has(id) || scope.clients.has(id)) {
       if (methodName === "sql") return { kind: "inline" };
       return null;
     }
@@ -116,8 +118,11 @@ function classifyCallee(
     const mid = callee.expression;
     if (!ts.isIdentifier(mid.name)) return null;
 
-    // ns.sql.X(...) chains
-    if (ts.isIdentifier(mid.expression) && scope.namespaces.has(mid.expression.text)) {
+    // ns.sql.X(...) and client.sql.X(...) chains
+    if (
+      ts.isIdentifier(mid.expression) &&
+      (scope.namespaces.has(mid.expression.text) || scope.clients.has(mid.expression.text))
+    ) {
       if (mid.name.text !== "sql") return null;
       if (methodName === "one" || methodName === "optional" || methodName === "execute") return { kind: "inline" };
       if (methodName === "file") return { kind: "file" };
@@ -134,12 +139,12 @@ function classifyCallee(
       return null;
     }
 
-    // ns.sql.file.X(...) chains
+    // ns.sql.file.X(...) and client.sql.file.X(...) chains
     if (
       ts.isPropertyAccessExpression(mid.expression) &&
       ts.isIdentifier(mid.expression.expression) &&
       ts.isIdentifier(mid.expression.name) &&
-      scope.namespaces.has(mid.expression.expression.text) &&
+      (scope.namespaces.has(mid.expression.expression.text) || scope.clients.has(mid.expression.expression.text)) &&
       mid.expression.name.text === "sql" &&
       mid.name.text === "file" &&
       (methodName === "one" || methodName === "optional" || methodName === "execute")
@@ -157,10 +162,19 @@ export function scanFile(
   modules: readonly string[] = DEFAULT_SQLX_MODULES,
 ): QueryCallSite[] {
   const text = readFileSync(absPath, "utf8");
-  const source = ts.createSourceFile(absPath, text, ts.ScriptTarget.ESNext, false, ts.ScriptKind.TSX);
+  const source = ts.createSourceFile(absPath, text, ts.ScriptTarget.ESNext, false, scriptKind(absPath));
+  const parseDiagnostics = (source as ts.SourceFile & { parseDiagnostics?: readonly ts.DiagnosticWithLocation[] }).parseDiagnostics ?? [];
+  const parseError = parseDiagnostics.find((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
+  if (parseError) {
+    const start = parseError.start ?? 0;
+    const { line, character } = source.getLineAndCharacterOfPosition(start);
+    const file = relative(root, absPath).replace(/\\/g, "/");
+    throw new ScanError(file, line + 1, character + 1, ts.flattenDiagnosticMessageText(parseError.messageText, "\n"));
+  }
 
   const importedAliases = new Set<string>();
   const importedNamespaces = new Set<string>();
+  const importedClientFactories = new Set<string>();
   for (const stmt of source.statements) {
     if (!ts.isImportDeclaration(stmt)) continue;
     const mod = stmt.moduleSpecifier;
@@ -176,18 +190,19 @@ export function scanFile(
       for (const elem of nb.elements) {
         const orig = (elem.propertyName ?? elem.name).text;
         if (orig === "sql") importedAliases.add(elem.name.text);
+        if (orig === "createSqlClient") importedClientFactories.add(elem.name.text);
       }
     }
   }
 
-  if (importedAliases.size === 0 && importedNamespaces.size === 0) return [];
+  if (importedAliases.size === 0 && importedNamespaces.size === 0 && importedClientFactories.size === 0) return [];
 
   const out: QueryCallSite[] = [];
   const here = (node: ts.Node) => {
     const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
     return { line: line + 1, column: character + 1 };
   };
-  const fileRel = relative(root, absPath);
+  const fileRel = relative(root, absPath).replace(/\\/g, "/");
 
   const recordInline = (first: ts.Node, args: ts.NodeArray<ts.Expression>): boolean => {
     if (!ts.isStringLiteralLike(first)) {
@@ -253,6 +268,8 @@ export function scanFile(
     let changed = false;
     const nextSql = new Set(scope.sqlAliases);
     const nextNs = new Set(scope.namespaces);
+    const nextFactories = new Set(scope.clientFactories);
+    const nextClients = new Set(scope.clients);
     for (const binding of bindings) {
       for (const a of scope.sqlAliases) {
         if (bindingDeclares(binding, a)) {
@@ -266,8 +283,46 @@ export function scanFile(
           changed = true;
         }
       }
+      for (const a of scope.clientFactories) {
+        if (bindingDeclares(binding, a)) {
+          nextFactories.delete(a);
+          changed = true;
+        }
+      }
+      for (const a of scope.clients) {
+        if (bindingDeclares(binding, a)) {
+          nextClients.delete(a);
+          changed = true;
+        }
+      }
     }
-    return changed ? { sqlAliases: nextSql, namespaces: nextNs } : scope;
+    return changed
+      ? { sqlAliases: nextSql, namespaces: nextNs, clientFactories: nextFactories, clients: nextClients }
+      : scope;
+  };
+
+  const isClientFactoryCall = (initializer: ts.Expression | undefined, scope: ScopeState): boolean => {
+    if (!initializer || !ts.isCallExpression(initializer)) return false;
+    const callee = initializer.expression;
+    if (ts.isIdentifier(callee)) return scope.clientFactories.has(callee.text);
+    return ts.isPropertyAccessExpression(callee) &&
+      ts.isIdentifier(callee.expression) &&
+      scope.namespaces.has(callee.expression.text) &&
+      callee.name.text === "createSqlClient";
+  };
+
+  const scopeWithClientDeclarations = (
+    scope: ScopeState,
+    declarations: readonly ts.VariableDeclaration[],
+  ): ScopeState => {
+    const nextClients = new Set(scope.clients);
+    let changed = false;
+    for (const declaration of declarations) {
+      if (!ts.isIdentifier(declaration.name) || !isClientFactoryCall(declaration.initializer, scope)) continue;
+      nextClients.add(declaration.name.text);
+      changed = true;
+    }
+    return changed ? { ...scope, clients: nextClients } : scope;
   };
 
   const visit = (node: ts.Node, scope: ScopeState) => {
@@ -283,7 +338,7 @@ export function scanFile(
             if (param && ts.isIdentifier(param.name)) {
               innerSql.add(param.name.text);
             }
-            visit(fn.body, { sqlAliases: innerSql, namespaces: shadowed.namespaces });
+            visit(fn.body, { ...shadowed, sqlAliases: innerSql });
             return;
           }
         } else if (classified.kind === "file") {
@@ -300,7 +355,11 @@ export function scanFile(
       const stmts = (node as { statements: ts.NodeArray<ts.Statement> }).statements;
       for (const stmt of stmts) {
         if (ts.isVariableStatement(stmt)) {
-          current = scopeWithoutBindingShadows(current, stmt.declarationList.declarations.map((d) => d.name));
+          const declarations = stmt.declarationList.declarations;
+          current = scopeWithoutBindingShadows(current, declarations.map((d) => d.name));
+          visit(stmt, current);
+          current = scopeWithClientDeclarations(current, declarations);
+          continue;
         } else if (ts.isFunctionDeclaration(stmt) && stmt.name) {
           current = scopeWithoutBindingShadows(current, [stmt.name]);
         }
@@ -336,8 +395,22 @@ export function scanFile(
     }
     ts.forEachChild(node, (child) => visit(child, scope));
   };
-  visit(source, { sqlAliases: importedAliases, namespaces: importedNamespaces });
+  visit(source, {
+    sqlAliases: importedAliases,
+    namespaces: importedNamespaces,
+    clientFactories: importedClientFactories,
+    clients: new Set(),
+  });
   return out;
+}
+
+function scriptKind(path: string): ts.ScriptKind {
+  switch (extname(path).toLowerCase()) {
+    case ".tsx": return ts.ScriptKind.TSX;
+    case ".mts":
+    case ".cts":
+    default: return ts.ScriptKind.TS;
+  }
 }
 
 export function scanProject(root: string, scan: ScanConfig = {}): QueryCallSite[] {

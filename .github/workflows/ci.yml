@@ -85,6 +85,38 @@ jobs:
       - name: Verify npm package contents
         run: npm pack --dry-run
 
+      - name: Create pgschema end-to-end database
+        env:
+          ADMIN_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+        run: >-
+          bun -e 'import postgres from "postgres";
+          const sql = postgres(process.env.ADMIN_DATABASE_URL, { max: 1 });
+          await sql.unsafe("DROP DATABASE IF EXISTS sqlx_js_pgschema");
+          await sql.unsafe("CREATE DATABASE sqlx_js_pgschema");
+          await sql.end();'
+
+      - name: Install and verify pinned pgschema
+        run: |
+          bun bin/sqlx-js.ts db install --root tests/fixtures/pgschema
+          bun bin/sqlx-js.ts db check --root tests/fixtures/pgschema
+
+      - name: Plan and apply schema with the real pgschema binary
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_pgschema
+          PLAN_PATH: ${{ runner.temp }}/sqlx-js-pgschema-plan.json
+        run: |
+          bun bin/sqlx-js.ts db plan --root tests/fixtures/pgschema -- --output-json "$PLAN_PATH" --no-color
+          bun bin/sqlx-js.ts db apply --root tests/fixtures/pgschema -- --plan "$PLAN_PATH" --auto-approve
+          bun -e 'import postgres from "postgres"; const sql = postgres(process.env.DATABASE_URL); const rows = await sql.unsafe("SELECT name FROM pgschema_probe"); if (rows.length !== 0) throw new Error("expected empty probe table"); await sql.end();'
+
+      - name: Verify pgschema plan is idempotent
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_pgschema
+          PLAN_PATH: ${{ runner.temp }}/sqlx-js-pgschema-second-plan.json
+        run: |
+          bun bin/sqlx-js.ts db plan --root tests/fixtures/pgschema -- --output-json "$PLAN_PATH" --no-color
+          node -e 'const plan = require(process.env.PLAN_PATH); if (plan.groups?.length) throw new Error("pgschema plan is not idempotent")'
+
   postgres-compatibility:
     runs-on: ubuntu-latest
     strategy:
@@ -128,3 +160,38 @@ jobs:
 
       - name: Run PostgreSQL integration matrix
         run: bun test tests/prepare.integration.test.ts --timeout 120000
+
+  platform-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.0"
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run offline cross-platform suite
+        run: >-
+          bun test
+          tests/scanner.test.ts
+          tests/scanner-edges.test.ts
+          tests/cache.test.ts
+          tests/artifacts.test.ts
+          tests/codegen.test.ts
+          tests/runtime.test.ts
+          --timeout 120000
+
+      - name: Build package
+        run: bun run build

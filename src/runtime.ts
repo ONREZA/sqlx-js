@@ -11,7 +11,8 @@ export type OnQueryEvent = {
   error?: unknown;
 };
 
-export type OnQueryHook = (event: OnQueryEvent) => void;
+export type OnQueryHook = (event: OnQueryEvent) => void | Promise<void>;
+export type OnQueryHookError = (error: unknown, event: OnQueryEvent) => void | Promise<void>;
 
 export type RuntimeQueryResult = unknown[] & {
   count?: number | null;
@@ -24,7 +25,9 @@ export type RuntimeClient = {
   transaction: <R>(fn: (client: RuntimeClient) => Promise<R>) => Promise<R>;
   close: () => Promise<void>;
   onQuery?: OnQueryHook;
+  onQueryHookError?: OnQueryHookError;
   fileRoot?: string;
+  reloadSqlFiles?: boolean;
 };
 
 type AnyFn = (...args: unknown[]) => Promise<unknown[]>;
@@ -303,7 +306,7 @@ async function runRawQuery(client: RuntimeClient, query: string, params: unknown
   const start = performance.now();
   try {
     const result = await client.query(query, encoded);
-    onQuery({
+    notifyQuery(client, {
       query,
       params,
       durationMs: performance.now() - start,
@@ -312,8 +315,25 @@ async function runRawQuery(client: RuntimeClient, query: string, params: unknown
     return result;
   } catch (e) {
     const error = toPgError(e) ?? e;
-    onQuery({ query, params, durationMs: performance.now() - start, error });
+    notifyQuery(client, { query, params, durationMs: performance.now() - start, error });
     throw error;
+  }
+}
+
+function notifyQuery(client: RuntimeClient, event: OnQueryEvent): void {
+  try {
+    const pending = client.onQuery?.(event);
+    if (pending) void pending.catch((error) => notifyQueryHookError(client, error, event));
+  } catch (error) {
+    notifyQueryHookError(client, error, event);
+  }
+}
+
+function notifyQueryHookError(client: RuntimeClient, error: unknown, event: OnQueryEvent): void {
+  try {
+    const pending = client.onQueryHookError?.(error, event);
+    if (pending) void pending.catch(() => {});
+  } catch {
   }
 }
 
@@ -345,7 +365,11 @@ async function runOptional(client: RuntimeClient, query: string, params: unknown
 
 type SqlFileCacheEntry = { mtimeMs: number; size: number; content: string };
 const sqlFileCache = new Map<string, SqlFileCacheEntry>();
-function loadSqlFile(path: string, fileRoot = process.env.SQLX_JS_FILE_ROOT ?? process.cwd()): string {
+function loadSqlFile(
+  path: string,
+  fileRoot = process.env.SQLX_JS_FILE_ROOT ?? process.cwd(),
+  reload = false,
+): string {
   const root = resolve(fileRoot);
   if (isAbsolute(path)) {
     throw new Error(`sqlx-js.sql.file: path must be relative to fileRoot: ${path}`);
@@ -356,8 +380,9 @@ function loadSqlFile(path: string, fileRoot = process.env.SQLX_JS_FILE_ROOT ?? p
     throw new Error(`sqlx-js.sql.file: path escapes fileRoot: ${path}`);
   }
   try {
-    const st = statSync(full);
     const cached = sqlFileCache.get(full);
+    if (cached && !reload) return cached.content;
+    const st = statSync(full);
     if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
       return cached.content;
     }
@@ -513,16 +538,16 @@ function makeBoundCallable(client: RuntimeClient): SqlCallable {
     return runQuery(client, query, params);
   }) as AnyFn;
   const file: AnyFn = (async (path: string, ...params: unknown[]) => {
-    return runQuery(client, loadSqlFile(path, client.fileRoot), params);
+    return runQuery(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles), params);
   }) as AnyFn;
   (file as FileCallable).one = (async (path: string, ...params: unknown[]) => {
-    return runOne(client, loadSqlFile(path, client.fileRoot), params);
+    return runOne(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles), params);
   }) as AnyOneFn;
   (file as FileCallable).optional = (async (path: string, ...params: unknown[]) => {
-    return runOptional(client, loadSqlFile(path, client.fileRoot), params);
+    return runOptional(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles), params);
   }) as AnyOptionalFn;
   (file as FileCallable).execute = (async (path: string, ...params: unknown[]) => {
-    return runExecute(client, loadSqlFile(path, client.fileRoot), params);
+    return runExecute(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles), params);
   }) as AnyExecuteFn;
   (fn as SqlCallable).file = file as FileCallable;
   (fn as SqlCallable).one = (async (query: string, ...params: unknown[]) => {
@@ -574,19 +599,19 @@ export function createSqlRuntime(getClient: () => RuntimeClient): RuntimeApi {
 
   const rootFile: AnyFn = (async (path: string, ...params: unknown[]) => {
     const client = getClient();
-    return runQuery(client, loadSqlFile(path, client.fileRoot), params);
+    return runQuery(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles), params);
   }) as AnyFn;
   (rootFile as FileCallable).one = (async (path: string, ...params: unknown[]) => {
     const client = getClient();
-    return runOne(client, loadSqlFile(path, client.fileRoot), params);
+    return runOne(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles), params);
   }) as AnyOneFn;
   (rootFile as FileCallable).optional = (async (path: string, ...params: unknown[]) => {
     const client = getClient();
-    return runOptional(client, loadSqlFile(path, client.fileRoot), params);
+    return runOptional(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles), params);
   }) as AnyOptionalFn;
   (rootFile as FileCallable).execute = (async (path: string, ...params: unknown[]) => {
     const client = getClient();
-    return runExecute(client, loadSqlFile(path, client.fileRoot), params);
+    return runExecute(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles), params);
   }) as AnyExecuteFn;
   root.file = rootFile as FileCallable;
 

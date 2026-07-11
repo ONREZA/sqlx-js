@@ -43,7 +43,7 @@ const rows = await sql(
 - **Shadow database validation** via `migrate dev` / `migrate verify`: auto-create a disposable shadow DB, apply migrations, validate SQL, and drop it afterwards.
 - **Safe identifier quoting** via `sql.id(...)`, backed by the committed schema snapshot whitelist.
 - **Single runtime adapter**: Postgres.js backs the runtime on Node/Bun-compatible environments — no Bun.SQL-specific adapter to choose.
-- **Watch mode**: debounced re-prepare with a warm `PgClient` + `SchemaCache` on source/SQL changes and scanner/config graph updates.
+- **Incremental watch mode**: debounced re-prepare with a warm `PgClient` + `SchemaCache`; source/SQL edits only rescan affected files and re-describe changed fingerprints, while config/tsconfig/schema changes trigger a full rebuild.
 - **Cache pruning** removes orphaned entries automatically (toggleable with `--no-prune`).
 - **Environment doctor** checks runtime versions, config loading, `.env`, database connectivity/permissions, cache metadata, tsconfig inclusion, and pgschema availability.
 - **Strict inference gate** promotes degraded nullability analysis and generated `unknown` query types to CI errors.
@@ -324,6 +324,25 @@ import { createClient, setClient } from "@onreza/sqlx-js";
 setClient(createClient(process.env.DATABASE_URL));
 ```
 
+For dependency injection, read replicas, tests, or several independent pools in one process, create a scoped runtime instead of replacing the global client:
+
+```ts
+import { createSqlClient } from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env";
+
+const primary = createSqlClient<SqlxJsGeneratedRegistry>(process.env.DATABASE_URL);
+const replica = createSqlClient<SqlxJsGeneratedRegistry>(process.env.REPLICA_DATABASE_URL);
+
+await primary.sql(`INSERT INTO audit_log (message) VALUES ($1)`, "created");
+const rows = await replica.sql(`SELECT id, message FROM audit_log ORDER BY id DESC`);
+
+await Promise.all([primary.close(), replica.close()]);
+```
+
+Each generated `sqlx-js-env.d.ts` exports its own `SqlxJsGeneratedRegistry`. Passing it to `createSqlClient<...>()` keeps a scoped client on that project's query contract even when a monorepo TypeScript program includes declarations for several databases. The global `sql` export remains available for the single-client convenience path.
+
+The scanner recognizes clients assigned directly from an imported `createSqlClient(...)` (including aliased and namespace imports), so `client.sql(...)`, its cardinality helpers, file queries, and transactions participate in `prepare` exactly like the global `sql` surface.
+
 `createClient(url, options)` accepts every Postgres.js option plus sqlx-js runtime options:
 
 ```ts
@@ -333,6 +352,9 @@ setClient(createClient(process.env.DATABASE_URL, {
   statementTimeoutMs: 5000,
   // Base directory for root-relative sql.file(...) calls.
   fileRoot: import.meta.dirname,
+  // Development-only: re-stat sql.file() files on every call. The default
+  // immutable cache avoids synchronous filesystem work in the query hot path.
+  reloadSqlFiles: true,
   // Honored for every unsafe call. Set false for PgBouncer transaction mode
   // unless protocol-level prepared statements are configured there.
   prepare: false,
@@ -341,14 +363,15 @@ setClient(createClient(process.env.DATABASE_URL, {
     if (error) logger.error({ query, error });        // database errors are PgError
     else if (durationMs > 200) logger.warn({ slow: query, durationMs, rowCount });
   },
+  onQueryHookError: (error) => logger.error({ error }, "query observer failed"),
 }));
 ```
 
-The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. The event carries the raw `params`, which may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
+The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. It is a non-blocking observer: synchronous throws and asynchronous rejections preserve the database result/error and are passed to `onQueryHookError` when configured. The event carries the raw `params`, which may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
 
 ### `clearSqlFileCache()`
 
-Drops the in-memory cache used by `sql.file(...)`. The cache invalidates automatically on file mtime change, so this is rarely needed manually.
+Drops the in-memory cache used by `sql.file(...)`. Files are immutable after their first read by default, avoiding a synchronous `stat` call for every query. Call this after a development-time file change or set `reloadSqlFiles: true` on the client to restore mtime-based reloading.
 
 ### Typed errors
 
@@ -390,26 +413,28 @@ sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]
 sqlx-js doctor [--root <dir>] [--dts <path>] [--json]
 sqlx-js db install | check [--root <dir>]
 sqlx-js db plan | apply [--root <dir>] [-- <pgschema args>]
-sqlx-js prepare [--check | --verify | --watch] [--json] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
+sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
 sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | verify [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
 sqlx-js schema dump [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
 sqlx-js schema check [--schema <path>] [--shadow-url <url>]
 sqlx-js --version | --help
 ```
 
-Regular `prepare` describes queries across a small connection pool (default 8, override with `SQLX_JS_PREPARE_CONCURRENCY`) for faster cold runs on large projects. Watch mode keeps one session warm and reuses it between debounced changes.
+Regular `prepare` describes queries across a small connection pool (default 8, override with `SQLX_JS_PREPARE_CONCURRENCY`) for faster cold runs on large projects. Watch mode keeps one session warm, rescans only affected source files, and reuses cached metadata for unchanged fingerprints. Config, tsconfig, and applied shadow-migration changes invalidate the incremental state and perform a full prepare.
 
 | Flag                  | Meaning                                                                              |
 |-----------------------|--------------------------------------------------------------------------------------|
-| `--check`             | Offline: verify every scanned query is present in cache, no database required.       |
+| `--check`             | Read-only offline verification of the active query cache, function catalog, and generated declaration. |
+| `--offline`           | Regenerate `sqlx-js-env.d.ts` from committed cache without a database.                |
 | `--verify`            | Prepare against the live/shadow schema and compare generated artifacts without writing. |
 | `--watch`             | Persistent connection, re-prepare on file change.                                    |
 | `--root <dir>`        | Source/cache/migrations root (default: cwd).                                         |
 | `--dts <path>`        | Root-relative declarations output (default: `<root>/sqlx-js-env.d.ts`).             |
-| `--no-prune`          | Keep orphaned cache entries instead of removing them.                                |
+| `--no-prune`          | Keep orphaned cache entries; they do not invalidate a later `--check`.                |
 | `--migrations <dir>`  | Root-relative migrations directory (default: `<root>/migrations`).                   |
 | `--dry-run`           | For `migrate run` / `migrate revert`: validate without applying to the target DB.   |
 | `--json`              | Machine-readable prepare diagnostics, doctor output, migration inspection and dry-runs. |
+| `--jsonl`             | Versioned streaming events for `prepare --watch`.                                     |
 | `--strict-inference`  | Fail prepare/dev/verify when nullability degrades or a generated query type contains `unknown`. |
 | `--force`             | For `migrate archive restore`: allow overwriting existing migration files.           |
 | `--lock-timeout <ms>` | Advisory-lock acquisition timeout for `migrate run` / `revert` / `dev` / `verify` / `squash`. |
@@ -424,9 +449,9 @@ Regular `prepare` describes queries across a small connection pool (default 8, o
 
 Flags that take a value accept both `--flag value` and `--flag=value` forms.
 
-Prepare and doctor JSON use `formatVersion: 1`. Prepare diagnostics include a stable phase plus root-relative file, 1-based line/column, PostgreSQL code/position/hint when available, and the query text. Degraded inference and generated `unknown` types appear as warnings by default; `--strict-inference` promotes them to errors. This is intended for CI annotations and editor integrations; stdout contains one JSON document and human progress is suppressed.
+Prepare and doctor JSON use `formatVersion: 1`. Prepare diagnostics include a stable phase plus root-relative file, 1-based line/column, PostgreSQL code/position/hint when available, and the query text. Degraded inference and generated `unknown` types appear as warnings by default; `--strict-inference` promotes them to errors. This is intended for CI annotations and editor integrations; stdout contains one JSON document and human progress is suppressed. `prepare --watch --jsonl` emits one `start`, `diagnostic`, `prepared`, `error`, `watching`, or `stopping` event per line so an editor can consume diagnostics without waiting for the watch process to exit. Fatal `error` events include the same structured `diagnostic` object as CLI preflight failures, preserving the prepare phase and source location when available.
 
-`DATABASE_URL` must be set for any command that touches the application database or auto-creates a shadow database. `SHADOW_ADMIN_DATABASE_URL` can point at a maintenance/admin database when the application user cannot `CREATE DATABASE`; `SHADOW_DATABASE_URL` can point at a pre-created disposable shadow database. The internal wire client understands `sslmode`, `sslrootcert`, `sslcert`, `sslkey`, `application_name`, `connect_timeout` (seconds), and `statement_timeout` (milliseconds).
+`DATABASE_URL` must be set for any command that touches the application database or auto-creates a shadow database. `SHADOW_ADMIN_DATABASE_URL` can point at a maintenance/admin database when the application user cannot `CREATE DATABASE`; `SHADOW_DATABASE_URL` can point at a pre-created disposable shadow database. The internal wire client understands `sslmode`, `sslrootcert`, `sslcert`, `sslkey`, `application_name`, `options` (PostgreSQL startup options such as `-c search_path=app,public`), `connect_timeout` (seconds), and `statement_timeout` (milliseconds). Unqualified relations are resolved using the prepare session's real `search_path`; they are not assumed to live in `public`.
 
 ### Development and deployment flows
 
@@ -664,7 +689,7 @@ Commit the generated `sqlx-js-env.d.ts` and the `.sqlx-js/` cache directory to y
 - run: sqlx-js db install
 - run: sqlx-js db plan -- --output-json plan.json
 - run: sqlx-js prepare --verify --strict-inference # live/shadow comparison with complete inference
-- run: sqlx-js prepare --check   # offline cache/version/config consistency
+- run: sqlx-js prepare --check   # read-only offline cache/declaration consistency
 - run: sqlx-js doctor --json     # runtime/config/DB/cache/tsconfig preflight
 - run: sqlx-js schema check      # fails if the committed schema snapshot is stale
 - run: tsc --noEmit               # fails if types are stale
@@ -672,7 +697,7 @@ Commit the generated `sqlx-js-env.d.ts` and the `.sqlx-js/` cache directory to y
 - run: bun run build              # emits publishable JS + declarations under dist/
 ```
 
-The `migrate verify` step needs `DATABASE_URL` credentials that can either create a temporary database or use `--shadow-admin-url` / `--shadow-url`. It does not write `.sqlx-js/` or `sqlx-js-env.d.ts`. For pgschema projects, `sqlx-js db plan` checks the desired `schema.sql` against the target database and leaves application query typing to `prepare`. The `prepare --check` step then runs without a database; your committed offline cache is the source of truth. Add `prepare --verify` when CI has a canonical database/shadow schema and must prove byte-for-byte artifact freshness. `schema check` intentionally uses a live database because it verifies the committed schema contract against PostgreSQL.
+The `migrate verify` step needs `DATABASE_URL` credentials that can either create a temporary database or use `--shadow-admin-url` / `--shadow-url`. It does not write `.sqlx-js/` or `sqlx-js-env.d.ts`. For pgschema projects, `sqlx-js db plan` checks the desired `schema.sql` against the target database and leaves application query typing to `prepare`. `prepare --check` is read-only and fails when either the committed cache or declaration is stale. Use `prepare --offline` when a developer intentionally needs to restore the declaration from a valid committed cache. Add `prepare --verify` when CI has a canonical database/shadow schema and must prove byte-for-byte artifact freshness. `schema check` intentionally uses a live database because it verifies the committed schema contract against PostgreSQL.
 
 The managed pgschema binary is installed under `node_modules/.cache/sqlx-js/pgschema/`, not `.sqlx-js/`, so it is not part of the committed offline cache.
 
@@ -699,7 +724,7 @@ Releases are automated via `release-please`: pushes to `main` accumulate into a 
 - Column names whose **real** name (not an alias) ends with `!` or `?` are not supported — the runtime strips those suffixes assuming an override. Use `AS "alias"` if you have such a column.
 - Result columns must have unique names because Postgres.js returns object rows. Alias join projections such as `users.id AS user_id, posts.id AS post_id`; `prepare` rejects duplicate output names before generating declarations.
 - Migrations run inside `BEGIN/COMMIT`. DDL that disallows transactions (`CREATE INDEX CONCURRENTLY`, `VACUUM`, `REINDEX CONCURRENTLY`, …) will fail; split such operations into separate migrations executed outside the runner.
-- The **internal** wire client (used by `migrate run`, `prepare`, and the runtime `migrate()` helper) reads `sslmode`, `sslrootcert`/`sslcert`/`sslkey`, `application_name`, `connect_timeout`, and `statement_timeout` from `DATABASE_URL`. The default runtime `sql()` path delegates connection handling to Postgres.js; configure TLS, pooling, and timeouts through the `DATABASE_URL` and `createClient(...)` options it understands (`statementTimeoutMs` is a convenience that maps to a per-connection `statement_timeout`).
+- The **internal** wire client (used by `migrate run`, `prepare`, and the runtime `migrate()` helper) reads `sslmode`, `sslrootcert`/`sslcert`/`sslkey`, `application_name`, `options`, `connect_timeout`, and `statement_timeout` from `DATABASE_URL`. The default runtime `sql()` path delegates connection handling to Postgres.js; configure TLS, pooling, and timeouts through the `DATABASE_URL` and `createClient(...)` options it understands (`statementTimeoutMs` is a convenience that maps to a per-connection `statement_timeout`).
 - `connect_timeout` bounds the entire internal-client connect, including the TLS handshake and SCRAM authentication.
 - Runtime `sql.file(path)` resolves against `fileRoot` while prepare resolves against `--root`. They are both root-relative, but applications started outside the project root must set `fileRoot` explicitly.
 
@@ -707,13 +732,17 @@ See [ROADMAP.md](./ROADMAP.md) for what's planned.
 
 ## Upgrading
 
-### Cache and parameter contract change (pre-1.0)
+### Cache, codegen, and parameter contract changes (pre-1.0)
 
 Generated cache now includes `.sqlx-js/cache-manifest.json` with an explicit cache format, generator revision, and hash of `jsonbTypes` / `customTypes`. Cache without this manifest is rejected. Delete `.sqlx-js/` and re-run `sqlx-js prepare` against your database — there is no data loss because the cache is generated.
 
 Generated JSON and PostgreSQL array parameters now require `sql.json(...)` and `sql.array(...)`. This removes the ambiguous runtime guess where a JavaScript array could mean either a PostgreSQL array or a JSON array. Replace raw array JSON params with `sql.json(value)` and PostgreSQL arrays with `sql.array(value)` before regenerating declarations.
 
 CI (`prepare --check`) will also fail loudly until the cache is regenerated; this is intentional so a stale schema can't silently emit incorrect `.d.ts`.
+
+Generator revision 4 changes the declaration layout so it exports `SqlxJsGeneratedRegistry` for scoped clients while continuing to augment the global `KnownQueries` convenience API. Re-run live `sqlx-js prepare` after upgrading. `prepare --check` is now strictly read-only; use `prepare --offline` when deliberate cache-to-declaration regeneration is required.
+
+Runtime observers and SQL-file caching are also stricter production boundaries. An exception from `onQuery` no longer replaces a successful query result; handle it through `onQueryHookError`. `sql.file()` no longer performs an mtime check on every call—use `reloadSqlFiles: true` during development or call `clearSqlFileCache()` explicitly after changing a file.
 
 ## License
 

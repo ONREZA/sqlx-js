@@ -36,6 +36,11 @@ describe("parseDatabaseUrl", () => {
     expect(cfg.applicationName).toBe("migrator");
   });
 
+  test("propagates PostgreSQL startup options", () => {
+    const cfg = parseDatabaseUrl("postgres://u@h/db?options=-c%20search_path%3Dprivate%2Cpublic");
+    expect(cfg.startupOptions).toBe("-c search_path=private,public");
+  });
+
   test("converts connect_timeout seconds → milliseconds", () => {
     const cfg = parseDatabaseUrl("postgres://u@h/db?connect_timeout=5");
     expect(cfg.connectTimeoutMs).toBe(5000);
