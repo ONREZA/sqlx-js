@@ -153,6 +153,7 @@ export function runInit(opts: InitOptions): void {
       "sqlx:check": "sqlx-js prepare --check",
       "sqlx:offline": "sqlx-js prepare --offline",
       "sqlx:verify": "sqlx-js prepare --verify --strict-inference",
+      "sqlx:ci": "sqlx-js ci",
     };
     let changed = false;
     for (const [name, command] of Object.entries(defaults)) {

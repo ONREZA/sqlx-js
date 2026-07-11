@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { PgClient, parseDatabaseUrl, PgError } from "./pg/wire";
 import { applyPending, acquireMigrateLock, releaseMigrateLock, DEFAULT_MIGRATE_LOCK_KEY } from "./migration-core";
+import { bindNamedParameters, rewriteNamedParameters } from "./sql-params";
 
 export type OnQueryEvent = {
   query: string;
@@ -292,6 +293,11 @@ export const _internal = {
 };
 
 async function runRawQuery(client: RuntimeClient, query: string, params: unknown[]): Promise<RuntimeQueryResult> {
+  const observedQuery = query;
+  const observedParams = params;
+  const bound = bindNamedParameters(rewriteNamedParameters(query), params);
+  query = bound.query;
+  params = bound.params;
   const encoded = params.length === 0
     ? params
     : params.map((p) => client.transformParam ? client.transformParam(p) : encodeParam(p));
@@ -307,15 +313,15 @@ async function runRawQuery(client: RuntimeClient, query: string, params: unknown
   try {
     const result = await client.query(query, encoded);
     notifyQuery(client, {
-      query,
-      params,
+      query: observedQuery,
+      params: observedParams,
       durationMs: performance.now() - start,
       rowCount: result.count ?? result.length,
     });
     return result;
   } catch (e) {
     const error = toPgError(e) ?? e;
-    notifyQuery(client, { query, params, durationMs: performance.now() - start, error });
+    notifyQuery(client, { query: observedQuery, params: observedParams, durationMs: performance.now() - start, error });
     throw error;
   }
 }

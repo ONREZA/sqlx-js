@@ -19,7 +19,7 @@ function packageVersion(): string {
 
 const VERSION = packageVersion();
 
-type HelpScope = "root" | "init" | "doctor" | "db" | "prepare" | "migrate" | "schema";
+type HelpScope = "root" | "init" | "doctor" | "ci" | "db" | "prepare" | "migrate" | "schema";
 
 const HELP: Record<HelpScope, string> = {
   root: `sqlx-js — compile-time-checked SQL for TypeScript + Postgres (v${VERSION})
@@ -27,10 +27,11 @@ const HELP: Record<HelpScope, string> = {
 usage:
   sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]
   sqlx-js doctor [--root <dir>] [--dts <path>] [--json]
+  sqlx-js ci [--root <dir>] [--dts <path>] [--schema <path>] [--json] [--shadow-url <url>] [--shadow-admin-url <url>]
   sqlx-js db install | check [--root <dir>]
   sqlx-js db plan | apply [--root <dir>] [-- <pgschema args>]
   sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
-  sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | verify [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
+  sqlx-js migrate dev [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | verify [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
   sqlx-js schema dump [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
   sqlx-js schema check [--schema <path>] [--shadow-url <url>]
   sqlx-js --version
@@ -67,9 +68,10 @@ flags:
 `,
   init: `usage: sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]`,
   doctor: `usage: sqlx-js doctor [--root <dir>] [--dts <path>] [--json]`,
+  ci: `usage: sqlx-js ci [--root <dir>] [--dts <path>] [--schema <path>] [--json] [--shadow-url <url>] [--shadow-admin-url <url>] [--migrations <dir>]`,
   db: `usage: sqlx-js db install | check [--root <dir>] | plan | apply [--root <dir>] [-- <pgschema args>]`,
   prepare: `usage: sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]`,
-  migrate: `usage: sqlx-js migrate dev [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | verify [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]`,
+  migrate: `usage: sqlx-js migrate dev [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | verify [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]`,
   schema: `usage: sqlx-js schema dump [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>] | check [--schema <path>] [--shadow-url <url>]`,
 };
 
@@ -94,7 +96,7 @@ const cliArgv = passthroughIndex >= 0 ? rawArgv.slice(0, passthroughIndex) : raw
 const passthroughArgs = passthroughIndex >= 0 ? rawArgv.slice(passthroughIndex + 1) : [];
 const cmd = cliArgv[0];
 
-const scopes = new Set<HelpScope>(["init", "doctor", "db", "prepare", "migrate", "schema"]);
+const scopes = new Set<HelpScope>(["init", "doctor", "ci", "db", "prepare", "migrate", "schema"]);
 
 if (cmd === "--version" || cmd === "-v") {
   console.log(VERSION);
@@ -114,6 +116,15 @@ const ROOT_OPTIONS: ParseArgsOptionsConfig = {
 function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfig {
   if (command === "init") return { ...ROOT_OPTIONS, "schema-provider": { type: "string" } };
   if (command === "doctor") return { ...ROOT_OPTIONS, dts: { type: "string" }, json: { type: "boolean" } };
+  if (command === "ci") return {
+    ...ROOT_OPTIONS,
+    json: { type: "boolean" },
+    dts: { type: "string" },
+    schema: { type: "string" },
+    migrations: { type: "string" },
+    "shadow-url": { type: "string" },
+    "shadow-admin-url": { type: "string" },
+  };
   if (command === "db") return ROOT_OPTIONS;
   if (command === "prepare") {
     return {
@@ -150,6 +161,7 @@ function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfi
   if (subcommand === "dev") {
     return {
       ...common,
+      dts: { type: "string" },
       "shadow-admin-url": { type: "string" },
       "shadow-url": { type: "string" },
       "lock-timeout": { type: "string" },
@@ -160,6 +172,7 @@ function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfi
   if (subcommand === "verify") {
     return {
       ...common,
+      dts: { type: "string" },
       "shadow-admin-url": { type: "string" },
       "shadow-url": { type: "string" },
       "lock-timeout": { type: "string" },
@@ -222,7 +235,7 @@ function requirePositionals(min: number, max: number, label: string): void {
 }
 
 function validateInvocation(): void {
-  if (cmd === "init" || cmd === "doctor" || cmd === "prepare") {
+  if (cmd === "init" || cmd === "doctor" || cmd === "ci" || cmd === "prepare") {
     requirePositionals(0, 0, cmd);
     return;
   }
@@ -268,17 +281,52 @@ function validateInvocation(): void {
 validateInvocation();
 
 const root = resolve(arg("--root", process.cwd())!);
+function failCiPreflight(message: string): never {
+  if (cmd === "ci" && flag("--json")) {
+    console.log(JSON.stringify({
+      formatVersion: 1,
+      ok: false,
+      results: [{ name: "preflight", ok: false, durationMs: 0, exitCode: 2, stderr: message }],
+    }, null, 2));
+  } else {
+    console.error(message);
+  }
+  process.exit(2);
+}
 if (cmd !== "doctor") {
   try {
     assertSupportedRuntime();
   } catch (e) {
-    console.error((e as Error).message);
+    failCiPreflight((e as Error).message);
+  }
+}
+const needsTypeScript =
+  cmd === "doctor" ||
+  cmd === "ci" ||
+  cmd === "prepare" ||
+  (cmd === "migrate" && (positionals[0] === "dev" || positionals[0] === "verify"));
+if (needsTypeScript) {
+  try {
+    import.meta.resolve("typescript");
+  } catch {
+    const message = "sqlx-js: TypeScript is required for source scanning. Install it with `npm install --save-dev typescript` or `bun add --dev typescript`.";
+    if (cmd === "doctor" && flag("--json")) {
+      console.log(JSON.stringify({
+        formatVersion: 1,
+        ok: false,
+        checks: [{ name: "typescript", status: "error", message }],
+      }, null, 2));
+    } else {
+      if (cmd === "ci") failCiPreflight(message);
+      console.error(message);
+    }
     process.exit(2);
   }
 }
 let envError: string | undefined;
 const needsEnvironment =
   cmd === "doctor" ||
+  cmd === "ci" ||
   cmd === "schema" ||
   (cmd === "db" && (positionals[0] === "plan" || positionals[0] === "apply")) ||
   (cmd === "prepare" && !flag("--check") && !flag("--offline")) ||
@@ -289,8 +337,7 @@ if (needsEnvironment) {
   } catch (e) {
     envError = (e as Error).message;
     if (cmd !== "doctor") {
-      console.error(envError);
-      process.exit(2);
+      failCiPreflight(envError);
     }
   }
 }
@@ -318,6 +365,26 @@ if (cmd === "init") {
 } else if (cmd === "doctor") {
   const { runDoctor } = await import("../src/commands/doctor");
   await runDoctor({ root, databaseUrl, cacheDir, dtsPath, json: flag("--json"), envError });
+} else if (cmd === "ci") {
+  const { runCi } = await import("../src/commands/ci");
+  let config: Awaited<ReturnType<typeof loadConfig>>;
+  try {
+    config = await loadConfig(root);
+  } catch (error) {
+    failCiPreflight((error as Error).message);
+  }
+  runCi({
+    executable: process.execPath,
+    cliPath: fileURLToPath(import.meta.url),
+    root,
+    config,
+    schemaPath,
+    json: flag("--json"),
+    shadowUrl,
+    shadowAdminUrl,
+    migrationsDir: arg("--migrations"),
+    dtsPath: dtsArg ? dtsPath : undefined,
+  });
 } else if (cmd === "db") {
   const { runPgschemaCommand, runPgschemaInstall } = await import("../src/commands/pgschema");
   const sub = positionals[0];

@@ -2,6 +2,7 @@ import ts from "typescript";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ScanConfig } from "../config";
+import { rewriteNamedParameters } from "../sql-params";
 
 export type QueryCallSite = {
   file: string;
@@ -210,6 +211,15 @@ export function scanFile(
       throw new ScanError(fileRel, pos.line, pos.column, "sql() requires a string literal as first argument");
     }
     const pos = here(first);
+    let named: string[];
+    try {
+      named = rewriteNamedParameters(first.text).names;
+    } catch (error) {
+      throw new ScanError(fileRel, pos.line, pos.column, (error as Error).message.replace(/^sqlx-js: /, ""));
+    }
+    if (named.length > 0 && args.length !== 2) {
+      throw new ScanError(fileRel, pos.line, pos.column, "a query with named parameters requires exactly one parameter object");
+    }
     out.push({
       file: fileRel,
       line: pos.line,
@@ -243,6 +253,15 @@ export function scanFile(
     }
     const query = readFileSync(abs, "utf8");
     const pos = here(first);
+    let named: string[];
+    try {
+      named = rewriteNamedParameters(query).names;
+    } catch (error) {
+      throw new ScanError(fileRel, pos.line, pos.column, (error as Error).message.replace(/^sqlx-js: /, ""));
+    }
+    if (named.length > 0 && args.length !== 2) {
+      throw new ScanError(fileRel, pos.line, pos.column, "a SQL file with named parameters requires exactly one parameter object");
+    }
     out.push({
       file: fileRel,
       line: pos.line,

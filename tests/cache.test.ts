@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   assertCacheManifest,
@@ -32,6 +33,10 @@ test("fingerprint still ignores formatting around quoted SQL tokens", () => {
   expect(fingerprint("SELECT  $tag$a  b$tag$")).toBe(fingerprint("SELECT $tag$a  b$tag$"));
 });
 
+test("fingerprint does not treat dollars inside identifiers as quote delimiters", () => {
+  expect(fingerprint("SELECT foo$bar  FROM t")).toBe(fingerprint("SELECT foo$bar FROM t"));
+});
+
 test("fingerprint treats SQL comments as whitespace", () => {
   expect(fingerprint("SELECT 1 -- comment\nFROM t")).toBe(fingerprint("SELECT 1 FROM t"));
   expect(fingerprint("SELECT 1 /* comment */ FROM t")).toBe(fingerprint("SELECT 1 FROM t"));
@@ -39,6 +44,37 @@ test("fingerprint treats SQL comments as whitespace", () => {
 
 test("different queries have different fingerprints", () => {
   expect(fingerprint("SELECT 1")).not.toBe(fingerprint("SELECT 2"));
+});
+
+test("named and positional parameter contracts have different fingerprints", () => {
+  expect(fingerprint("SELECT $id")).not.toBe(fingerprint("SELECT $1"));
+  expect(fingerprint("SELECT $id")).not.toBe(fingerprint("SELECT $user_id"));
+});
+
+test("Cache rejects malformed named parameter metadata", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sqlx-js-cache-named-"));
+  try {
+    writeFileSync(join(dir, "bad.json"), JSON.stringify({
+      query: "SELECT $1",
+      paramOids: [23],
+      paramTsTypes: ["number"],
+      paramNames: ["id", "extra"],
+      columns: [],
+      hasResultSet: true,
+    }));
+    expect(() => new Cache(dir).read("bad")).toThrow(/malformed named parameter metadata/);
+    writeFileSync(join(dir, "bad.json"), JSON.stringify({
+      query: "SELECT $user_id",
+      paramOids: [23],
+      paramTsTypes: ["number"],
+      paramNames: ["id"],
+      columns: [],
+      hasResultSet: true,
+    }));
+    expect(() => new Cache(dir).read("bad")).toThrow(/malformed named parameter metadata/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("Cache round-trips entries to disk", () => {

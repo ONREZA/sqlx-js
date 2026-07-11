@@ -9,6 +9,7 @@ import { PgClient, parseDatabaseUrl } from "../src/pg/wire";
 import { describeAll } from "../src/commands/prepare";
 import { SchemaCache, compositeLiteral } from "../src/pg/schema";
 import { mergeExtensionTypes } from "../src/pg/extensions";
+import { fingerprint } from "../src/cache";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-integration-"));
@@ -199,6 +200,41 @@ if (!haveIntegrationDatabase) {
     expect(dts).toContain("interface KnownQueries");
     expect(dts).toContain("SELECT id, name FROM tmp_users WHERE id = $1");
     expect(queryCacheFiles().length).toBeGreaterThan(0);
+  });
+
+  test("prepare describes named parameters and emits an object contract", () => {
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT id, name FROM tmp_users WHERE id = $id OR name = $name\", { name: \"a\", id: 1 });\n",
+    );
+    const r = prepare();
+    expect(r.code).toBe(0);
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain("WHERE id = $id OR name = $name");
+    expect(dts).toContain('params: { "id": bigint; "name": string }');
+    const cacheFiles = queryCacheFiles();
+    const entries = cacheFiles.map((file) => JSON.parse(readFileSync(join(tmp, ".sqlx-js", file), "utf8")));
+    expect(entries).toContainEqual(expect.objectContaining({
+      query: "SELECT id, name FROM tmp_users WHERE id = $id OR name = $name",
+      paramNames: ["id", "name"],
+    }));
+    for (const [index, entry] of entries.entries()) {
+      expect(cacheFiles[index]).toBe(`${fingerprint(entry.query)}.json`);
+    }
+  });
+
+  test("named and positional forms keep independent generated contracts", () => {
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT id FROM tmp_users WHERE id = $id\", { id: 1 });\n" +
+      "await sql(\"SELECT id FROM tmp_users WHERE id = $1\", 1);\n",
+    );
+    const r = prepare();
+    expect(r.code).toBe(0);
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain('WHERE id = $id": { params: { "id": bigint }');
+    expect(dts).toContain('WHERE id = $1": { params: [bigint]');
+    expect(queryCacheFiles()).toHaveLength(2);
   });
 
   test("prepare includes queries issued through createSqlClient", () => {

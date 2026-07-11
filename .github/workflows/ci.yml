@@ -51,11 +51,8 @@ jobs:
       - name: Migrate example schema
         run: bun bin/sqlx-js.ts migrate run --root example
 
-      - name: Verify committed prepare artifacts
-        run: bun bin/sqlx-js.ts prepare --verify --strict-inference --root example
-
-      - name: Verify offline cache matches sources
-        run: bun bin/sqlx-js.ts prepare --check --strict-inference --root example
+      - name: Run provider-aware SQL verification
+        run: bun bin/sqlx-js.ts ci --root example
 
       - name: Verify production query corpus
         run: bun scripts/check-production-corpus.ts

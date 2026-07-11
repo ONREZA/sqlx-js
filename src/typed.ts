@@ -1,4 +1,6 @@
-type ParamsOf<T> = T extends { params: infer P extends readonly unknown[] } ? P : never[];
+type ParamsOf<T> = T extends { params: infer P }
+  ? P extends readonly unknown[] ? P : [P]
+  : never[];
 type RowOf<T> = T extends { row: infer R } ? R : never;
 type ExecuteResult = import("./runtime").ExecuteResult;
 type JsonInputValue = import("./runtime").JsonInputValue;

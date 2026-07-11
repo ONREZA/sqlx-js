@@ -33,6 +33,16 @@ test("finds sql() calls when sql is imported from sqlx-js", () => {
   expect(sites.find((s) => s.query === "SELECT 1")!.paramCount).toBe(1);
 });
 
+test("accepts one object argument for named parameters", () => {
+  setup({ "a.ts": `import { sql } from "@onreza/sqlx-js"; sql("SELECT $id", { id: 1 });` });
+  expect(scanProject(tmp)[0]).toMatchObject({ query: "SELECT $id", paramCount: 1 });
+});
+
+test("rejects named parameters without one object argument", () => {
+  setup({ "a.ts": `import { sql } from "@onreza/sqlx-js"; sql("SELECT $id", 1, 2);` });
+  expect(() => scanProject(tmp)).toThrow(/exactly one parameter object/);
+});
+
 test("respects alias import", () => {
   setup({
     "a.ts": `
@@ -117,6 +127,18 @@ test("sql.file() resolves paths relative to the project root", () => {
   expect(s.query).toContain("SELECT id, name FROM users");
   expect(s.sqlFilePath).toBe("queries/get_user.sql");
   expect(s.paramCount).toBe(1);
+});
+
+test("sql.file() accepts one object for named parameters", () => {
+  setup({
+    "src/a.ts": 'import { sql } from "@onreza/sqlx-js"; sql.file("queries/user.sql", { id: 1 });',
+    "queries/user.sql": "SELECT id FROM users WHERE id = $id\n",
+  });
+  expect(scanProject(tmp)[0]).toMatchObject({
+    kind: "file",
+    query: "SELECT id FROM users WHERE id = $id\n",
+    paramCount: 1,
+  });
 });
 
 test("sql.file() missing path throws with file:line:column", () => {

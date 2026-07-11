@@ -26,7 +26,7 @@ try {
   const filename = pack[0]?.filename;
   if (typeof filename !== "string") throw new Error("npm pack did not return a package filename");
   writeFileSync(join(temp, "package.json"), JSON.stringify({ type: "module", private: true }));
-  run("npm", ["install", join(temp, filename), "--ignore-scripts", "--omit=peer", "--no-package-lock", "--no-audit", "--no-fund"], temp);
+  run("npm", ["install", join(temp, filename), "--ignore-scripts", "--no-package-lock", "--no-audit", "--no-fund"], temp);
   if (existsSync(join(temp, "node_modules/typescript"))) {
     throw new Error("packed runtime unexpectedly installed the omitted TypeScript peer");
   }
@@ -65,6 +65,14 @@ try {
   const cliPath = join(packageRoot, packageJson.bin["sqlx-js"]);
   const cliVersion = run("node", [cliPath, "--version"], temp).trim();
   if (cliVersion !== packageJson.version) throw new Error(`packed CLI version ${cliVersion} does not match ${packageJson.version}`);
+  const missingTypeScript = spawnSync("node", [cliPath, "prepare", "--check", "--root", temp], {
+    cwd: temp,
+    encoding: "utf8",
+    env: process.env,
+  });
+  if (missingTypeScript.status !== 2 || !missingTypeScript.stderr.includes("TypeScript is required for source scanning")) {
+    throw new Error("packed prepare does not report the missing optional TypeScript peer");
+  }
   const migrationCheck = JSON.parse(run("node", [cliPath, "migrate", "check", "--root", temp, "--json"], temp));
   if (migrationCheck.ok !== true) throw new Error("packed offline migration check failed without the TypeScript peer");
   const diagnosticsHelp = run("node", [join(packageRoot, packageJson.bin["sqlx-js-diagnostics"]), "--help"], temp);

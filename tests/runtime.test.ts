@@ -84,6 +84,50 @@ describe("encodeParam", () => {
   });
 });
 
+test("runtime rewrites and binds named parameters", async () => {
+  let received: { query: string; params: unknown[] } | undefined;
+  const client: RuntimeClient = {
+    query: async (query, params) => {
+      received = { query, params };
+      return [];
+    },
+    transaction: async (fn) => fn(client),
+    close: async () => {},
+  };
+  const runtime = createSqlRuntime(() => client);
+  await runtime.sql("SELECT $email, $id, $email", { id: 7, email: "a@b" });
+  expect(received).toEqual({ query: "SELECT $1, $2, $1", params: ["a@b", 7] });
+});
+
+test("named parameters preserve the source query and object for observers", async () => {
+  let event: OnQueryEvent | undefined;
+  const client: RuntimeClient = {
+    query: async () => [],
+    transaction: async (fn) => fn(client),
+    close: async () => {},
+    onQuery: (value) => { event = value; },
+  };
+  const runtime = createSqlRuntime(() => client);
+  const params = { id: 7 };
+  await runtime.sql("SELECT $id", params);
+  expect(event).toMatchObject({ query: "SELECT $id", params: [params] });
+});
+
+test("named parameters preserve explicit JSON and array encoding", async () => {
+  let received: unknown[] | undefined;
+  const client: RuntimeClient = {
+    query: async (_query, params) => { received = params; return []; },
+    transaction: async (fn) => fn(client),
+    close: async () => {},
+  };
+  const runtime = createSqlRuntime(() => client);
+  await runtime.sql("SELECT $payload, $values", {
+    payload: json({ ok: true }),
+    values: array([1, 2]),
+  });
+  expect(received).toEqual(['{"ok":true}', "{1,2}"]);
+});
+
 describe("isPrimitiveArrayElement", () => {
   test("primitives + null/undefined are primitive", () => {
     expect(_internal.isPrimitiveArrayElement(1)).toBe(true);
