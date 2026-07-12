@@ -22,6 +22,7 @@ type Scope = {
   aliases: Map<string, AliasInfo>;
   aliasOidByName: Map<string, number>;
   tableRefsByOid: Map<number, AliasInfo[]>;
+  unqualifiedStarAlias: string | undefined;
   hasStar: boolean;
   schema: SchemaCache;
   forcedNonNull: NonNullSet;
@@ -247,6 +248,7 @@ async function buildScope(
     aliases: new Map(),
     aliasOidByName: new Map(),
     tableRefsByOid: new Map(),
+    unqualifiedStarAlias: singleStarSourceAlias(select.fromClause),
     hasStar: false,
     schema,
     forcedNonNull: narrowFromWhere(select.whereClause),
@@ -314,20 +316,11 @@ async function loadRangeSubselects(node: any, joinNullable: boolean, scope: Scop
   const explicitNames: string[] = (range.alias?.colnames ?? [])
     .map((name: any) => name?.String?.sval)
     .filter((name: any): name is string => typeof name === "string");
-  const columns = new Map<string, AnalyzedColumn>();
-  for (let index = 0; index < targets.length; index++) {
-    const target = targets[index];
-    if (containsStar(target?.ResTarget?.val)) continue;
-    const name = explicitNames[index]
-      ?? target?.ResTarget?.name
-      ?? colNameOfColumnRef(target?.ResTarget?.val)
-      ?? `?column?${index}`;
-    columns.set(name, {
-      nullable: analysis.perColumnNullable[index] ?? true,
-      sources: analysis.perColumnSources[index] ?? null,
-      arrayElementNullability: analysis.perColumnArrayElementNullability[index] ?? "unknown",
-    });
-  }
+  const hasStar = targets.some((target) => containsStar(target?.ResTarget?.val));
+  const innerScope = hasStar
+    ? await buildScope(select, scope.schema, scope.cteColumnInfo)
+    : undefined;
+  const columns = await analyzedOutputColumns(targets, analysis, innerScope, explicitNames);
   scope.aliases.set(aliasName, { kind: "subquery", joinNullable, columns });
 }
 
@@ -354,7 +347,6 @@ async function analyzeCteColumns(
   schema: SchemaCache,
   inheritedCtes: CteColumnInfo = new Map(),
 ): Promise<Map<string, AnalyzedColumn>> {
-  const result = new Map<string, AnalyzedColumn>();
   const explicitColNames: string[] | undefined = Array.isArray(cte.aliascolnames)
     ? cte.aliascolnames.map((n: any) => n?.String?.sval).filter((s: any) => typeof s === "string")
     : undefined;
@@ -363,7 +355,7 @@ async function analyzeCteColumns(
     ?? cte.ctequery?.InsertStmt
     ?? cte.ctequery?.UpdateStmt
     ?? cte.ctequery?.DeleteStmt;
-  if (!inner) return result;
+  if (!inner) return new Map();
 
   let targetList: any[] | undefined;
   let dmlKind: "insert" | "update" | "delete" | undefined;
@@ -375,31 +367,107 @@ async function analyzeCteColumns(
     else if (cte.ctequery?.UpdateStmt) dmlKind = "update";
     else if (cte.ctequery?.DeleteStmt) dmlKind = "delete";
   }
-  if (!Array.isArray(targetList) || targetList.length === 0) return result;
+  if (!Array.isArray(targetList) || targetList.length === 0) return new Map();
 
   const isSelect = !!cte.ctequery?.SelectStmt;
+  const hasStar = targetList.some((target) => containsStar(target?.ResTarget?.val));
   const analysis = isSelect
     ? await analyzeSelect(inner, syntheticRowDescription(targetList), schema, inheritedCtes)
     : undefined;
-  const scope = analysis
+  const scope = analysis && !hasStar
     ? undefined
     : isSelect
       ? await buildScope(inner, schema, inheritedCtes)
       : await buildScope(dmlAsSelect(inner, dmlKind!, targetList), schema, inheritedCtes);
+  return await analyzedOutputColumns(targetList, analysis, scope, explicitColNames);
+}
 
-  for (let i = 0; i < targetList.length; i++) {
-    const t = targetList[i];
-    const explicit = explicitColNames?.[i];
-    const colName = explicit ?? t?.ResTarget?.name ?? colNameOfColumnRef(t?.ResTarget?.val) ?? `?column?${i}`;
-    const isStar = containsStar(t?.ResTarget?.val);
-    if (isStar) continue;
-    const nullable = analysis?.perColumnNullable[i] ?? computeTargetNullable(t, scope!);
-    const sources = analysis ? analysis.perColumnSources[i] ?? null : columnSourcesOfTarget(t, scope!);
-    const arrayElementNullability = analysis?.perColumnArrayElementNullability[i]
-      ?? await expressionArrayElementNullability(t?.ResTarget?.val, scope!);
-    result.set(colName, { nullable, sources, arrayElementNullability });
+async function analyzedOutputColumns(
+  targets: any[],
+  analysis: AnalysisResult | undefined,
+  scope: Scope | undefined,
+  explicitNames?: string[],
+): Promise<Map<string, AnalyzedColumn>> {
+  const columns = new Map<string, AnalyzedColumn>();
+  let outputIndex = 0;
+  for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
+    const target = targets[targetIndex];
+    if (containsStar(target?.ResTarget?.val)) {
+      const expanded = scope ? expandStarColumns(target.ResTarget.val, scope) : undefined;
+      if (!expanded) {
+        if (explicitNames?.length) return columns;
+        continue;
+      }
+      for (const [name, column] of expanded) {
+        columns.set(explicitNames?.[outputIndex] ?? name, column);
+        outputIndex++;
+      }
+      continue;
+    }
+    const name = explicitNames?.[outputIndex]
+      ?? target?.ResTarget?.name
+      ?? colNameOfColumnRef(target?.ResTarget?.val)
+      ?? `?column?${targetIndex}`;
+    const nullable = scope
+      ? computeTargetNullable(target, scope)
+      : analysis?.perColumnNullable[targetIndex] ?? true;
+    const sources = scope
+      ? columnSourcesOfTarget(target, scope)
+      : analysis?.perColumnSources[targetIndex] ?? null;
+    const arrayElementNullability = scope
+      ? await expressionArrayElementNullability(target?.ResTarget?.val, scope)
+      : analysis?.perColumnArrayElementNullability[targetIndex] ?? "unknown";
+    columns.set(name, { nullable, sources, arrayElementNullability });
+    outputIndex++;
   }
-  return result;
+  return columns;
+}
+
+function expandStarColumns(val: any, scope: Scope): [string, AnalyzedColumn][] | undefined {
+  const fields = val?.ColumnRef?.fields;
+  if (!Array.isArray(fields) || !fields.some((field: any) => field.A_Star !== undefined)) return undefined;
+  const qualifiedAlias = columnRefAlias(fields, scope);
+  const aliasNames = qualifiedAlias
+    ? [qualifiedAlias]
+    : fields.length === 1 && scope.unqualifiedStarAlias
+      ? [scope.unqualifiedStarAlias]
+      : undefined;
+  if (!aliasNames) return undefined;
+
+  const expanded: [string, AnalyzedColumn][] = [];
+  for (const aliasName of aliasNames) {
+    const alias = scope.aliases.get(aliasName);
+    if (!alias) return undefined;
+    if (alias.kind === "cte" || alias.kind === "subquery") {
+      for (const [name, column] of alias.columns) {
+        expanded.push([name, {
+          ...column,
+          nullable: column.nullable || alias.joinNullable,
+        }]);
+      }
+      continue;
+    }
+    if (alias.kind !== "table") return undefined;
+    const oid = scope.aliasOidByName.get(aliasName);
+    const table = oid === undefined ? undefined : scope.schema.tableNameByOid(oid);
+    const columns = oid === undefined ? undefined : scope.schema.columnsOf(oid);
+    if (!table || !columns) return undefined;
+    for (const [name, column] of [...columns].sort((left, right) => left[1].attnum - right[1].attnum)) {
+      expanded.push([name, {
+        nullable: !column.notNull || alias.joinNullable,
+        sources: [{ schema: table.schema, table: table.name, column: name }],
+        arrayElementNullability: scope.schema.arrayElement?.(column.typeOid)?.nullability ?? "unknown",
+      }]);
+    }
+  }
+  return expanded;
+}
+
+function singleStarSourceAlias(fromClause: any): string | undefined {
+  if (!Array.isArray(fromClause) || fromClause.length !== 1) return undefined;
+  const source = fromClause[0];
+  if (source?.RangeVar) return source.RangeVar.alias?.aliasname ?? source.RangeVar.relname;
+  return source?.RangeSubselect?.alias?.aliasname;
 }
 
 function outputTargetList(select: any): any[] | undefined {

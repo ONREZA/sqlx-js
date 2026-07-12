@@ -3,9 +3,28 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { close, createSqlClient, setClient, sql, unsafe, type PostgresClient } from "../src/index";
+import { normalizeRuntimeDatabaseUrl } from "../src/postgres-runtime";
 
 afterEach(async () => {
   await close();
+});
+
+test("Prisma schema parameters remain compatible with the Postgres.js runtime", () => {
+  expect(normalizeRuntimeDatabaseUrl(
+    "postgresql://app:secret@db.example.com/app?schema=public",
+  )).toBe(
+    "postgresql://app:secret@db.example.com/app",
+  );
+  expect(normalizeRuntimeDatabaseUrl(
+    "postgresql://app:secret@db.example.com/app?schema=tenant&sslmode=require&application_name=api",
+  )).toBe(
+    "postgresql://app:secret@db.example.com/app?sslmode=require&application_name=api",
+  );
+  expect(normalizeRuntimeDatabaseUrl(
+    "postgres://app:secret@db.example.com/app?statement_timeout=5000",
+  )).toBe(
+    "postgres://app:secret@db.example.com/app?statement_timeout=5000",
+  );
 });
 
 test("setClient respects prepare false and preserves result metadata", async () => {

@@ -427,9 +427,11 @@ test("query definitions, executor helpers, and structural JSON compile together"
   mkdirSync(root, { recursive: true });
   const query = "SELECT id, email FROM users WHERE id = $id";
   const jsonQuery = "SELECT $payload::jsonb AS payload";
+  const jsonArrayQuery = "SELECT $items::jsonb[] AS items";
   const positionalQuery = "SELECT id, email FROM users WHERE id = $1 AND active IS NOT DISTINCT FROM $2";
   const zeroParamsQuery = "SELECT COUNT(*)::int4 AS count FROM users";
   const executeQuery = "UPDATE users SET active = $active WHERE id = $id";
+  const conditionalQuery = "UPDATE users SET email = CASE WHEN NOT $setEmail THEN email WHEN $clearEmail THEN NULL ELSE $email END WHERE id = $id";
   emitDts(join(root, "generated.d.ts"), [
     {
       query,
@@ -449,6 +451,14 @@ test("query definitions, executor helpers, and structural JSON compile together"
       paramNames: ["payload"],
       hasResultSet: true,
       columns: [{ name: "payload", typeOid: 3802, tsType: 'import("@onreza/sqlx-js").JsonValue', nullable: false }],
+    },
+    {
+      query: jsonArrayQuery,
+      paramOids: [3807],
+      paramTsTypes: ['import("@onreza/sqlx-js").PgArrayParameter<import("@onreza/sqlx-js").JsonParameter<unknown>, boolean>'],
+      paramNames: ["items"],
+      hasResultSet: true,
+      columns: [{ name: "items", typeOid: 3807, tsType: 'import("@onreza/sqlx-js").JsonValue[]', nullable: false }],
     },
     {
       query: positionalQuery,
@@ -477,6 +487,15 @@ test("query definitions, executor helpers, and structural JSON compile together"
       columns: [],
     },
     {
+      query: conditionalQuery,
+      paramOids: [16, 16, 25, 2950],
+      paramTsTypes: ["boolean", "boolean", "string", "string"],
+      paramNullable: [false, false, true, false],
+      paramNames: ["setEmail", "clearEmail", "email", "id"],
+      hasResultSet: false,
+      columns: [],
+    },
+    {
       query: "SELECT id, email FROM users WHERE id = $1",
       paramOids: [2950],
       paramTsTypes: ["string"],
@@ -500,6 +519,7 @@ import {
   type QueryRegistry,
   type QueryResult,
   type QueryRow,
+  type QueryWireParams,
   type PgArrayParameter,
   type SqlClient,
   type SqlExecutor,
@@ -652,6 +672,78 @@ const encoded = json(payload);
 const preserved: Payload = encoded.value;
 void executor(${JSON.stringify(jsonQuery)}, { payload: encoded });
 void preserved;
+
+const mappedPayloadQuery = defineQuery.one("payload.select", ${JSON.stringify(jsonQuery)}).mapParams(
+  (input: Payload, { json }) => ({ payload: json(input) }),
+);
+type MappedPayloadParams = QueryParams<typeof mappedPayloadQuery, SqlxJsGeneratedRegistry>;
+type MappedPayloadWireParams = QueryWireParams<typeof mappedPayloadQuery, SqlxJsGeneratedRegistry>;
+const mappedPayload: MappedPayloadParams = payload;
+const mappedPayloadWire: MappedPayloadWireParams = { payload: encoded };
+export function runMappedPayload(
+  executor: SqlExecutor<SqlxJsGeneratedRegistry>,
+  input: MappedPayloadParams,
+) {
+  return mappedPayloadQuery.run(executor, input);
+}
+void mappedPayload;
+void mappedPayloadWire;
+
+type MappedPayloadEntry = SqlxJsGeneratedRegistry["queries"][typeof mappedPayloadQuery.query];
+type CompatibleMappedRegistry = QueryRegistry & {
+  queries: Record<typeof mappedPayloadQuery.query, MappedPayloadEntry>;
+};
+export function runMappedRegistryGeneric<Registry extends CompatibleMappedRegistry>(
+  executor: SqlExecutor<Registry>,
+  input: QueryParams<typeof mappedPayloadQuery, Registry>,
+) {
+  return mappedPayloadQuery.run(executor, input);
+}
+
+const mappedJsonArrayQuery = defineQuery.one(
+  "payload.selectArray",
+  ${JSON.stringify(jsonArrayQuery)},
+).mapParams((input: readonly Payload[], { array, json }) => ({
+  items: array(input.map((item) => json(item))),
+}));
+export function runMappedJsonArray(
+  executor: SqlExecutor<SqlxJsGeneratedRegistry>,
+  input: QueryParams<typeof mappedJsonArrayQuery, SqlxJsGeneratedRegistry>,
+) {
+  return mappedJsonArrayQuery.run(executor, input);
+}
+
+const mappedPositionalQuery = positional.mapParams(
+  (input: { id: string; active?: boolean }) => [input.id, input.active ?? null] as const,
+);
+type MappedPositionalParams = QueryParams<typeof mappedPositionalQuery, SqlxJsGeneratedRegistry>;
+export function runMappedPositional(
+  executor: SqlExecutor<SqlxJsGeneratedRegistry>,
+  input: MappedPositionalParams,
+) {
+  return mappedPositionalQuery.run(executor, input);
+}
+
+type EmailChange =
+  | { kind: "preserve" }
+  | { kind: "clear" }
+  | { kind: "set"; value: string };
+const mappedConditionalQuery = defineQuery.execute(
+  "users.updateEmail",
+  ${JSON.stringify(conditionalQuery)},
+).mapParams((input: { id: string; email: EmailChange }) => ({
+  setEmail: input.email.kind !== "preserve",
+  clearEmail: input.email.kind === "clear",
+  email: input.email.kind === "set" ? input.email.value : null,
+  id: input.id,
+}));
+type MappedConditionalParams = QueryParams<typeof mappedConditionalQuery, SqlxJsGeneratedRegistry>;
+export function runMappedConditional(
+  executor: SqlExecutor<SqlxJsGeneratedRegistry>,
+  input: MappedConditionalParams,
+) {
+  return mappedConditionalQuery.run(executor, input);
+}
 declare const batch: readonly import("@onreza/sqlx-js").JsonInputObject[];
 json(batch);
 interface TreeNode {

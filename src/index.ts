@@ -8,6 +8,7 @@ import type {
   QueryParamsFor,
   QueryResultFor,
   QueryRowFor,
+  QueryWireParamsFor,
 } from "./query";
 
 export interface KnownQueries {}
@@ -88,11 +89,13 @@ export type SqlExecutor<Registry extends QueryRegistry = DefaultQueryRegistry> =
   TypedSqlForRegistry<Registry>;
 export type QueryParams<Definition, Registry extends QueryRegistry = DefaultQueryRegistry> =
   QueryParamsFor<Definition, Registry>;
+export type QueryWireParams<Definition, Registry extends QueryRegistry = DefaultQueryRegistry> =
+  QueryWireParamsFor<Definition, Registry>;
 export type QueryRow<Definition, Registry extends QueryRegistry = DefaultQueryRegistry> =
   QueryRowFor<Definition, Registry>;
 export type QueryResult<Definition, Registry extends QueryRegistry = DefaultQueryRegistry> =
   QueryResultFor<Definition, Registry>;
-export type { QueryDefinition, QueryExecutionMode } from "./query";
+export type { MappedQueryDefinition, QueryDefinition, QueryExecutionMode, QueryParameterHelpers } from "./query";
 export { defineQuery } from "./query";
 export { queryId } from "./query-id";
 
