@@ -214,8 +214,14 @@ test("cache manifest binds generated artifacts to type-affecting config", () => 
   rmSync(dir, { recursive: true, force: true });
   writeCacheManifest(dir, "config-a");
   expect(readCacheManifest(dir)?.configHash).toBe("config-a");
-  expect(assertCacheManifest(dir, "config-a").generatorRevision).toBeGreaterThan(0);
+  const manifest = assertCacheManifest(dir, "config-a");
+  expect(manifest.generatorRevision).toBeGreaterThan(0);
   expect(() => assertCacheManifest(dir, "config-b")).toThrow(/different jsonbTypes\/customTypes config/);
+  writeFileSync(join(dir, "cache-manifest.json"), JSON.stringify({
+    ...manifest,
+    generatorRevision: manifest.generatorRevision - 1,
+  }));
+  expect(() => readCacheManifest(dir)).toThrow(/cache manifest is stale.*Run `sqlx-js prepare`/);
   rmSync(dir, { recursive: true, force: true });
 });
 

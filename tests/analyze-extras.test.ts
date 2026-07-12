@@ -206,6 +206,53 @@ describe("analyze: set operations", () => {
   });
 });
 
+describe("analyze: non-null expressions", () => {
+  test("treats array constructors and EXISTS sublinks as non-null", async () => {
+    const schema = fakeSchema([]);
+    const sql = `SELECT
+      ARRAY[1, 2] AS literal_array,
+      ARRAY(SELECT NULL::int WHERE FALSE) AS subquery_array,
+      COALESCE(ARRAY(SELECT NULL::int WHERE FALSE), ARRAY[]::int[]) AS fallback_array,
+      EXISTS(SELECT 1) AS exists_value`;
+    const result = await analyzeQuery(sql, rowDesc([
+      { name: "literal_array" },
+      { name: "subquery_array" },
+      { name: "fallback_array" },
+      { name: "exists_value" },
+    ]), schema);
+    expect(result.perColumnNullable).toEqual([false, false, false, false]);
+    expect(result.degraded).toBeUndefined();
+  });
+
+  test("propagates array nullability through CTEs, VALUES, and set operations", async () => {
+    const schema = fakeSchema([]);
+    const cte = await analyzeQuery(
+      "WITH source AS (SELECT ARRAY[1] AS values) SELECT values FROM source",
+      rowDesc([{ name: "values" }]),
+      schema,
+    );
+    const values = await analyzeQuery(
+      "VALUES (ARRAY[1]), (ARRAY[]::int[])",
+      rowDesc([{ name: "column1" }]),
+      schema,
+    );
+    const nonNullableUnion = await analyzeQuery(
+      "SELECT ARRAY[1] AS values UNION ALL SELECT ARRAY(SELECT 2) AS values",
+      rowDesc([{ name: "values" }]),
+      schema,
+    );
+    const nullableUnion = await analyzeQuery(
+      "SELECT ARRAY[1] AS values UNION ALL SELECT NULL::int[] AS values",
+      rowDesc([{ name: "values" }]),
+      schema,
+    );
+    expect(cte.perColumnNullable).toEqual([false]);
+    expect(values.perColumnNullable).toEqual([false]);
+    expect(nonNullableUnion.perColumnNullable).toEqual([false]);
+    expect(nullableUnion.perColumnNullable).toEqual([true]);
+  });
+});
+
 describe("analyze: CTE explicit column list and unnamed expressions", () => {
   test("WITH foo(a, b) AS (...) uses the declared alias names", async () => {
     const schema = fakeSchema([{

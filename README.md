@@ -761,7 +761,7 @@ A result column is non-null if **all** of the following hold:
 
 1. The source column has a `NOT NULL` constraint (looked up via `pg_attribute`).
 2. The source table isn't on the nullable side of an outer join.
-3. Any wrapping expression is null-preserving — `COALESCE` with a non-null fallback, `CASE` with `ELSE`, `COUNT(*)`, `length(non_null)`, etc.
+3. Any wrapping expression is null-preserving — `COALESCE` with a non-null fallback, `CASE` with `ELSE`, `COUNT(*)`, `EXISTS`, PostgreSQL array constructors, `length(non_null)`, etc.
 
 A column that doesn't satisfy the above is `T | null`. You can override:
 
@@ -848,6 +848,8 @@ Generator revision 4 changes the declaration layout so it exports `SqlxJsGenerat
 Generator revision 6 adds `columnTypes` and function-catalog scope to the generated contract. Extension-owned functions are no longer emitted by default. Re-run live `sqlx-js prepare`; set `functionCatalog.includeExtensionOwned: true` only if application code intentionally indexes those signatures.
 
 Generator revision 7 adds strict nullability inference and compatible application-owned type provenance for `UNION`, `INTERSECT`, and `EXCEPT`, including inherited/sequential CTE scopes and `VALUES` branches. Re-run live `sqlx-js prepare` after upgrading so committed cache entries use the new branch-combined row contracts.
+
+Generator revision 8 treats `ARRAY[...]`, `ARRAY(SELECT ...)`, and `EXISTS(...)` expressions as non-null, including typed empty-array fallbacks inside `COALESCE`. Re-run live `sqlx-js prepare` after upgrading so generated row contracts remove obsolete `| null` branches.
 
 Runtime observers and SQL-file caching are also stricter production boundaries. An exception from `onQuery` no longer replaces a successful query result; handle it through `onQueryHookError`. `sql.file()` no longer performs an mtime check on every call—use `reloadSqlFiles: true` during development or call `clearSqlFileCache()` explicitly after changing a file.
 

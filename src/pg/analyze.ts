@@ -636,6 +636,8 @@ function expressionNullable(val: any, scope: Scope): boolean {
     return false;
   }
 
+  if (val.A_ArrayExpr) return false;
+
   if (val.ColumnRef) {
     const fields = val.ColumnRef.fields;
     if (!Array.isArray(fields)) return true;
@@ -688,7 +690,10 @@ function expressionNullable(val: any, scope: Scope): boolean {
     return expressionNullable(e.lexpr, scope) || expressionNullable(e.rexpr, scope);
   }
 
-  if (val.SubLink) return true;
+  if (val.SubLink) {
+    const type = val.SubLink.subLinkType;
+    return type !== "ARRAY_SUBLINK" && type !== "EXISTS_SUBLINK";
+  }
 
   if (val.TypeCast) {
     return expressionNullable(val.TypeCast.arg, scope);

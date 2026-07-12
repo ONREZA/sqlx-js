@@ -1210,6 +1210,19 @@ if (!haveIntegrationDatabase) {
     expect(dts).toContain('row: { "column1": number }');
   });
 
+  test("strict inference keeps array constructors non-null in data-modifying CTEs", () => {
+    const root = isolatedRoot("array-constructor-nullability");
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"WITH deleted AS MATERIALIZED (DELETE FROM tmp_users WHERE id < 0 RETURNING id) SELECT COALESCE(ARRAY(SELECT id FROM deleted), ARRAY[]::bigint[]) AS ids, EXISTS(SELECT 1 FROM deleted) AS \\\"hasDeleted\\\"\");\n",
+    );
+    const result = prepareRoot(root, ["--strict-inference"]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stderr).not.toContain("nullability inference degraded");
+    const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain('row: { "ids": (bigint)[]; "hasDeleted": boolean }');
+  });
+
   test("PostgreSQL array params emit the explicit PgArrayParameter wrapper", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
