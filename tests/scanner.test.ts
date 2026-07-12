@@ -212,6 +212,26 @@ test("defineQuery definitions are scanned with names and cardinality", () => {
   expect(sites[2]).toMatchObject({ cardinality: "execute" });
 });
 
+test("mapped query definitions keep their SQL inventory metadata", () => {
+  setup({
+    "queries.ts": `
+      import { defineQuery } from "@onreza/sqlx-js";
+      export const insert = defineQuery.execute(
+        "events.insertBatch",
+        "INSERT INTO events (payload) VALUES ($payload::jsonb)",
+      ).mapParams((payload: { id: string }, { json }) => ({ payload: json(payload) }));
+    `,
+  });
+  expect(scanProject(tmp)).toEqual([
+    expect.objectContaining({
+      cardinality: "execute",
+      queryName: "events.insertBatch",
+      query: "INSERT INTO events (payload) VALUES ($payload::jsonb)",
+      paramCount: 1,
+    }),
+  ]);
+});
+
 test("namespace defineQuery and configured query modules are scanned", () => {
   setup({
     "queries.ts": `

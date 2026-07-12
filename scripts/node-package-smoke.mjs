@@ -30,13 +30,63 @@ try {
   if (existsSync(join(temp, "node_modules/typescript"))) {
     throw new Error("packed runtime unexpectedly installed the omitted TypeScript peer");
   }
+  writeFileSync(join(temp, "types.ts"), `
+    import {
+      defineQuery,
+      type JsonParameter,
+      type JsonValue,
+      type QueryParams,
+      type QueryRegistry,
+      type QueryWireParams,
+      type SqlExecutor,
+    } from "@onreza/sqlx-js";
+
+    const statement = "SELECT $payload::jsonb AS payload";
+    declare module "@onreza/sqlx-js" {
+      interface KnownQueries {
+        "SELECT $payload::jsonb AS payload": {
+          params: { payload: JsonParameter<unknown> };
+          row: { payload: JsonValue };
+        };
+      }
+    }
+
+    interface Payload { id: string; nested: { count: number } }
+    const query = defineQuery.one("smoke.typedEcho", statement).mapParams(
+      (payload: Payload, { json }) => ({ payload: json(payload) }),
+    );
+    type Input = QueryParams<typeof query>;
+    type Wire = QueryWireParams<typeof query>;
+    type Entry = { params: Wire; row: { payload: JsonValue } };
+    type Registry = QueryRegistry & { queries: Record<typeof statement, Entry> };
+    declare const executor: SqlExecutor<Registry>;
+    declare const input: Input;
+    const result: Promise<{ payload: JsonValue }> = query.run(executor, input);
+    void result;
+  `);
+  writeFileSync(join(temp, "tsconfig.json"), JSON.stringify({
+    compilerOptions: {
+      strict: true,
+      noEmit: true,
+      skipLibCheck: false,
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
+      target: "ES2023",
+      types: ["node"],
+      typeRoots: [join(root, "node_modules/@types")],
+    },
+    files: ["types.ts"],
+  }));
+  run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "-p", join(temp, "tsconfig.json")], temp);
   writeFileSync(join(temp, "app.mjs"), `
     import assert from "node:assert/strict";
     import { close, createClient, defineQuery, queryId, ready, setClient, sql, TransactionTimeoutError } from "@onreza/sqlx-js";
 
     try {
       const events = [];
-      setClient(createClient(process.env.DATABASE_URL, {
+      const runtimeUrl = new URL(process.env.DATABASE_URL);
+      runtimeUrl.searchParams.set("schema", "public");
+      setClient(createClient(runtimeUrl.toString(), {
         max: 1,
         onQuery: (event) => events.push(event),
         sqlFiles: { "queries/embedded.sql": "SELECT 9::int4 AS value" },
@@ -64,9 +114,14 @@ try {
 
       const answerQuery = defineQuery.one("smoke.answer", "SELECT 43::int4 AS value");
       assert.deepEqual(await answerQuery.run(sql), { value: 43 });
+      const echoQuery = defineQuery.one("smoke.echo", "SELECT $payload::jsonb AS payload").mapParams(
+        (payload, { json }) => ({ payload: json(payload) }),
+      );
+      assert.deepEqual(await echoQuery.run(sql, { ok: true }), { payload: { ok: true } });
       assert.deepEqual(await sql.file.one("queries/embedded.sql"), { value: 9 });
       assert.equal(answerQuery.queryId, queryId(answerQuery.query));
       assert.ok(events.some((event) => event.queryId === answerQuery.queryId && event.queryName === "smoke.answer"));
+      assert.ok(events.some((event) => event.queryId === echoQuery.queryId && event.queryName === "smoke.echo"));
     } finally {
       await close();
     }

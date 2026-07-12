@@ -21,7 +21,7 @@ const rows = await sql(
 ## Features
 
 - **Compile-time validation** against a live PostgreSQL via `Parse` + `Describe Statement` followed by non-executing, parameter-independent generic planning for supported query statements.
-- **Precise nullability inference** through `libpg-query`: `JOIN` direction (LEFT/RIGHT/FULL), inner `JOIN ... ON` predicates, `UNION`/`INTERSECT`/`EXCEPT`, DML `RETURNING`, `COALESCE`, `CASE`, `COUNT`, expression propagation. Parameters become `T | null` when wrapped in `COALESCE`/`NULLIF`/`IS [NOT] NULL`/`IS [NOT] DISTINCT FROM`, or when bound to a nullable column in `INSERT`/`UPDATE`.
+- **Precise nullability inference** through `libpg-query`: `JOIN` direction (LEFT/RIGHT/FULL), inner `JOIN ... ON` predicates, `UNION`/`INTERSECT`/`EXCEPT`, DML `RETURNING`, `COALESCE`, `CASE`, `COUNT`, expression propagation. Parameters become `T | null` when wrapped in `COALESCE`/`NULLIF`/`IS [NOT] NULL`/`IS [NOT] DISTINCT FROM`, or when they contribute to a nullable `INSERT`, `UPDATE`, or `ON CONFLICT DO UPDATE` target.
 - **WHERE narrowing**: `IS NOT NULL`, equality chains, `IN`, `LIKE`, `BETWEEN` make columns non-null. Tracks `AND`/`OR` semantics.
 - **PostgreSQL enums** generated as TypeScript literal unions (read + write side).
 - **Schema-aware `jsonb`** via config-driven column → application type mappings. Works for both result columns and `INSERT`/`UPDATE`/`WHERE` parameters. Unmapped `json`/`jsonb` falls back to `JsonValue` for rows and an explicitly wrapped, structurally checked JSON parameter.
@@ -30,7 +30,7 @@ const rows = await sql(
 - **Wide built-in type coverage**: numeric, text, date/time, UUID, json/jsonb, network (inet/cidr/macaddr/macaddr8), bit strings, ranges/multiranges, geometric, money, tsvector/tsquery, xml — and the matching array variants.
 - **External SQL files** via `sql.file("queries/foo.sql", ...)` — prepared and typed through `KnownFileQueries`. Watch mode re-prepares on `.sql` edits too.
 - **One-row helpers**: `sql.one(...)`, `sql.optional(...)`, `sql.file.one(...)`, `sql.file.optional(...)`, and the same chain on the `tx` callback — friendly with `noUncheckedIndexedAccess: true`. The scanner walks all of them.
-- **Reusable query definitions** via `defineQuery`: declare one typed SQL contract and execute it through either a root client or transaction-scoped executor. `QueryParams`, `QueryRow`, and `QueryResult` expose its generated types without indexing a registry by SQL text.
+- **Reusable query definitions** via `defineQuery`: declare one typed SQL contract and execute it through either a root client or transaction-scoped executor. Optional `mapParams` adapters bind application-owned inputs to the generated PostgreSQL wire contract. `QueryParams`, `QueryWireParams`, `QueryRow`, and `QueryResult` expose both layers without indexing a registry by SQL text.
 - **Sound PostgreSQL array contracts** keep array-value nullability separate from element nullability. SQL constructors, subqueries, aggregates, CTEs, set operations, `NOT NULL` element domains, and explicit column assertions narrow `(T | null)[]` to `T[]` only when proven. Array params remain unambiguous through `sql.array(...)`.
 - **Typed transactions** via `sql.transaction(async tx => …)` — the `tx` callback parameter is recognized by the scanner, so queries inside the block keep full type checking.
 - **Sourcemap-accurate error reporting**: every prepare failure points to `file:line:column` of the originating `sql(...)` call site, with PG error code, position, and hint.
@@ -222,6 +222,27 @@ async function loadUser(executor: SqlExecutor, params: FindUserParams) {
 
 The optional definition name is included in query observer and inventory metadata. The stable `queryId` is derived from the same lexical SQL fingerprint used by prepare/cache. `defineQuery.one`, `.optional`, and `.execute` mirror the cardinality contracts of the corresponding `sql` helpers.
 
+Use `mapParams` when the application input is intentionally narrower or more expressive than PostgreSQL's physical parameters:
+
+```ts
+import { defineQuery, type QueryParams, type QueryWireParams } from "@onreza/sqlx-js";
+
+type AnalyticsEvent = { id: string; action: "created" | "deleted" };
+
+export const insertEvents = defineQuery.execute(
+  "analytics.insertBatch",
+  `INSERT INTO analytics_event (payload)
+   SELECT item FROM jsonb_array_elements($events::jsonb) AS item`,
+).mapParams((events: readonly AnalyticsEvent[], { json }) => ({
+  events: json(events),
+}));
+
+type InsertEventsInput = QueryParams<typeof insertEvents>;       // readonly AnalyticsEvent[]
+type InsertEventsWire = QueryWireParams<typeof insertEvents>;    // { events: JsonParameter<unknown> }
+```
+
+The mapper receives only `json` and `array` parameter helpers. Once `prepare` has emitted `KnownQueries`, its output is checked exactly at the definition against the generated wire contract: missing, extra, and incompatible fields are compile errors. An application input can therefore narrow or reorganize the API without widening PostgreSQL parameters. The mapper executes once per call before named-parameter binding; root, generic scoped, and transaction executors keep the same result, observer, and query-ID behavior. This is the intended boundary for discriminated unions such as `preserve | clear | set`: the application owns the union and maps it to the physical flags and nullable values required by SQL.
+
 ### `sql.file(path, ...params)`
 
 Load SQL from an external file. The path is root-relative everywhere: prepare resolves it against `--root`, codegen keeps the exact string literal as the `KnownFileQueries` key, and runtime resolves it against `fileRoot` (default: `process.cwd()`). Absolute paths and paths escaping the root are rejected.
@@ -317,7 +338,7 @@ Both helpers also work with `unsafe(...)`. `encodePgArrayLiteral(arr)` remains e
 `prepare` infers param types as `T | null` when:
 
 - `$N` appears inside `COALESCE($N, …)`, `NULLIF($N, …)`, `IS [NOT] NULL`, or `IS [NOT] DISTINCT FROM` — these patterns are only meaningful when the parameter can be `null`.
-- `$N` is positionally bound in `INSERT … VALUES (…, $N, …)` or `UPDATE … SET col = $N` and the target column is nullable.
+- `$N` contributes a value to a nullable `INSERT`, `UPDATE`, or `ON CONFLICT DO UPDATE` target, directly or through value-preserving `CASE`, `COALESCE`, `GREATEST`/`LEAST`, or the stored side of `NULLIF`.
 
 `WHERE col = $N` stays non-null even if `col` is nullable: `col = NULL` is always false in SQL, so passing `null` from the caller would be a bug. Use `col IS NOT DISTINCT FROM $N` (or an `OR $N IS NULL` clause) when you want NULL semantics.
 
@@ -423,6 +444,8 @@ The scanner recognizes clients assigned directly from an imported `createSqlClie
 
 `createClient(url, options)` accepts every Postgres.js option plus sqlx-js runtime options:
 
+The `schema` query parameter used by Prisma PostgreSQL URLs is accepted directly: sqlx-js removes it before handing the URL to Postgres.js. Other query parameters remain untouched, including PostgreSQL session parameters intentionally supported by Postgres.js.
+
 ```ts
 setClient(createClient(process.env.DATABASE_URL, {
   // Server-side per-connection statement timeout (ms). Also settable via
@@ -456,7 +479,7 @@ setClient(createClient(process.env.DATABASE_URL, {
 }));
 ```
 
-The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. `queryId` is the stable prepare/cache fingerprint and is suitable for metric labels; `queryName` is present for named `defineQuery` calls. The hook is a non-blocking observer: synchronous throws and asynchronous rejections preserve the database result/error and are passed to `onQueryHookError` when configured. The event carries the raw `params`, which may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
+The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. `queryId` is the stable prepare/cache fingerprint and is suitable for metric labels; `queryName` is present for named `defineQuery` calls. The hook is a non-blocking observer: synchronous throws and asynchronous rejections preserve the database result/error and are passed to `onQueryHookError` when configured. The event carries the raw wire `params`; mapped definitions report the mapper output rather than their application input. Parameters may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
 
 ### `clearSqlFileCache()`
 
@@ -900,7 +923,7 @@ Releases are automated via `release-please`: pushes to `main` accumulate into a 
 
 - PostgreSQL only (no MySQL or SQLite).
 - The scanner only follows direct named imports and namespace imports from configured `scan.modules` (default: `@onreza/sqlx-js`); it does not discover re-export graphs, dynamic aliases, or tagged-template calls automatically.
-- `SELECT *` falls back to conservative nullability.
+- Star projections fall back to conservative nullability when their relation shape is ambiguous. Single-relation CTE and derived-table stars are expanded from the live schema, including `MATERIALIZED` CTEs used with lateral joins; multi-relation unqualified stars and recursive stars may still need explicit columns.
 - Plain `sql(...)` keeps returning rows, so statements without `RETURNING` produce an empty typed array. Use `sql.execute(...)` when affected-row count and command metadata matter.
 - Self-references inside `WITH RECURSIVE` are not analysed transitively — at worst this produces extra `T | null`. Ordinary later CTEs can reference earlier CTEs in the same `WITH`. Use `AS "id!"` overrides if recursive output needs an explicit contract.
 - Column names whose **real** name (not an alias) ends with `!` or `?` are not supported — the runtime strips those suffixes assuming an override. Use `AS "alias"` if you have such a column.
@@ -935,6 +958,8 @@ Generator revision 9 separates array-value nullability from element nullability.
 Generator revision 10 adds non-executing generic-plan validation after `Describe`. Live prepare now catches planner-only PostgreSQL errors such as an `ON CONFLICT` target without a matching unique or exclusion constraint, including errors hidden by value-dependent custom-plan simplification. Cache entries record whether a statement was `planned` or only `parse-only`; re-run live `sqlx-js prepare` before relying on `--check` or `--offline` after upgrading. This revision also raises the supported database baseline to PostgreSQL 16.
 
 Generator revision 11 adds a scoped runtime codec contract to generated declarations. Every explicit `customTypes` mapping now requires matching name-based `typeCodecs` or typed numeric Postgres.js `types` when the generated registry is bound to `createSqlClient<SqlxJsGeneratedRegistry>()` or `createClient<SqlxJsGeneratedRegistry>()`. Explicit enum and composite mappings now affect query types as well as the runtime codec contract. Domain-specific mappings are rejected because PostgreSQL exposes the base type OID for domain results. Re-run live `sqlx-js prepare` after upgrading; this also validates that committed declarations and cache manifests use the new contract.
+
+Generator revision 12 propagates DML target provenance through value-producing `CASE`, `COALESCE`, `GREATEST`/`LEAST`, and the stored side of `NULLIF`, plus set-operation inputs and multi-column row assignments. Conditional parameters now inherit application-owned column types and nullable-column contracts without typing control predicates or `NULLIF` sentinels as stored values. It also expands unambiguous single-relation star projections inside CTEs and derived tables so non-null base columns survive materialization and lateral fallbacks. Re-run live `sqlx-js prepare` so committed cache entries and declarations use the stronger contracts.
 
 Runtime observers and SQL-file caching are also stricter production boundaries. An exception from `onQuery` no longer replaces a successful query result; handle it through `onQueryHookError`. `sql.file()` no longer performs an mtime check on every call—use `reloadSqlFiles: true` during development or call `clearSqlFileCache()` explicitly after changing a file.
 

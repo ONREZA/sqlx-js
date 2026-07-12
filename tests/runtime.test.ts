@@ -156,6 +156,62 @@ test("query definitions execute through root and transaction executors with stab
   expect(events[1]).toMatchObject({ queryId: findUser.queryId, queryName: "users.findById" });
 });
 
+test("mapped query definitions encode application input through root and transaction executors", async () => {
+  const received: { query: string; params: unknown[] }[] = [];
+  const events: OnQueryEvent[] = [];
+  const client: RuntimeClient = {
+    query: async (query, params) => {
+      received.push({ query, params });
+      return [];
+    },
+    transaction: async (fn) => fn(client),
+    close: async () => {},
+    onQuery: (event) => events.push(event),
+  };
+  const runtime = createSqlRuntime(() => client);
+  const insertBatch = defineQuery.execute(
+    "events.insertBatch",
+    "SELECT $events::jsonb, $ids::int[]",
+  ).mapParams((input: { events: readonly { id: number }[]; ids: readonly number[] }, helpers) => ({
+    events: helpers.json(input.events),
+    ids: helpers.array(input.ids),
+  }));
+  const input = { events: [{ id: 7 }], ids: [3, 5] };
+  await insertBatch.run(runtime.sql as never, input as never);
+  await runtime.sql.transaction(async (tx) => {
+    await insertBatch.run(tx as never, input as never);
+  });
+  expect(received).toEqual([
+    { query: "SELECT $1::jsonb, $2::int[]", params: ['[{"id":7}]', "{3,5}"] },
+    { query: "SELECT $1::jsonb, $2::int[]", params: ['[{"id":7}]', "{3,5}"] },
+  ]);
+  expect(events).toHaveLength(2);
+  expect(events[0]).toMatchObject({ queryId: insertBatch.queryId, queryName: "events.insertBatch" });
+  expect(events[1]).toMatchObject({ queryId: insertBatch.queryId, queryName: "events.insertBatch" });
+  expect(events[0]!.params).toEqual([{
+    events: expect.objectContaining({ value: input.events }),
+    ids: expect.objectContaining({ value: input.ids }),
+  }]);
+});
+
+test("mapped positional query definitions spread the wire tuple", async () => {
+  let received: { query: string; params: unknown[] } | undefined;
+  const client: RuntimeClient = {
+    query: async (query, params) => {
+      received = { query, params };
+      return [];
+    },
+    transaction: async (fn) => fn(client),
+    close: async () => {},
+  };
+  const runtime = createSqlRuntime(() => client);
+  const update = defineQuery.execute("values.update", "SELECT $1::int, $2::text").mapParams(
+    (input: { count: number; label: string }) => [input.count, input.label] as const,
+  );
+  await update.run(runtime.sql as never, { count: 7, label: "ready" } as never);
+  expect(received).toEqual({ query: "SELECT $1::int, $2::text", params: [7, "ready"] });
+});
+
 test("transaction timeout is forwarded after transaction characteristics", async () => {
   const queries: string[] = [];
   let transactionOptions: { timeoutMs?: number } | undefined;

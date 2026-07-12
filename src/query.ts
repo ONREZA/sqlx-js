@@ -15,6 +15,27 @@ export type QueryExecutorMethod = (
 
 type NamedQueryEntry = { params: Record<string, unknown>; row: unknown };
 type PositionalQueryEntry = { params: readonly unknown[]; row: unknown };
+type QueryEntry = NamedQueryEntry | PositionalQueryEntry;
+type QueryWireParams = Record<string, unknown> | readonly unknown[];
+type KnownQueryEntry<Query extends string> = Query extends keyof import("./index").KnownQueries
+  ? import("./index").KnownQueries[Query]
+  : never;
+type KnownQueryWireParams<Query extends string> = [KnownQueryEntry<Query>] extends [never]
+  ? QueryWireParams
+  : KnownQueryEntry<Query> extends { params: infer Params extends QueryWireParams } ? Params : QueryWireParams;
+type CheckedMappedWireParams<Query extends string, WireParams extends QueryWireParams> =
+  [KnownQueryEntry<Query>] extends [never]
+    ? WireParams
+    : WireParams extends ReadonlyWireParams<KnownQueryWireParams<Query>>
+      ? KnownQueryWireParams<Query> extends readonly unknown[]
+        ? WireParams
+        : Exclude<keyof WireParams, keyof KnownQueryWireParams<Query>> extends never
+          ? WireParams
+          : WireParams & {
+            [Key in Exclude<keyof WireParams, keyof KnownQueryWireParams<Query>>]: never;
+          }
+      : ReadonlyWireParams<KnownQueryWireParams<Query>>;
+declare const MAPPED_QUERY_INPUT: unique symbol;
 type QueryModeResult<Mode extends QueryExecutionMode, Row> =
   Mode extends "many" ? Row[]
     : Mode extends "one" ? Row
@@ -29,6 +50,9 @@ export type QueryDefinition<
   readonly mode: Mode;
   readonly queryId: string;
   readonly queryName?: string;
+  mapParams<Input, const WireParams extends QueryWireParams>(
+    mapper: (input: Input, helpers: QueryParameterHelpers) => CheckedMappedWireParams<Query, WireParams>,
+  ): MappedQueryDefinition<Query, Mode, Input>;
   run<Registry extends { queries: Record<Query, NamedQueryEntry>; fileQueries: object }>(
     executor: TypedSqlForRegistry<Registry>,
     params: RegistryParams<Query, Registry>,
@@ -39,17 +63,45 @@ export type QueryDefinition<
   ): Promise<QueryResultFor<QueryDefinition<Query, Mode>, Registry>>;
 };
 
-type DefinitionQuery<Definition> = Definition extends QueryDefinition<infer Query, QueryExecutionMode> ? Query : never;
-type DefinitionMode<Definition> = Definition extends QueryDefinition<string, infer Mode> ? Mode : never;
-type RegistryQuery<Query extends string, Registry extends { queries: object }> =
-  Registry["queries"][Query & keyof Registry["queries"]];
+export type QueryParameterHelpers = Pick<
+  TypedSqlForRegistry<{ queries: object; fileQueries: object }>,
+  "json" | "array"
+>;
+
+type ReadonlyWireParams<Params> = Params extends readonly unknown[] ? Readonly<Params> : Params;
+
+export type MappedQueryDefinition<
+  Query extends string = string,
+  Mode extends QueryExecutionMode = QueryExecutionMode,
+  Input = unknown,
+> = {
+  readonly query: Query;
+  readonly mode: Mode;
+  readonly queryId: string;
+  readonly queryName?: string;
+  readonly [MAPPED_QUERY_INPUT]: Input;
+  run<Registry extends { queries: Record<Query, QueryEntry>; fileQueries: object }>(
+    executor: TypedSqlForRegistry<Registry>,
+    input: Input,
+  ): Promise<QueryResultFor<MappedQueryDefinition<Query, Mode, Input>, Registry>>;
+};
+
+type DefinitionQuery<Definition> = Definition extends { readonly query: infer Query extends string } ? Query : never;
+type DefinitionMode<Definition> =
+  Definition extends { readonly mode: infer Mode extends QueryExecutionMode } ? Mode : never;
+type RegistryQuery<Query extends string, Registry extends { queries: object }> = Registry extends {
+  queries: Record<Query, infer Entry>;
+} ? Entry : never;
 type RegistryParams<Query extends string, Registry extends { queries: object }> =
   RegistryQuery<Query, Registry>["params" & keyof RegistryQuery<Query, Registry>];
 type RegistryRow<Query extends string, Registry extends { queries: object }> =
   RegistryQuery<Query, Registry>["row" & keyof RegistryQuery<Query, Registry>];
 
-export type QueryParamsFor<Definition, Registry extends { queries: object }> =
+export type QueryWireParamsFor<Definition, Registry extends { queries: object }> =
   RegistryParams<DefinitionQuery<Definition>, Registry>;
+export type QueryParamsFor<Definition, Registry extends { queries: object }> = Definition extends {
+  readonly [MAPPED_QUERY_INPUT]: infer Input;
+} ? Input : QueryWireParamsFor<Definition, Registry>;
 export type QueryRowFor<Definition, Registry extends { queries: object }> =
   RegistryRow<DefinitionQuery<Definition>, Registry>;
 export type QueryResultFor<Definition, Registry extends { queries: object }> = QueryModeResult<
@@ -78,22 +130,42 @@ function definitionMethod<Mode extends QueryExecutionMode>(mode: Mode): DefineQu
       one(query: string, ...params: unknown[]): Promise<unknown>;
       optional(query: string, ...params: unknown[]): Promise<unknown>;
       execute(query: string, ...params: unknown[]): Promise<unknown>;
+      json: QueryParameterHelpers["json"];
+      array: QueryParameterHelpers["array"];
       readonly [QUERY_EXECUTOR]?: QueryExecutorMethod;
     };
-    return Object.freeze({
+    const run = async (executor: RuntimeExecutor, params: unknown[]) => {
+      const execute = executor[QUERY_EXECUTOR];
+      if (execute) return await execute(mode, query, params, metadata);
+      if (mode === "one") return await executor.one(query, ...params);
+      if (mode === "optional") return await executor.optional(query, ...params);
+      if (mode === "execute") return await executor.execute(query, ...params);
+      return await executor(query, ...params);
+    };
+    const definition = {
       query,
       mode,
       queryId: metadata.queryId,
       ...(name ? { queryName: name } : {}),
-      async run(executor: RuntimeExecutor, ...params: unknown[]) {
-        const execute = executor[QUERY_EXECUTOR];
-        if (execute) return await execute(mode, query, params, metadata);
-        if (mode === "one") return await executor.one(query, ...params);
-        if (mode === "optional") return await executor.optional(query, ...params);
-        if (mode === "execute") return await executor.execute(query, ...params);
-        return await executor(query, ...params);
+      mapParams<Input, WireParams extends QueryWireParams>(
+        mapper: (input: Input, helpers: QueryParameterHelpers) => WireParams,
+      ) {
+        return Object.freeze({
+          query,
+          mode,
+          queryId: metadata.queryId,
+          ...(name ? { queryName: name } : {}),
+          async run(executor: RuntimeExecutor, input: Input) {
+            const mapped = mapper(input, { json: executor.json, array: executor.array });
+            return await run(executor, Array.isArray(mapped) ? [...mapped] : [mapped]);
+          },
+        });
       },
-    });
+      async run(executor: RuntimeExecutor, ...params: unknown[]) {
+        return await run(executor, params);
+      },
+    };
+    return Object.freeze(definition);
   }) as unknown as DefineQueryMethod<Mode>;
 }
 

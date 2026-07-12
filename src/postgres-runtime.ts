@@ -51,6 +51,14 @@ function resolvedFileRoot(value?: string): string {
   return resolve(value ?? process.env.SQLX_JS_FILE_ROOT ?? process.cwd());
 }
 
+export function normalizeRuntimeDatabaseUrl(url: string): string {
+  if (!/^postgres(?:ql)?:\/\//i.test(url)) return url;
+  const parsed = new URL(url);
+  if (!parsed.searchParams.has("schema")) return url;
+  parsed.searchParams.delete("schema");
+  return parsed.toString();
+}
+
 class PostgresRuntimeClient implements RuntimeClient {
   constructor(
     public readonly client: PostgresQueryClient,
@@ -299,7 +307,7 @@ export function createClient(url = process.env.DATABASE_URL, options: CreateClie
   const connection = statementTimeoutMs !== undefined
     ? { ...(pgOptions.connection ?? {}), statement_timeout: statementTimeoutMs }
     : pgOptions.connection;
-  const client = postgres(url, {
+  const client = postgres(normalizeRuntimeDatabaseUrl(url), {
     ...pgOptions,
     ...(connection ? { connection } : {}),
     types: { ...postgresTypes(), ...(pgOptions.types ?? {}) },

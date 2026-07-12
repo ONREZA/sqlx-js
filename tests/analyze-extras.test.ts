@@ -133,6 +133,67 @@ describe("analyze: CTE / WITH", () => {
     expect(result.perColumnNullable).toEqual([false, true]);
     expect(result.degraded).toBeUndefined();
   });
+
+  test("expands materialized CTE rows through a lateral fallback", async () => {
+    const schema = fakeSchema([
+      {
+        name: "billing_period_terms",
+        oid: 16400,
+        columns: [
+          { name: "id", attno: 1, notNull: true },
+          { name: "plan_slug", attno: 2, notNull: true },
+        ],
+      },
+      {
+        name: "billing_period_amendment",
+        oid: 16401,
+        columns: [
+          { name: "terms_id", attno: 1, notNull: true },
+          { name: "plan_slug", attno: 2, notNull: true },
+        ],
+      },
+    ]);
+    const sql = `WITH terms AS MATERIALIZED (
+      SELECT * FROM billing_period_terms ORDER BY id LIMIT 1
+    )
+    SELECT
+      terms.id,
+      COALESCE(amendment.plan_slug, terms.plan_slug) AS plan_slug,
+      EXISTS(SELECT 1) AS found
+    FROM terms
+    LEFT JOIN LATERAL (
+      SELECT plan_slug
+      FROM billing_period_amendment
+      WHERE terms_id = terms.id
+      LIMIT 1
+    ) amendment ON TRUE`;
+    const result = await analyzeQuery(sql, rowDesc([
+      { name: "id" },
+      { name: "plan_slug" },
+      { name: "found", typeOid: 16 },
+    ]), schema);
+    expect(result.perColumnNullable).toEqual([false, false, false]);
+    expect(result.degraded).toBeUndefined();
+  });
+
+  test("does not misalign an unqualified star with an untracked range function", async () => {
+    const schema = fakeSchema([{
+      name: "users",
+      oid: 16400,
+      columns: [
+        { name: "id", attno: 1, notNull: true },
+        { name: "bio", attno: 2, notNull: false },
+      ],
+    }]);
+    const result = await analyzeQuery(
+      "WITH mixed(user_id, user_bio, series, marker) AS (" +
+      "SELECT *, 1 AS marker FROM users CROSS JOIN unnest(ARRAY[NULL::int])" +
+      ") SELECT series FROM mixed",
+      rowDesc([{ name: "series" }]),
+      schema,
+    );
+    expect(result.perColumnNullable).toEqual([true]);
+  });
 });
 
 describe("analyze: set operations", () => {
@@ -351,6 +412,20 @@ describe("analyze: subquery aliases", () => {
     const rd = rowDesc([{ name: "x", tableOid: 0, attno: 0 }]);
     const result = await analyzeQuery(sql, rd, schema);
     expect(result.perColumnNullable[0]).toBe(false);
+  });
+
+  test("derived single-relation star preserves analyzed column nullability", async () => {
+    const schema = fakeSchema([{
+      name: "users",
+      oid: 16400,
+      columns: [{ name: "id", attno: 1, notNull: true }],
+    }]);
+    const result = await analyzeQuery(
+      "SELECT derived.id FROM (SELECT * FROM users) derived",
+      rowDesc([{ name: "id" }]),
+      schema,
+    );
+    expect(result.perColumnNullable).toEqual([false]);
   });
 
   test("schema-qualified columns resolve through the table scope", async () => {

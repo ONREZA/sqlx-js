@@ -41,25 +41,9 @@ function walkInsert(ins: any, map: ParamMap, dmlBound: Set<number>): void {
   const cols: string[] = (ins.cols ?? [])
     .map((c: any) => c?.ResTarget?.name)
     .filter((n: any): n is string => typeof n === "string");
-  const valuesLists = ins.selectStmt?.SelectStmt?.valuesLists ?? [];
-  for (const row of valuesLists) {
-    const items = row?.List?.items ?? [];
-    for (let i = 0; i < items.length; i++) {
-      const pn = paramNumber(items[i]);
-      if (pn !== null) {
-        bindParam(map, dmlBound, pn, insertTarget(rel, cols, i), true);
-      }
-    }
-  }
-
   const select = ins.selectStmt?.SelectStmt;
-  if (select && !select.valuesLists && Array.isArray(select.targetList)) {
-    for (let i = 0; i < select.targetList.length; i++) {
-      const pn = paramNumber(select.targetList[i]?.ResTarget?.val);
-      if (pn !== null) {
-        bindParam(map, dmlBound, pn, insertTarget(rel, cols, i), true);
-      }
-    }
+  if (select) {
+    bindSelectValueParams(select, (index) => insertTarget(rel, cols, index), map, dmlBound);
     walkSelect(select, map, dmlBound);
   }
   if (ins.returningList) walkExpr(ins.returningList, scope, map, dmlBound);
@@ -72,10 +56,8 @@ function walkOnConflict(conflict: any, rel: Rel, scope: Scope, map: ParamMap, dm
   for (const rt of conflict.targetList ?? []) {
     const colName = rt?.ResTarget?.name;
     if (typeof colName !== "string") continue;
-    const pn = paramNumber(rt.ResTarget.val);
-    if (pn !== null) {
-      bindParam(map, dmlBound, pn, { ...rel, column: colName }, true);
-    }
+    bindAssignmentValueParams(rt.ResTarget.val, { ...rel, column: colName }, map, dmlBound);
+    walkExpr(rt.ResTarget.val, scope, map, dmlBound);
   }
   walkExpr(conflict.whereClause, scope, map, dmlBound);
 }
@@ -88,10 +70,8 @@ function walkUpdate(upd: any, map: ParamMap, dmlBound: Set<number>): void {
   for (const rt of upd.targetList ?? []) {
     const colName = rt?.ResTarget?.name;
     if (typeof colName !== "string") continue;
-    const pn = paramNumber(rt.ResTarget.val);
-    if (pn !== null) {
-      bindParam(map, dmlBound, pn, { ...rel, column: colName }, true);
-    }
+    bindAssignmentValueParams(rt.ResTarget.val, { ...rel, column: colName }, map, dmlBound);
+    walkExpr(rt.ResTarget.val, scope, map, dmlBound);
   }
   walkExpr(upd.whereClause, scope, map, dmlBound);
 }
@@ -105,9 +85,54 @@ function walkDelete(del: any, map: ParamMap, dmlBound: Set<number>): void {
 }
 
 function walkSelect(select: any, map: ParamMap, dmlBound: Set<number>): void {
+  if (select?.larg) walkSelect(select.larg, map, dmlBound);
+  if (select?.rarg) walkSelect(select.rarg, map, dmlBound);
   const scope = scopeFromSelect(select);
   walkJoinQuals(select.fromClause ?? [], scope, map, dmlBound);
   walkExpr(select.whereClause, scope, map, dmlBound);
+}
+
+function bindSelectValueParams(
+  select: any,
+  targetAt: (index: number) => ParamTarget | undefined,
+  map: ParamMap,
+  dmlBound: Set<number>,
+): void {
+  if (select?.larg || select?.rarg) {
+    if (select.larg) bindSelectValueParams(select.larg, targetAt, map, dmlBound);
+    if (select.rarg) bindSelectValueParams(select.rarg, targetAt, map, dmlBound);
+    return;
+  }
+  for (const row of select?.valuesLists ?? []) {
+    const items = row?.List?.items ?? [];
+    for (let i = 0; i < items.length; i++) {
+      const target = targetAt(i);
+      if (target) bindValueParams(items[i], target, map, dmlBound);
+    }
+  }
+  if (select?.valuesLists || !Array.isArray(select?.targetList)) return;
+  for (let i = 0; i < select.targetList.length; i++) {
+    const target = targetAt(i);
+    if (target) bindValueParams(select.targetList[i]?.ResTarget?.val, target, map, dmlBound);
+  }
+}
+
+function bindAssignmentValueParams(node: any, target: ParamTarget, map: ParamMap, dmlBound: Set<number>): void {
+  const multi = node?.MultiAssignRef;
+  if (!multi || typeof multi.colno !== "number") {
+    bindValueParams(node, target, map, dmlBound);
+    return;
+  }
+  const index = multi.colno - 1;
+  const rowValue = multi.source?.RowExpr?.args?.[index];
+  if (rowValue) {
+    bindValueParams(rowValue, target, map, dmlBound);
+    return;
+  }
+  const select = multi.source?.SubLink?.subselect?.SelectStmt;
+  if (!select) return;
+  bindSelectValueParams(select, (candidate) => candidate === index ? target : undefined, map, dmlBound);
+  walkSelect(select, map, dmlBound);
 }
 
 function walkExpr(node: any, scope: Scope, map: ParamMap, dmlBound: Set<number>): void {
@@ -204,6 +229,40 @@ function bindParam(map: ParamMap, dmlBound: Set<number>, pn: number, target: Par
   if (!dml && dmlBound.has(pn)) return;
   map.set(pn, target);
   if (dml) dmlBound.add(pn);
+}
+
+function bindValueParams(node: any, target: ParamTarget, map: ParamMap, dmlBound: Set<number>): void {
+  const pn = paramNumber(node);
+  if (pn !== null) {
+    bindParam(map, dmlBound, pn, target, true);
+    return;
+  }
+  if (node?.TypeCast) {
+    bindValueParams(node.TypeCast.arg, target, map, dmlBound);
+    return;
+  }
+  if (node?.CollateClause) {
+    bindValueParams(node.CollateClause.arg, target, map, dmlBound);
+    return;
+  }
+  if (node?.CaseExpr) {
+    for (const item of node.CaseExpr.args ?? []) {
+      bindValueParams(item?.CaseWhen?.result, target, map, dmlBound);
+    }
+    bindValueParams(node.CaseExpr.defresult, target, map, dmlBound);
+    return;
+  }
+  if (node?.CoalesceExpr) {
+    for (const item of node.CoalesceExpr.args ?? []) bindValueParams(item, target, map, dmlBound);
+    return;
+  }
+  if (node?.MinMaxExpr) {
+    for (const item of node.MinMaxExpr.args ?? []) bindValueParams(item, target, map, dmlBound);
+    return;
+  }
+  if (node?.A_Expr?.kind === "AEXPR_NULLIF") {
+    bindValueParams(node.A_Expr.lexpr, target, map, dmlBound);
+  }
 }
 
 function stringFields(node: any): string[] | null {

@@ -619,7 +619,8 @@ if (!haveIntegrationDatabase) {
       await setup.simpleQuery(`
         CREATE TABLE IF NOT EXISTS tmp_column_types (
           id bigint PRIMARY KEY,
-          action text NOT NULL
+          action text NOT NULL,
+          previous_action text
         )
       `);
     } finally {
@@ -627,12 +628,18 @@ if (!haveIntegrationDatabase) {
     }
     const root = isolatedRoot("column-types");
     writeRootFile(root, "sqlx-js.config.ts", `export default {
-      columnTypes: { "public.tmp_column_types.action": '\"created\" | \"deleted\"' },
+      columnTypes: {
+        "public.tmp_column_types.action": '\"created\" | \"deleted\"',
+        "public.tmp_column_types.previous_action": '\"created\" | \"deleted\"',
+      },
     };\n`);
     writeRootFile(root, "a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT action, upper(action) AS derived FROM tmp_column_types WHERE action = $action\", { action: \"created\" });\n" +
-      "await sql(\"INSERT INTO tmp_column_types (id, action) VALUES ($id, $action) RETURNING action\", { id: 1n, action: \"created\" });\n",
+      "await sql(\"INSERT INTO tmp_column_types (id, action) VALUES ($id, $action) RETURNING action\", { id: 1n, action: \"created\" });\n" +
+      "await sql(\"UPDATE tmp_column_types SET action = CASE WHEN $preserve THEN action ELSE $action END WHERE id = $id\", { preserve: false, action: \"created\", id: 1n });\n" +
+      "await sql(\"UPDATE tmp_column_types SET previous_action = NULLIF($action, $sentinel) WHERE id = $id\", { action: \"created\", sentinel: \"\", id: 1n });\n" +
+      "await sql(\"UPDATE tmp_column_types SET action = GREATEST($minimumAction, action) WHERE id = $id\", { minimumAction: \"created\", id: 1n });\n",
     );
     const r = prepareRoot(root);
     expect(r.code, r.stderr).toBe(0);
@@ -640,6 +647,15 @@ if (!haveIntegrationDatabase) {
     expect(dts).toContain('"action": "created" | "deleted"');
     expect(dts).toContain('"derived": string');
     expect(dts).toContain('"action": "created" | "deleted" }');
+    expect(dts).toMatch(
+      /UPDATE tmp_column_types SET action = CASE.*"preserve": boolean; "action": "created" \| "deleted"; "id": bigint/,
+    );
+    expect(dts).toMatch(
+      /UPDATE tmp_column_types SET previous_action = NULLIF.*"action": "created" \| "deleted" \| null; "sentinel": string \| null; "id": bigint/,
+    );
+    expect(dts).toMatch(
+      /UPDATE tmp_column_types SET action = GREATEST.*"minimumAction": "created" \| "deleted"; "id": bigint/,
+    );
   });
 
   test("set operations preserve compatible application-owned column types", async () => {
@@ -1456,6 +1472,48 @@ if (!haveIntegrationDatabase) {
     expect(dts).toMatch(/INSERT INTO tmp_insert_values_order VALUES.*params: \[bigint, string \| null\]/);
   });
 
+  test("conditional DML values inherit target types and nullability", () => {
+    writeFile("migrations/0007_conditional_params.up.sql",
+      "ALTER TABLE tmp_users ADD COLUMN IF NOT EXISTS conditional_at TIMESTAMPTZ;\n" +
+      "ALTER TABLE tmp_users ADD COLUMN IF NOT EXISTS conditional_count INTEGER;\n" +
+      "ALTER TABLE tmp_users ADD COLUMN IF NOT EXISTS conditional_note TEXT;\n",
+    );
+    writeFile("migrations/0007_conditional_params.down.sql",
+      "ALTER TABLE tmp_users DROP COLUMN IF EXISTS conditional_note;\n" +
+      "ALTER TABLE tmp_users DROP COLUMN IF EXISTS conditional_count;\n" +
+      "ALTER TABLE tmp_users DROP COLUMN IF EXISTS conditional_at;\n",
+    );
+    const mig = migrate();
+    expect(mig.code).toBe(0);
+
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(`UPDATE tmp_users SET\n" +
+      "  conditional_at = CASE\n" +
+      "    WHEN NOT $setConditionalAt::boolean THEN conditional_at\n" +
+      "    WHEN $clearConditionalAt::boolean THEN NULL\n" +
+      "    ELSE $conditionalAt::timestamptz\n" +
+      "  END,\n" +
+      "  conditional_count = COALESCE($conditionalCount::int, conditional_count),\n" +
+      "  name = CASE WHEN $setName::boolean THEN $name ELSE name END\n" +
+      "WHERE id = $id`, {} as never);\n" +
+      "await sql(\"UPDATE tmp_users SET (conditional_at, conditional_count) = ($conditionalAt, $conditionalCount) WHERE id = $id\", {} as never);\n" +
+      "await sql(\"INSERT INTO tmp_users (name, email, conditional_note) SELECT $name, $email, $note UNION ALL SELECT $otherName, $otherEmail, $otherNote\", {} as never);\n",
+    );
+    const r = prepare();
+    expect(r.code, r.stderr).toBe(0);
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toMatch(
+      /"setConditionalAt": boolean; "clearConditionalAt": boolean; "conditionalAt": Date \| null; "conditionalCount": number \| null; "setName": boolean; "name": string; "id": bigint/,
+    );
+    expect(dts).toMatch(
+      /SET \(conditional_at, conditional_count\).*"conditionalAt": Date \| null; "conditionalCount": number \| null; "id": bigint/,
+    );
+    expect(dts).toMatch(
+      /UNION ALL SELECT.*"name": string; "email": string; "note": string \| null; "otherName": string; "otherEmail": string; "otherNote": string \| null/,
+    );
+  });
+
   test("DML introspection preserves dots inside quoted schema and table names", () => {
     writeFile("migrations/0009_quoted_dots.up.sql",
       "CREATE SCHEMA IF NOT EXISTS \"tmp.dot\";\n" +
@@ -1515,6 +1573,28 @@ if (!haveIntegrationDatabase) {
     expect(dts).toContain('row: { "id": bigint; "label": string | null }');
     expect(dts).toContain('row: { "id": bigint; "name": string }');
     expect(dts).toContain('row: { "column1": number }');
+  });
+
+  test("strict inference expands a materialized CTE row through a lateral fallback", () => {
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(`WITH picked AS MATERIALIZED (\n" +
+      "  SELECT * FROM tmp_users ORDER BY id LIMIT 1\n" +
+      ")\n" +
+      "SELECT\n" +
+      "  picked.id,\n" +
+      "  COALESCE(later.name, picked.name) AS name,\n" +
+      "  EXISTS(SELECT 1 FROM tmp_users WHERE id = picked.id) AS found\n" +
+      "FROM picked\n" +
+      "LEFT JOIN LATERAL (\n" +
+      "  SELECT name FROM tmp_users WHERE id > picked.id ORDER BY id LIMIT 1\n" +
+      ") later ON TRUE`);\n",
+    );
+    const result = prepare(["--strict-inference"]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stderr).not.toContain("nullability inference degraded");
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain('row: { "id": bigint; "name": string; "found": boolean }');
   });
 
   test("strict inference keeps array constructors non-null in data-modifying CTEs", () => {
