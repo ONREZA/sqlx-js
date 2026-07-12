@@ -52,7 +52,21 @@ test("loadConfig rejects malformed JavaScript config with an actionable path", a
   };
   `);
 
-  await expect(loadConfig(dir)).rejects.toThrow(/sqlx-js\.config\.mjs jsonbTypes\.users\.settings must be a string/);
+  await expect(loadConfig(dir)).rejects.toThrow(/sqlx-js\.config\.mjs jsonbTypes\.users\.settings must be a non-empty string/);
+});
+
+test("loadConfig rejects empty declarations and qualified custom type keys", async () => {
+  const empty = root();
+  writeFileSync(join(empty, "sqlx-js.config.mjs"), `export default {
+    customTypes: { geometry: " " },
+  };\n`);
+  await expect(loadConfig(empty)).rejects.toThrow(/customTypes\.geometry must be a non-empty string/);
+
+  const qualified = root();
+  writeFileSync(join(qualified, "sqlx-js.config.mjs"), `export default {
+    customTypes: { "postgis.geometry": "GeoJSON.Geometry" },
+  };\n`);
+  await expect(loadConfig(qualified)).rejects.toThrow(/customTypes keys must be bare PostgreSQL type names/);
 });
 
 test("loadConfig requires a default export", async () => {

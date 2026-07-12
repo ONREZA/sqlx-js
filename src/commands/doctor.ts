@@ -11,6 +11,8 @@ import {
   runtimeVersion,
 } from "../config";
 import { decodeText, parseDatabaseUrl, PgClient } from "../pg/wire";
+import { mergeExtensionTypes } from "../pg/extensions";
+import { SchemaCache } from "../pg/schema";
 import { probePgschema } from "./pgschema";
 
 export type DoctorCheck = {
@@ -186,6 +188,26 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
           shadowAdminConfigured: Boolean(shadowAdminDatabaseUrl),
         },
       });
+      if (configLoaded) {
+        const schema = new SchemaCache(client);
+        schema.setTypeRegistry(mergeExtensionTypes(config.customTypes), config.customTypes);
+        try {
+          await schema.validateUserTypeRegistry();
+          checks.push({
+            name: "runtimeTypes",
+            status: "ok",
+            message: "customTypes match runtime-addressable PostgreSQL types",
+          });
+        } catch (error) {
+          checks.push({ name: "runtimeTypes", status: "error", message: (error as Error).message });
+        }
+      } else {
+        checks.push({
+          name: "runtimeTypes",
+          status: "warning",
+          message: "runtime type check skipped because config failed to load",
+        });
+      }
     } catch (e) {
       checks.push({ name: "database", status: "error", message: (e as Error).message });
     } finally {

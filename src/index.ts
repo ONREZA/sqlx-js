@@ -30,6 +30,7 @@ export { PgError, ConnectionLostError } from "./pg/wire";
 export { NoRowsError, TooManyRowsError, TransactionTimeoutError, SQLSTATE, isPgError } from "./runtime";
 export type { TransactionOptions, MigrateOptions, OnQueryEvent, OnQueryHook, OnQueryHookError } from "./runtime";
 export type { ExecuteResult, JsonParameter, PgArrayParameter, JsonCompatible, KnownSqlState } from "./runtime";
+export type { RuntimeTypeCodec, RuntimeTypeCodecs } from "./postgres-codecs";
 export type { PostgresClient, PostgresOptions, CreateClientOptions } from "./postgres-runtime";
 
 export type TypedFile = TypedFileFor<KnownFileQueries>;
@@ -39,6 +40,7 @@ export type Typed = TypedForRegistry<DefaultQueryRegistry, import("./runtime").T
 export type QueryRegistry = {
   queries: object;
   fileQueries: object;
+  runtimeTypes?: object;
 };
 
 export interface DefaultQueryRegistry {
@@ -51,8 +53,36 @@ export type SqlClient<Registry extends QueryRegistry = DefaultQueryRegistry> = {
   sql: TypedForRegistry<Registry, import("./runtime").TransactionOptions>;
   unsafe: Unsafe;
   client: import("./postgres-runtime").PostgresClient;
+  ready: () => Promise<void>;
   close: () => Promise<void>;
 };
+
+type RegistryRuntimeTypes<Registry extends QueryRegistry> =
+  Registry extends { runtimeTypes: infer RuntimeTypes extends object } ? RuntimeTypes : object;
+export type RuntimeTypeCodecsFor<Registry extends QueryRegistry> =
+  import("./postgres-codecs").RuntimeTypeCodecs & {
+    readonly [Name in keyof RegistryRuntimeTypes<Registry> & string]:
+      import("./postgres-codecs").RuntimeTypeCodec<RegistryRuntimeTypes<Registry>[Name]>;
+  };
+export type RuntimePostgresTypesFor<Registry extends QueryRegistry> = {
+  readonly [Name in keyof RegistryRuntimeTypes<Registry> & string]:
+    import("postgres").PostgresType<RegistryRuntimeTypes<Registry>[Name]>;
+};
+type GeneratedClientOptionsFor<Registry extends QueryRegistry> =
+  Omit<import("./postgres-runtime").CreateClientOptions, "typeCodecs" | "types"> & (
+    | {
+      typeCodecs: RuntimeTypeCodecsFor<Registry>;
+      types?: import("./postgres-runtime").CreateClientOptions["types"];
+    }
+    | {
+      typeCodecs?: never;
+      types: RuntimePostgresTypesFor<Registry>;
+    }
+  );
+type CreateClientArgs<Registry extends QueryRegistry> =
+  keyof RegistryRuntimeTypes<Registry> extends never
+    ? [url?: string, options?: import("./postgres-runtime").CreateClientOptions]
+    : [url: string | undefined, options: GeneratedClientOptionsFor<Registry>];
 
 export type SqlExecutor<Registry extends QueryRegistry = DefaultQueryRegistry> =
   TypedSqlForRegistry<Registry>;
@@ -72,12 +102,18 @@ export type Unsafe = (query: string, ...params: unknown[]) => Promise<Record<str
 export const unsafe: Unsafe = rt.unsafe as Unsafe;
 export const getClient = rt.getClient;
 export const setClient = rt.setClient;
-export const createClient = rt.createClient;
+export function createClient<Registry extends QueryRegistry = DefaultQueryRegistry>(
+  ...args: CreateClientArgs<Registry>
+): import("./postgres-runtime").PostgresClient {
+  const [url, options] = args as [string | undefined, import("./postgres-runtime").CreateClientOptions | undefined];
+  return rt.createClient(url, options);
+}
 export function createSqlClient<Registry extends QueryRegistry = DefaultQueryRegistry>(
-  url?: string,
-  options?: import("./postgres-runtime").CreateClientOptions,
+  ...args: CreateClientArgs<Registry>
 ): SqlClient<Registry> {
+  const [url, options] = args as [string | undefined, import("./postgres-runtime").CreateClientOptions | undefined];
   return rt.createSqlClient(url, options) as unknown as SqlClient<Registry>;
 }
 export const close = rt.close;
+export const ready = rt.ready;
 export { migrate, clearSqlFileCache, encodePgArrayLiteral, id, json, array } from "./runtime";

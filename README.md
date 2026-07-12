@@ -25,7 +25,7 @@ const rows = await sql(
 - **WHERE narrowing**: `IS NOT NULL`, equality chains, `IN`, `LIKE`, `BETWEEN` make columns non-null. Tracks `AND`/`OR` semantics.
 - **PostgreSQL enums** generated as TypeScript literal unions (read + write side).
 - **Schema-aware `jsonb`** via config-driven column → application type mappings. Works for both result columns and `INSERT`/`UPDATE`/`WHERE` parameters. Unmapped `json`/`jsonb` falls back to `JsonValue` for rows and an explicitly wrapped, structurally checked JSON parameter.
-- **Compile-time extension type inference**: `pgvector` (`vector`, `halfvec`, `sparsevec`), `hstore`, `citext`, `ltree`/`lquery`/`ltxtquery`. Add your own through `customTypes` config.
+- **End-to-end extension types**: `pgvector` (`vector`, `halfvec`, `sparsevec`), `hstore`, `citext`, `ltree`/`lquery`/`ltxtquery`. Prepare infers their TypeScript types; the runtime discovers database-local OIDs and installs matching scalar/array codecs before the first query. Add your own through `customTypes` and `typeCodecs`.
 - **Domains** resolve to their base TypeScript type (`CREATE DOMAIN email AS text` → `string`), including domains over extension types or other domains.
 - **Wide built-in type coverage**: numeric, text, date/time, UUID, json/jsonb, network (inet/cidr/macaddr/macaddr8), bit strings, ranges/multiranges, geometric, money, tsvector/tsquery, xml — and the matching array variants.
 - **External SQL files** via `sql.file("queries/foo.sql", ...)` — prepared and typed through `KnownFileQueries`. Watch mode re-prepares on `.sql` edits too.
@@ -46,7 +46,7 @@ const rows = await sql(
 - **Single runtime adapter**: Postgres.js backs the runtime on Node/Bun-compatible environments — no Bun.SQL-specific adapter to choose.
 - **Incremental watch mode**: debounced re-prepare with a warm `PgClient` + `SchemaCache`; source/SQL edits only rescan affected files and re-describe changed fingerprints, while config/tsconfig/schema changes trigger a full rebuild.
 - **Cache pruning** removes orphaned entries automatically (toggleable with `--no-prune`).
-- **Environment doctor** checks runtime versions, config loading, `.env`, database connectivity/permissions, cache metadata, tsconfig inclusion, and pgschema availability.
+- **Environment doctor** checks runtime versions, config loading, `.env`, database connectivity/permissions, runtime-addressable `customTypes`, cache metadata, tsconfig inclusion, and pgschema availability.
 - **Strict inference gate** promotes degraded nullability analysis and generated `unknown` query types to CI errors.
 - **GitHub/editor diagnostics adapter** converts versioned prepare JSON into workflow annotations or Unix problem-matcher output.
 - **Versioned query inventory** via `queries --json`, including stable query IDs, definition names, cardinality, call sites, SQL files, and cache state. The same command can emit a deterministic embedded-SQL module for bundled applications.
@@ -390,10 +390,13 @@ Low-level access to the underlying Postgres.js client, in case you need to manag
 Use `createClient(...)` when replacing the default client; it preserves the built-in `bigint` and PostgreSQL array parsers expected by generated types.
 
 ```ts
-import { createClient, setClient } from "@onreza/sqlx-js";
+import { createClient, ready, setClient } from "@onreza/sqlx-js";
 
 setClient(createClient(process.env.DATABASE_URL));
+await ready();
 ```
+
+`sql()`, `unsafe()`, and transactions await runtime type discovery automatically. Call `ready()` only before using the raw object returned by `getClient()`, or `db.ready()` before a scoped client's raw `db.client`. A standalone Postgres.js object returned by `createClient()` is initialized after it is passed to `setClient()`; direct raw use without that runtime boundary remains ordinary Postgres.js behavior.
 
 For dependency injection, read replicas, tests, or several independent pools in one process, create a scoped runtime instead of replacing the global client:
 
@@ -403,6 +406,8 @@ import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env";
 
 const primary = createSqlClient<SqlxJsGeneratedRegistry>(process.env.DATABASE_URL);
 const replica = createSqlClient<SqlxJsGeneratedRegistry>(process.env.REPLICA_DATABASE_URL);
+
+await Promise.all([primary.ready(), replica.ready()]); // optional pre-warm
 
 await primary.sql(`INSERT INTO audit_log (message) VALUES ($1)`, "created");
 const rows = await replica.sql(`SELECT id, message FROM audit_log ORDER BY id DESC`);
@@ -431,6 +436,14 @@ setClient(createClient(process.env.DATABASE_URL, {
   // Optional generated map from `sqlx-js queries --embed ...`. When present,
   // sql.file() needs no runtime filesystem asset for those paths.
   sqlFiles: sqlxJsEmbeddedSql,
+  // Name-based runtime codecs. Schema-qualified keys disambiguate duplicate
+  // type names; PostgreSQL OIDs are discovered for the active database.
+  typeCodecs: {
+    geometry: {
+      parse: (text) => parseWkt(text),
+      serialize: (value) => toWkt(value),
+    },
+  },
   // Honored for every unsafe call. Set false for PgBouncer transaction mode
   // unless protocol-level prepared statements are configured there.
   prepare: false,
@@ -741,9 +754,9 @@ Arrays of that domain are inferred as `string[]` without config. Ordinary `text[
 
 Application-owned functions and procedures from non-system schemas are generated into `KnownFunctions`. Objects owned by installed extensions are excluded through `pg_depend`, preventing extension internals from dominating committed artifacts. Set `functionCatalog.includeExtensionOwned: true` only when those approximate signatures are needed, or set `functionCatalog: false` to disable catalog generation entirely.
 
-### Extension types and `customTypes`
+### Extension types, `customTypes`, and `typeCodecs`
 
-sqlx-js ships with a built-in compile-time registry that resolves popular PostgreSQL extension types automatically:
+sqlx-js ships with built-in compile-time and runtime codecs for popular PostgreSQL extension types:
 
 | `pg_type.typname` | TS type                            | Source extension |
 |-------------------|------------------------------------|-------------------|
@@ -756,7 +769,7 @@ sqlx-js ships with a built-in compile-time registry that resolves popular Postgr
 | `lquery`          | `string`                           | ltree             |
 | `ltxtquery`       | `string`                           | ltree             |
 
-Add or override mappings via `customTypes` in `sqlx-js.config.ts`. Keys are `pg_type.typname` values (the bare type name). The registry is global by type name, so two schemas with the same `typname` cannot be mapped differently:
+Add or override mappings via `customTypes` in `sqlx-js.config.ts`. Keys are non-system `pg_type.typname` values (the bare element type name, not `_typename` array names). Live prepare verifies that every configured type exists and rejects system, array, and domain targets before publishing artifacts. The registry is global by type name, so two schemas with the same `typname` cannot be mapped differently:
 
 ```ts
 import { defineConfig } from "@onreza/sqlx-js";
@@ -765,16 +778,61 @@ export default defineConfig({
   customTypes: {
     vector: "Float32Array",         // override pgvector default
     geometry: "GeoJSON.Geometry",   // postgis (not built-in by design)
-    myapp_color: "`#${string}`",    // your own CREATE TYPE base/domain
+    myapp_color: "`#${string}`",    // application representation of an enum
   },
 });
 ```
 
-Domains resolve to their base type through `pg_type.typbasetype`. `CREATE DOMAIN positive_int AS integer CHECK (VALUE > 0)` → `number`, `CREATE DOMAIN tagged AS hstore` → `Record<string, string | null>`. Array variants of any registered scalar are also wired up automatically — `vector[]` → `(number[])[]`.
+Domains resolve to their base type through `pg_type.typbasetype`. `CREATE DOMAIN positive_int AS integer CHECK (VALUE > 0)` → `number`, `CREATE DOMAIN tagged AS hstore` → `Record<string, string | null>`. PostgreSQL reports domain result columns with the base type OID, so domain-specific `customTypes` / `typeCodecs` overrides are rejected rather than producing a read/write contract that only works for parameters. Use `columnTypes` for a runtime-compatible branded assertion on a direct domain column. Array variants of any registered scalar are wired up automatically — `vector[]` → `(number[])[]`.
 
 Composite types (`CREATE TYPE foo AS (a int, b text)`) resolve to a struct literal — `{ a: number | null; b: string | null }` — with each attribute typed (enums, domains, and nested composites included) and nullable unless the attribute is `NOT NULL`. Array variants (`foo[]`) resolve too.
 
-These mappings describe generated TypeScript contracts; they do not install Postgres.js runtime codecs. PostgreSQL assigns database-local OIDs to enums, domains, composites, and extension types, so Postgres.js returns an unmapped value in its text representation unless a matching codec is registered through `createClient(..., { types })`. The same applies to arrays whose element OID has no runtime parser. Keep the configured TypeScript type aligned with that runtime representation, or provide a parser and serializer for the active database OIDs. Automatic OID discovery and name-based runtime codec registration are tracked separately in the roadmap.
+PostgreSQL assigns database-local OIDs to enums, domains, composites, and extension types. The runtime resolves those OIDs once per pool before the first application query, then installs both scalar and array parsers/serializers in the shared Postgres.js registry. Enums use their string labels, domains delegate to their base type, composites become objects keyed by attribute name, and built-in `vector`/`halfvec`/`hstore` mappings match the TypeScript table above. Existing numeric Postgres.js `types` entries remain authoritative. Apply migrations before creating the application pool; recreate the client after adding or replacing database types so discovery sees the new catalog.
+
+For an application-defined `customTypes` representation, provide the matching name-based runtime codec. Explicit mappings can override non-system base/extension, enum, range, and composite representations. Every configured `customTypes` entry is emitted into `SqlxJsGeneratedRegistry["runtimeTypes"]`; binding that registry to `createSqlClient<SqlxJsGeneratedRegistry>(...)` or `createClient<SqlxJsGeneratedRegistry>(...)` makes missing codecs and incompatible parser/serializer values TypeScript errors:
+
+```ts
+import { createSqlClient } from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env";
+import { parseGeometry, serializeGeometry } from "./geometry-codec";
+
+const db = createSqlClient<SqlxJsGeneratedRegistry>(process.env.DATABASE_URL, {
+  typeCodecs: {
+    vector: {
+      parse: (value) => new Float32Array(
+        value === "[]" ? [] : value.slice(1, -1).split(",").map(Number),
+      ),
+      serialize: (value) => `[${Array.from(value).join(",")}]`,
+    },
+    geometry: {
+      parse: parseGeometry,
+      serialize: serializeGeometry,
+    },
+    myapp_color: {
+      parse: (value) => value as `#${string}`,
+      serialize: String,
+    },
+  },
+});
+```
+
+The same contract is available for the global client setup:
+
+```ts
+import { createClient, setClient } from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env";
+import { typeCodecs } from "./database-codecs";
+
+setClient(createClient<SqlxJsGeneratedRegistry>(process.env.DATABASE_URL, {
+  typeCodecs,
+}));
+```
+
+The contract is scoped rather than ambient, so separate database packages can use the same PostgreSQL type name with different application representations. The lazy global `sql` export cannot prove that runtime options were installed; use a registry-bound `createClient` as above or prefer the scoped client for strict end-to-end enforcement.
+
+Generated `customTypes` contracts use bare keys matching `pg_type.typname`. Bare codec keys apply to every matching type name; schema-qualified keys such as `postgis.geometry` are available for additional manually configured codecs but do not replace a generated bare-key requirement. A configured key that does not exist fails during bootstrap instead of silently leaving a mismatched runtime value. Codecs receive the scalar PostgreSQL text representation; their parser and serializer are composed automatically for composite attributes and arrays.
+
+Database-specific numeric Postgres.js codecs remain a fully typed alternative. Pass `types` keyed by the generated `customTypes` names; each value is checked as `postgres.PostgresType<T>` for that application type. The numeric OIDs remain application-owned and take runtime precedence. If both mechanisms are needed, satisfy the generated contract with `typeCodecs` and add unrelated numeric `types` alongside it.
 
 ## How nullability is inferred
 
@@ -875,6 +933,8 @@ Generator revision 8 treats `ARRAY[...]`, `ARRAY(SELECT ...)`, and `EXISTS(...)`
 Generator revision 9 separates array-value nullability from element nullability. Ordinary PostgreSQL arrays now emit `(T | null)[]`; SQL expression proofs, `NOT NULL` element domains, and `arrayElementNullability` assertions narrow them to `T[]`. `PgArrayParameter` also carries an element-nullability flag inferred by `sql.array(...)`. Re-run live `sqlx-js prepare` after upgrading; review widened result types and add assertions only for invariants the application genuinely enforces.
 
 Generator revision 10 adds non-executing generic-plan validation after `Describe`. Live prepare now catches planner-only PostgreSQL errors such as an `ON CONFLICT` target without a matching unique or exclusion constraint, including errors hidden by value-dependent custom-plan simplification. Cache entries record whether a statement was `planned` or only `parse-only`; re-run live `sqlx-js prepare` before relying on `--check` or `--offline` after upgrading. This revision also raises the supported database baseline to PostgreSQL 16.
+
+Generator revision 11 adds a scoped runtime codec contract to generated declarations. Every explicit `customTypes` mapping now requires matching name-based `typeCodecs` or typed numeric Postgres.js `types` when the generated registry is bound to `createSqlClient<SqlxJsGeneratedRegistry>()` or `createClient<SqlxJsGeneratedRegistry>()`. Explicit enum and composite mappings now affect query types as well as the runtime codec contract. Domain-specific mappings are rejected because PostgreSQL exposes the base type OID for domain results. Re-run live `sqlx-js prepare` after upgrading; this also validates that committed declarations and cache manifests use the new contract.
 
 Runtime observers and SQL-file caching are also stricter production boundaries. An exception from `onQuery` no longer replaces a successful query result; handle it through `onQueryHookError`. `sql.file()` no longer performs an mtime check on every call—use `reloadSqlFiles: true` during development or call `clearSqlFileCache()` explicitly after changing a file.
 

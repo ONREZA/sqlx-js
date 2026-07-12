@@ -434,7 +434,13 @@ export async function openSession(opts: PrepareOptions): Promise<PrepareSession>
     throw fatal("connect", error);
   }
   const schema = new SchemaCache(client);
-  schema.setTypeRegistry(mergeExtensionTypes(userCfg.customTypes));
+  schema.setTypeRegistry(mergeExtensionTypes(userCfg.customTypes), userCfg.customTypes);
+  try {
+    await schema.validateUserTypeRegistry();
+  } catch (error) {
+    await client.end().catch(() => {});
+    throw fatal("config", error);
+  }
   return { client, schema, userCfg };
 }
 
@@ -805,7 +811,7 @@ export async function prepareOnce(
     if (pruned > 0) log(`pruned ${pruned} orphaned cache entry/entries`);
     writeFunctionCache(opts.cacheDir, functions);
     writeCacheManifest(opts.cacheDir, prepareConfigHash(userCfg));
-    emitDts(opts.dtsPath, entries, functions);
+    emitDts(opts.dtsPath, entries, functions, userCfg.customTypes);
   } catch (error) {
     throw fatal("cache", error);
   }
@@ -935,7 +941,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-check-"));
         const generatedDts = join(tmp, "sqlx-js-env.d.ts");
         try {
-          emitDts(generatedDts, entries, functions);
+          emitDts(generatedDts, entries, functions, userCfg.customTypes);
           if (!existsSync(opts.dtsPath) || readFileSync(opts.dtsPath, "utf8") !== readFileSync(generatedDts, "utf8")) {
             diagnostics.push({
               severity: "error",
@@ -973,7 +979,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         process.exitCode = 1;
         return;
       }
-      if (opts.offline) emitDts(opts.dtsPath, entries, functions);
+      if (opts.offline) emitDts(opts.dtsPath, entries, functions, userCfg.customTypes);
     } catch (error) {
       throw fatal("cache", error);
     }

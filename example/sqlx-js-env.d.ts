@@ -50,10 +50,14 @@ export interface SqlxJsGeneratedFileQueries {
 export interface SqlxJsGeneratedFunctions {
 }
 
+export interface SqlxJsGeneratedRuntimeTypes {
+}
+
 export interface SqlxJsGeneratedRegistry {
   queries: SqlxJsGeneratedQueries;
   fileQueries: SqlxJsGeneratedFileQueries;
   functions: SqlxJsGeneratedFunctions;
+  runtimeTypes: SqlxJsGeneratedRuntimeTypes;
 }
 
 declare module "@onreza/sqlx-js" {

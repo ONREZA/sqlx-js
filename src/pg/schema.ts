@@ -43,11 +43,61 @@ export class SchemaCache {
   private customArrayElements = new Map<number, number>();
   private typesProbed = new Set<number>();
   private typeRegistry: Record<string, string> = {};
+  private userTypeRegistry: Record<string, string> = {};
 
   constructor(private client: PgClient) {}
 
-  setTypeRegistry(registry: Record<string, string>): void {
+  setTypeRegistry(
+    registry: Record<string, string>,
+    userRegistry: Record<string, string> = {},
+  ): void {
     this.typeRegistry = registry;
+    this.userTypeRegistry = userRegistry;
+  }
+
+  async validateUserTypeRegistry(): Promise<void> {
+    const names = Object.keys(this.userTypeRegistry).sort();
+    if (names.length === 0) return;
+    const literals = names.map((name) => `'${name.replace(/'/g, "''")}'`).join(", ");
+    const result = await this.client.simpleQueryAll(`
+      SELECT n.nspname, t.typname, t.typtype, t.typcategory
+      FROM pg_catalog.pg_type t
+      JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+      WHERE t.typname IN (${literals})
+      ORDER BY n.nspname, t.typname
+    `);
+    const matches = new Map<string, { schema: string; kind: string; category: string }[]>();
+    for (const row of result.rows) {
+      const name = decodeText(row[1]!)!;
+      const values = matches.get(name) ?? [];
+      values.push({
+        schema: decodeText(row[0]!)!,
+        kind: decodeText(row[2]!)!,
+        category: decodeText(row[3]!)!,
+      });
+      matches.set(name, values);
+    }
+    for (const name of names) {
+      const types = matches.get(name) ?? [];
+      if (types.length === 0) {
+        throw new Error(`sqlx-js: customTypes type ${name} does not exist in the prepare database`);
+      }
+      if (types.some((type) =>
+        type.schema === "pg_catalog"
+        || type.schema === "information_schema"
+        || type.schema.startsWith("pg_toast")
+        || type.schema.startsWith("pg_temp_"))) {
+        throw new Error(`sqlx-js: customTypes cannot override PostgreSQL system type ${name}`);
+      }
+      if (types.some((type) => type.kind === "d")) {
+        throw new Error(
+          `sqlx-js: customTypes cannot override PostgreSQL domain ${name} because PostgreSQL reports domain results as the base type`,
+        );
+      }
+      if (types.some((type) => type.category === "A")) {
+        throw new Error(`sqlx-js: customTypes must name the array element type, not PostgreSQL array type ${name}`);
+      }
+    }
   }
 
   async loadAttributes(refs: { tableOid: number; attno: number }[]): Promise<void> {
@@ -191,12 +241,22 @@ export class SchemaCache {
       const typrelid = Number(decodeText(row[6]!));
       const typnotnull = decodeText(row[7]!) === "t";
 
-      if (typtype === "e") {
-        enumOids.push(oid);
-        this.customTypes.set(oid, { kind: "enum", name, values: [] });
-      } else if (typcategory === "A" && typelem > 0) {
+      if (typcategory === "A" && typelem > 0) {
         arrayInfos.push({ arrayOid: oid, arrayName: name, elemOid: typelem });
         this.customArrayElements.set(oid, typelem);
+      } else if (Object.hasOwn(this.userTypeRegistry, name) && typtype === "d") {
+        throw new Error(
+          `sqlx-js: customTypes cannot override PostgreSQL domain ${name} because PostgreSQL reports domain results as the base type`,
+        );
+      } else if (Object.hasOwn(this.userTypeRegistry, name)) {
+        this.customTypes.set(oid, {
+          kind: "scalar",
+          name,
+          tsType: this.userTypeRegistry[name]!,
+        });
+      } else if (typtype === "e") {
+        enumOids.push(oid);
+        this.customTypes.set(oid, { kind: "enum", name, values: [] });
       } else if (typtype === "b" && this.typeRegistry[name]) {
         this.customTypes.set(oid, { kind: "scalar", name, tsType: this.typeRegistry[name]! });
       } else if (typtype === "d" && typbasetype > 0) {

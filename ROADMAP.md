@@ -6,7 +6,6 @@ Items already shipped live in the [README](./README.md) feature list; this file 
 
 | Feature | ROI | Notes |
 |---------|-----|-------|
-| Runtime codecs for database-local types | 9 | Discover enum/domain/composite/extension OIDs per database and register name-based Postgres.js scalar/array parsers before application queries. Keep explicit application codecs for representations such as vector, hstore, PostGIS, and custom `customTypes`; compile-time type strings alone cannot define serialization semantics. |
 | pgschema integration hardening | 6 | Managed install/check/plan/apply now has a real pinned-binary PostgreSQL E2E in CI. Continue with schema snapshot handoff and migration guidance for projects that outgrow built-in migrations. |
 | Separate runtime package | Deferred | The audited root import already excludes compile-time modules. Making TypeScript an optional peer reduced a clean production install from about 33 MB to 2.4 MB; a second public package and release boundary is not justified for the remaining analyzer dependency unless production consumers demonstrate measurable pressure. |
 | Built-in migration lifecycle maintenance | 5 | Keep `migrate run/dev/verify/revert/squash/archive` stable for simple projects and application startup, but avoid expanding it into a full PostgreSQL schema-as-code system. |

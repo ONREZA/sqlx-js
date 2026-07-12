@@ -18,6 +18,7 @@ test("setClient respects prepare false and preserves result metadata", async () 
     },
     array: (value: unknown[], oid?: number) => ({ kind: "array", value, oid }),
     json: (value: unknown) => ({ kind: "json", value }),
+    typed: (value: unknown, oid: number) => ({ kind: "typed", value, oid }),
     end: async () => {},
   } as unknown as PostgresClient;
 
@@ -68,30 +69,35 @@ test("Postgres.js receives explicit JSON and array parameters", async () => {
     },
     array: (value: unknown[], oid?: number) => ({ kind: "array", value, oid }),
     json: (value: unknown) => ({ kind: "json", value }),
+    typed: (value: unknown, oid: number) => ({ kind: "typed", value, oid }),
     end: async () => {},
   } as unknown as PostgresClient;
 
   setClient(fake);
   const jsonArray = sql.array([sql.json({ kind: "object" }), null]);
   await unsafe(
-    "SELECT $1::jsonb, $2::text[], $3::bytea[], $4::jsonb[], $5::timestamptz[]",
+    "SELECT $1::jsonb, $2::text[], $3::bytea[], $4::jsonb[], $5::timestamptz[], $6::text[], $7::int4[]",
     sql.json([1, 2]),
     sql.array(["a", "b"]),
     sql.array([new Uint8Array([1, 2])]),
     jsonArray,
     sql.array([new Date("2026-01-02T03:04:05.000Z")]),
+    sql.array([]),
+    sql.array([null]),
   );
 
   expect(calls[0]).toEqual([
     { kind: "json", value: [1, 2] },
-    "{a,b}",
-    "{\"\\\\x0102\"}",
+    { kind: "typed", value: ["a", "b"], oid: 0 },
+    { kind: "typed", value: [new Uint8Array([1, 2])], oid: 0 },
     {
       kind: "array",
       value: [...jsonArray.value],
       oid: 3807,
     },
-    '{"2026-01-02T03:04:05.000Z"}',
+    { kind: "typed", value: [new Date("2026-01-02T03:04:05.000Z")], oid: 0 },
+    { kind: "typed", value: [], oid: 0 },
+    { kind: "typed", value: [null], oid: 0 },
   ]);
 });
 

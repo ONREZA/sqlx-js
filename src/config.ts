@@ -66,8 +66,17 @@ function validateStringRecord(value: unknown, name: string, path: string): void 
     throw new Error(`sqlx-js: ${path} ${name} must be an object of string values`);
   }
   for (const [key, item] of Object.entries(value)) {
-    if (typeof item !== "string") {
-      throw new Error(`sqlx-js: ${path} ${name}.${key} must be a string`);
+    if (typeof item !== "string" || item.trim() === "") {
+      throw new Error(`sqlx-js: ${path} ${name}.${key} must be a non-empty string`);
+    }
+  }
+}
+
+function validateCustomTypes(value: unknown, path: string): void {
+  validateStringRecord(value, "customTypes", path);
+  for (const key of Object.keys(value as Record<string, string>)) {
+    if (key.trim() === "" || key.includes(".")) {
+      throw new Error(`sqlx-js: ${path} customTypes keys must be bare PostgreSQL type names`);
     }
   }
 }
@@ -104,7 +113,7 @@ function validateConfig(value: unknown, path: string): SqlxJsConfig {
   if (config.jsonbTypes !== undefined) validateStringRecord(config.jsonbTypes, "jsonbTypes", path);
   if (config.columnTypes !== undefined) validateStringRecord(config.columnTypes, "columnTypes", path);
   if (config.arrayElementNullability !== undefined) validateArrayElementNullability(config.arrayElementNullability, path);
-  if (config.customTypes !== undefined) validateStringRecord(config.customTypes, "customTypes", path);
+  if (config.customTypes !== undefined) validateCustomTypes(config.customTypes, path);
   if (config.jsonbTypes && config.columnTypes) {
     const jsonKeys = Object.keys(config.jsonbTypes as Record<string, string>);
     const columnKeys = Object.keys(config.columnTypes as Record<string, string>);

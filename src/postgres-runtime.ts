@@ -3,9 +3,9 @@ import { resolve } from "node:path";
 import {
   createSqlRuntime,
   encodePgArrayLiteral,
-  isPrimitiveArrayElement,
   parameterKind,
   parsePgArrayLiteral,
+  toPgError,
   TransactionTimeoutError,
   type JsonParameter,
   type OnQueryHook,
@@ -16,6 +16,7 @@ import {
   type RuntimeTransactionOptions,
 } from "./runtime";
 import { arrayElementOid, builtinArrayOids } from "./pg/oids";
+import { PostgresTypeRegistry, type RuntimeTypeCodecs } from "./postgres-codecs";
 
 export type PostgresClient = postgres.Sql<{ bigint: bigint }>;
 export type PostgresOptions = postgres.Options<Record<string, postgres.PostgresType>>;
@@ -26,6 +27,7 @@ export type CreateClientOptions = PostgresOptions & {
   fileRoot?: string;
   reloadSqlFiles?: boolean;
   sqlFiles?: Readonly<Record<string, string>>;
+  typeCodecs?: RuntimeTypeCodecs;
 };
 type PostgresQueryClient = PostgresClient | postgres.TransactionSql<{ bigint: bigint }>;
 type PendingQuery = PromiseLike<RuntimeQueryResult> & { cancel?: () => void };
@@ -42,6 +44,7 @@ type AttachedHooks = {
   fileRoot: string;
   reloadSqlFiles: boolean;
   sqlFiles?: Readonly<Record<string, string>>;
+  typeCodecs?: RuntimeTypeCodecs;
 };
 
 function resolvedFileRoot(value?: string): string {
@@ -59,6 +62,7 @@ class PostgresRuntimeClient implements RuntimeClient {
     public readonly sqlFiles?: Readonly<Record<string, string>>,
     private readonly transactionScoped = false,
     private readonly transactionState?: TransactionState,
+    private readonly typeRegistry: PostgresTypeRegistry = new PostgresTypeRegistry(client as PostgresClient),
   ) {}
 
   async query(query: string, params: unknown[]): Promise<RuntimeQueryResult> {
@@ -76,18 +80,41 @@ class PostgresRuntimeClient implements RuntimeClient {
     }
   }
 
-  transformParam(param: unknown): unknown {
+  transformParams(params: unknown[]): unknown[] | PromiseLike<unknown[]> {
+    const pending = this.bootstrap();
+    return pending
+      ? pending.then(() => this.encodeParams(params))
+      : this.encodeParams(params);
+  }
+
+  private encodeParams(params: unknown[]): unknown[] {
+    return params.length === 0 ? params : params.map((param) => this.encodeParam(param));
+  }
+
+  private encodeParam(param: unknown): unknown {
     const kind = parameterKind(param);
     if (kind === "json") return this.client.json((param as JsonParameter).value as never);
     if (kind === "array") {
       const value = [...(param as PgArrayParameter).value];
-      if (value.every(isPrimitiveArrayElement)) return encodePgArrayLiteral(value);
-      if (value.every((item) => item === null || parameterKind(item) === "json")) {
+      const hasJson = value.some((item) => parameterKind(item) === "json");
+      if (hasJson && value.every((item) => item === null || parameterKind(item) === "json")) {
         return this.client.array(value as never[], 3807);
       }
-      return this.client.array(value as never[]);
+      return this.client.typed(value as never[], 0);
     }
     return param;
+  }
+
+  async ready(): Promise<void> {
+    const pending = this.bootstrap();
+    if (pending) await pending;
+  }
+
+  private bootstrap(): Promise<void> | undefined {
+    const pending = this.typeRegistry.ready();
+    return pending?.catch((error) => {
+      throw toPgError(error) ?? error;
+    });
   }
 
   async transaction<R>(
@@ -97,6 +124,8 @@ class PostgresRuntimeClient implements RuntimeClient {
     if (this.transactionScoped || !("begin" in this.client)) {
       throw new Error("sqlx-js.transaction: nested transactions are not supported");
     }
+    const pending = this.bootstrap();
+    if (pending) await pending;
     return await this.client.begin(async (tx) => {
       const state: TransactionState | undefined = options.timeoutMs === undefined
         ? undefined
@@ -111,6 +140,7 @@ class PostgresRuntimeClient implements RuntimeClient {
         this.sqlFiles,
         true,
         state,
+        this.typeRegistry,
       );
       if (options.timeoutMs === undefined) return await fn(scoped);
       return await runTransactionWithTimeout(options.timeoutMs, state!, () => fn(scoped));
@@ -265,7 +295,7 @@ function installJsonArrayCodecs(client: PostgresClient): void {
 
 export function createClient(url = process.env.DATABASE_URL, options: CreateClientOptions = {}): PostgresClient {
   if (!url) throw new Error("sqlx-js: DATABASE_URL is not set");
-  const { onQuery, onQueryHookError, statementTimeoutMs, fileRoot, reloadSqlFiles, sqlFiles, ...pgOptions } = options;
+  const { onQuery, onQueryHookError, statementTimeoutMs, fileRoot, reloadSqlFiles, sqlFiles, typeCodecs, ...pgOptions } = options;
   const connection = statementTimeoutMs !== undefined
     ? { ...(pgOptions.connection ?? {}), statement_timeout: statementTimeoutMs }
     : pgOptions.connection;
@@ -281,6 +311,7 @@ export function createClient(url = process.env.DATABASE_URL, options: CreateClie
     fileRoot: resolvedFileRoot(fileRoot),
     reloadSqlFiles: reloadSqlFiles ?? false,
     sqlFiles,
+    typeCodecs,
   } satisfies AttachedHooks;
   return client;
 }
@@ -288,6 +319,7 @@ export function createClient(url = process.env.DATABASE_URL, options: CreateClie
 function createDefaultClient(): PostgresRuntimeClient {
   const client = createClient();
   const attached = (client as unknown as Record<symbol, unknown>)[HOOKS] as AttachedHooks;
+  const typeRegistry = new PostgresTypeRegistry(client, attached.typeCodecs);
   return new PostgresRuntimeClient(
     client,
     attached.onQuery,
@@ -296,6 +328,9 @@ function createDefaultClient(): PostgresRuntimeClient {
     attached.fileRoot,
     attached.reloadSqlFiles,
     attached.sqlFiles,
+    false,
+    undefined,
+    typeRegistry,
   );
 }
 
@@ -317,10 +352,13 @@ export function setClient(
     fileRoot?: string;
     reloadSqlFiles?: boolean;
     sqlFiles?: Readonly<Record<string, string>>;
+    typeCodecs?: RuntimeTypeCodecs;
   },
 ): void {
   installJsonArrayCodecs(client);
   const attached = (client as unknown as Record<symbol, unknown>)[HOOKS] as AttachedHooks | undefined;
+  const typeCodecs = options?.typeCodecs ?? attached?.typeCodecs;
+  const typeRegistry = new PostgresTypeRegistry(client, typeCodecs);
   defaultClient = new PostgresRuntimeClient(
     client,
     options?.onQuery ?? attached?.onQuery,
@@ -329,6 +367,9 @@ export function setClient(
     resolvedFileRoot(options?.fileRoot ?? attached?.fileRoot),
     options?.reloadSqlFiles ?? attached?.reloadSqlFiles ?? false,
     options?.sqlFiles ?? attached?.sqlFiles,
+    false,
+    undefined,
+    typeRegistry,
   );
 }
 
@@ -339,9 +380,14 @@ export async function close(): Promise<void> {
   }
 }
 
+export async function ready(): Promise<void> {
+  await getRuntimeClient().ready();
+}
+
 export function createSqlClient(url = process.env.DATABASE_URL, options: CreateClientOptions = {}) {
   const client = createClient(url, options);
   const attached = (client as unknown as Record<symbol, unknown>)[HOOKS] as AttachedHooks;
+  const typeRegistry = new PostgresTypeRegistry(client, attached.typeCodecs);
   const runtimeClient = new PostgresRuntimeClient(
     client,
     attached.onQuery,
@@ -350,11 +396,15 @@ export function createSqlClient(url = process.env.DATABASE_URL, options: CreateC
     attached.fileRoot,
     attached.reloadSqlFiles,
     attached.sqlFiles,
+    false,
+    undefined,
+    typeRegistry,
   );
   const runtime = createSqlRuntime(() => runtimeClient);
   return {
     ...runtime,
     client,
+    ready: async () => runtimeClient.ready(),
     close: async () => runtimeClient.close(),
   };
 }

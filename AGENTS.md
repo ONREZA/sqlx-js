@@ -22,6 +22,7 @@ The library is **PostgreSQL-only** and **compile-time-only by design** — no ru
 │   ├── query-id.ts           Shared prepare/runtime query fingerprint
 │   ├── migration-core.ts     Lightweight migration apply/lock path shared by runtime + CLI
 │   ├── postgres-runtime.ts   Postgres.js runtime adapter
+│   ├── postgres-codecs.ts    Name-based runtime codecs + database-local OID bootstrap
 │   ├── artifacts.ts          Generated-artifact comparison for prepare --verify
 │   ├── cache.ts              .sqlx-js/<fingerprint>.json reader/writer
 │   ├── codegen.ts            Emits sqlx-js-env.d.ts from CacheEntry[]
@@ -71,7 +72,7 @@ A `prepare` run executes the following pipeline:
 
 `prepare --watch` keeps the `PgClient` + `SchemaCache` warm and re-runs steps 1–8 on every debounced filesystem event.
 
-The runtime (`src/index.ts` + `src/runtime.ts` + `src/postgres-runtime.ts`) is a thin layer over `client.unsafe(query, params)` using Postgres.js with prepared `unsafe` calls. Strict typing comes from an overload keyed on the active query registry — the global convenience API uses `KnownQueries`, while `createSqlClient<SqlxJsGeneratedRegistry>()` can bind an independent pool to one generated project contract. `defineQuery` keeps a SQL literal/cardinality contract reusable across the root and transaction `SqlExecutor` surfaces; runtime observers receive the same stable query ID used by prepare/cache. Transaction deadlines cancel pending driver queries and expire the scoped executor before Postgres.js rolls the transaction back.
+The runtime (`src/index.ts` + `src/runtime.ts` + `src/postgres-runtime.ts`) is a thin layer over `client.unsafe(query, params)` using Postgres.js with prepared `unsafe` calls. Before the first application query, `src/postgres-codecs.ts` discovers database-local enum/domain/composite/extension OIDs once per pool and installs scalar/array codecs shared by every connection. Generated registries carry explicit `customTypes` into a required `typeCodecs` or typed numeric Postgres.js `types` contract for `createSqlClient<SqlxJsGeneratedRegistry>()` and `createClient<SqlxJsGeneratedRegistry>()`. Domain-specific overrides are intentionally rejected because PostgreSQL exposes their base OID in result metadata; domains inherit their base codec instead. Strict query typing comes from an overload keyed on the active query registry — the global convenience API uses `KnownQueries`, while a scoped client binds one generated project contract. `defineQuery` keeps a SQL literal/cardinality contract reusable across the root and transaction `SqlExecutor` surfaces; runtime observers receive the same stable query ID used by prepare/cache. Transaction deadlines cancel pending driver queries and expire the scoped executor before Postgres.js rolls the transaction back.
 
 ## Common development tasks
 

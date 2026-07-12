@@ -12,9 +12,13 @@ afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-function write(entries: CacheEntry[], functions: FunctionEntry[] = []): string {
+function write(
+  entries: CacheEntry[],
+  functions: FunctionEntry[] = [],
+  runtimeTypes: Record<string, string> = {},
+): string {
   const out = join(tmp, "sqlx-js-env.d.ts");
-  emitDts(out, entries, functions);
+  emitDts(out, entries, functions, runtimeTypes);
   return readFileSync(out, "utf8");
 }
 
@@ -265,14 +269,14 @@ test("two generated registries remain independently usable in one TypeScript pro
     paramTsTypes: [],
     hasResultSet: true,
     columns: [{ name: "primary", typeOid: 23, tsType: "number", nullable: false }],
-  }]);
+  }], [], { shared_type: "number" });
   emitDts(join(root, "replica.d.ts"), [{
     query: "SELECT replica",
     paramOids: [],
     paramTsTypes: [],
     hasResultSet: true,
     columns: [{ name: "replica", typeOid: 25, tsType: "string", nullable: false }],
-  }]);
+  }], [], { shared_type: "string" });
   writeFileSync(join(root, "consumer.ts"), `
 import { createSqlClient } from "@onreza/sqlx-js";
 import type { SqlxJsGeneratedRegistry as PrimaryRegistry } from "./primary";
@@ -283,8 +287,12 @@ const replicaKey: keyof ReplicaRegistry["queries"] = "SELECT replica";
 const primaryOnly: "SELECT primary" = null as unknown as keyof PrimaryRegistry["queries"];
 const replicaOnly: "SELECT replica" = null as unknown as keyof ReplicaRegistry["queries"];
 
-const primary = createSqlClient<PrimaryRegistry>();
-const replica = createSqlClient<ReplicaRegistry>();
+const primary = createSqlClient<PrimaryRegistry>(undefined, {
+  typeCodecs: { shared_type: { parse: Number, serialize: String } },
+});
+const replica = createSqlClient<ReplicaRegistry>(undefined, {
+  typeCodecs: { shared_type: { parse: String, serialize: String } },
+});
 void primary.sql(primaryKey);
 void replica.sql(replicaKey);
 void primaryOnly;
@@ -309,6 +317,109 @@ void replicaOnly;
     encoding: "utf8",
   });
   expect(checked.status, checked.stdout + checked.stderr).toBe(0);
+});
+
+test("generated custom types require matching scoped runtime codecs", () => {
+  const root = join(tmp, "runtime-codecs");
+  mkdirSync(root, { recursive: true });
+  emitDts(join(root, "generated.d.ts"), [], [], {
+    geometry: "{ x: number; y: number }",
+  });
+  writeFileSync(join(root, "consumer.ts"), `
+import { createClient, createSqlClient } from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedRegistry } from "./generated";
+
+const client = createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
+  typeCodecs: {
+    geometry: {
+      parse: (value) => ({ x: Number(value), y: Number(value) }),
+      serialize: (value) => \`${"${value.x},${value.y}"}\`,
+    },
+  },
+});
+void client;
+
+const rawClient = createClient<SqlxJsGeneratedRegistry>(undefined, {
+  typeCodecs: {
+    geometry: {
+      parse: (value) => ({ x: Number(value), y: Number(value) }),
+      serialize: (value) => \`${"${value.x},${value.y}"}\`,
+    },
+  },
+});
+void rawClient;
+
+const numericClient = createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
+  types: {
+    geometry: {
+      to: 50_000,
+      from: [50_000],
+      parse: (value) => ({ x: Number(value), y: Number(value) }),
+      serialize: (value) => \`${"${value.x},${value.y}"}\`,
+    },
+  },
+});
+void numericClient;
+
+// @ts-expect-error numeric parser output must match the configured customTypes representation
+createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
+  types: {
+    geometry: {
+      to: 50_000,
+      from: [50_000],
+      parse: () => "not geometry",
+      serialize: (value) => \`${"${value.x},${value.y}"}\`,
+    },
+  },
+});
+
+createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
+  typeCodecs: {
+    geometry: {
+      // @ts-expect-error parser output must match the configured customTypes representation
+      parse: () => "not geometry",
+      serialize: (value) => \`${"${value.x},${value.y}"}\`,
+    },
+  },
+});
+
+createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
+  typeCodecs: {
+    geometry: {
+      parse: (value) => ({ x: Number(value), y: Number(value) }),
+      // @ts-expect-error serializer input must match the configured customTypes representation
+      serialize: (value: string) => value,
+    },
+  },
+});
+
+// @ts-expect-error customTypes require corresponding runtime codecs
+createSqlClient<SqlxJsGeneratedRegistry>();
+// @ts-expect-error raw clients bound to generated customTypes require codecs too
+createClient<SqlxJsGeneratedRegistry>();
+`);
+  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
+    compilerOptions: {
+      strict: true,
+      noEmit: true,
+      module: "Preserve",
+      moduleResolution: "Bundler",
+      target: "ESNext",
+      types: ["bun-types"],
+      baseUrl: resolve(import.meta.dir, ".."),
+      paths: { "@onreza/sqlx-js": ["src/index.ts"] },
+    },
+    files: ["consumer.ts", "generated.d.ts"],
+  }));
+
+  const checked = spawnSync("bunx", ["tsc", "-p", join(root, "tsconfig.json")], {
+    cwd: resolve(import.meta.dir, ".."),
+    encoding: "utf8",
+  });
+  expect(checked.status, checked.stdout + checked.stderr).toBe(0);
+  const dts = readFileSync(join(root, "generated.d.ts"), "utf8");
+  expect(dts).toContain("export interface SqlxJsGeneratedRuntimeTypes");
+  expect(dts).toContain('"geometry": { x: number; y: number };');
 });
 
 test("query definitions, executor helpers, and structural JSON compile together", () => {

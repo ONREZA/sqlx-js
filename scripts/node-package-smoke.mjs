@@ -32,7 +32,7 @@ try {
   }
   writeFileSync(join(temp, "app.mjs"), `
     import assert from "node:assert/strict";
-    import { close, createClient, defineQuery, queryId, setClient, sql, TransactionTimeoutError } from "@onreza/sqlx-js";
+    import { close, createClient, defineQuery, queryId, ready, setClient, sql, TransactionTimeoutError } from "@onreza/sqlx-js";
 
     try {
       const events = [];
@@ -41,6 +41,7 @@ try {
         onQuery: (event) => events.push(event),
         sqlFiles: { "queries/embedded.sql": "SELECT 9::int4 AS value" },
       }));
+      await ready();
       const row = await sql.one(
         "SELECT 42::int4 AS value, $1::jsonb AS payload, $2::int4[] AS numbers",
         sql.json({ ok: true }),

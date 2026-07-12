@@ -508,6 +508,7 @@ if (!haveIntegrationDatabase) {
       "tsconfig",
       "database",
       "permissions",
+      "runtimeTypes",
       "pgschema",
     ]);
     expect(payload.checks.every((check) => check.status !== "error")).toBe(true);
@@ -1282,7 +1283,98 @@ if (!haveIntegrationDatabase) {
     expect(r.code).toBe(0);
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain('"embedding": Float32Array | null');
+    expect(dts).toContain('"vector": Float32Array;');
+    expect(dts).toContain("runtimeTypes: SqlxJsGeneratedRuntimeTypes;");
     rmSync(join(tmp, "sqlx-js.config.ts"), { force: true });
+  });
+
+  test("user customTypes override enum and composite contracts but reject domains", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        DROP TYPE IF EXISTS tmp_custom_payload CASCADE;
+        DROP DOMAIN IF EXISTS tmp_custom_code CASCADE;
+        DROP DOMAIN IF EXISTS tmp_custom_status_domain CASCADE;
+        DROP TYPE IF EXISTS tmp_custom_status CASCADE;
+        CREATE TYPE tmp_custom_status AS ENUM ('active', 'disabled');
+        CREATE DOMAIN tmp_custom_code AS text;
+        CREATE DOMAIN tmp_custom_status_domain AS tmp_custom_status;
+        CREATE TYPE tmp_custom_payload AS (label text, count integer);
+      `);
+    } finally {
+      await setup.end();
+    }
+    writeFile("sqlx-js.config.ts",
+      "export default { customTypes: {\n" +
+      "  tmp_custom_status: \"RuntimeStatus\",\n" +
+      "  tmp_custom_payload: \"RuntimePayload\",\n" +
+      "} };\n",
+    );
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT $1::tmp_custom_status AS status, $2::tmp_custom_payload AS payload, $3::tmp_custom_status[] AS statuses, $4::tmp_custom_payload[] AS payloads, $5::tmp_custom_status_domain AS domain_status\", null, null, null, null, null);\n",
+    );
+    try {
+      const r = prepare();
+      expect(r.code, r.stderr).toBe(0);
+      const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+      expect(dts).toContain("params: [RuntimeStatus, RuntimePayload, import(\"@onreza/sqlx-js\").PgArrayParameter<RuntimeStatus, boolean>, import(\"@onreza/sqlx-js\").PgArrayParameter<RuntimePayload, boolean>, RuntimeStatus]");
+      expect(dts).toContain('"status": RuntimeStatus | null');
+      expect(dts).toContain('"payload": RuntimePayload | null');
+      expect(dts).toContain('"statuses": (RuntimeStatus | null)[] | null');
+      expect(dts).toContain('"payloads": (RuntimePayload | null)[] | null');
+      expect(dts).toContain('"domain_status": RuntimeStatus | null');
+      expect(dts).toContain('"tmp_custom_status": RuntimeStatus;');
+      expect(dts).toContain('"tmp_custom_payload": RuntimePayload;');
+      expect(prepare(["--check"]).code).toBe(0);
+      writeFile("sqlx-js-env.d.ts", "export {};\n");
+      expect(prepare(["--offline"]).code).toBe(0);
+      expect(readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8")).toContain(
+        '"tmp_custom_payload": RuntimePayload;',
+      );
+      expect(prepare(["--verify"]).code).toBe(0);
+
+      writeFile("sqlx-js.config.ts",
+        "export default { customTypes: { tmp_custom_code: \"RuntimeCode\" } };\n",
+      );
+      writeFile("a.ts",
+        "import { sql } from \"@onreza/sqlx-js\";\n" +
+        "await sql(\"SELECT $1::tmp_custom_code AS code\", null);\n",
+      );
+      const domain = prepare();
+      expect(domain.code).toBe(1);
+      expect(domain.stderr).toContain(
+        "customTypes cannot override PostgreSQL domain tmp_custom_code because PostgreSQL reports domain results as the base type",
+      );
+
+      writeFile("sqlx-js.config.ts",
+        "export default { customTypes: { text: \"RuntimeText\" } };\n",
+      );
+      const system = prepare();
+      expect(system.code).toBe(1);
+      expect(system.stderr).toContain("customTypes cannot override PostgreSQL system type text");
+
+      writeFile("sqlx-js.config.ts",
+        "export default { customTypes: { tmp_missing_type: \"MissingType\" } };\n",
+      );
+      const missing = prepare();
+      expect(missing.code).toBe(1);
+      expect(missing.stderr).toContain(
+        "customTypes type tmp_missing_type does not exist in the prepare database",
+      );
+      const diagnosis = doctor(["--json"]);
+      expect(diagnosis.code).toBe(1);
+      const doctorPayload = JSON.parse(diagnosis.stdout) as {
+        checks: { name: string; status: string; message: string }[];
+      };
+      expect(doctorPayload.checks.find((check) => check.name === "runtimeTypes")).toMatchObject({
+        status: "error",
+        message: expect.stringContaining("customTypes type tmp_missing_type does not exist"),
+      });
+    } finally {
+      rmSync(join(tmp, "sqlx-js.config.ts"), { force: true });
+    }
   });
 
   test("domain types resolve to their base TS type", () => {
@@ -1605,6 +1697,10 @@ if (!haveIntegrationDatabase) {
       expect(Array.from((ints[0] as { ns: ArrayLike<number> }).ns)).toEqual([1, 2, 3]);
       const withNull = await sql("SELECT $1::text[] AS xs", sql.array(["a", null, "b"]));
       expect((withNull[0] as { xs: (string | null)[] }).xs).toEqual(["a", null, "b"]);
+      const empty = await sql("SELECT $1::text[] AS xs", sql.array([]));
+      expect((empty[0] as { xs: string[] }).xs).toEqual([]);
+      const onlyNull = await sql("SELECT $1::int[] AS ns", sql.array([null]));
+      expect((onlyNull[0] as { ns: (number | null)[] }).ns).toEqual([null]);
       const timestamp = new Date("2026-01-02T03:04:05.000Z");
       const dates = await sql("SELECT $1::timestamptz[] AS xs", sql.array([timestamp]));
       expect((dates[0] as { xs: Date[] }).xs).toEqual([timestamp]);
@@ -1612,6 +1708,144 @@ if (!haveIntegrationDatabase) {
       await close();
       if (prev === undefined) delete process.env.DATABASE_URL;
       else process.env.DATABASE_URL = prev;
+    }
+  });
+
+  test("runtime codecs align database-local scalar and array values", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        CREATE EXTENSION IF NOT EXISTS vector;
+        CREATE EXTENSION IF NOT EXISTS hstore;
+        CREATE EXTENSION IF NOT EXISTS citext;
+        CREATE EXTENSION IF NOT EXISTS ltree;
+        DROP TYPE IF EXISTS tmp_runtime_item CASCADE;
+        DROP TYPE IF EXISTS tmp_runtime_role CASCADE;
+        DROP DOMAIN IF EXISTS tmp_runtime_role_domain CASCADE;
+        DROP DOMAIN IF EXISTS tmp_runtime_vectors CASCADE;
+        DROP DOMAIN IF EXISTS tmp_runtime_positive CASCADE;
+        CREATE TYPE tmp_runtime_role AS ENUM ('admin', 'member');
+        CREATE DOMAIN tmp_runtime_role_domain AS tmp_runtime_role;
+        CREATE DOMAIN tmp_runtime_positive AS integer CHECK (VALUE > 0);
+        CREATE DOMAIN tmp_runtime_vectors AS vector[];
+        CREATE TYPE tmp_runtime_item AS (label text, score integer);
+      `);
+    } finally {
+      await setup.end();
+    }
+
+    const { createSqlClient, array } = await import("../src/index");
+    const runtime = createSqlClient(dbUrl);
+    try {
+      await runtime.ready();
+      const literal = await runtime.unsafe(`
+        SELECT
+          '[1.5,-2]'::vector AS vector_value,
+          '"a"=>"b", "nullable"=>NULL'::hstore AS hstore_value,
+          'admin'::tmp_runtime_role AS role_value,
+          ARRAY['admin', NULL]::tmp_runtime_role[] AS role_values,
+          5::tmp_runtime_positive AS domain_value,
+          ARRAY[5, NULL]::tmp_runtime_positive[] AS domain_values,
+          ARRAY['[9,10]'::vector, '[11,12]'::vector]::tmp_runtime_vectors AS domain_vector_values,
+          ROW('literal', 7)::tmp_runtime_item AS composite_value,
+          ARRAY[ROW('first', 1), NULL]::tmp_runtime_item[] AS composite_values,
+          ARRAY['[1,2]'::vector, '[3,4]'::vector] AS vector_values,
+          ARRAY['Mixed', NULL]::citext[] AS citext_values,
+          ARRAY['Top.Child'::ltree, NULL] AS ltree_values
+      `);
+      expect(literal[0]).toEqual({
+        vector_value: [1.5, -2],
+        hstore_value: { a: "b", nullable: null },
+        role_value: "admin",
+        role_values: ["admin", null],
+        domain_value: 5,
+        domain_values: [5, null],
+        domain_vector_values: [[9, 10], [11, 12]],
+        composite_value: { label: "literal", score: 7 },
+        composite_values: [{ label: "first", score: 1 }, null],
+        vector_values: [[1, 2], [3, 4]],
+        citext_values: ["Mixed", null],
+        ltree_values: ["Top.Child", null],
+      });
+
+      const params = await runtime.unsafe(
+        `SELECT $1::vector AS vector_value,
+                $2::hstore AS hstore_value,
+                $3::tmp_runtime_role AS role_value,
+                $4::tmp_runtime_role[] AS role_values,
+                $5::tmp_runtime_item AS composite_value,
+                $6::tmp_runtime_item[] AS composite_values,
+                $7::vector[] AS vector_values,
+                $8::tmp_runtime_vectors AS domain_vector_values`,
+        [8, 9],
+        { key: "value", nullable: null, 'quote"slash\\': 'comma, arrow=> and "quote"' },
+        "member",
+        array(["member", null]),
+        { label: 'parameter, "quoted"', score: 11 },
+        array([{ label: "array\\value", score: 12 }, null]),
+        array([[5, 6], [7, 8]]),
+        array([[13, 14], [15, 16]]),
+      );
+      expect(params[0]).toEqual({
+        vector_value: [8, 9],
+        hstore_value: { key: "value", nullable: null, 'quote"slash\\': 'comma, arrow=> and "quote"' },
+        role_value: "member",
+        role_values: ["member", null],
+        composite_value: { label: 'parameter, "quoted"', score: 11 },
+        composite_values: [{ label: "array\\value", score: 12 }, null],
+        vector_values: [[5, 6], [7, 8]],
+        domain_vector_values: [[13, 14], [15, 16]],
+      });
+    } finally {
+      await runtime.close();
+    }
+
+    type RuntimeRole = { value: "admin" | "member" };
+    type RuntimeItem = { literal: string };
+    const typeCodecs = {
+      tmp_runtime_role: {
+        parse: (value: string): RuntimeRole => ({ value: value as RuntimeRole["value"] }),
+        serialize: (value: RuntimeRole) => value.value,
+      },
+      tmp_runtime_item: {
+        parse: (value: string): RuntimeItem => ({ literal: value }),
+        serialize: (value: RuntimeItem) => value.literal,
+      },
+    };
+    const custom = createSqlClient(dbUrl, { typeCodecs });
+    try {
+      const rows = await custom.unsafe(
+        `SELECT $1::tmp_runtime_role AS role,
+                $2::tmp_runtime_role[] AS roles,
+                $3::tmp_runtime_item AS item,
+                $4::tmp_runtime_item[] AS items,
+                $5::tmp_runtime_role_domain AS domain_role`,
+        { value: "member" },
+        array([{ value: "admin" }, null]),
+        { literal: '("custom",13)' },
+        array([{ literal: '("array",14)' }, null]),
+        { value: "admin" },
+      );
+      expect(rows[0]).toEqual({
+        role: { value: "member" },
+        roles: [{ value: "admin" }, null],
+        item: { literal: "(custom,13)" },
+        items: [{ literal: "(array,14)" }, null],
+        domain_role: { value: "admin" },
+      });
+    } finally {
+      await custom.close();
+    }
+
+    const transactional = createSqlClient(dbUrl, { typeCodecs });
+    try {
+      const role = await transactional.sql.transaction(async (tx) =>
+        await tx.one("SELECT $1::tmp_runtime_role AS role", { value: "admin" }),
+      );
+      expect(role).toEqual({ role: { value: "admin" } });
+    } finally {
+      await transactional.close();
     }
   });
 

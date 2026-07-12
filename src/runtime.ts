@@ -35,7 +35,7 @@ export type RuntimeTransactionOptions = {
 
 export type RuntimeClient = {
   query: (query: string, params: unknown[]) => Promise<RuntimeQueryResult>;
-  transformParam?: (param: unknown) => unknown;
+  transformParams?: (params: unknown[]) => unknown[] | PromiseLike<unknown[]>;
   transaction: <R>(fn: (client: RuntimeClient) => Promise<R>, options?: RuntimeTransactionOptions) => Promise<R>;
   close: () => Promise<void>;
   onQuery?: OnQueryHook;
@@ -147,15 +147,22 @@ function quoteArrayElement(raw: string): string {
   return '"' + raw.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
 }
 
-export function encodePgArrayLiteral(arr: unknown[]): string {
+export function encodePgArrayLiteral(
+  arr: unknown[],
+  serializeElement?: (value: unknown) => string,
+): string {
   const parts: string[] = [];
   for (const v of arr) {
-    if (Array.isArray(v)) {
-      parts.push(encodePgArrayLiteral(v));
-      continue;
-    }
     if (v === null || v === undefined) {
       parts.push("NULL");
+      continue;
+    }
+    if (serializeElement) {
+      parts.push(quoteArrayElement(serializeElement(v)));
+      continue;
+    }
+    if (Array.isArray(v)) {
+      parts.push(encodePgArrayLiteral(v));
       continue;
     }
     if (parameterKind(v) === "json") {
@@ -387,12 +394,13 @@ async function runRawQuery(
   const bound = bindNamedParameters(rewriteNamedParameters(query), params);
   query = bound.query;
   params = bound.params;
-  const encoded = params.length === 0
-    ? params
-    : params.map((p) => client.transformParam ? client.transformParam(p) : encodeParam(p));
   const onQuery = client.onQuery;
   if (!onQuery) {
     try {
+      const transformed = client.transformParams
+        ? client.transformParams(params)
+        : params.length === 0 ? params : params.map(encodeParam);
+      const encoded = isPromiseLike(transformed) ? await transformed : transformed;
       return await client.query(query, encoded);
     } catch (e) {
       throw toPgError(e) ?? e;
@@ -401,6 +409,10 @@ async function runRawQuery(
   const observed = observedMetadata(observedQuery, metadata);
   const start = performance.now();
   try {
+    const transformed = client.transformParams
+      ? client.transformParams(params)
+      : params.length === 0 ? params : params.map(encodeParam);
+    const encoded = isPromiseLike(transformed) ? await transformed : transformed;
     const result = await client.query(query, encoded);
     notifyQuery(client, {
       ...observed,
@@ -415,6 +427,10 @@ async function runRawQuery(
     notifyQuery(client, { ...observed, query: observedQuery, params: observedParams, durationMs: performance.now() - start, error });
     throw error;
   }
+}
+
+function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
+  return typeof (value as PromiseLike<T>)?.then === "function";
 }
 
 function notifyQuery(client: RuntimeClient, event: OnQueryEvent): void {

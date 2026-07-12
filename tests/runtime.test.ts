@@ -102,6 +102,27 @@ test("runtime rewrites and binds named parameters", async () => {
   expect(received).toEqual({ query: "SELECT $1, $2, $1", params: ["a@b", 7] });
 });
 
+test("runtime delegates parameter transformation once per query", async () => {
+  let transformations = 0;
+  let received: unknown[] | undefined;
+  const client: RuntimeClient = {
+    transformParams: (params) => {
+      transformations++;
+      return params.map((param) => `encoded:${String(param)}`);
+    },
+    query: async (_query, params) => {
+      received = params;
+      return [];
+    },
+    transaction: async (fn) => fn(client),
+    close: async () => {},
+  };
+  const runtime = createSqlRuntime(() => client);
+  await runtime.sql("SELECT $1, $2", 7, "value");
+  expect(transformations).toBe(1);
+  expect(received).toEqual(["encoded:7", "encoded:value"]);
+});
+
 test("named parameters preserve the source query and object for observers", async () => {
   let event: OnQueryEvent | undefined;
   const client: RuntimeClient = {
