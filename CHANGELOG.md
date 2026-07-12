@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/ONREZA/sqlx-js/compare/v0.11.0...v0.12.0) (2026-07-12)
+
+
+### Features
+
+* **dx:** add mapped query contracts ([#20](https://github.com/ONREZA/sqlx-js/issues/20)) ([84a0124](https://github.com/ONREZA/sqlx-js/commit/84a01242ed83423bed5c3dc4649150a944a9b64b))
+
 ## [0.11.0](https://github.com/ONREZA/sqlx-js/compare/v0.10.1...v0.11.0) (2026-07-12)
 
 
