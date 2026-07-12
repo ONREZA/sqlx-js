@@ -104,6 +104,106 @@ describe("analyze: CTE / WITH", () => {
     expect(result.perColumnNullable[0]).toBe(false);
     expect(result.perColumnNullable[1]).toBe(true);
   });
+
+  test("infers CTE columns produced by UNION ALL", async () => {
+    const schema = fakeSchema([{
+      name: "users",
+      oid: 16400,
+      columns: [
+        { name: "id", attno: 1, notNull: true },
+        { name: "name", attno: 2, notNull: true },
+        { name: "bio", attno: 3, notNull: false },
+      ],
+    }]);
+    const sql = "WITH combined AS (SELECT id, name FROM users UNION ALL SELECT id, bio FROM users) SELECT id, name FROM combined";
+    const rd = rowDesc([
+      { name: "id", tableOid: 0, attno: 0 },
+      { name: "name", tableOid: 0, attno: 0 },
+    ]);
+    const result = await analyzeQuery(sql, rd, schema);
+    expect(result.perColumnNullable).toEqual([false, true]);
+    expect(result.degraded).toBeUndefined();
+  });
+});
+
+describe("analyze: set operations", () => {
+  test("combines nullability across UNION ALL branches", async () => {
+    const schema = fakeSchema([{
+      name: "users",
+      oid: 16400,
+      columns: [
+        { name: "id", attno: 1, notNull: true },
+        { name: "name", attno: 2, notNull: true },
+        { name: "bio", attno: 3, notNull: false },
+      ],
+    }]);
+    const sql = "SELECT id, name FROM users UNION ALL SELECT id, bio FROM users ORDER BY id";
+    const rd = rowDesc([
+      { name: "id", tableOid: 0, attno: 0 },
+      { name: "name", tableOid: 0, attno: 0 },
+    ]);
+    const result = await analyzeQuery(sql, rd, schema);
+    expect(result.perColumnNullable).toEqual([false, true]);
+    expect(result.perColumnSources).toEqual([
+      [{ schema: "public", table: "users", column: "id" }],
+      [
+        { schema: "public", table: "users", column: "name" },
+        { schema: "public", table: "users", column: "bio" },
+      ],
+    ]);
+    expect(result.referencedTables).toEqual([{ name: "users" }]);
+    expect(result.degraded).toBeUndefined();
+  });
+
+  test("handles nested INTERSECT and EXCEPT branches", async () => {
+    const schema = fakeSchema([]);
+    const sql = "SELECT 1 AS id INTERSECT SELECT 2 AS id EXCEPT SELECT NULL::int AS id";
+    const result = await analyzeQuery(sql, rowDesc([{ name: "id" }]), schema);
+    expect(result.perColumnNullable).toEqual([false]);
+    expect(result.degraded).toBeUndefined();
+  });
+
+  test("shares a top-level WITH scope with every set-operation branch", async () => {
+    const schema = fakeSchema([]);
+    const sql = "WITH source AS (SELECT 1 AS id) SELECT id FROM source UNION ALL SELECT id FROM source";
+    const result = await analyzeQuery(sql, rowDesc([{ name: "id" }]), schema);
+    expect(result.perColumnNullable).toEqual([false]);
+    expect(result.degraded).toBeUndefined();
+  });
+
+  test("resolves earlier CTEs inside a later set-operation CTE", async () => {
+    const schema = fakeSchema([]);
+    const sql = "WITH first AS (SELECT 1 AS id), second AS (SELECT id FROM first UNION ALL SELECT id FROM first) SELECT id FROM second";
+    const result = await analyzeQuery(sql, rowDesc([{ name: "id" }]), schema);
+    expect(result.perColumnNullable).toEqual([false]);
+    expect(result.degraded).toBeUndefined();
+  });
+
+  test("combines VALUES rows and VALUES set-operation branches", async () => {
+    const schema = fakeSchema([]);
+    const nullable = await analyzeQuery(
+      "VALUES (1::int), (NULL::int)",
+      rowDesc([{ name: "column1" }]),
+      schema,
+    );
+    const nonNullable = await analyzeQuery(
+      "VALUES (1) UNION ALL VALUES (2)",
+      rowDesc([{ name: "column1" }]),
+      schema,
+    );
+    expect(nullable.perColumnNullable).toEqual([true]);
+    expect(nullable.degraded).toBeUndefined();
+    expect(nonNullable.perColumnNullable).toEqual([false]);
+    expect(nonNullable.degraded).toBeUndefined();
+  });
+
+  test("infers a CTE backed by VALUES set-operation branches", async () => {
+    const schema = fakeSchema([]);
+    const sql = "WITH items(value) AS (VALUES (1) UNION ALL VALUES (2)) SELECT value FROM items";
+    const result = await analyzeQuery(sql, rowDesc([{ name: "value" }]), schema);
+    expect(result.perColumnNullable).toEqual([false]);
+    expect(result.degraded).toBeUndefined();
+  });
 });
 
 describe("analyze: CTE explicit column list and unnamed expressions", () => {

@@ -14,6 +14,7 @@ import {
   type OnQueryEvent,
   type RuntimeClient,
   TooManyRowsError,
+  TransactionTimeoutError,
 } from "../src/runtime";
 import { PgError } from "../src/pg/wire";
 import { defineQuery } from "../src/query";
@@ -134,6 +135,54 @@ test("query definitions execute through root and transaction executors with stab
   expect(events[1]).toMatchObject({ queryId: findUser.queryId, queryName: "users.findById" });
 });
 
+test("transaction timeout is forwarded after transaction characteristics", async () => {
+  const queries: string[] = [];
+  let transactionOptions: { timeoutMs?: number } | undefined;
+  const txClient: RuntimeClient = {
+    query: async (query) => {
+      queries.push(query);
+      return Object.assign([], { count: 1, command: "UPDATE" });
+    },
+    transaction: async () => { throw new Error("nested transaction"); },
+    close: async () => {},
+  };
+  const client: RuntimeClient = {
+    ...txClient,
+    transaction: async (fn, options) => {
+      transactionOptions = options;
+      return fn(txClient);
+    },
+  };
+  const runtime = createSqlRuntime(() => client);
+
+  await runtime.sql.transaction({ isolation: "serializable", timeoutMs: 120_000 }, async (tx) => {
+    await tx.execute("UPDATE jobs SET active = false");
+  });
+
+  expect(queries).toEqual([
+    "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+    "UPDATE jobs SET active = false",
+  ]);
+  expect(transactionOptions).toEqual({ timeoutMs: 120_000 });
+});
+
+test("invalid transaction timeout fails before opening a transaction", async () => {
+  let transactions = 0;
+  const client: RuntimeClient = {
+    query: async () => [],
+    transaction: async (fn) => {
+      transactions++;
+      return fn(client);
+    },
+    close: async () => {},
+  };
+  const runtime = createSqlRuntime(() => client);
+
+  await expect(runtime.sql.transaction({ timeoutMs: 0 }, async () => {}))
+    .rejects.toThrow(/integer from 1 to 2147483647/);
+  expect(transactions).toBe(0);
+});
+
 test("named parameters preserve explicit JSON and array encoding", async () => {
   let received: unknown[] | undefined;
   const client: RuntimeClient = {
@@ -180,6 +229,13 @@ describe("typed errors", () => {
     expect(e.name).toBe("TooManyRowsError");
     expect(e.actual).toBe(5);
     expect(e.message).toContain("5");
+  });
+
+  test("TransactionTimeoutError carries the configured deadline", () => {
+    const error = new TransactionTimeoutError(120_000);
+    expect(error.name).toBe("TransactionTimeoutError");
+    expect(error.message).toBe("transaction exceeded 120000ms");
+    expect(error.timeoutMs).toBe(120_000);
   });
 
   test("isPgError narrows normalized errors by SQLSTATE", () => {

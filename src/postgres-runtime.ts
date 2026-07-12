@@ -6,12 +6,14 @@ import {
   isPrimitiveArrayElement,
   parameterKind,
   parsePgArrayLiteral,
+  TransactionTimeoutError,
   type JsonParameter,
   type OnQueryHook,
   type OnQueryHookError,
   type PgArrayParameter,
   type RuntimeClient,
   type RuntimeQueryResult,
+  type RuntimeTransactionOptions,
 } from "./runtime";
 import { arrayElementOid, builtinArrayOids } from "./pg/oids";
 
@@ -26,6 +28,11 @@ export type CreateClientOptions = PostgresOptions & {
   sqlFiles?: Readonly<Record<string, string>>;
 };
 type PostgresQueryClient = PostgresClient | postgres.TransactionSql<{ bigint: bigint }>;
+type PendingQuery = PromiseLike<RuntimeQueryResult> & { cancel?: () => void };
+type TransactionState = {
+  expired?: TransactionTimeoutError;
+  pending: Set<PendingQuery>;
+};
 
 const HOOKS = Symbol.for("sqlx-js.hooks");
 type AttachedHooks = {
@@ -50,10 +57,23 @@ class PostgresRuntimeClient implements RuntimeClient {
     public readonly fileRoot = resolvedFileRoot(),
     public readonly reloadSqlFiles = false,
     public readonly sqlFiles?: Readonly<Record<string, string>>,
+    private readonly transactionScoped = false,
+    private readonly transactionState?: TransactionState,
   ) {}
 
   async query(query: string, params: unknown[]): Promise<RuntimeQueryResult> {
-    return await this.client.unsafe(query, params as never[], { prepare: this.prepare }) as RuntimeQueryResult;
+    if (this.transactionState?.expired) throw this.transactionState.expired;
+    const pending = this.client.unsafe(
+      query,
+      params as never[],
+      { prepare: this.prepare },
+    ) as unknown as PendingQuery;
+    this.transactionState?.pending.add(pending);
+    try {
+      return await pending;
+    } finally {
+      this.transactionState?.pending.delete(pending);
+    }
   }
 
   transformParam(param: unknown): unknown {
@@ -70,10 +90,18 @@ class PostgresRuntimeClient implements RuntimeClient {
     return param;
   }
 
-  async transaction<R>(fn: (client: RuntimeClient) => Promise<R>): Promise<R> {
-    if (!("begin" in this.client)) throw new Error("sqlx-js.transaction: nested transactions are not supported");
+  async transaction<R>(
+    fn: (client: RuntimeClient) => Promise<R>,
+    options: RuntimeTransactionOptions = {},
+  ): Promise<R> {
+    if (this.transactionScoped || !("begin" in this.client)) {
+      throw new Error("sqlx-js.transaction: nested transactions are not supported");
+    }
     return await this.client.begin(async (tx) => {
-      return await fn(new PostgresRuntimeClient(
+      const state: TransactionState | undefined = options.timeoutMs === undefined
+        ? undefined
+        : { pending: new Set() };
+      const scoped = new PostgresRuntimeClient(
         tx,
         this.onQuery,
         this.onQueryHookError,
@@ -81,12 +109,41 @@ class PostgresRuntimeClient implements RuntimeClient {
         this.fileRoot,
         this.reloadSqlFiles,
         this.sqlFiles,
-      ));
+        true,
+        state,
+      );
+      if (options.timeoutMs === undefined) return await fn(scoped);
+      return await runTransactionWithTimeout(options.timeoutMs, state!, () => fn(scoped));
     }) as R;
   }
 
   async close(): Promise<void> {
     if ("end" in this.client) await this.client.end();
+  }
+}
+
+async function runTransactionWithTimeout<R>(
+  timeoutMs: number,
+  state: TransactionState,
+  fn: () => Promise<R>,
+): Promise<R> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new TransactionTimeoutError(timeoutMs);
+      state.expired = error;
+      for (const query of state.pending) {
+        try {
+          query.cancel?.();
+        } catch {}
+      }
+      reject(error);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([fn(), timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

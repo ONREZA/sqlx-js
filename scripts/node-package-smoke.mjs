@@ -32,7 +32,7 @@ try {
   }
   writeFileSync(join(temp, "app.mjs"), `
     import assert from "node:assert/strict";
-    import { close, createClient, defineQuery, queryId, setClient, sql } from "@onreza/sqlx-js";
+    import { close, createClient, defineQuery, queryId, setClient, sql, TransactionTimeoutError } from "@onreza/sqlx-js";
 
     try {
       const events = [];
@@ -48,12 +48,18 @@ try {
       );
       assert.deepEqual(row, { value: 42, payload: { ok: true }, numbers: [1, 2, 3] });
 
-      const transactionValue = await sql.transaction(async (tx) => {
+      const transactionValue = await sql.transaction({ timeoutMs: 5000 }, async (tx) => {
         await tx.execute("CREATE TEMP TABLE node_package_smoke (value int NOT NULL)");
         await tx.execute("INSERT INTO node_package_smoke (value) VALUES ($1)", 7);
         return await tx.one("SELECT value FROM node_package_smoke");
       });
       assert.deepEqual(transactionValue, { value: 7 });
+
+      await assert.rejects(
+        sql.transaction({ timeoutMs: 50 }, tx => tx("SELECT pg_sleep(1)")),
+        error => error instanceof TransactionTimeoutError && error.timeoutMs === 50,
+      );
+      assert.deepEqual(await sql.one("SELECT 1::int AS value"), { value: 1 });
 
       const answerQuery = defineQuery.one("smoke.answer", "SELECT 43::int4 AS value");
       assert.deepEqual(await answerQuery.run(sql), { value: 43 });

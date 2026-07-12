@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { PgClient, parseDatabaseUrl, PgError, type ConnConfig, type FieldDescription } from "../pg/wire";
 import { SchemaCache, compositeLiteral, type CustomTypeInfo } from "../pg/schema";
-import { analyzeQuery } from "../pg/analyze";
+import { analyzeQuery, type ColumnSource } from "../pg/analyze";
 import { arrayElementOid, isBuiltinOid, oidToTs } from "../pg/oids";
 import { ScanError, scanProject, type QueryCallSite } from "../scan/scanner";
 import {
@@ -65,26 +65,46 @@ function resolveColumnTs(
   f: FieldDescription,
   schema: SchemaCache,
   cfg: SqlxJsConfig,
+  sources: ColumnSource[] | null = null,
 ): string {
   if (f.tableOid !== 0 && f.columnAttr !== 0) {
     const tbl = schema.tableNameByOid(f.tableOid);
     const colName = schema.columnNameByAttno(f.tableOid, f.columnAttr);
     if (tbl && colName) {
-      if (JSON_OIDS.has(f.typeOid)) {
-        const decl = lookupJsonbType(cfg, tbl.schema, tbl.name, colName);
-        if (decl) return decl;
-      }
-      if (JSON_ARRAY_OIDS.has(f.typeOid)) {
-        const decl = lookupJsonbType(cfg, tbl.schema, tbl.name, colName);
-        if (decl) return `(${decl})[]`;
-      }
-      if (isScalarColumnType(f.typeOid, schema)) {
-        const decl = lookupColumnType(cfg, tbl.schema, tbl.name, colName);
-        if (decl) return decl;
-      }
+      const configured = configuredColumnTs(f.typeOid, schema, cfg, {
+        schema: tbl.schema,
+        table: tbl.name,
+        column: colName,
+      });
+      if (configured) return configured;
+    }
+  }
+  if (sources && sources.length > 0) {
+    const configured = sources.map((source) => configuredColumnTs(f.typeOid, schema, cfg, source));
+    if (configured.every((type): type is string => type !== undefined) && new Set(configured).size === 1) {
+      return configured[0]!;
     }
   }
   return resolveTs(f.typeOid, (oid) => schema.customType(oid));
+}
+
+function configuredColumnTs(
+  typeOid: number,
+  schema: SchemaCache,
+  cfg: SqlxJsConfig,
+  source: ColumnSource,
+): string | undefined {
+  if (JSON_OIDS.has(typeOid)) {
+    return lookupJsonbType(cfg, source.schema, source.table, source.column);
+  }
+  if (JSON_ARRAY_OIDS.has(typeOid)) {
+    const declaration = lookupJsonbType(cfg, source.schema, source.table, source.column);
+    return declaration ? `(${declaration})[]` : undefined;
+  }
+  if (isScalarColumnType(typeOid, schema)) {
+    return lookupColumnType(cfg, source.schema, source.table, source.column);
+  }
+  return undefined;
 }
 
 function resolveParamTs(
@@ -665,7 +685,7 @@ export async function prepareOnce(
         return {
           name: parsed.name,
           typeOid: portableCacheOid(f.typeOid),
-          tsType: resolveColumnTs(f, schema, userCfg),
+          tsType: resolveColumnTs(f, schema, userCfg, analysis.perColumnSources[i] ?? null),
           nullable: analysis.perColumnNullable[i] ?? true,
           ...(treatAsOverride ? { override: parsed.override } : {}),
         };

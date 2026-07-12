@@ -483,6 +483,44 @@ if (!haveIntegrationDatabase) {
     expect(dts).toContain('"action": "created" | "deleted" }');
   });
 
+  test("set operations preserve compatible application-owned column types", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        CREATE TABLE IF NOT EXISTS tmp_union_types (
+          payload_a jsonb NOT NULL,
+          payload_b jsonb NOT NULL,
+          action_a text NOT NULL,
+          action_b text NOT NULL
+        )
+      `);
+    } finally {
+      await setup.end();
+    }
+    const root = isolatedRoot("union-column-types");
+    writeRootFile(root, "types.ts", "export type UnionPayload = { kind: string };\n");
+    writeRootFile(root, "sqlx-js.config.ts", `export default {
+      jsonbTypes: {
+        "public.tmp_union_types.payload_a": 'import("./types").UnionPayload',
+        "public.tmp_union_types.payload_b": 'import("./types").UnionPayload',
+      },
+      columnTypes: {
+        "public.tmp_union_types.action_a": '"created" | "deleted"',
+        "public.tmp_union_types.action_b": '"created" | "deleted"',
+      },
+    };\n`);
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"WITH left_source AS (SELECT payload_a AS payload, action_a AS action FROM tmp_union_types), right_source AS (SELECT payload_b AS payload, action_b AS action FROM tmp_union_types) SELECT payload, action FROM left_source UNION ALL SELECT payload, action FROM right_source\");\n",
+    );
+    const result = prepareRoot(root, ["--strict-inference"]);
+    expect(result.code, result.stderr).toBe(0);
+    const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain('"payload": import("./types").UnionPayload');
+    expect(dts).toContain('"action": "created" | "deleted"');
+  });
+
   test("describeAll resolves every query across a connection pool", async () => {
     const cfg = parseDatabaseUrl(dbUrl);
     const session = new PgClient(cfg);
@@ -1156,6 +1194,22 @@ if (!haveIntegrationDatabase) {
     expect(dts).toContain('"maybe_payload": import("@onreza/sqlx-js").JsonValue | null');
   });
 
+  test("strict inference accepts set operations and inherited CTE scopes", () => {
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT id, name AS label FROM tmp_users UNION ALL SELECT id, NULL::text AS label FROM tmp_users ORDER BY id\");\n" +
+      "await sql(\"WITH source AS (SELECT id, name FROM tmp_users) SELECT id, name FROM source UNION ALL SELECT id, name FROM source ORDER BY id\");\n" +
+      "await sql(\"VALUES (1::int) UNION ALL VALUES (2::int)\");\n",
+    );
+    const result = prepare(["--strict-inference"]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).not.toContain("nullability inference degraded");
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain('row: { "id": bigint; "label": string | null }');
+    expect(dts).toContain('row: { "id": bigint; "name": string }');
+    expect(dts).toContain('row: { "column1": number }');
+  });
+
   test("PostgreSQL array params emit the explicit PgArrayParameter wrapper", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
@@ -1349,6 +1403,51 @@ if (!haveIntegrationDatabase) {
       expect(inserted).toEqual({ rowCount: 1, command: "INSERT" });
       const updated = await sql.execute("UPDATE tmp_users SET name = $1 WHERE name = $2", "execute-done", "execute-user");
       expect(updated).toEqual({ rowCount: 1, command: "UPDATE" });
+    } finally {
+      await close();
+      if (prev === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = prev;
+    }
+  });
+
+  test("transaction timeout cancels work, rolls back, and keeps the pool usable", async () => {
+    const { sql, close, TransactionTimeoutError } = await import("../src/index");
+    const prev = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = dbUrl;
+    try {
+      const email = `timeout-${Date.now()}@example.com`;
+      let timeoutError: unknown;
+      try {
+        await sql.transaction({ timeoutMs: 100 }, async (tx) => {
+          await tx.execute("INSERT INTO tmp_users (name, email) VALUES ($1, $2)", "timeout", email);
+          await tx("SELECT pg_sleep(1)");
+        });
+      } catch (error) {
+        timeoutError = error;
+      }
+      expect(timeoutError).toBeInstanceOf(TransactionTimeoutError);
+      expect((timeoutError as InstanceType<typeof TransactionTimeoutError>).timeoutMs).toBe(100);
+      const rolledBack = await sql.one(
+        "SELECT COUNT(*)::int AS count FROM tmp_users WHERE email = $1",
+        email,
+      ) as { count: number };
+      expect(rolledBack.count).toBe(0);
+      expect(await sql.one("SELECT 1::int AS value")).toEqual({ value: 1 });
+
+      const lateEmail = `late-timeout-${Date.now()}@example.com`;
+      let callbackResumed = false;
+      await expect(sql.transaction({ timeoutMs: 50 }, async (tx) => {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        callbackResumed = true;
+        await tx.execute("INSERT INTO tmp_users (name, email) VALUES ($1, $2)", "late-timeout", lateEmail);
+      })).rejects.toBeInstanceOf(TransactionTimeoutError);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(callbackResumed).toBe(true);
+      const lateQuery = await sql.one(
+        "SELECT COUNT(*)::int AS count FROM tmp_users WHERE email = $1",
+        lateEmail,
+      ) as { count: number };
+      expect(lateQuery.count).toBe(0);
     } finally {
       await close();
       if (prev === undefined) delete process.env.DATABASE_URL;

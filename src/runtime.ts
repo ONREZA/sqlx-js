@@ -29,10 +29,14 @@ export type RuntimeQueryResult = unknown[] & {
   command?: string | null;
 };
 
+export type RuntimeTransactionOptions = {
+  timeoutMs?: number;
+};
+
 export type RuntimeClient = {
   query: (query: string, params: unknown[]) => Promise<RuntimeQueryResult>;
   transformParam?: (param: unknown) => unknown;
-  transaction: <R>(fn: (client: RuntimeClient) => Promise<R>) => Promise<R>;
+  transaction: <R>(fn: (client: RuntimeClient) => Promise<R>, options?: RuntimeTransactionOptions) => Promise<R>;
   close: () => Promise<void>;
   onQuery?: OnQueryHook;
   onQueryHookError?: OnQueryHookError;
@@ -259,6 +263,13 @@ export class TooManyRowsError extends Error {
   }
 }
 
+export class TransactionTimeoutError extends Error {
+  constructor(public readonly timeoutMs: number) {
+    super(`transaction exceeded ${timeoutMs}ms`);
+    this.name = "TransactionTimeoutError";
+  }
+}
+
 // SQLSTATE is exactly five characters from [0-9A-Z]; lowercase or other shapes
 // are never valid, so transport codes like "EPIPE" must not match on shape alone.
 const SQLSTATE_PATTERN = /^[0-9A-Z]{5}$/;
@@ -331,6 +342,7 @@ export const _internal = {
   parsePgArrayLiteral,
   loadSqlFile,
   buildSetTransaction,
+  validateTransactionTimeout,
   clearIdentifierCache,
   parameterKind,
   toPgError,
@@ -679,6 +691,7 @@ export type TransactionOptions = {
   isolation?: "read uncommitted" | "read committed" | "repeatable read" | "serializable";
   readOnly?: boolean;
   deferrable?: boolean;
+  timeoutMs?: number;
 };
 
 export type SqlRoot = SqlCallable & {
@@ -695,6 +708,13 @@ function buildSetTransaction(opts: TransactionOptions): string {
   if (opts.deferrable !== undefined) parts.push(opts.deferrable ? "DEFERRABLE" : "NOT DEFERRABLE");
   if (parts.length === 0) return "";
   return `SET TRANSACTION ${parts.join(" ")}`;
+}
+
+function validateTransactionTimeout(timeoutMs: number | undefined): void {
+  if (timeoutMs === undefined) return;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) {
+    throw new Error(`sqlx-js.transaction: timeoutMs must be an integer from 1 to 2147483647, got ${timeoutMs}`);
+  }
 }
 
 export type RuntimeApi = {
@@ -756,11 +776,12 @@ export function createSqlRuntime(getClient: () => RuntimeClient): RuntimeApi {
       cb = maybeFn;
     }
     const setTx = buildSetTransaction(opts);
+    validateTransactionTimeout(opts.timeoutMs);
     return await c.transaction(async (txClient) => {
       if (setTx) await txClient.query(setTx, []);
       const tx = makeBoundCallable(txClient);
       return await cb(tx);
-    });
+    }, { timeoutMs: opts.timeoutMs });
   }) as SqlRoot["transaction"];
 
   const unsafe = (async (query: string, ...params: unknown[]): Promise<Record<string, unknown>[]> => {

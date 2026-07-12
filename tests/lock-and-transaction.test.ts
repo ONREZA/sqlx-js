@@ -97,3 +97,19 @@ describe("buildSetTransaction", () => {
       .toBe("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE READ ONLY DEFERRABLE");
   });
 });
+
+describe("validateTransactionTimeout", () => {
+  const validate = _internal.validateTransactionTimeout;
+
+  test("accepts an omitted timeout", () => {
+    expect(validate(undefined)).toBeUndefined();
+    expect(validate(120_000)).toBeUndefined();
+  });
+
+  test("requires the supported positive timer range", () => {
+    expect(() => validate(0)).toThrow(/integer from 1 to 2147483647/);
+    expect(() => validate(1.5)).toThrow(/integer from 1 to 2147483647/);
+    expect(() => validate(2_147_483_648)).toThrow(/integer from 1 to 2147483647/);
+    expect(() => validate(Number.POSITIVE_INFINITY)).toThrow(/integer from 1 to 2147483647/);
+  });
+});

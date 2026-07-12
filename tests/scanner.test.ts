@@ -271,7 +271,7 @@ test("transaction tx.one / tx.optional / tx.file.one are scanned inside the call
   setup({
     "a.ts":
       "import { sql } from \"@onreza/sqlx-js\";\n" +
-      "await sql.transaction(async (tx) => {\n" +
+      "await sql.transaction({ timeoutMs: 1000 }, async (tx) => {\n" +
       "  await tx(\"SELECT 1 AS one\");\n" +
       "  await tx.one(\"SELECT id FROM users WHERE id = $1\", 1);\n" +
       "  await tx.optional(\"SELECT id FROM users WHERE email = $1\", \"x\");\n" +

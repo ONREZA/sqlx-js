@@ -27,7 +27,7 @@ export { defineConfig } from "./config";
 export type { ScanConfig, SqlxJsConfig } from "./config";
 export type { SslMode, ConnConfig } from "./pg/wire";
 export { PgError, ConnectionLostError } from "./pg/wire";
-export { NoRowsError, TooManyRowsError, SQLSTATE, isPgError } from "./runtime";
+export { NoRowsError, TooManyRowsError, TransactionTimeoutError, SQLSTATE, isPgError } from "./runtime";
 export type { TransactionOptions, MigrateOptions, OnQueryEvent, OnQueryHook, OnQueryHookError } from "./runtime";
 export type { ExecuteResult, JsonParameter, PgArrayParameter, JsonCompatible, KnownSqlState } from "./runtime";
 export type { PostgresClient, PostgresOptions, CreateClientOptions } from "./postgres-runtime";
