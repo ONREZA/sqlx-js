@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/ONREZA/sqlx-js/compare/v0.9.2...v0.10.0) (2026-07-12)
+
+
+### Features
+
+* **dx:** improve sql integration ergonomics ([a2202a5](https://github.com/ONREZA/sqlx-js/commit/a2202a5e3f9b062118f1e040ff11419bd934c446))
+
 ## [0.9.2](https://github.com/ONREZA/sqlx-js/compare/v0.9.1...v0.9.2) (2026-07-11)
 
 
