@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/ONREZA/sqlx-js/compare/v0.10.0...v0.10.1) (2026-07-12)
+
+
+### Bug Fixes
+
+* **prepare:** infer non-null expressions ([f41fb36](https://github.com/ONREZA/sqlx-js/commit/f41fb36726dc300a57089b1f6b24ce13a41e335d))
+
 ## [0.10.0](https://github.com/ONREZA/sqlx-js/compare/v0.9.2...v0.10.0) (2026-07-12)
 
 
