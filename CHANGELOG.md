@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.0](https://github.com/ONREZA/sqlx-js/compare/v0.10.1...v0.11.0) (2026-07-12)
+
+
+### Features
+
+* **prepare:** strengthen database validation ([157e53e](https://github.com/ONREZA/sqlx-js/commit/157e53e9609e24168f94409482205e8005685812))
+* **runtime:** add end-to-end type codecs ([41db4af](https://github.com/ONREZA/sqlx-js/commit/41db4afc631bdc925e49acb7bdcb13b0a5e8b0d3))
+
 ## [0.10.1](https://github.com/ONREZA/sqlx-js/compare/v0.10.0...v0.10.1) (2026-07-12)
 
 
