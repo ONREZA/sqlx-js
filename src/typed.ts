@@ -9,10 +9,14 @@ type RowOf<T> = T extends { row: infer R } ? R : never;
 type ExecuteResult = import("./runtime").ExecuteResult;
 type JsonCompatible<T> = import("./runtime").JsonCompatible<T>;
 type JsonParameter<T> = import("./runtime").JsonParameter<T>;
-type PgArrayParameter<T> = import("./runtime").PgArrayParameter<T>;
+type PgArrayParameter<T, NullableElements extends boolean = boolean> = import("./runtime").PgArrayParameter<T, NullableElements>;
+type PgArrayElement<Values extends readonly unknown[]> = Exclude<Values[number], null>;
+type PgArrayContainsNull<Values extends readonly unknown[]> = null extends Values[number] ? true : false;
 
 type JsonFn = <T>(value: T & JsonCompatible<T>) => JsonParameter<T>;
-type ArrayFn = <T>(value: readonly (T | null)[]) => PgArrayParameter<T>;
+type ArrayFn = <const Values extends readonly unknown[]>(
+  value: Values,
+) => PgArrayParameter<PgArrayElement<Values>, PgArrayContainsNull<Values>>;
 
 export type TypedFile<TFileQueries> = {
   <P extends keyof TFileQueries>(path: P, ...params: ParamsOf<TFileQueries[P]>): Promise<RowOf<TFileQueries[P]>[]>;

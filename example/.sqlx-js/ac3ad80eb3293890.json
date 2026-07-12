@@ -1,5 +1,6 @@
 {
   "query": "SELECT id, name, email, role\n   FROM users\n   WHERE email = $email",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "SELECT id, name, email, role\n   FROM users\n   WHERE email = $email"

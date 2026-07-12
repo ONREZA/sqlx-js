@@ -1,5 +1,6 @@
 {
   "query": "SELECT id, bio FROM users WHERE bio IS NOT NULL OR id = $1",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "SELECT id, bio FROM users WHERE bio IS NOT NULL OR id = $1"

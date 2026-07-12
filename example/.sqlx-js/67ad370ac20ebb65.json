@@ -1,5 +1,6 @@
 {
   "query": "SELECT\n       u.id AS user_id,\n       u.email AS user_email,\n       u.role AS user_role,\n       COUNT(p.id) AS post_count,\n       MAX(p.id) AS latest_post_id\n     FROM users u\n     LEFT JOIN posts p ON p.user_id = u.id\n     GROUP BY u.id, u.email, u.role\n     ORDER BY u.id DESC\n     LIMIT $1::int OFFSET $2::int",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "SELECT\n       u.id AS user_id,\n       u.email AS user_email,\n       u.role AS user_role,\n       COUNT(p.id) AS post_count,\n       MAX(p.id) AS latest_post_id\n     FROM users u\n     LEFT JOIN posts p ON p.user_id = u.id\n     GROUP BY u.id, u.email, u.role\n     ORDER BY u.id DESC\n     LIMIT $1::int OFFSET $2::int"

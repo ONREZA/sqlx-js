@@ -1,5 +1,6 @@
 {
   "query": "UPDATE users SET settings = $1 WHERE id = $2 RETURNING id AS \"id!\", settings",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "UPDATE users SET settings = $1 WHERE id = $2 RETURNING id AS \"id!\", settings"

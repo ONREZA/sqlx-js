@@ -1,5 +1,6 @@
 {
   "query": "SELECT COUNT(*) AS \"n!\" FROM posts WHERE user_id = $1\n",
+  "validation": "planned",
   "hasInline": false,
   "filePaths": [
     "queries/count_posts.sql"

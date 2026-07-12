@@ -75,8 +75,17 @@ test("prepare config hash includes column and function catalog contracts", () =>
   const base = prepareConfigHash({});
   expect(prepareConfigHash({ functionCatalog: { includeExtensionOwned: false } })).toBe(base);
   expect(prepareConfigHash({ columnTypes: { "users.status": "Status" } })).not.toBe(base);
+  expect(prepareConfigHash({ arrayElementNullability: { "users.tags": "non-null" } })).not.toBe(base);
   expect(prepareConfigHash({ functionCatalog: false })).not.toBe(base);
   expect(prepareConfigHash({ functionCatalog: { includeExtensionOwned: true } })).not.toBe(base);
+});
+
+test("loadConfig validates array element nullability assertions", async () => {
+  const dir = root();
+  writeFileSync(join(dir, "sqlx-js.config.mjs"), `export default {
+    arrayElementNullability: { "users.tags": "sometimes" },
+  };\n`);
+  await expect(loadConfig(dir)).rejects.toThrow(/arrayElementNullability\.users\.tags must be non-null/);
 });
 
 test("loadConfig rejects conflicting column type assertions", async () => {

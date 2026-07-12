@@ -13,6 +13,7 @@ export type ScanConfig = {
 export type SqlxJsConfig = {
   jsonbTypes?: Record<string, string>;
   columnTypes?: Record<string, string>;
+  arrayElementNullability?: Record<string, "non-null">;
   customTypes?: Record<string, string>;
   functionCatalog?: false | {
     includeExtensionOwned?: boolean;
@@ -71,6 +72,17 @@ function validateStringRecord(value: unknown, name: string, path: string): void 
   }
 }
 
+function validateArrayElementNullability(value: unknown, path: string): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`sqlx-js: ${path} arrayElementNullability must be an object`);
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (item !== "non-null") {
+      throw new Error(`sqlx-js: ${path} arrayElementNullability.${key} must be non-null`);
+    }
+  }
+}
+
 function validateStringArray(value: unknown, name: string, path: string): void {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
     throw new Error(`sqlx-js: ${path} ${name} must be an array of strings`);
@@ -91,6 +103,7 @@ function validateConfig(value: unknown, path: string): SqlxJsConfig {
   const config = value as Record<string, unknown>;
   if (config.jsonbTypes !== undefined) validateStringRecord(config.jsonbTypes, "jsonbTypes", path);
   if (config.columnTypes !== undefined) validateStringRecord(config.columnTypes, "columnTypes", path);
+  if (config.arrayElementNullability !== undefined) validateArrayElementNullability(config.arrayElementNullability, path);
   if (config.customTypes !== undefined) validateStringRecord(config.customTypes, "customTypes", path);
   if (config.jsonbTypes && config.columnTypes) {
     const jsonKeys = Object.keys(config.jsonbTypes as Record<string, string>);
@@ -142,6 +155,7 @@ export function prepareConfigHash(cfg: SqlxJsConfig): string {
   const value = stableValue({
     jsonbTypes: cfg.jsonbTypes ?? {},
     columnTypes: cfg.columnTypes ?? {},
+    arrayElementNullability: cfg.arrayElementNullability ?? {},
     customTypes: cfg.customTypes ?? {},
     functionCatalog: cfg.functionCatalog === false
       ? false
@@ -227,4 +241,15 @@ export function lookupColumnType(
   const types = cfg.columnTypes;
   if (!types) return undefined;
   return types[`${schema}.${table}.${column}`] ?? types[`${table}.${column}`];
+}
+
+export function lookupArrayElementNullability(
+  cfg: SqlxJsConfig,
+  schema: string,
+  table: string,
+  column: string,
+): "non-null" | undefined {
+  const assertions = cfg.arrayElementNullability;
+  if (!assertions) return undefined;
+  return assertions[`${schema}.${table}.${column}`] ?? assertions[`${table}.${column}`];
 }

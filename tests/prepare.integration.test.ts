@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { PgClient, parseDatabaseUrl } from "../src/pg/wire";
-import { describeAll } from "../src/commands/prepare";
+import { validateAll } from "../src/commands/prepare";
 import { SchemaCache, compositeLiteral } from "../src/pg/schema";
 import { mergeExtensionTypes } from "../src/pg/extensions";
 import { fingerprint } from "../src/cache";
@@ -314,6 +314,138 @@ if (!haveIntegrationDatabase) {
     expect(readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8")).toBe(before);
   });
 
+  test("prepare --verify rejects planner-only ON CONFLICT errors without executing DML", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        DROP TABLE IF EXISTS tmp_plan_outbox;
+        CREATE TABLE tmp_plan_outbox (
+          id bigserial PRIMARY KEY,
+          transition_id text NOT NULL,
+          idempotency_key text NOT NULL
+        );
+        CREATE UNIQUE INDEX tmp_plan_outbox_idempotency_key
+          ON tmp_plan_outbox (idempotency_key)
+      `);
+    } finally {
+      await setup.end();
+    }
+
+    const root = isolatedRoot("planner-validation");
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql.execute(\"INSERT INTO tmp_plan_outbox (transition_id, idempotency_key) SELECT $1, $2 ON CONFLICT (idempotency_key) DO NOTHING\", \"transition\", \"key\");\n",
+    );
+    const prepared = prepareRoot(root);
+    expect(prepared.code, prepared.stderr).toBe(0);
+
+    const mutateSchema = new PgClient(parseDatabaseUrl(dbUrl));
+    await mutateSchema.connect();
+    try {
+      await mutateSchema.simpleQuery(`
+        DROP INDEX tmp_plan_outbox_idempotency_key;
+        CREATE UNIQUE INDEX tmp_plan_outbox_transition_key
+          ON tmp_plan_outbox (transition_id, idempotency_key)
+      `);
+    } finally {
+      await mutateSchema.end();
+    }
+
+    const verified = prepareRoot(root, ["--verify", "--strict-inference", "--json"]);
+    expect(verified.code).toBe(1);
+    expect(verified.stderr).toBe("");
+    const payload = JSON.parse(verified.stdout) as {
+      ok: boolean;
+      diagnostics: { phase: string; file: string; line: number; code?: string; message: string }[];
+    };
+    expect(payload.ok).toBe(false);
+    expect(payload.diagnostics[0]).toMatchObject({
+      phase: "plan",
+      file: "a.ts",
+      line: 2,
+      code: "42P10",
+    });
+
+    const inspect = new PgClient(parseDatabaseUrl(dbUrl));
+    await inspect.connect();
+    try {
+      const rows = await inspect.simpleQueryAll("SELECT count(*)::int4 FROM tmp_plan_outbox");
+      expect(Number(new TextDecoder().decode(rows.rows[0]![0]!))).toBe(0);
+    } finally {
+      await inspect.end();
+    }
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("prepare uses a generic plan independent of parameter values", () => {
+    const root = isolatedRoot("generic-planner-validation");
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql.one(\"SELECT CASE WHEN $1::boolean THEN 1 / 0 ELSE 1 END AS value\", false);\n",
+    );
+    const result = prepareRoot(root, ["--json"]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe("");
+    const payload = JSON.parse(result.stdout) as {
+      ok: boolean;
+      diagnostics: { phase: string; file: string; line: number; code?: string; message: string }[];
+    };
+    expect(payload.ok).toBe(false);
+    expect(payload.diagnostics[0]).toMatchObject({
+      phase: "plan",
+      file: "a.ts",
+      line: 2,
+      code: "22012",
+      message: "division by zero",
+    });
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("prepare reports statements outside generic planning as parse-only", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        DROP PROCEDURE IF EXISTS tmp_parse_only_procedure();
+        CREATE PROCEDURE tmp_parse_only_procedure() LANGUAGE SQL AS 'SELECT 1'
+      `);
+    } finally {
+      await setup.end();
+    }
+    const root = isolatedRoot("parse-only-validation");
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql.execute(\"SET statement_timeout = '1s'\");\n" +
+      "await sql.execute(\"CALL tmp_parse_only_procedure()\");\n",
+    );
+    const result = prepareRoot(root, ["--json"]);
+    expect(result.code, result.stderr).toBe(0);
+    const payload = JSON.parse(result.stdout) as {
+      ok: boolean;
+      diagnostics: { severity: string; phase: string; message: string }[];
+    };
+    expect(payload.ok).toBe(true);
+    expect(payload.diagnostics).toHaveLength(2);
+    expect(payload.diagnostics).toContainEqual(expect.objectContaining({
+      severity: "warning",
+      phase: "plan",
+      message: expect.stringContaining("parse-only"),
+    }));
+    const entries = queryCacheFiles(root).map((cacheFile) =>
+      JSON.parse(readFileSync(join(root, ".sqlx-js", cacheFile), "utf8")) as { validation?: string });
+    expect(entries).toHaveLength(2);
+    expect(entries.every((entry) => entry.validation === "parse-only")).toBe(true);
+    rmSync(root, { recursive: true, force: true });
+    const cleanup = new PgClient(parseDatabaseUrl(dbUrl));
+    await cleanup.connect();
+    try {
+      await cleanup.simpleQuery("DROP PROCEDURE tmp_parse_only_procedure()");
+    } finally {
+      await cleanup.end();
+    }
+  });
+
   test("prepare --check rejects cache generated with a different type config", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
@@ -326,10 +458,32 @@ if (!haveIntegrationDatabase) {
       expect(result.code).toBe(1);
       const payload = JSON.parse(result.stdout) as { ok: boolean; diagnostics: { message: string }[] };
       expect(payload.ok).toBe(false);
-      expect(payload.diagnostics[0]!.message).toContain("different jsonbTypes/customTypes config");
+      expect(payload.diagnostics[0]!.message).toContain("different type-affecting config");
     } finally {
       rmSync(join(tmp, "sqlx-js.config.ts"), { force: true });
     }
+  });
+
+  test("prepare --check rejects cache entries without planner metadata", () => {
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT id FROM tmp_users\");\n",
+    );
+    expect(prepare().code).toBe(0);
+    const cachePath = join(tmp, ".sqlx-js", queryCacheFiles()[0]!);
+    const entry = JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, unknown>;
+    delete entry.validation;
+    writeFileSync(cachePath, JSON.stringify(entry, null, 2) + "\n");
+
+    const result = prepare(["--check", "--json"]);
+    expect(result.code).toBe(1);
+    const payload = JSON.parse(result.stdout) as {
+      diagnostics: { phase: string; message: string }[];
+    };
+    expect(payload.diagnostics).toContainEqual(expect.objectContaining({
+      phase: "cache",
+      message: expect.stringContaining("missing planner validation metadata"),
+    }));
   });
 
   test("doctor checks runtime, config, cache, tsconfig, database, permissions, and schema provider", () => {
@@ -391,6 +545,7 @@ if (!haveIntegrationDatabase) {
         DROP FUNCTION IF EXISTS tmp_catalog_json_table(jsonb);
         DROP FUNCTION IF EXISTS tmp_catalog_json_out(text);
         DROP FUNCTION IF EXISTS tmp_catalog_json_inout(jsonb);
+        DROP FUNCTION IF EXISTS tmp_catalog_json_array(jsonb[]);
         CREATE FUNCTION tmp_catalog_slug(value text) RETURNS text
         LANGUAGE sql IMMUTABLE AS $$ SELECT lower(value) $$;
         CREATE FUNCTION tmp_catalog_pair(value text) RETURNS TABLE(slug text, score integer)
@@ -401,6 +556,8 @@ if (!haveIntegrationDatabase) {
         LANGUAGE sql STABLE AS $$ SELECT jsonb_build_object('value', value) $$;
         CREATE FUNCTION tmp_catalog_json_inout(INOUT payload jsonb)
         LANGUAGE sql STABLE AS $$ SELECT payload $$;
+        CREATE FUNCTION tmp_catalog_json_array(value jsonb[]) RETURNS jsonb[]
+        LANGUAGE sql IMMUTABLE AS $$ SELECT value $$;
       `);
     } finally {
       await setup.end();
@@ -419,6 +576,7 @@ if (!haveIntegrationDatabase) {
     expect(dts).toContain('"public.tmp_catalog_json_table(value jsonb)": { kind: "function"; params: [import("@onreza/sqlx-js").JsonInput]; returns: { payload: import("@onreza/sqlx-js").JsonValue | null }; returnsSet: true }');
     expect(dts).toContain('"public.tmp_catalog_json_out(value text, OUT payload jsonb)": { kind: "function"; params: [string]; returns: { payload: import("@onreza/sqlx-js").JsonValue | null }; returnsSet: false }');
     expect(dts).toMatch(/"public\.tmp_catalog_json_inout\([^"]*jsonb\)": \{ kind: "function"; params: \[import\("@onreza\/sqlx-js"\)\.JsonInput\]; returns: \{ payload: import\("@onreza\/sqlx-js"\)\.JsonValue \| null \}; returnsSet: false \}/);
+    expect(dts).toContain('"public.tmp_catalog_json_array(value jsonb[])": { kind: "function"; params: [(import("@onreza/sqlx-js").JsonInput | null)[]]; returns: (import("@onreza/sqlx-js").JsonValue | null)[] | null; returnsSet: false }');
     expect(dts).not.toContain('"public.hstore(');
 
     r = prepare(["--check"]);
@@ -521,7 +679,7 @@ if (!haveIntegrationDatabase) {
     expect(dts).toContain('"action": "created" | "deleted"');
   });
 
-  test("describeAll resolves every query across a connection pool", async () => {
+  test("validateAll describes and plans every query across a connection pool", async () => {
     const cfg = parseDatabaseUrl(dbUrl);
     const session = new PgClient(cfg);
     await session.connect();
@@ -531,15 +689,20 @@ if (!haveIntegrationDatabase) {
         { fp: "q2", query: "SELECT email FROM tmp_users" },
         { fp: "q3", query: "SELECT title FROM tmp_join_posts" },
         { fp: "q4", query: "SELECT external_id FROM tmp_join_users" },
+        {
+          fp: "qmerge",
+          query: "MERGE INTO tmp_users AS target USING (SELECT $1::bigint AS id) AS source ON target.id = source.id WHEN MATCHED THEN UPDATE SET name = target.name",
+        },
         { fp: "qbad", query: "SELECT * FROM no_such_relation_xyz" },
       ];
-      const results = await describeAll(cfg, session, queries, 4);
-      expect(results.size).toBe(5);
+      const results = await validateAll(cfg, session, queries, 4);
+      expect(results.size).toBe(6);
       const q1 = results.get("q1")!;
       expect(q1.ok).toBe(true);
       if (q1.ok) expect(q1.fields.map((f) => f.name)).toEqual(["id", "name"]);
       const q2 = results.get("q2")!;
       if (q2.ok) expect(q2.fields.map((f) => f.name)).toEqual(["email"]);
+      expect(results.get("qmerge")).toMatchObject({ ok: true, validation: "planned" });
       expect(results.get("qbad")!.ok).toBe(false);
       // session connection stays usable after the pool drains
       const after = await session.describe("SELECT 1 AS one");
@@ -549,7 +712,29 @@ if (!haveIntegrationDatabase) {
     }
   });
 
-  test("describeAll degrades to the session connection when extra workers cannot connect", async () => {
+  test("validateAll cleans up generic planning after a PostgreSQL error", async () => {
+    const cfg = parseDatabaseUrl(dbUrl);
+    const session = new PgClient(cfg);
+    await session.connect();
+    try {
+      const results = await validateAll(cfg, session, [
+        { fp: "bad", query: "SELECT CASE WHEN $1::boolean THEN 1 / 0 ELSE 1 END" },
+        { fp: "good", query: "SELECT 1 AS value" },
+      ], 1);
+      expect(results.get("bad")).toMatchObject({
+        ok: false,
+        phase: "plan",
+        error: expect.objectContaining({ code: "22012" }),
+      });
+      expect(results.get("good")).toMatchObject({ ok: true, validation: "planned" });
+      const after = await session.simpleQuery("SELECT current_setting('plan_cache_mode')");
+      expect(new TextDecoder().decode(after.rows[0]![0]!)).toBe("auto");
+    } finally {
+      await session.end();
+    }
+  });
+
+  test("validateAll degrades to the session connection when extra workers cannot connect", async () => {
     const session = new PgClient(parseDatabaseUrl(dbUrl));
     await session.connect();
     try {
@@ -561,7 +746,7 @@ if (!haveIntegrationDatabase) {
         { fp: "d2", query: "SELECT 2 AS b" },
         { fp: "d3", query: "SELECT 3 AS c" },
       ];
-      const results = await describeAll(badCfg, session, queries, 4);
+      const results = await validateAll(badCfg, session, queries, 4);
       expect(results.size).toBe(3);
       expect([...results.values()].every((r) => r.ok)).toBe(true);
     } finally {
@@ -590,6 +775,36 @@ if (!haveIntegrationDatabase) {
     } finally {
       await setup.simpleQuery("DROP TABLE IF EXISTS tmp_comp CASCADE").catch(() => {});
       await setup.simpleQuery("DROP TYPE IF EXISTS tmp_addr CASCADE").catch(() => {});
+      await setup.end();
+    }
+  });
+
+  test("domains resolve enum labels when both types are loaded together", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        DROP DOMAIN IF EXISTS tmp_catalog_enum_domain;
+        DROP TYPE IF EXISTS tmp_catalog_enum;
+        CREATE TYPE tmp_catalog_enum AS ENUM ('created', 'deleted');
+        CREATE DOMAIN tmp_catalog_enum_domain AS tmp_catalog_enum NOT NULL
+      `);
+      const rows = await setup.simpleQueryAll(`
+        SELECT 'tmp_catalog_enum_domain'::regtype::oid::int8, 'tmp_catalog_enum'::regtype::oid::int8
+      `);
+      const domainOid = Number(new TextDecoder().decode(rows.rows[0]![0]!));
+      const enumOid = Number(new TextDecoder().decode(rows.rows[0]![1]!));
+      const schema = new SchemaCache(setup);
+      schema.setTypeRegistry(mergeExtensionTypes());
+      await schema.loadCustomTypes([domainOid, enumOid]);
+      expect(schema.customType(domainOid)).toMatchObject({
+        kind: "scalar",
+        tsType: '"created" | "deleted"',
+        notNull: true,
+      });
+    } finally {
+      await setup.simpleQuery("DROP DOMAIN IF EXISTS tmp_catalog_enum_domain").catch(() => {});
+      await setup.simpleQuery("DROP TYPE IF EXISTS tmp_catalog_enum").catch(() => {});
       await setup.end();
     }
   });
@@ -1223,6 +1438,66 @@ if (!haveIntegrationDatabase) {
     expect(dts).toContain('row: { "ids": (bigint)[]; "hasDeleted": boolean }');
   });
 
+  test("array element nullability follows SQL, domain, and config proofs", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        DROP TABLE IF EXISTS tmp_array_contracts;
+        DROP DOMAIN IF EXISTS tmp_non_null_text;
+        DROP DOMAIN IF EXISTS tmp_text_array;
+        DROP DOMAIN IF EXISTS tmp_non_null_role;
+        DROP TYPE IF EXISTS tmp_array_role;
+        DROP TYPE IF EXISTS tmp_array_pair;
+        CREATE DOMAIN tmp_non_null_text AS text NOT NULL;
+        CREATE DOMAIN tmp_text_array AS text[];
+        CREATE TYPE tmp_array_role AS ENUM ('admin', 'member');
+        CREATE TYPE tmp_array_pair AS (label text, score int);
+        CREATE DOMAIN tmp_non_null_role AS tmp_array_role NOT NULL;
+        CREATE TABLE tmp_array_contracts (
+          plain text[] NOT NULL,
+          proven tmp_non_null_text[] NOT NULL,
+          wrapped tmp_text_array NOT NULL,
+          roles tmp_array_role[] NOT NULL,
+          domain_roles tmp_non_null_role[] NOT NULL,
+          pairs tmp_array_pair[] NOT NULL
+        )
+      `);
+    } finally {
+      await setup.end();
+    }
+
+    const root = isolatedRoot("array-element-contracts");
+    writeRootFile(root, "sqlx-js.config.ts", `export default {
+      arrayElementNullability: {
+        "public.tmp_array_contracts.plain": "non-null",
+      },
+    };\n`);
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT plain, proven, wrapped, roles, domain_roles, pairs FROM tmp_array_contracts\");\n" +
+      "await sql(\"WITH source AS (SELECT plain FROM tmp_array_contracts) SELECT plain AS cte_plain FROM source\");\n" +
+      "await sql(\"SELECT nested.plain AS derived_plain FROM (SELECT plain FROM tmp_array_contracts) AS nested\");\n" +
+      "await sql(\"SELECT plain AS set_plain FROM tmp_array_contracts UNION ALL SELECT plain AS set_plain FROM tmp_array_contracts\");\n" +
+      "await sql(\"SELECT ARRAY[1, 2] AS non_null, ARRAY[1, NULL] AS nullable, ARRAY(SELECT id FROM tmp_users) AS selected\");\n" +
+      "await sql(\"WITH values_source(value) AS (VALUES (1::int), (NULL::int)) SELECT ARRAY(SELECT value FROM values_source) AS values\");\n" +
+      "await sql(\"INSERT INTO tmp_array_contracts (plain, proven, wrapped, roles, domain_roles, pairs) VALUES ($1, $2, $3, $4, $5, ARRAY[ROW('label', 1)]::tmp_array_pair[])\", sql.array([\"a\"]), sql.array([\"b\"]), sql.array([\"c\", null]), sql.array([\"admin\"]), sql.array([\"member\"]));\n",
+    );
+    const result = prepareRoot(root, ["--strict-inference"]);
+    expect(result.code, result.stderr).toBe(0);
+    const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain('"plain": (string)[]; "proven": (string)[]; "wrapped": (string | null)[]');
+    expect(dts).toContain('"roles": ("admin" | "member" | null)[]');
+    expect(dts).toContain('"domain_roles": ("admin" | "member")[]');
+    expect(dts).toContain('"pairs": ({ label: string | null; score: number | null } | null)[]');
+    expect(dts).toContain('row: { "cte_plain": (string)[] }');
+    expect(dts).toContain('row: { "derived_plain": (string)[] }');
+    expect(dts).toContain('row: { "set_plain": (string)[] }');
+    expect(dts).toContain('"non_null": (number)[]; "nullable": (number | null)[]; "selected": (bigint)[]');
+    expect(dts).toContain('row: { "values": (number | null)[] }');
+    expect(dts).toContain('params: [import("@onreza/sqlx-js").PgArrayParameter<string, false>, import("@onreza/sqlx-js").PgArrayParameter<string, false>, import("@onreza/sqlx-js").PgArrayParameter<string, boolean>, import("@onreza/sqlx-js").PgArrayParameter<"admin" | "member", boolean>, import("@onreza/sqlx-js").PgArrayParameter<"admin" | "member", false>]');
+  });
+
   test("PostgreSQL array params emit the explicit PgArrayParameter wrapper", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
@@ -1231,7 +1506,7 @@ if (!haveIntegrationDatabase) {
     const result = prepare();
     expect(result.code).toBe(0);
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
-    expect(dts).toContain('params: [import("@onreza/sqlx-js").PgArrayParameter<string>]');
+    expect(dts).toContain('params: [import("@onreza/sqlx-js").PgArrayParameter<string, boolean>]');
 
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
@@ -1240,7 +1515,7 @@ if (!haveIntegrationDatabase) {
     const jsonResult = prepare(["--strict-inference"]);
     expect(jsonResult.code).toBe(0);
     const jsonDts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
-    expect(jsonDts).toContain('PgArrayParameter<import("@onreza/sqlx-js").JsonParameter<unknown>>');
+    expect(jsonDts).toContain('PgArrayParameter<import("@onreza/sqlx-js").JsonParameter<unknown>, boolean>');
   });
 
   test("$N IS NULL OR col = $N pattern makes the param nullable", () => {

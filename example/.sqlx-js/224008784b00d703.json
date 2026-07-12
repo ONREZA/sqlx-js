@@ -1,5 +1,6 @@
 {
   "query": "INSERT INTO users (name, email)\n     VALUES ($1, $2)\n     ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name\n     RETURNING id AS user_id, name AS user_name, email AS user_email, role AS user_role",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "INSERT INTO users (name, email)\n     VALUES ($1, $2)\n     ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name\n     RETURNING id AS user_id, name AS user_name, email AS user_email, role AS user_role"

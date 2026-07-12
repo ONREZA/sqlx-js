@@ -7,7 +7,7 @@ type TableDef = {
   schema?: string;
   name: string;
   oid: number;
-  columns: { name: string; attno: number; notNull: boolean }[];
+  columns: { name: string; attno: number; notNull: boolean; typeOid?: number }[];
 };
 
 function fakeSchema(tables: TableDef[]): SchemaCache {
@@ -21,7 +21,13 @@ function fakeSchema(tables: TableDef[]): SchemaCache {
     oidToName.set(t.oid, { schema, name: t.name });
     const cols = new Map<string, ColumnInfo>();
     for (const c of t.columns) {
-      const info: ColumnInfo = { attrelid: t.oid, attnum: c.attno, notNull: c.notNull, name: c.name };
+      const info: ColumnInfo = {
+        attrelid: t.oid,
+        attnum: c.attno,
+        notNull: c.notNull,
+        typeOid: c.typeOid ?? 23,
+        name: c.name,
+      };
       cols.set(c.name, info);
       byOidAttno.set(`${t.oid}/${c.attno}`, info);
     }
@@ -39,6 +45,9 @@ function fakeSchema(tables: TableDef[]): SchemaCache {
     columnsOf: (oid: number) => byOid.get(oid),
     tableNameByOid: (oid: number) => oidToName.get(oid),
     customType: () => undefined,
+    arrayElement: (oid: number) => oid === 1007
+      ? { typeOid: 23, tsType: "number", nullability: "unknown" as const }
+      : undefined,
     setTypeRegistry: () => {},
   } as unknown as SchemaCache;
 }
@@ -250,6 +259,29 @@ describe("analyze: non-null expressions", () => {
     expect(values.perColumnNullable).toEqual([false]);
     expect(nonNullableUnion.perColumnNullable).toEqual([false]);
     expect(nullableUnion.perColumnNullable).toEqual([true]);
+    expect(cte.perColumnArrayElementNullability).toEqual(["non-null"]);
+    expect(values.perColumnArrayElementNullability).toEqual(["non-null"]);
+    expect(nonNullableUnion.perColumnArrayElementNullability).toEqual(["non-null"]);
+  });
+
+  test("tracks nullable elements through constructors, array_agg, and derived tables", async () => {
+    const schema = fakeSchema([]);
+    const result = await analyzeQuery(
+      `SELECT
+        ARRAY[1, NULL] AS literal_values,
+        array_agg(value) AS aggregate_values,
+        nested.values AS derived_values
+      FROM (VALUES (1::int), (NULL::int)) AS source(value)
+      CROSS JOIN (SELECT ARRAY[1, 2] AS values) AS nested
+      GROUP BY nested.values`,
+      rowDesc([
+        { name: "literal_values", typeOid: 1007 },
+        { name: "aggregate_values", typeOid: 1007 },
+        { name: "derived_values", typeOid: 1007 },
+      ]),
+      schema,
+    );
+    expect(result.perColumnArrayElementNullability).toEqual(["nullable", "nullable", "non-null"]);
   });
 });
 
@@ -309,7 +341,7 @@ describe("analyze: degraded reason", () => {
 });
 
 describe("analyze: subquery aliases", () => {
-  test("derived table reference (qualified) treats unknown column as nullable", async () => {
+  test("derived table reference preserves analyzed column nullability", async () => {
     const schema = fakeSchema([{
       name: "users",
       oid: 16400,
@@ -318,11 +350,44 @@ describe("analyze: subquery aliases", () => {
     const sql = "SELECT s.x FROM (SELECT id AS x FROM users) s";
     const rd = rowDesc([{ name: "x", tableOid: 0, attno: 0 }]);
     const result = await analyzeQuery(sql, rd, schema);
-    expect(result.perColumnNullable[0]).toBe(true);
+    expect(result.perColumnNullable[0]).toBe(false);
+  });
+
+  test("schema-qualified columns resolve through the table scope", async () => {
+    const schema = fakeSchema([{
+      schema: "app",
+      name: "users",
+      oid: 16400,
+      columns: [{ name: "id", attno: 1, notNull: true }],
+    }]);
+    const result = await analyzeQuery(
+      "SELECT app.users.id FROM app.users",
+      rowDesc([{ name: "id", tableOid: 16400, attno: 1 }]),
+      schema,
+    );
+    expect(result.perColumnNullable).toEqual([false]);
+    expect(result.perColumnSources).toEqual([[{ schema: "app", table: "users", column: "id" }]]);
   });
 });
 
 describe("analyze: JOIN ON narrowing", () => {
+  test("qualified self-joins keep alias-specific WHERE narrowing", async () => {
+    const schema = fakeSchema([{
+      name: "users",
+      oid: 16400,
+      columns: [
+        { name: "id", attno: 1, notNull: true },
+        { name: "name", attno: 2, notNull: false },
+      ],
+    }]);
+    const result = await analyzeQuery(
+      "SELECT u1.name FROM users u1 JOIN users u2 ON u1.id = u2.id WHERE u1.name IS NOT NULL",
+      rowDesc([{ name: "name", tableOid: 16400, attno: 2 }]),
+      schema,
+    );
+    expect(result.perColumnNullable).toEqual([false]);
+  });
+
   test("INNER JOIN ON equality narrows nullable join keys", async () => {
     const schema = fakeSchema([
       {

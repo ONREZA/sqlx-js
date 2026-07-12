@@ -1,6 +1,7 @@
 import { parse } from "libpg-query";
 import type { FieldDescription } from "./wire";
 import type { SchemaCache } from "./schema";
+import type { ArrayElementNullability } from "./oids";
 import { narrowFromWhere, isNarrowed, type NonNullSet } from "./narrow";
 
 type AliasInfo =
@@ -10,7 +11,11 @@ type AliasInfo =
   | { kind: "function"; joinNullable: boolean };
 
 export type ColumnSource = { schema: string; table: string; column: string };
-type AnalyzedColumn = { nullable: boolean; sources: ColumnSource[] | null };
+type AnalyzedColumn = {
+  nullable: boolean;
+  sources: ColumnSource[] | null;
+  arrayElementNullability: ArrayElementNullability;
+};
 type CteColumnInfo = Map<string, Map<string, AnalyzedColumn>>;
 
 type Scope = {
@@ -26,6 +31,7 @@ type Scope = {
 export type AnalysisResult = {
   perColumnNullable: boolean[];
   perColumnSources: (ColumnSource[] | null)[];
+  perColumnArrayElementNullability: ArrayElementNullability[];
   referencedTables: { schema?: string; name: string }[];
   degraded?: { reason: string };
 };
@@ -59,6 +65,7 @@ function conservative(rowDesc: FieldDescription[], reason?: string): AnalysisRes
   return {
     perColumnNullable: rowDesc.map(() => true),
     perColumnSources: rowDesc.map(() => null),
+    perColumnArrayElementNullability: rowDesc.map(() => "unknown"),
     referencedTables: [],
     ...(reason && rowDesc.length > 0 ? { degraded: { reason } } : {}),
   };
@@ -82,12 +89,12 @@ async function analyzeSelect(
   if (!select.targetList || !select.fromClause) {
     if (select.targetList && !select.fromClause) {
       const scope = await buildScope(select, schema, inheritedCtes);
-      return runTargets(select.targetList, rowDesc, scope);
+      return await runTargets(select.targetList, rowDesc, scope);
     }
     return conservative(rowDesc, "SELECT without targetList");
   }
   const scope = await buildScope(select, schema, inheritedCtes);
-  return runTargets(select.targetList, rowDesc, scope);
+  return await runTargets(select.targetList, rowDesc, scope);
 }
 
 async function analyzeValues(
@@ -103,9 +110,16 @@ async function analyzeValues(
     return conservative(rowDesc, "VALUES rows do not match the described columns");
   }
   const scope = await buildScope(select, schema, inheritedCtes);
+  const perColumnArrayElementNullability: ArrayElementNullability[] = [];
+  for (let index = 0; index < rowDesc.length; index++) {
+    const states: ArrayElementNullability[] = [];
+    for (const row of rows) states.push(await expressionArrayElementNullability(row[index], scope));
+    perColumnArrayElementNullability.push(mergeArrayElementNullability(states));
+  }
   return {
     perColumnNullable: rowDesc.map((_, index) => rows.some((row: any[]) => expressionNullable(row[index], scope))),
     perColumnSources: rowDesc.map(() => null),
+    perColumnArrayElementNullability,
     referencedTables: [],
   };
 }
@@ -139,6 +153,10 @@ function combineSetOperation(
   return {
     perColumnNullable,
     perColumnSources: combineSetOperationSources(operation, left, right),
+    perColumnArrayElementNullability: operation === "SETOP_EXCEPT"
+      ? left.perColumnArrayElementNullability
+      : left.perColumnArrayElementNullability.map((state, index) =>
+        mergeArrayElementNullability([state, right.perColumnArrayElementNullability[index] ?? "unknown"])),
     referencedTables: mergeReferencedTables(left.referencedTables, right.referencedTables),
     ...(degradedReasons.length > 0 ? { degraded: { reason: degradedReasons.join("; ") } } : {}),
   };
@@ -185,11 +203,16 @@ async function analyzeDml(
 ): Promise<AnalysisResult> {
   const returningList = stmt.returningList ?? [];
   if (returningList.length === 0 && rowDesc.length === 0) {
-    return { perColumnNullable: [], perColumnSources: [], referencedTables: tablesFromRelation(stmt.relation) };
+    return {
+      perColumnNullable: [],
+      perColumnSources: [],
+      perColumnArrayElementNullability: [],
+      referencedTables: tablesFromRelation(stmt.relation),
+    };
   }
   const fakeSelect = dmlAsSelect(stmt, kind, returningList);
   const scope = await buildScope(fakeSelect, schema);
-  return runTargets(returningList, rowDesc, scope);
+  return await runTargets(returningList, rowDesc, scope);
 }
 
 function dmlAsSelect(stmt: any, kind: "insert" | "update" | "delete", targetList: any[]): any {
@@ -255,8 +278,57 @@ async function buildScope(
     scope.tableRefsByOid.set(oid, arr);
   }
   await schema.loadColumnsForTables(allOids);
+  const columnTypeOids = allOids
+    .flatMap((oid) => [...(schema.columnsOf(oid)?.values() ?? [])].map((column) => column.typeOid))
+    .filter((oid) => oid > 0);
+  await schema.loadCustomTypes(columnTypeOids);
+  for (const entry of select.fromClause ?? []) {
+    await loadRangeSubselects(entry, false, scope);
+  }
 
   return scope;
+}
+
+async function loadRangeSubselects(node: any, joinNullable: boolean, scope: Scope): Promise<void> {
+  if (!node) return;
+  if (node.JoinExpr) {
+    const join = node.JoinExpr;
+    let leftNullable = joinNullable;
+    let rightNullable = joinNullable;
+    if (join.jointype === "JOIN_LEFT") rightNullable = true;
+    else if (join.jointype === "JOIN_RIGHT") leftNullable = true;
+    else if (join.jointype === "JOIN_FULL") {
+      leftNullable = true;
+      rightNullable = true;
+    }
+    await loadRangeSubselects(join.larg, leftNullable, scope);
+    await loadRangeSubselects(join.rarg, rightNullable, scope);
+    return;
+  }
+  const range = node.RangeSubselect;
+  const aliasName = range?.alias?.aliasname;
+  const select = range?.subquery?.SelectStmt;
+  const targets = outputTargetList(select);
+  if (!aliasName || !select || !targets) return;
+  const analysis = await analyzeSelect(select, syntheticRowDescription(targets), scope.schema, scope.cteColumnInfo);
+  const explicitNames: string[] = (range.alias?.colnames ?? [])
+    .map((name: any) => name?.String?.sval)
+    .filter((name: any): name is string => typeof name === "string");
+  const columns = new Map<string, AnalyzedColumn>();
+  for (let index = 0; index < targets.length; index++) {
+    const target = targets[index];
+    if (containsStar(target?.ResTarget?.val)) continue;
+    const name = explicitNames[index]
+      ?? target?.ResTarget?.name
+      ?? colNameOfColumnRef(target?.ResTarget?.val)
+      ?? `?column?${index}`;
+    columns.set(name, {
+      nullable: analysis.perColumnNullable[index] ?? true,
+      sources: analysis.perColumnSources[index] ?? null,
+      arrayElementNullability: analysis.perColumnArrayElementNullability[index] ?? "unknown",
+    });
+  }
+  scope.aliases.set(aliasName, { kind: "subquery", joinNullable, columns });
 }
 
 async function collectCteColumns(
@@ -306,7 +378,7 @@ async function analyzeCteColumns(
   if (!Array.isArray(targetList) || targetList.length === 0) return result;
 
   const isSelect = !!cte.ctequery?.SelectStmt;
-  const analysis = isSelect && isSetOperation(inner)
+  const analysis = isSelect
     ? await analyzeSelect(inner, syntheticRowDescription(targetList), schema, inheritedCtes)
     : undefined;
   const scope = analysis
@@ -323,7 +395,9 @@ async function analyzeCteColumns(
     if (isStar) continue;
     const nullable = analysis?.perColumnNullable[i] ?? computeTargetNullable(t, scope!);
     const sources = analysis ? analysis.perColumnSources[i] ?? null : columnSourcesOfTarget(t, scope!);
-    result.set(colName, { nullable, sources });
+    const arrayElementNullability = analysis?.perColumnArrayElementNullability[i]
+      ?? await expressionArrayElementNullability(t?.ResTarget?.val, scope!);
+    result.set(colName, { nullable, sources, arrayElementNullability });
   }
   return result;
 }
@@ -350,11 +424,11 @@ function syntheticRowDescription(targets: any[]): FieldDescription[] {
   }));
 }
 
-function runTargets(
+async function runTargets(
   targets: any[],
   rowDesc: FieldDescription[],
   scope: Scope,
-): AnalysisResult {
+): Promise<AnalysisResult> {
   const referencedTables: { schema?: string; name: string }[] = [];
   for (const a of scope.aliases.values()) {
     if (a.kind === "table") referencedTables.push({ schema: a.schema, name: a.relname });
@@ -362,13 +436,20 @@ function runTargets(
 
   const nullables = new Array<boolean>(rowDesc.length).fill(true);
   const sources = new Array<ColumnSource[] | null>(rowDesc.length).fill(null);
+  const arrayElements = new Array<ArrayElementNullability>(rowDesc.length).fill("unknown");
   if (scope.hasStar || targets.length !== rowDesc.length) {
     for (let i = 0; i < rowDesc.length; i++) {
       const f = rowDesc[i]!;
       nullables[i] = nullableFromRowDescConservative(f, scope);
       sources[i] = sourceFromField(f, scope.schema);
+      arrayElements[i] = scope.schema.arrayElement?.(f.typeOid)?.nullability ?? "unknown";
     }
-    return { perColumnNullable: nullables, perColumnSources: sources, referencedTables };
+    return {
+      perColumnNullable: nullables,
+      perColumnSources: sources,
+      perColumnArrayElementNullability: arrayElements,
+      referencedTables,
+    };
   }
 
   for (let i = 0; i < rowDesc.length; i++) {
@@ -376,26 +457,27 @@ function runTargets(
     const target = targets[i]!;
     const val = target.ResTarget?.val;
     sources[i] = sourceFromField(f, scope.schema) ?? columnSourcesOfTarget(target, scope);
-    if (f.tableOid !== 0 && f.columnAttr !== 0) {
-      const aliasName = aliasOfColumnRef(val);
-      const refColName = colNameOfColumnRef(val);
-      if (refColName && isNarrowed(scope.forcedNonNull, aliasName ?? undefined, refColName)) {
-        nullables[i] = false;
-        continue;
-      }
+    arrayElements[i] = await expressionArrayElementNullability(val, scope);
+    const fields = val?.ColumnRef?.fields;
+    const scopedColumnRef = Array.isArray(fields)
+      && !fields.some((field: any) => field.A_Star !== undefined)
+      && (fields.length === 1 || columnRefAlias(fields, scope) !== undefined);
+    if (scopedColumnRef) {
+      nullables[i] = columnRefNullable(fields, scope);
+    } else if (f.tableOid !== 0 && f.columnAttr !== 0) {
       const notNull = scope.schema.isNotNull(f.tableOid, f.columnAttr);
-      let joinNullable: boolean;
-      if (aliasName && scope.aliases.has(aliasName)) {
-        joinNullable = scope.aliases.get(aliasName)!.joinNullable;
-      } else {
-        joinNullable = anyAliasNullableForOid(f.tableOid, scope);
-      }
+      const joinNullable = anyAliasNullableForOid(f.tableOid, scope);
       nullables[i] = !(notNull === true && !joinNullable);
     } else {
       nullables[i] = expressionNullable(val, scope);
     }
   }
-  return { perColumnNullable: nullables, perColumnSources: sources, referencedTables };
+  return {
+    perColumnNullable: nullables,
+    perColumnSources: sources,
+    perColumnArrayElementNullability: arrayElements,
+    referencedTables,
+  };
 }
 
 function sourceFromField(f: FieldDescription, schema: SchemaCache): ColumnSource[] | null {
@@ -412,7 +494,7 @@ function columnSourcesOfTarget(target: any, scope: Scope): ColumnSource[] | null
   let aliasName: string | undefined;
   let column: string | undefined;
   if (fields.length >= 2) {
-    aliasName = fields[0]?.String?.sval;
+    aliasName = columnRefAlias(fields, scope);
     column = fields[fields.length - 1]?.String?.sval;
   } else if (fields.length === 1) {
     column = fields[0]?.String?.sval;
@@ -518,15 +600,6 @@ function walkFrom(node: any, joinNullable: boolean, scope: Scope): void {
   }
 }
 
-function aliasOfColumnRef(val: any): string | null {
-  if (!val?.ColumnRef) return null;
-  const fields = val.ColumnRef.fields;
-  if (!Array.isArray(fields) || fields.length < 2) return null;
-  const first = fields[0]?.String?.sval;
-  if (typeof first !== "string") return null;
-  return first;
-}
-
 function colNameOfColumnRef(val: any): string | undefined {
   if (!val?.ColumnRef) return undefined;
   const fields = val.ColumnRef.fields;
@@ -546,7 +619,7 @@ function columnRefNullable(fields: any[], scope: Scope): boolean {
   let aliasName: string | undefined;
   let colName: string | undefined;
   if (fields.length >= 2) {
-    aliasName = fields[0]?.String?.sval;
+    aliasName = columnRefAlias(fields, scope);
     colName = fields[fields.length - 1]?.String?.sval;
   } else if (fields.length === 1) {
     colName = fields[0]?.String?.sval;
@@ -626,6 +699,113 @@ const NON_NULL_FUNCS = new Set([
 ]);
 
 const COUNT_FUNCS = new Set(["count"]);
+
+function mergeArrayElementNullability(states: ArrayElementNullability[]): ArrayElementNullability {
+  if (states.length === 0) return "non-null";
+  if (states.some((state) => state === "nullable")) return "nullable";
+  if (states.every((state) => state === "non-null")) return "non-null";
+  return "unknown";
+}
+
+function columnRefArrayElementNullability(fields: any[], scope: Scope): ArrayElementNullability {
+  let aliasName: string | undefined;
+  let colName: string | undefined;
+  if (fields.length >= 2) {
+    aliasName = columnRefAlias(fields, scope);
+    colName = fields[fields.length - 1]?.String?.sval;
+  } else if (fields.length === 1) {
+    colName = fields[0]?.String?.sval;
+  }
+  if (typeof colName !== "string") return "unknown";
+
+  const stateForAlias = (name: string, alias: AliasInfo): ArrayElementNullability | undefined => {
+    if (alias.kind === "cte" || alias.kind === "subquery") {
+      return alias.columns.get(colName!)?.arrayElementNullability;
+    }
+    if (alias.kind !== "table") return undefined;
+    const oid = scope.aliasOidByName.get(name);
+    if (oid === undefined) return undefined;
+    const column = scope.schema.columnsOf(oid)?.get(colName!);
+    if (!column) return undefined;
+    return scope.schema.arrayElement?.(column.typeOid)?.nullability;
+  };
+
+  if (aliasName) {
+    const alias = scope.aliases.get(aliasName);
+    return alias ? stateForAlias(aliasName, alias) ?? "unknown" : "unknown";
+  }
+  const matches: ArrayElementNullability[] = [];
+  for (const [name, alias] of scope.aliases) {
+    const state = stateForAlias(name, alias);
+    if (state !== undefined) matches.push(state);
+  }
+  return matches.length === 1 ? matches[0]! : "unknown";
+}
+
+function columnRefAlias(fields: any[], scope: Scope): string | undefined {
+  for (let index = fields.length - 2; index >= 0; index--) {
+    const name = fields[index]?.String?.sval;
+    if (typeof name === "string" && scope.aliases.has(name)) return name;
+  }
+  return undefined;
+}
+
+async function expressionArrayElementNullability(val: any, scope: Scope): Promise<ArrayElementNullability> {
+  if (!val) return "unknown";
+
+  if (val.A_ArrayExpr) {
+    const states: ArrayElementNullability[] = [];
+    for (const element of val.A_ArrayExpr.elements ?? []) {
+      const nested = await expressionArrayElementNullability(element, scope);
+      states.push(nested === "unknown" ? (expressionNullable(element, scope) ? "nullable" : "non-null") : nested);
+    }
+    return mergeArrayElementNullability(states);
+  }
+
+  if (val.ColumnRef) {
+    const fields = val.ColumnRef.fields;
+    if (!Array.isArray(fields) || fields.some((field: any) => field.A_Star !== undefined)) return "unknown";
+    return columnRefArrayElementNullability(fields, scope);
+  }
+
+  if (val.FuncCall && funcName(val.FuncCall) === "array_agg") {
+    const arg = val.FuncCall.args?.[0];
+    if (!arg) return "unknown";
+    const nested = await expressionArrayElementNullability(arg, scope);
+    return nested === "unknown" ? (expressionNullable(arg, scope) ? "nullable" : "non-null") : nested;
+  }
+
+  if (val.SubLink?.subLinkType === "ARRAY_SUBLINK") {
+    const select = val.SubLink.subselect?.SelectStmt;
+    const targets = outputTargetList(select);
+    if (!select || !targets || targets.length !== 1) return "unknown";
+    const analysis = await analyzeSelect(select, syntheticRowDescription(targets), scope.schema, scope.cteColumnInfo);
+    if (analysis.degraded || analysis.perColumnNullable.length !== 1) return "unknown";
+    const nested = analysis.perColumnArrayElementNullability[0] ?? "unknown";
+    return nested === "unknown" ? (analysis.perColumnNullable[0] ? "nullable" : "non-null") : nested;
+  }
+
+  if (val.TypeCast) return await expressionArrayElementNullability(val.TypeCast.arg, scope);
+
+  if (val.CoalesceExpr || val.MinMaxExpr) {
+    const args = val.CoalesceExpr?.args ?? val.MinMaxExpr?.args ?? [];
+    const states: ArrayElementNullability[] = [];
+    for (const arg of args) states.push(await expressionArrayElementNullability(arg, scope));
+    return mergeArrayElementNullability(states);
+  }
+
+  if (val.CaseExpr) {
+    const c = val.CaseExpr;
+    const branches = (c.args ?? []).map((arm: any) => arm.CaseWhen?.result);
+    if (c.defresult !== undefined && c.defresult !== null) branches.push(c.defresult);
+    else return "unknown";
+    const states: ArrayElementNullability[] = [];
+    for (const branch of branches) states.push(await expressionArrayElementNullability(branch, scope));
+    return mergeArrayElementNullability(states);
+  }
+
+  return "unknown";
+}
 
 function expressionNullable(val: any, scope: Scope): boolean {
   if (!val) return true;

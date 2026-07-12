@@ -1,5 +1,6 @@
 {
   "query": "SELECT COUNT(*) AS \"n!\" FROM users",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "SELECT COUNT(*) AS \"n!\" FROM users"

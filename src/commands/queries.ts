@@ -46,6 +46,7 @@ export type QueryInventoryItem = {
   sqlFilePaths: string[];
   callSites: { file: string; line: number; column: number }[];
   cacheStatus: "current" | "stale" | "missing";
+  validation: "planned" | "parse-only" | null;
 };
 
 export type QueryInventory = {
@@ -80,13 +81,13 @@ export async function buildQueryInventory(root: string, cacheDir: string): Promi
     manifestCurrent = false;
   }
 
-  let cacheIds: string[];
+  let cacheEntries: ReturnType<Cache["list"]>;
   try {
-    cacheIds = cache.list().map(({ fp }) => fp);
+    cacheEntries = cache.list();
   } catch (error) {
     throw queriesError("cache", error);
   }
-  const cached = new Set(cacheIds);
+  const cached = new Map(cacheEntries.map(({ fp, entry }) => [fp, entry]));
   const grouped = new Map<string, typeof sites>();
   for (const site of sites) {
     const id = queryId(site.query);
@@ -95,6 +96,7 @@ export async function buildQueryInventory(root: string, cacheDir: string): Promi
     grouped.set(id, group);
   }
   const queries = [...grouped.entries()].map(([id, group]): QueryInventoryItem => {
+    const cachedEntry = cached.get(id);
     return {
       queryId: id,
       queryNames: [...new Set(group.flatMap((site) => site.queryName ? [site.queryName] : []))].sort(),
@@ -104,11 +106,12 @@ export async function buildQueryInventory(root: string, cacheDir: string): Promi
       callSites: group
         .map(({ file, line, column }) => ({ file, line, column }))
         .sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column),
-      cacheStatus: !cached.has(id) ? "missing" : manifestCurrent ? "current" : "stale",
+      cacheStatus: !cachedEntry ? "missing" : manifestCurrent && cachedEntry.validation ? "current" : "stale",
+      validation: cachedEntry?.validation ?? null,
     };
   }).sort((a, b) => a.queryId.localeCompare(b.queryId));
   const active = new Set(queries.map((query) => query.queryId));
-  const orphanedCacheIds = cacheIds.filter((fp) => !active.has(fp)).sort();
+  const orphanedCacheIds = cacheEntries.map(({ fp }) => fp).filter((fp) => !active.has(fp)).sort();
   return { formatVersion: 1, ok: true, queries, orphanedCacheIds };
 }
 
@@ -159,7 +162,8 @@ export async function runQueries(options: {
   }
   for (const query of inventory.queries) {
     const names = query.queryNames.length > 0 ? ` ${query.queryNames.join(",")}` : "";
-    console.log(`${query.queryId}${names} ${query.cardinalities.join(",")} ${query.cacheStatus}`);
+    const validation = query.validation ? ` ${query.validation}` : "";
+    console.log(`${query.queryId}${names} ${query.cardinalities.join(",")} ${query.cacheStatus}${validation}`);
     for (const site of query.callSites) console.log(`  ${site.file}:${site.line}:${site.column}`);
   }
   if (inventory.queries.length === 0) console.log("no sqlx-js queries found");

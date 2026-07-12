@@ -5,6 +5,23 @@ import { TLSSocket, connect as tlsConnect } from "node:tls";
 
 const textEncoder = new TextEncoder();
 
+export const MIN_POSTGRES_MAJOR_VERSION = 16;
+
+export function postgresMajorVersion(version: string): number | null {
+  const match = /^(\d+)/.exec(version);
+  if (!match) return null;
+  const major = Number(match[1]);
+  return Number.isSafeInteger(major) ? major : null;
+}
+
+export function assertSupportedPostgresVersion(version: string | undefined): number {
+  const major = version ? postgresMajorVersion(version) : null;
+  if (major !== null && major >= MIN_POSTGRES_MAJOR_VERSION) return major;
+  throw new Error(
+    `sqlx-js requires PostgreSQL ${MIN_POSTGRES_MAJOR_VERSION} or newer; server reports ${version ?? "unknown"}`,
+  );
+}
+
 export const SSL_MODES = ["disable", "prefer", "require", "verify-ca", "verify-full"] as const;
 export type SslMode = (typeof SSL_MODES)[number];
 
@@ -97,6 +114,8 @@ export type PgRowResult = {
   fields: FieldDescription[];
   tag: string;
 };
+
+export type PlanValidation = "planned" | "parse-only";
 
 export class MessageReader {
   private chunks: Uint8Array[] = [];
@@ -382,6 +401,8 @@ export class PgClient {
   private closed = false;
   private closeReason: Error | null = null;
   private tlsEnabled = false;
+  private serverVersionText: string | undefined;
+  private planSequence = 0;
 
   constructor(private cfg: ConnConfig) {}
 
@@ -433,6 +454,12 @@ export class PgClient {
     await this.startup();
     await this.authenticate();
     await this.awaitReady();
+    try {
+      assertSupportedPostgresVersion(this.serverVersionText);
+    } catch (error) {
+      this.destroySocket();
+      throw error;
+    }
   }
 
   private abortConnect(): never {
@@ -585,6 +612,7 @@ export class PgClient {
     while (true) {
       const m = await this.next();
       if (m.type === "Z") return;
+      if (m.type === "S" && m.name === "server_version") this.serverVersionText = m.value;
       if (m.type === "E") throw pgError(m.fields);
     }
   }
@@ -621,6 +649,50 @@ export class PgClient {
     if (err) throw err;
     if (!sawRowDesc && !sawNoData) throw new Error("describe: neither RowDescription nor NoData");
     return { paramOids, fields };
+  }
+
+  async plan(sql: string, paramCount: number): Promise<PlanValidation> {
+    // Binding placeholder values lets PostgreSQL build a value-dependent custom
+    // plan. SQL PREPARE preserves inferred types while force_generic_plan keeps
+    // correctness validation independent of those values.
+    const statement = `sqlx_js_plan_${++this.planSequence}`;
+    const prefix = `PREPARE ${statement} AS `;
+    let inTransaction = false;
+    let prepared = false;
+    let planError: unknown;
+    try {
+      await this.simpleQuery("BEGIN");
+      inTransaction = true;
+      await this.simpleQuery("SET LOCAL plan_cache_mode = force_generic_plan");
+      try {
+        await this.simpleQuery(prefix + sql);
+        prepared = true;
+      } catch (error) {
+        if (!(error instanceof PgError) || error.position === undefined) throw error;
+        const position = Math.max(1, error.position - prefix.length);
+        throw new PgError({ ...error.fields, P: String(position) }, { cause: error });
+      }
+      const params = Array.from({ length: paramCount }, () => "NULL").join(", ");
+      const execute = paramCount === 0 ? statement : `${statement}(${params})`;
+      await this.simpleQuery(`EXPLAIN (FORMAT JSON) EXECUTE ${execute}`);
+    } catch (error) {
+      planError = error;
+    }
+    if (inTransaction) {
+      const cleanup = !prepared
+        ? "ROLLBACK"
+        : planError === undefined
+          ? `DEALLOCATE ${statement}; ROLLBACK`
+          : `ROLLBACK; DEALLOCATE ${statement}`;
+      try {
+        await this.simpleQueryAll(cleanup);
+      } catch (error) {
+        if (planError === undefined) throw error;
+      }
+    }
+    if (!prepared && planError instanceof PgError && planError.code === "42601") return "parse-only";
+    if (planError !== undefined) throw planError;
+    return "planned";
   }
 
   async execParamsText(

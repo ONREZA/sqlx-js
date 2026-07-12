@@ -1,5 +1,6 @@
 {
   "query": "SELECT id AS \"id!\", name AS \"name!\", email AS \"email!\"\nFROM users\nWHERE role = $1\nORDER BY id\nLIMIT $2::int\n",
+  "validation": "planned",
   "hasInline": false,
   "filePaths": [
     "queries/get_users_by_role.sql"

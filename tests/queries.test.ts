@@ -44,6 +44,7 @@ test("queries inventory and embedded module are deterministic and database-free"
         cardinalities: string[];
         sqlFilePaths: string[];
         cacheStatus: string;
+        validation: string | null;
       }>;
       embeddedModule: string;
     };
@@ -53,6 +54,7 @@ test("queries inventory and embedded module are deterministic and database-free"
       cardinalities: ["one"],
       sqlFilePaths: [],
       cacheStatus: "missing",
+      validation: null,
     });
     expect(inventory.queries.find((query) => query.sqlFilePaths.length > 0)).toMatchObject({
       cardinalities: ["optional"],
@@ -94,6 +96,7 @@ test("queries inventory distinguishes current and orphaned cache entries", async
     const cache = new Cache(cacheDir);
     cache.write(queryId(query), {
       query,
+      validation: "planned",
       paramOids: [],
       paramTsTypes: [],
       columns: [{ name: "value", typeOid: 23, tsType: "number", nullable: false }],
@@ -108,8 +111,22 @@ test("queries inventory distinguishes current and orphaned cache entries", async
     });
     writeCacheManifest(cacheDir, prepareConfigHash({}));
     const inventory = await buildQueryInventory(root, cacheDir);
-    expect(inventory.queries[0]).toMatchObject({ queryId: queryId(query), cacheStatus: "current" });
+    expect(inventory.queries[0]).toMatchObject({
+      queryId: queryId(query),
+      cacheStatus: "current",
+      validation: "planned",
+    });
     expect(inventory.orphanedCacheIds).toEqual(["0000000000000000"]);
+
+    cache.write(queryId(query), {
+      query,
+      paramOids: [],
+      paramTsTypes: [],
+      columns: [{ name: "value", typeOid: 23, tsType: "number", nullable: false }],
+      hasResultSet: true,
+    });
+    const incomplete = await buildQueryInventory(root, cacheDir);
+    expect(incomplete.queries[0]).toMatchObject({ cacheStatus: "stale", validation: null });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

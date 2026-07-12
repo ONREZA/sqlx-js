@@ -1,5 +1,6 @@
 {
   "query": "SELECT u.id, p.title, p.body FROM users u LEFT JOIN posts p ON p.user_id = u.id WHERE p.body IS NOT NULL AND u.id = $1",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "SELECT u.id, p.title, p.body FROM users u LEFT JOIN posts p ON p.user_id = u.id WHERE p.body IS NOT NULL AND u.id = $1"

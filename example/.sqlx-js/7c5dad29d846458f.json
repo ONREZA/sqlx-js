@@ -1,5 +1,6 @@
 {
   "query": "SELECT u.id AS uid, p.id AS pid FROM users u FULL OUTER JOIN posts p ON p.user_id = u.id WHERE u.id = $1 OR p.id = $1",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "SELECT u.id AS uid, p.id AS pid FROM users u FULL OUTER JOIN posts p ON p.user_id = u.id WHERE u.id = $1 OR p.id = $1"

@@ -1,5 +1,6 @@
 {
   "query": "SELECT id, COALESCE(bio, 'no bio') AS bio_or_default, COALESCE(age, 0) AS age_or_zero FROM users WHERE id = $1",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "SELECT id, COALESCE(bio, 'no bio') AS bio_or_default, COALESCE(age, 0) AS age_or_zero FROM users WHERE id = $1"

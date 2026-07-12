@@ -1,5 +1,6 @@
 {
   "query": "SELECT id, settings FROM users WHERE settings = $1 LIMIT 1",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "SELECT id, settings FROM users WHERE settings = $1 LIMIT 1"

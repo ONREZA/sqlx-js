@@ -4,7 +4,7 @@ Compile-time-checked raw SQL for TypeScript + PostgreSQL. Inspired by Rust's [sq
 
 You write plain SQL strings. A `prepare` step validates them against your database via the PostgreSQL wire protocol and generates a TypeScript declaration file. Wrong column names and stale queries fail during `prepare`; mismatched parameter types and row usage become TypeScript errors.
 
-The runtime uses [Postgres.js](https://github.com/porsager/postgres) through a single adapter instead of a Bun-specific client. The published CLI requires **Node ≥ 24** (`#!/usr/bin/env node`) and can also run through **Bun ≥ 1.3**.
+The runtime uses [Postgres.js](https://github.com/porsager/postgres) through a single adapter instead of a Bun-specific client. The published CLI requires **Node ≥ 24** (`#!/usr/bin/env node`) and can also run through **Bun ≥ 1.3**. PostgreSQL 16 or newer is required.
 
 ```ts
 import { sql } from "@onreza/sqlx-js";
@@ -20,18 +20,18 @@ const rows = await sql(
 
 ## Features
 
-- **Compile-time validation** against a live PostgreSQL via `Parse` + `Describe Statement` (no query execution).
+- **Compile-time validation** against a live PostgreSQL via `Parse` + `Describe Statement` followed by non-executing, parameter-independent generic planning for supported query statements.
 - **Precise nullability inference** through `libpg-query`: `JOIN` direction (LEFT/RIGHT/FULL), inner `JOIN ... ON` predicates, `UNION`/`INTERSECT`/`EXCEPT`, DML `RETURNING`, `COALESCE`, `CASE`, `COUNT`, expression propagation. Parameters become `T | null` when wrapped in `COALESCE`/`NULLIF`/`IS [NOT] NULL`/`IS [NOT] DISTINCT FROM`, or when bound to a nullable column in `INSERT`/`UPDATE`.
 - **WHERE narrowing**: `IS NOT NULL`, equality chains, `IN`, `LIKE`, `BETWEEN` make columns non-null. Tracks `AND`/`OR` semantics.
 - **PostgreSQL enums** generated as TypeScript literal unions (read + write side).
 - **Schema-aware `jsonb`** via config-driven column → application type mappings. Works for both result columns and `INSERT`/`UPDATE`/`WHERE` parameters. Unmapped `json`/`jsonb` falls back to `JsonValue` for rows and an explicitly wrapped, structurally checked JSON parameter.
-- **Extension types out of the box**: `pgvector` (`vector`, `halfvec`, `sparsevec`), `hstore`, `citext`, `ltree`/`lquery`/`ltxtquery`. Add your own through `customTypes` config.
+- **Compile-time extension type inference**: `pgvector` (`vector`, `halfvec`, `sparsevec`), `hstore`, `citext`, `ltree`/`lquery`/`ltxtquery`. Add your own through `customTypes` config.
 - **Domains** resolve to their base TypeScript type (`CREATE DOMAIN email AS text` → `string`), including domains over extension types or other domains.
 - **Wide built-in type coverage**: numeric, text, date/time, UUID, json/jsonb, network (inet/cidr/macaddr/macaddr8), bit strings, ranges/multiranges, geometric, money, tsvector/tsquery, xml — and the matching array variants.
 - **External SQL files** via `sql.file("queries/foo.sql", ...)` — prepared and typed through `KnownFileQueries`. Watch mode re-prepares on `.sql` edits too.
 - **One-row helpers**: `sql.one(...)`, `sql.optional(...)`, `sql.file.one(...)`, `sql.file.optional(...)`, and the same chain on the `tx` callback — friendly with `noUncheckedIndexedAccess: true`. The scanner walks all of them.
 - **Reusable query definitions** via `defineQuery`: declare one typed SQL contract and execute it through either a root client or transaction-scoped executor. `QueryParams`, `QueryRow`, and `QueryResult` expose its generated types without indexing a registry by SQL text.
-- **Unambiguous JSON and PostgreSQL array params** through `sql.json(...)` and `sql.array(...)`. Primitive JSON arrays cannot be silently encoded as PostgreSQL array literals.
+- **Sound PostgreSQL array contracts** keep array-value nullability separate from element nullability. SQL constructors, subqueries, aggregates, CTEs, set operations, `NOT NULL` element domains, and explicit column assertions narrow `(T | null)[]` to `T[]` only when proven. Array params remain unambiguous through `sql.array(...)`.
 - **Typed transactions** via `sql.transaction(async tx => …)` — the `tx` callback parameter is recognized by the scanner, so queries inside the block keep full type checking.
 - **Sourcemap-accurate error reporting**: every prepare failure points to `file:line:column` of the originating `sql(...)` call site, with PG error code, position, and hint.
 - **Linear migrations** with hash tampering detection.
@@ -61,7 +61,7 @@ bun add @onreza/sqlx-js
 bun add --dev typescript
 ```
 
-Node.js 24 or newer is required. Bun users need Bun 1.3 or newer. TypeScript is an optional peer so production-only installs do not pull the compiler and its platform package into the application image; source scanning commands (`prepare`, `queries`, `doctor`, `ci`, and migration development/verification) require it in development dependencies.
+Node.js 24 or newer and PostgreSQL 16 or newer are required. Bun users need Bun 1.3 or newer. TypeScript is an optional peer so production-only installs do not pull the compiler and its platform package into the application image; source scanning commands (`prepare`, `queries`, `doctor`, `ci`, and migration development/verification) require it in development dependencies.
 
 The package installs `sqlx-js` and `sqlx-js-diagnostics` binaries. The CLI examples below use `npx @onreza/sqlx-js`; `bunx @onreza/sqlx-js ...` works the same if your project uses Bun.
 
@@ -304,7 +304,9 @@ await sql(
 );
 ```
 
-Generated parameter types require `PgArrayParameter<T>` or `JsonParameter<T>`, so mixing the two representations is a TypeScript error. A PostgreSQL `json[]` / `jsonb[]` composes both wrappers: the outer `sql.array(...)` selects the PostgreSQL array representation and each non-SQL-NULL element uses `sql.json(...)`. `sql.json(null)` represents JSON `null`; a bare `null` remains SQL `NULL` when the database parameter is nullable.
+Generated parameter types require `PgArrayParameter<T, NullableElements>` or `JsonParameter<T>`, so mixing the two representations is a TypeScript error. `sql.array(...)` derives whether its input contains SQL `NULL` elements. Ordinary PostgreSQL array targets accept either form; an array whose element type is a `DOMAIN ... NOT NULL`, or whose source column has an `arrayElementNullability` assertion, accepts only a non-null-element wrapper. A PostgreSQL `json[]` / `jsonb[]` composes both wrappers: the outer `sql.array(...)` selects the PostgreSQL array representation and each non-SQL-NULL element uses `sql.json(...)`. `sql.json(null)` represents JSON `null`; a bare `null` inside `sql.array(...)` represents an SQL `NULL` array element.
+
+PostgreSQL column `NOT NULL` constrains the array value, not its elements. Therefore an ordinary `text[] NOT NULL` result is `(string | null)[]`; `prepare` emits `string[]` only after proving non-null elements from the SQL expression, a `NOT NULL` element domain, or an explicit application assertion. Declared array dimensions are not treated as a fixed TypeScript shape because PostgreSQL does not enforce them.
 
 `sql.json()` accepts ordinary structurally JSON-compatible interfaces and preserves their concrete type in `JsonParameter<T>`. It rejects known non-JSON values such as `Date`, `bigint`, functions, and `undefined` array elements. TypeScript is structurally typed, so it cannot identify every user-defined class solely because it was constructed with `new`; runtime JSON semantics still belong to `JSON.stringify`.
 
@@ -497,7 +499,7 @@ sqlx-js schema check [--schema <path>] [--shadow-url <url>]
 sqlx-js --version | --help
 ```
 
-Regular `prepare` describes queries across a small connection pool (default 8, override with `SQLX_JS_PREPARE_CONCURRENCY`) for faster cold runs on large projects. Watch mode keeps one session warm, rescans only affected source files, and reuses cached metadata for unchanged fingerprints. Config, tsconfig, and applied shadow-migration changes invalidate the incremental state and perform a full prepare.
+Regular `prepare` describes and plans queries across a small connection pool (default 8, override with `SQLX_JS_PREPARE_CONCURRENCY`) for faster cold runs on large projects. After `Describe` establishes the server-side parameter contract, `SELECT`, `INSERT`, `UPDATE`, `DELETE`, and `MERGE` are SQL-prepared on the same session and planned through `EXPLAIN EXECUTE` under `plan_cache_mode = force_generic_plan`. The resulting plan is independent of placeholder values. `ANALYZE` is never used, so DML is not executed. Statements outside PostgreSQL's generic SQL `PREPARE` surface, such as `SET` and `CALL`, remain valid but are reported and cached as `parse-only`. Watch mode keeps one session warm, rescans only affected source files, and reuses cached metadata for unchanged fingerprints. Config, tsconfig, and applied shadow-migration changes invalidate the incremental state and perform a full prepare.
 
 | Flag                  | Meaning                                                                              |
 |-----------------------|--------------------------------------------------------------------------------------|
@@ -529,7 +531,7 @@ Flags that take a value accept both `--flag value` and `--flag=value` forms.
 
 Prepare and doctor JSON use `formatVersion: 1`. Prepare diagnostics include a stable phase plus root-relative file, 1-based line/column, query ID/name, PostgreSQL code/position/hint when available, and the query text. Degraded inference and generated `unknown` types appear as warnings by default; `--strict-inference` promotes them to errors. This is intended for CI annotations and editor integrations; stdout contains one JSON document and human progress is suppressed. `prepare --watch --jsonl` emits one `start`, `diagnostic`, `prepared`, `error`, `watching`, or `stopping` event per line so an editor can consume diagnostics without waiting for the watch process to exit. Fatal `error` events include the same structured `diagnostic` object as CLI preflight failures, preserving the prepare phase and source location when available.
 
-`queries --json` is database-free and read-only. It emits `formatVersion: 1` inventory entries with `queryId`, optional definition names, cardinalities, root-relative call sites, SQL file paths, and `current`/`stale`/`missing` cache status, plus orphaned cache IDs. Config, scan, cache, and embed failures use versioned structured diagnostics with source location when available. Adding `--embed` writes the external-SQL module only after a successful scan.
+`queries --json` is database-free and read-only. It emits `formatVersion: 1` inventory entries with `queryId`, optional definition names, cardinalities, root-relative call sites, SQL file paths, `current`/`stale`/`missing` cache status, and `planned`/`parse-only` validation when cached, plus orphaned cache IDs. Config, scan, cache, and embed failures use versioned structured diagnostics with source location when available. Adding `--embed` writes the external-SQL module only after a successful scan.
 
 `DATABASE_URL` must be set for any command that touches the application database or auto-creates a shadow database. `SHADOW_ADMIN_DATABASE_URL` can point at a maintenance/admin database when the application user cannot `CREATE DATABASE`; `SHADOW_DATABASE_URL` can point at a pre-created disposable shadow database. The internal wire client understands `sslmode`, `sslrootcert`, `sslcert`, `sslkey`, `application_name`, `options` (PostgreSQL startup options such as `-c search_path=app,public`), `connect_timeout` (seconds), and `statement_timeout` (milliseconds). Unqualified relations are resolved using the prepare session's real `search_path`; they are not assumed to live in `public`.
 
@@ -686,6 +688,10 @@ export default defineConfig({
   columnTypes: {
     "analytics_event.action": "AnalyticsAction",
   },
+  // Assert an application-enforced invariant for a direct array column.
+  arrayElementNullability: {
+    "analytics_event.tags": "non-null",
+  },
   functionCatalog: {
     // Extension-owned functions are excluded by default.
     includeExtensionOwned: false,
@@ -718,13 +724,26 @@ After re-running `prepare`, every direct `jsonb` column or mapped parameter uses
 
 This assertion does not validate stored values at runtime. Prefer a PostgreSQL enum/domain when the database truly owns a closed value set; use `columnTypes` when the database deliberately stores a broader scalar such as `text` and the application accepts responsibility for the narrower TypeScript contract.
 
+### Array element nullability assertions
+
+`arrayElementNullability` is an application-owned assertion for direct PostgreSQL array columns whose elements are guaranteed non-null outside PostgreSQL's type system. Use `"non-null"` only when writes and existing data enforce that invariant. It follows direct-column provenance through CTEs, derived tables, compatible set-operation branches, and mapped parameters; arbitrary expressions are not narrowed by column name.
+
+Prefer a database-owned element contract when possible:
+
+```sql
+CREATE DOMAIN non_null_tag AS text NOT NULL;
+CREATE TABLE events (tags non_null_tag[] NOT NULL);
+```
+
+Arrays of that domain are inferred as `string[]` without config. Ordinary `text[]` remains `(string | null)[]` when no SQL or configuration proof exists. This uncertainty is a sound result type and does not fail `--strict-inference`.
+
 ### Function catalog scope
 
 Application-owned functions and procedures from non-system schemas are generated into `KnownFunctions`. Objects owned by installed extensions are excluded through `pg_depend`, preventing extension internals from dominating committed artifacts. Set `functionCatalog.includeExtensionOwned: true` only when those approximate signatures are needed, or set `functionCatalog: false` to disable catalog generation entirely.
 
 ### Extension types and `customTypes`
 
-sqlx-js ships with a built-in registry that resolves popular PostgreSQL extension types automatically:
+sqlx-js ships with a built-in compile-time registry that resolves popular PostgreSQL extension types automatically:
 
 | `pg_type.typname` | TS type                            | Source extension |
 |-------------------|------------------------------------|-------------------|
@@ -754,6 +773,8 @@ export default defineConfig({
 Domains resolve to their base type through `pg_type.typbasetype`. `CREATE DOMAIN positive_int AS integer CHECK (VALUE > 0)` → `number`, `CREATE DOMAIN tagged AS hstore` → `Record<string, string | null>`. Array variants of any registered scalar are also wired up automatically — `vector[]` → `(number[])[]`.
 
 Composite types (`CREATE TYPE foo AS (a int, b text)`) resolve to a struct literal — `{ a: number | null; b: string | null }` — with each attribute typed (enums, domains, and nested composites included) and nullable unless the attribute is `NOT NULL`. Array variants (`foo[]`) resolve too.
+
+These mappings describe generated TypeScript contracts; they do not install Postgres.js runtime codecs. PostgreSQL assigns database-local OIDs to enums, domains, composites, and extension types, so Postgres.js returns an unmapped value in its text representation unless a matching codec is registered through `createClient(..., { types })`. The same applies to arrays whose element OID has no runtime parser. Keep the configured TypeScript type aligned with that runtime representation, or provide a parser and serializer for the active database OIDs. Automatic OID discovery and name-based runtime codec registration are tracked separately in the roadmap.
 
 ## How nullability is inferred
 
@@ -850,6 +871,10 @@ Generator revision 6 adds `columnTypes` and function-catalog scope to the genera
 Generator revision 7 adds strict nullability inference and compatible application-owned type provenance for `UNION`, `INTERSECT`, and `EXCEPT`, including inherited/sequential CTE scopes and `VALUES` branches. Re-run live `sqlx-js prepare` after upgrading so committed cache entries use the new branch-combined row contracts.
 
 Generator revision 8 treats `ARRAY[...]`, `ARRAY(SELECT ...)`, and `EXISTS(...)` expressions as non-null, including typed empty-array fallbacks inside `COALESCE`. Re-run live `sqlx-js prepare` after upgrading so generated row contracts remove obsolete `| null` branches.
+
+Generator revision 9 separates array-value nullability from element nullability. Ordinary PostgreSQL arrays now emit `(T | null)[]`; SQL expression proofs, `NOT NULL` element domains, and `arrayElementNullability` assertions narrow them to `T[]`. `PgArrayParameter` also carries an element-nullability flag inferred by `sql.array(...)`. Re-run live `sqlx-js prepare` after upgrading; review widened result types and add assertions only for invariants the application genuinely enforces.
+
+Generator revision 10 adds non-executing generic-plan validation after `Describe`. Live prepare now catches planner-only PostgreSQL errors such as an `ON CONFLICT` target without a matching unique or exclusion constraint, including errors hidden by value-dependent custom-plan simplification. Cache entries record whether a statement was `planned` or only `parse-only`; re-run live `sqlx-js prepare` before relying on `--check` or `--offline` after upgrading. This revision also raises the supported database baseline to PostgreSQL 16.
 
 Runtime observers and SQL-file caching are also stricter production boundaries. An exception from `onQuery` no longer replaces a successful query result; handle it through `onQueryHookError`. `sql.file()` no longer performs an mtime check on every call—use `reloadSqlFiles: true` during development or call `clearSqlFileCache()` explicitly after changing a file.
 

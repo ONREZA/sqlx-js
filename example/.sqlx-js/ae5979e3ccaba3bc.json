@@ -1,5 +1,6 @@
 {
   "query": "SELECT u.id AS user_id, u.name, p.title, p.published FROM users u LEFT JOIN posts p ON p.user_id = u.id WHERE u.id = $1",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "SELECT u.id AS user_id, u.name, p.title, p.published FROM users u LEFT JOIN posts p ON p.user_id = u.id WHERE u.id = $1"

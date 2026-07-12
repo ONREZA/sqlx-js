@@ -133,7 +133,7 @@ function outputObject(output: CatalogParamEntry[]): string {
 
 function inputTsType(oid: number, schema: SchemaCache): string {
   if (JSON_OIDS.has(oid)) return JSON_INPUT;
-  if (JSON_ARRAY_OIDS.has(oid)) return `(${JSON_INPUT})[]`;
+  if (JSON_ARRAY_OIDS.has(oid)) return `(${JSON_INPUT} | null)[]`;
   return schema.tsType(oid);
 }
 

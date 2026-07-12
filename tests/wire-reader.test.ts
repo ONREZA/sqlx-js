@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { MessageReader } from "../src/pg/wire";
+import { assertSupportedPostgresVersion, MessageReader, postgresMajorVersion } from "../src/pg/wire";
 
 const enc = new TextEncoder();
 
@@ -127,6 +127,16 @@ describe("MessageReader", () => {
     expect(collected[0].fields[0].name).toBe("alpha_column");
     expect(collected[0].fields[4].name).toBe("epsilon_column");
   });
+});
+
+test("postgresMajorVersion reads stable and prerelease server versions", () => {
+  expect(postgresMajorVersion("16.4")).toBe(16);
+  expect(postgresMajorVersion("17beta2")).toBe(17);
+  expect(postgresMajorVersion("unknown")).toBeNull();
+  expect(assertSupportedPostgresVersion("18.1")).toBe(18);
+  expect(() => assertSupportedPostgresVersion("15.14")).toThrow(
+    "sqlx-js requires PostgreSQL 16 or newer; server reports 15.14",
+  );
 });
 
 describe("MessageReader: extended message types", () => {

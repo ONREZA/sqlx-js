@@ -1,5 +1,6 @@
 {
   "query": "SELECT 1 AS one, 'literal'::text AS msg, now() AS ts FROM users LIMIT 1",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "SELECT 1 AS one, 'literal'::text AS msg, now() AS ts FROM users LIMIT 1"

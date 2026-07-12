@@ -1,5 +1,6 @@
 {
   "query": "UPDATE posts\n     SET status = 'published', published = true\n     WHERE id = (\n       SELECT id\n       FROM posts\n       WHERE status = 'draft'\n       ORDER BY id\n       FOR UPDATE SKIP LOCKED\n       LIMIT 1\n     )\n     RETURNING id AS post_id, user_id, status, published",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "UPDATE posts\n     SET status = 'published', published = true\n     WHERE id = (\n       SELECT id\n       FROM posts\n       WHERE status = 'draft'\n       ORDER BY id\n       FOR UPDATE SKIP LOCKED\n       LIMIT 1\n     )\n     RETURNING id AS post_id, user_id, status, published"

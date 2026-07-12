@@ -120,7 +120,7 @@ jobs:
       fail-fast: false
       matrix:
         image:
-          - pgvector/pgvector:pg14
+          - pgvector/pgvector:pg16
           - pgvector/pgvector:pg18
 
     services:

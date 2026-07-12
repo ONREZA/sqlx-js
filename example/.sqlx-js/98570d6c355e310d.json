@@ -1,5 +1,6 @@
 {
   "query": "DELETE FROM posts\n     WHERE user_id = $1 AND status = 'archived'\n     RETURNING id AS post_id, user_id, status",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "DELETE FROM posts\n     WHERE user_id = $1 AND status = 'archived'\n     RETURNING id AS post_id, user_id, status"

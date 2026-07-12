@@ -45,6 +45,10 @@ test("empty array → empty literal", () => {
   expect(encodePgArrayLiteral([])).toBe("{}");
 });
 
+test("encodes multidimensional arrays recursively", () => {
+  expect(encodePgArrayLiteral([[1, 2], [3, null]])).toBe("{{1,2},{3,NULL}}");
+});
+
 test("non-finite numbers are quoted", () => {
   expect(encodePgArrayLiteral([Infinity])).toBe('{"Infinity"}');
   expect(encodePgArrayLiteral([NaN])).toBe('{"NaN"}');
@@ -52,4 +56,9 @@ test("non-finite numbers are quoted", () => {
 
 test("parses NULL elements distinctly from quoted NULL strings", () => {
   expect(parsePgArrayLiteral('{a,NULL,"NULL","with \\"quote\\""}')).toEqual(["a", null, "NULL", 'with "quote"']);
+});
+
+test("parses arrays with explicit PostgreSQL dimension bounds", () => {
+  expect(parsePgArrayLiteral("[0:2]={one,two,three}")).toEqual(["one", "two", "three"]);
+  expect(parsePgArrayLiteral("[-1:0][2:3]={{1,2},{3,4}}", Number)).toEqual([[1, 2], [3, 4]]);
 });

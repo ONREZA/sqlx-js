@@ -1,5 +1,6 @@
 {
   "query": "SELECT id, title, meta, attachments FROM posts WHERE id = $1",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "SELECT id, title, meta, attachments FROM posts WHERE id = $1"
@@ -35,7 +36,7 @@
     {
       "name": "attachments",
       "typeOid": 3807,
-      "tsType": "(SqlxJsJson.Attachment)[]",
+      "tsType": "(SqlxJsJson.Attachment | null)[]",
       "nullable": false
     }
   ],

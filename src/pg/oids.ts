@@ -3,6 +3,12 @@ export type TsTypeInfo = {
   bigint?: boolean;
 };
 
+export type ArrayElementNullability = "non-null" | "nullable" | "unknown";
+
+export function arrayTsType(elementTs: string, nullability: ArrayElementNullability = "unknown"): string {
+  return `(${elementTs}${nullability === "non-null" ? "" : " | null"})[]`;
+}
+
 const JSON_VALUE = 'import("@onreza/sqlx-js").JsonValue';
 
 const SCALAR: Record<number, TsTypeInfo> = {
@@ -124,7 +130,7 @@ export function oidToTs(oid: number): TsTypeInfo {
   const inner = ARRAY[oid];
   if (inner !== undefined) {
     const t = SCALAR[inner];
-    return { ts: `(${t?.ts ?? "unknown"})[]`, bigint: t?.bigint };
+    return { ts: arrayTsType(t?.ts ?? "unknown"), bigint: t?.bigint };
   }
   return { ts: "unknown" };
 }

@@ -1,5 +1,6 @@
 {
   "query": "SELECT id, CASE WHEN age >= 18 THEN 'adult' ELSE 'minor' END AS bucket FROM users WHERE id = $1",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "SELECT id, CASE WHEN age >= 18 THEN 'adult' ELSE 'minor' END AS bucket FROM users WHERE id = $1"

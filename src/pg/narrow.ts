@@ -129,7 +129,7 @@ function keyOfColumnRef(node: any): string | null {
     const col = fields[0]?.String?.sval;
     return typeof col === "string" ? `|${col}` : null;
   }
-  const alias = fields[0]?.String?.sval;
+  const alias = fields[fields.length - 2]?.String?.sval;
   const col = fields[fields.length - 1]?.String?.sval;
   if (typeof alias !== "string" || typeof col !== "string") return null;
   return `${alias}|${col}`;

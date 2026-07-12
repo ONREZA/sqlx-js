@@ -68,6 +68,13 @@ test("qualified WHERE matches qualified lookup", async () => {
   expect(isNarrowed(set, "u", "bio")).toBe(true);
 });
 
+test("schema-qualified WHERE narrows through the table name", async () => {
+  const set = narrowFromWhere(
+    await whereOf("SELECT app.users.id FROM app.users WHERE app.users.bio IS NOT NULL"),
+  );
+  expect(isNarrowed(set, "users", "bio")).toBe(true);
+});
+
 test("unqualified WHERE matches qualified lookup", async () => {
   const set = narrowFromWhere(await whereOf("SELECT id FROM users WHERE bio IS NOT NULL"));
   expect(isNarrowed(set, "users", "bio")).toBe(true);

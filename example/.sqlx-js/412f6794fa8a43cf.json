@@ -1,5 +1,6 @@
 {
   "query": "SELECT id, name, role FROM users WHERE id = $1",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "SELECT id, name, role FROM users WHERE id = $1"

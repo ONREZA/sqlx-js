@@ -1,10 +1,17 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { PgClient, parseDatabaseUrl, PgError, type ConnConfig, type FieldDescription } from "../pg/wire";
+import {
+  PgClient,
+  parseDatabaseUrl,
+  PgError,
+  type ConnConfig,
+  type FieldDescription,
+  type PlanValidation,
+} from "../pg/wire";
 import { SchemaCache, compositeLiteral, type CustomTypeInfo } from "../pg/schema";
 import { analyzeQuery, type ColumnSource } from "../pg/analyze";
-import { arrayElementOid, isBuiltinOid, oidToTs } from "../pg/oids";
+import { arrayTsType, isBuiltinOid, oidToTs, type ArrayElementNullability } from "../pg/oids";
 import { ScanError, scanProject, type QueryCallSite } from "../scan/scanner";
 import {
   assertCacheManifest,
@@ -16,7 +23,14 @@ import {
   type CacheEntry,
 } from "../cache";
 import { emitDts } from "../codegen";
-import { loadConfig, lookupColumnType, lookupJsonbType, prepareConfigHash, type SqlxJsConfig } from "../config";
+import {
+  loadConfig,
+  lookupArrayElementNullability,
+  lookupColumnType,
+  lookupJsonbType,
+  prepareConfigHash,
+  type SqlxJsConfig,
+} from "../config";
 import { functionCacheExists, readFunctionCache, writeFunctionCache, type FunctionEntry } from "../function-cache";
 import { introspectFunctions } from "../pg/functions";
 import { buildParamMap, type ParamMap, type ParamMapResult } from "../pg/param-map";
@@ -33,8 +47,8 @@ function jsonParameter(type: string): string {
   return `import("@onreza/sqlx-js").JsonParameter<${type}>`;
 }
 
-function arrayParameter(type: string): string {
-  return `import("@onreza/sqlx-js").PgArrayParameter<${type}>`;
+function arrayParameter(type: string, nonNullElements: boolean): string {
+  return `import("@onreza/sqlx-js").PgArrayParameter<${type}, ${nonNullElements ? "false" : "boolean"}>`;
 }
 
 function enumUnion(values: string[]): string {
@@ -46,17 +60,17 @@ function resolveTs(oid: number, customLookup: (o: number) => CustomTypeInfo | un
   const c = customLookup(oid);
   if (c) {
     if (c.kind === "enum") return enumUnion(c.values);
-    if (c.kind === "enumArray") return `(${enumUnion(c.element.values)})[]`;
+    if (c.kind === "enumArray") return arrayTsType(enumUnion(c.element.values));
     if (c.kind === "scalar") return c.tsType;
-    if (c.kind === "scalarArray") return `(${c.element.tsType})[]`;
+    if (c.kind === "scalarArray") return arrayTsType(c.element.tsType, c.element.notNull ? "non-null" : "unknown");
     if (c.kind === "composite") return compositeLiteral(c);
-    if (c.kind === "compositeArray") return `(${compositeLiteral(c.element)})[]`;
+    if (c.kind === "compositeArray") return arrayTsType(compositeLiteral(c.element));
   }
   return oidToTs(oid).ts;
 }
 
 function isScalarColumnType(oid: number, schema: SchemaCache): boolean {
-  if (JSON_OIDS.has(oid) || JSON_ARRAY_OIDS.has(oid) || arrayElementOid(oid) !== undefined) return false;
+  if (JSON_OIDS.has(oid) || JSON_ARRAY_OIDS.has(oid) || schema.arrayElement(oid) !== undefined) return false;
   const custom = schema.customType(oid);
   return custom?.kind !== "enumArray" && custom?.kind !== "scalarArray" && custom?.kind !== "compositeArray";
 }
@@ -66,7 +80,15 @@ function resolveColumnTs(
   schema: SchemaCache,
   cfg: SqlxJsConfig,
   sources: ColumnSource[] | null = null,
+  arrayElementNullability: ArrayElementNullability = "unknown",
 ): string {
+  const directSource = directColumnSource(f, schema);
+  const effectiveSources = directSource ? [directSource] : sources ?? [];
+  const schemaArray = schema.arrayElement(f.typeOid);
+  const nonNullElements = arrayElementNullability === "non-null"
+    || schemaArray?.nullability === "non-null"
+    || (effectiveSources.length > 0 && effectiveSources.every((source) =>
+      lookupArrayElementNullability(cfg, source.schema, source.table, source.column) === "non-null"));
   if (f.tableOid !== 0 && f.columnAttr !== 0) {
     const tbl = schema.tableNameByOid(f.tableOid);
     const colName = schema.columnNameByAttno(f.tableOid, f.columnAttr);
@@ -75,17 +97,25 @@ function resolveColumnTs(
         schema: tbl.schema,
         table: tbl.name,
         column: colName,
-      });
+      }, nonNullElements);
       if (configured) return configured;
     }
   }
   if (sources && sources.length > 0) {
-    const configured = sources.map((source) => configuredColumnTs(f.typeOid, schema, cfg, source));
+    const configured = sources.map((source) => configuredColumnTs(f.typeOid, schema, cfg, source, nonNullElements));
     if (configured.every((type): type is string => type !== undefined) && new Set(configured).size === 1) {
       return configured[0]!;
     }
   }
+  if (schemaArray) return arrayTsType(schemaArray.tsType, nonNullElements ? "non-null" : "unknown");
   return resolveTs(f.typeOid, (oid) => schema.customType(oid));
+}
+
+function directColumnSource(f: FieldDescription, schema: SchemaCache): ColumnSource | undefined {
+  if (f.tableOid === 0 || f.columnAttr === 0) return undefined;
+  const table = schema.tableNameByOid(f.tableOid);
+  const column = schema.columnNameByAttno(f.tableOid, f.columnAttr);
+  return table && column ? { schema: table.schema, table: table.name, column } : undefined;
 }
 
 function configuredColumnTs(
@@ -93,13 +123,14 @@ function configuredColumnTs(
   schema: SchemaCache,
   cfg: SqlxJsConfig,
   source: ColumnSource,
+  nonNullElements: boolean,
 ): string | undefined {
   if (JSON_OIDS.has(typeOid)) {
     return lookupJsonbType(cfg, source.schema, source.table, source.column);
   }
   if (JSON_ARRAY_OIDS.has(typeOid)) {
     const declaration = lookupJsonbType(cfg, source.schema, source.table, source.column);
-    return declaration ? `(${declaration})[]` : undefined;
+    return declaration ? arrayTsType(declaration, nonNullElements ? "non-null" : "unknown") : undefined;
   }
   if (isScalarColumnType(typeOid, schema)) {
     return lookupColumnType(cfg, source.schema, source.table, source.column);
@@ -115,6 +146,12 @@ function resolveParamTs(
   cfg: SqlxJsConfig,
 ): string {
   const target = paramMap.get(paramIndex);
+  const targetColumn = target ? resolveTargetColumn(target, schema) : undefined;
+  const targetTable = target ? resolvedTargetTable(target, schema) : undefined;
+  const configuredNonNullElements = !!(targetColumn && targetTable
+    && lookupArrayElementNullability(cfg, targetTable.schema, targetTable.name, targetColumn) === "non-null");
+  const schemaNonNullElements = schema.arrayElement(paramOid)?.nullability === "non-null";
+  const nonNullElements = configuredNonNullElements || schemaNonNullElements;
   if (isScalarColumnType(paramOid, schema) && target) {
     const column = resolveTargetColumn(target, schema);
     const table = resolvedTargetTable(target, schema);
@@ -135,18 +172,13 @@ function resolveParamTs(
       const column = resolveTargetColumn(target, schema);
       const table = resolvedTargetTable(target, schema);
       const decl = column && table ? lookupJsonbType(cfg, table.schema, table.name, column) : undefined;
-      if (decl) return arrayParameter(jsonParameter(decl));
+      if (decl) return arrayParameter(jsonParameter(decl), nonNullElements);
     }
-    return arrayParameter(jsonParameter(JSON_INPUT_VALUE));
+    return arrayParameter(jsonParameter(JSON_INPUT_VALUE), nonNullElements);
   }
-  const builtinElementOid = arrayElementOid(paramOid);
-  if (builtinElementOid !== undefined) {
-    return arrayParameter(resolveTs(builtinElementOid, (oid) => schema.customType(oid)));
-  }
+  const array = schema.arrayElement(paramOid);
+  if (array) return arrayParameter(array.tsType, nonNullElements);
   const custom = schema.customType(paramOid);
-  if (custom?.kind === "enumArray") return arrayParameter(enumUnion(custom.element.values));
-  if (custom?.kind === "scalarArray") return arrayParameter(custom.element.tsType);
-  if (custom?.kind === "compositeArray") return arrayParameter(compositeLiteral(custom.element));
   if (custom) {
     return resolveTs(paramOid, () => custom);
   }
@@ -233,6 +265,7 @@ export type PrepareDiagnosticPhase =
   | "shadow"
   | "scan"
   | "describe"
+  | "plan"
   | "result-shape"
   | "introspect"
   | "analyze"
@@ -358,6 +391,16 @@ function inferenceDiagnostics(
   }));
 }
 
+function planningDiagnostic(entry: CacheEntry, site: QueryCallSite): PrepareDiagnostic | undefined {
+  if (entry.validation !== "parse-only") return undefined;
+  return {
+    severity: "warning",
+    phase: "plan",
+    message: "statement is outside PostgreSQL's generic planning surface; validation is parse-only",
+    ...siteDiagnostic(site),
+  };
+}
+
 export type PrepareSession = {
   client: PgClient;
   schema: SchemaCache;
@@ -395,9 +438,9 @@ export async function openSession(opts: PrepareOptions): Promise<PrepareSession>
   return { client, schema, userCfg };
 }
 
-type DescribeOutcome =
-  | { ok: true; paramOids: number[]; fields: FieldDescription[] }
-  | { ok: false; error: unknown };
+type ValidationOutcome =
+  | { ok: true; paramOids: number[]; fields: FieldDescription[]; validation: PlanValidation }
+  | { ok: false; phase: "describe" | "plan"; error: unknown };
 
 export function defaultPrepareConcurrency(): number {
   const raw = process.env.SQLX_JS_PREPARE_CONCURRENCY;
@@ -405,16 +448,16 @@ export function defaultPrepareConcurrency(): number {
   return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 8;
 }
 
-// describe() is sequential per PgClient (see wire.ts), so concurrency comes from
+// describe()/plan() are sequential per PgClient (see wire.ts), so concurrency comes from
 // running several short-lived connections in parallel, each draining a shared
 // cursor. The session connection is reused as one worker; extras are closed after.
-export async function describeAll(
+export async function validateAll(
   cfg: ConnConfig,
   sessionClient: PgClient,
   queries: { fp: string; query: string }[],
   concurrency: number,
-): Promise<Map<string, DescribeOutcome>> {
-  const results = new Map<string, DescribeOutcome>();
+): Promise<Map<string, ValidationOutcome>> {
+  const results = new Map<string, ValidationOutcome>();
   if (queries.length === 0) return results;
   const workerCount = Math.max(1, Math.min(concurrency, queries.length));
   let cursor = 0;
@@ -425,9 +468,14 @@ export async function describeAll(
       const { fp, query } = queries[i]!;
       try {
         const d = await client.describe(query);
-        results.set(fp, { ok: true, paramOids: d.paramOids, fields: d.fields });
+        try {
+          const validation = await client.plan(query, d.paramOids.length);
+          results.set(fp, { ok: true, paramOids: d.paramOids, fields: d.fields, validation });
+        } catch (error) {
+          results.set(fp, { ok: false, phase: "plan", error });
+        }
       } catch (error) {
-        results.set(fp, { ok: false, error });
+        results.set(fp, { ok: false, phase: "describe", error });
       }
     }
   };
@@ -493,6 +541,7 @@ export async function prepareOnce(
     paramOids: number[];
     fields: FieldDescription[];
     paramNames: string[];
+    validation: PlanValidation;
   };
   const raw: Raw[] = [];
   const reusedEntries: CacheEntry[] = [];
@@ -502,27 +551,30 @@ export async function prepareOnce(
   const toPrepare: typeof unique = new Map();
   for (const [fp, item] of unique) {
     const cached = input.reuseCacheFps?.has(fp) ? cache.read(fp) : null;
-    if (!cached) {
+    if (!cached?.validation) {
       toPrepare.set(fp, item);
       continue;
     }
     const entry = { ...cached, ...siteUsage(item.sites) };
     const entryDiagnostics = inferenceDiagnostics(entry, item.sites[0]!, opts.strictInference === true);
     diagnostics.push(...entryDiagnostics);
+    const planDiagnostic = planningDiagnostic(entry, item.sites[0]!);
+    if (planDiagnostic) diagnostics.push(planDiagnostic);
     if (opts.strictInference && entryDiagnostics.length > 0) {
       failures++;
       continue;
     }
     reusedEntries.push(entry);
     reusedGenerated.push({ fp, entry });
-    log(`  ↺ ${formatSite(item.sites[0]!)} → reused ${entry.paramOids.length} param(s), ${entry.columns.length} col(s)`);
+    const validationTag = entry.validation === "parse-only" ? " [parse-only]" : "";
+    log(`  ↺ ${formatSite(item.sites[0]!)} → reused ${entry.paramOids.length} param(s), ${entry.columns.length} col(s)${validationTag}`);
   }
 
-  const describeList = [...toPrepare.values()].map((u) => ({ fp: u.fp, query: u.query }));
-  const describeResults = await describeAll(parseDatabaseUrl(opts.databaseUrl), client, describeList, concurrency);
+  const validationList = [...toPrepare.values()].map((u) => ({ fp: u.fp, query: u.query }));
+  const validationResults = await validateAll(parseDatabaseUrl(opts.databaseUrl), client, validationList, concurrency);
   for (const { fp, query, sites: ss } of toPrepare.values()) {
     const site = ss[0]!;
-    const outcome = describeResults.get(fp)!;
+    const outcome = validationResults.get(fp)!;
     if (outcome.ok) {
       const duplicates = duplicateOutputColumns(outcome.fields);
       if (duplicates.length > 0) {
@@ -538,7 +590,21 @@ export async function prepareOnce(
         err(`      query: ${snippet(site.query)}`);
         continue;
       }
-      raw.push({ fp, query, sites: ss, paramOids: outcome.paramOids, fields: outcome.fields, paramNames: toPrepare.get(fp)!.paramNames });
+      if (outcome.validation === "parse-only") diagnostics.push({
+        severity: "warning",
+        phase: "plan",
+        message: "statement is outside PostgreSQL's generic planning surface; validation is parse-only",
+        ...siteDiagnostic(site),
+      });
+      raw.push({
+        fp,
+        query,
+        sites: ss,
+        paramOids: outcome.paramOids,
+        fields: outcome.fields,
+        paramNames: toPrepare.get(fp)!.paramNames,
+        validation: outcome.validation,
+      });
       continue;
     }
     failures++;
@@ -547,7 +613,7 @@ export async function prepareOnce(
       const position = e.position ? originalPosition(rewriteNamedParameters(site.query), e.position) : undefined;
       diagnostics.push({
         severity: "error",
-        phase: "describe",
+        phase: outcome.phase,
         message: e.message,
         ...siteDiagnostic(site),
         ...(e.code ? { code: e.code } : {}),
@@ -558,17 +624,17 @@ export async function prepareOnce(
       if (position) extras.push(`pos ${position}`);
       if (e.code) extras.push(`code ${e.code}`);
       const tail = extras.length > 0 ? ` (${extras.join(", ")})` : "";
-      err(`  ✗ ${formatSite(site)} — describe failed: ${e.message}${tail}`);
+      err(`  ✗ ${formatSite(site)} — ${outcome.phase} failed: ${e.message}${tail}`);
       if (e.hint) err(`      hint: ${e.hint}`);
       err(`      query: ${snippet(site.query)}`);
     } else {
       diagnostics.push({
         severity: "error",
-        phase: "describe",
+        phase: outcome.phase,
         message: (e as Error).message,
         ...siteDiagnostic(site),
       });
-      err(`  ✗ ${formatSite(site)} — describe failed: ${(e as Error).message}`);
+      err(`  ✗ ${formatSite(site)} — ${outcome.phase} failed: ${(e as Error).message}`);
       err(`      query: ${snippet(site.query)}`);
     }
   }
@@ -586,6 +652,12 @@ export async function prepareOnce(
   try {
     await schema.loadAttributes(allAttrRefs);
     await schema.loadTableNamesByOid(allTableOids);
+    const unknownOids = new Set<number>();
+    for (const r of raw) {
+      for (const o of r.paramOids) if (!isBuiltinOid(o)) unknownOids.add(o);
+      for (const f of r.fields) if (!isBuiltinOid(f.typeOid)) unknownOids.add(f.typeOid);
+    }
+    await schema.loadCustomTypes([...unknownOids]);
   } catch (error) {
     throw fatal("introspect", error);
   }
@@ -651,17 +723,6 @@ export async function prepareOnce(
     throw fatal("introspect", error);
   }
 
-  const unknownOids = new Set<number>();
-  for (const r of raw) {
-    for (const o of r.paramOids) if (!isBuiltinOid(o)) unknownOids.add(o);
-    for (const f of r.fields) if (!isBuiltinOid(f.typeOid)) unknownOids.add(f.typeOid);
-  }
-  try {
-    await schema.loadCustomTypes([...unknownOids]);
-  } catch (error) {
-    throw fatal("introspect", error);
-  }
-
   const entries: CacheEntry[] = [...reusedEntries];
   const generated: { fp: string; entry: CacheEntry }[] = [...reusedGenerated];
   for (const r of raw) {
@@ -674,6 +735,7 @@ export async function prepareOnce(
     };
     const entry: CacheEntry = {
       query: r.sites[0]!.query,
+      validation: r.validation,
       ...siteUsage(r.sites),
       paramOids: r.paramOids.map(portableCacheOid),
       paramTsTypes: r.paramOids.map((o, idx) => resolveParamTs(idx + 1, o, pm.targets, schema, userCfg)),
@@ -685,7 +747,13 @@ export async function prepareOnce(
         return {
           name: parsed.name,
           typeOid: portableCacheOid(f.typeOid),
-          tsType: resolveColumnTs(f, schema, userCfg, analysis.perColumnSources[i] ?? null),
+          tsType: resolveColumnTs(
+            f,
+            schema,
+            userCfg,
+            analysis.perColumnSources[i] ?? null,
+            analysis.perColumnArrayElementNullability[i] ?? "unknown",
+          ),
           nullable: analysis.perColumnNullable[i] ?? true,
           ...(treatAsOverride ? { override: parsed.override } : {}),
         };
@@ -708,8 +776,9 @@ export async function prepareOnce(
     entries.push(entry);
     generated.push({ fp: r.fp, entry });
     const nn = entry.columns.filter((c) => !effectiveNullable(c)).length;
-    const tag = entry.degraded ? ` [degraded: ${entry.degraded.reason}]` : "";
-    log(`  ✓ ${formatSite(r.sites[0]!)} → ${r.paramOids.length} param(s), ${r.fields.length} col(s) [${nn} non-null]${tag}`);
+    const inferenceTag = entry.degraded ? ` [degraded: ${entry.degraded.reason}]` : "";
+    const validationTag = entry.validation === "parse-only" ? " [parse-only]" : "";
+    log(`  ✓ ${formatSite(r.sites[0]!)} → ${r.paramOids.length} param(s), ${r.fields.length} col(s) [${nn} non-null]${inferenceTag}${validationTag}`);
   }
 
   if (failures > 0) {
@@ -832,9 +901,21 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
       for (const u of unique.values()) {
         const entry = cache.read(u.fp);
         if (!entry) continue;
+        if (!entry.validation) {
+          diagnostics.push({
+            severity: "error",
+            phase: "cache",
+            message: "cache entry is missing planner validation metadata; run live `sqlx-js prepare`",
+            ...siteDiagnostic(u.sites[0]!),
+          });
+          inferenceFailures++;
+          continue;
+        }
         const current = { ...entry, ...siteUsage(u.sites) };
         const entryDiagnostics = inferenceDiagnostics(current, u.sites[0]!, opts.strictInference === true);
         diagnostics.push(...entryDiagnostics);
+        const planDiagnostic = planningDiagnostic(current, u.sites[0]!);
+        if (planDiagnostic) diagnostics.push(planDiagnostic);
         if (opts.strictInference && entryDiagnostics.length > 0) {
           inferenceFailures++;
           continue;
@@ -910,7 +991,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
       }, null, 2));
     } else {
       for (const diagnostic of diagnostics) {
-        console.error(`inference warning: ${diagnostic.file}:${diagnostic.line}:${diagnostic.column} — ${diagnostic.message}`);
+        console.error(`${diagnostic.phase} warning: ${diagnostic.file}:${diagnostic.line}:${diagnostic.column} — ${diagnostic.message}`);
       }
       const suffix = opts.offline ? ", types regenerated" : ", generated artifacts are current";
       console.log(`ok — ${entries.length} unique queries, ${functions.length} function(s)${suffix}`);

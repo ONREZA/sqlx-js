@@ -1,16 +1,17 @@
 import { PgClient, decodeText } from "./wire";
-import { isBuiltinOid, oidToTs } from "./oids";
+import { arrayElementOid, arrayTsType, isBuiltinOid, oidToTs, type ArrayElementNullability } from "./oids";
 
 export type ColumnInfo = {
   attrelid: number;
   attnum: number;
   notNull: boolean;
+  typeOid: number;
   name?: string;
 };
 
 export type EnumInfo = { kind: "enum"; name: string; values: string[] };
 export type EnumArrayInfo = { kind: "enumArray"; element: EnumInfo };
-export type ScalarInfo = { kind: "scalar"; name: string; tsType: string };
+export type ScalarInfo = { kind: "scalar"; name: string; tsType: string; notNull?: boolean; baseOid?: number };
 export type ScalarArrayInfo = { kind: "scalarArray"; name: string; element: ScalarInfo };
 export type CompositeField = { name: string; tsType: string; nullable: boolean };
 export type CompositeInfo = { kind: "composite"; name: string; fields: CompositeField[] };
@@ -39,6 +40,7 @@ export class SchemaCache {
   private columnsByOid = new Map<number, Map<string, ColumnInfo>>();
   private fullyLoaded = new Set<number>();
   private customTypes = new Map<number, CustomTypeInfo>();
+  private customArrayElements = new Map<number, number>();
   private typesProbed = new Set<number>();
   private typeRegistry: Record<string, string> = {};
 
@@ -59,14 +61,15 @@ export class SchemaCache {
       seen.add(k);
       pairs.push(`(${r.tableOid},${r.attno})`);
     }
-    const sql = `SELECT attrelid::int8, attnum::int4, attnotnull, attname FROM pg_attribute WHERE (attrelid, attnum) IN (${pairs.join(",")})`;
+    const sql = `SELECT attrelid::int8, attnum::int4, attnotnull, attname, atttypid::int8 FROM pg_attribute WHERE (attrelid, attnum) IN (${pairs.join(",")})`;
     const r = await this.client.simpleQueryAll(sql);
     for (const row of r.rows) {
       const attrelid = Number(decodeText(row[0]!));
       const attnum = Number(decodeText(row[1]!));
       const notNull = decodeText(row[2]!) === "t";
       const name = decodeText(row[3]!) ?? undefined;
-      this.byOidNum.set(key(attrelid, attnum), { attrelid, attnum, notNull, name });
+      const typeOid = Number(decodeText(row[4]!));
+      this.byOidNum.set(key(attrelid, attnum), { attrelid, attnum, notNull, typeOid, name });
     }
   }
 
@@ -138,7 +141,7 @@ export class SchemaCache {
     const need = tableOids.filter((oid) => !this.fullyLoaded.has(oid));
     if (need.length === 0) return;
     const list = [...new Set(need)].join(",");
-    const sql = `SELECT attrelid::int8, attnum::int4, attname, attnotnull FROM pg_attribute WHERE attrelid IN (${list}) AND attnum > 0 AND NOT attisdropped`;
+    const sql = `SELECT attrelid::int8, attnum::int4, attname, attnotnull, atttypid::int8 FROM pg_attribute WHERE attrelid IN (${list}) AND attnum > 0 AND NOT attisdropped`;
     const r = await this.client.simpleQueryAll(sql);
     const grouped = new Map<number, Map<string, ColumnInfo>>();
     for (const row of r.rows) {
@@ -146,7 +149,8 @@ export class SchemaCache {
       const attnum = Number(decodeText(row[1]!));
       const attname = decodeText(row[2]!)!;
       const notNull = decodeText(row[3]!) === "t";
-      const info: ColumnInfo = { attrelid, attnum, notNull, name: attname };
+      const typeOid = Number(decodeText(row[4]!));
+      const info: ColumnInfo = { attrelid, attnum, notNull, typeOid, name: attname };
       this.byOidNum.set(key(attrelid, attnum), info);
       const m = grouped.get(attrelid) ?? new Map<string, ColumnInfo>();
       m.set(attname, info);
@@ -164,17 +168,17 @@ export class SchemaCache {
   }
 
   async loadCustomTypes(typeOids: number[]): Promise<void> {
-    const need = typeOids.filter((oid) => oid > 0 && !this.typesProbed.has(oid));
+    const need = typeOids.filter((oid) => oid > 0 && !isBuiltinOid(oid) && !this.typesProbed.has(oid));
     if (need.length === 0) return;
     for (const oid of need) this.typesProbed.add(oid);
 
     const list1 = [...new Set(need)].join(",");
-    const sql1 = `SELECT oid::int8, typname, typtype, typcategory, typelem::int8, typbasetype::int8, typrelid::int8 FROM pg_type WHERE oid IN (${list1})`;
+    const sql1 = `SELECT oid::int8, typname, typtype, typcategory, typelem::int8, typbasetype::int8, typrelid::int8, typnotnull FROM pg_type WHERE oid IN (${list1})`;
     const r1 = await this.client.simpleQueryAll(sql1);
 
     const enumOids: number[] = [];
     const arrayInfos: { arrayOid: number; arrayName: string; elemOid: number }[] = [];
-    const domainInfos: { oid: number; name: string; baseOid: number }[] = [];
+    const domainInfos: { oid: number; name: string; baseOid: number; notNull: boolean }[] = [];
     const compositeInfos: { oid: number; name: string; relOid: number }[] = [];
 
     for (const row of r1.rows) {
@@ -185,16 +189,18 @@ export class SchemaCache {
       const typelem = Number(decodeText(row[4]!));
       const typbasetype = Number(decodeText(row[5]!));
       const typrelid = Number(decodeText(row[6]!));
+      const typnotnull = decodeText(row[7]!) === "t";
 
       if (typtype === "e") {
         enumOids.push(oid);
         this.customTypes.set(oid, { kind: "enum", name, values: [] });
       } else if (typcategory === "A" && typelem > 0) {
         arrayInfos.push({ arrayOid: oid, arrayName: name, elemOid: typelem });
+        this.customArrayElements.set(oid, typelem);
       } else if (typtype === "b" && this.typeRegistry[name]) {
         this.customTypes.set(oid, { kind: "scalar", name, tsType: this.typeRegistry[name]! });
       } else if (typtype === "d" && typbasetype > 0) {
-        domainInfos.push({ oid, name, baseOid: typbasetype });
+        domainInfos.push({ oid, name, baseOid: typbasetype, notNull: typnotnull });
       } else if (typtype === "c" && typrelid > 0) {
         compositeInfos.push({ oid, name, relOid: typrelid });
       }
@@ -222,10 +228,22 @@ export class SchemaCache {
     const recurse = [...new Set([...elemsToProbe, ...basesToProbe, ...fieldsToProbe])];
     if (recurse.length > 0) await this.loadCustomTypes(recurse);
 
-    for (const { oid, name, baseOid } of domainInfos) {
+    if (enumOids.length > 0) {
+      const list2 = enumOids.join(",");
+      const sql2 = `SELECT enumtypid::int8, enumlabel FROM pg_enum WHERE enumtypid IN (${list2}) ORDER BY enumtypid, enumsortorder`;
+      const r2 = await this.client.simpleQueryAll(sql2);
+      for (const row of r2.rows) {
+        const oid = Number(decodeText(row[0]!));
+        const label = decodeText(row[1]!)!;
+        const type = this.customTypes.get(oid);
+        if (type?.kind === "enum") type.values.push(label);
+      }
+    }
+
+    for (const { oid, name, baseOid, notNull } of domainInfos) {
       const resolved = this.resolveBaseTs(baseOid);
       if (resolved) {
-        this.customTypes.set(oid, { kind: "scalar", name, tsType: resolved });
+        this.customTypes.set(oid, { kind: "scalar", name, tsType: resolved, notNull, baseOid });
       }
     }
 
@@ -250,17 +268,6 @@ export class SchemaCache {
       }
     }
 
-    if (enumOids.length > 0) {
-      const list2 = enumOids.join(",");
-      const sql2 = `SELECT enumtypid::int8, enumlabel FROM pg_enum WHERE enumtypid IN (${list2}) ORDER BY enumtypid, enumsortorder`;
-      const r2 = await this.client.simpleQueryAll(sql2);
-      for (const row of r2.rows) {
-        const oid = Number(decodeText(row[0]!));
-        const label = decodeText(row[1]!)!;
-        const t = this.customTypes.get(oid);
-        if (t && t.kind === "enum") t.values.push(label);
-      }
-    }
   }
 
   private resolveBaseTs(baseOid: number): string | undefined {
@@ -269,22 +276,37 @@ export class SchemaCache {
     const info = this.customTypes.get(baseOid);
     if (!info) return undefined;
     if (info.kind === "scalar") return info.tsType;
-    if (info.kind === "scalarArray") return `(${info.element.tsType})[]`;
+    if (info.kind === "scalarArray") return arrayTsType(info.element.tsType, info.element.notNull ? "non-null" : "unknown");
     if (info.kind === "enum") {
       if (info.values.length === 0) return "string";
       return info.values.map((v) => JSON.stringify(v)).join(" | ");
     }
     if (info.kind === "enumArray") {
-      if (info.element.values.length === 0) return "string[]";
-      return `(${info.element.values.map((v) => JSON.stringify(v)).join(" | ")})[]`;
+      const element = info.element.values.length === 0
+        ? "string"
+        : info.element.values.map((v) => JSON.stringify(v)).join(" | ");
+      return arrayTsType(element);
     }
     if (info.kind === "composite") return compositeLiteral(info);
-    if (info.kind === "compositeArray") return `(${compositeLiteral(info.element)})[]`;
+    if (info.kind === "compositeArray") return arrayTsType(compositeLiteral(info.element));
     return undefined;
   }
 
   customType(oid: number): CustomTypeInfo | undefined {
     return this.customTypes.get(oid);
+  }
+
+  arrayElement(oid: number): { typeOid: number; tsType: string; nullability: ArrayElementNullability } | undefined {
+    const type = this.customTypes.get(oid);
+    if (type?.kind === "scalar" && type.baseOid) return this.arrayElement(type.baseOid);
+    const typeOid = arrayElementOid(oid) ?? this.customArrayElements.get(oid);
+    if (typeOid === undefined) return undefined;
+    const custom = this.customTypes.get(typeOid);
+    return {
+      typeOid,
+      tsType: this.resolveBaseTs(typeOid) ?? "unknown",
+      nullability: custom?.kind === "scalar" && custom.notNull ? "non-null" : "unknown",
+    };
   }
 
   tsType(oid: number): string {

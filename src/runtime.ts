@@ -58,9 +58,15 @@ export type JsonParameter<T = unknown> = {
   readonly value: T;
 };
 
-export type PgArrayParameter<T = unknown> = {
+type PgArrayScalar<T, NullableElements extends boolean> =
+  T | (NullableElements extends true ? null : never);
+
+type PgArrayElement<Values extends readonly unknown[]> = Exclude<Values[number], null>;
+type PgArrayContainsNull<Values extends readonly unknown[]> = null extends Values[number] ? true : false;
+
+export type PgArrayParameter<T = unknown, NullableElements extends boolean = boolean> = {
   readonly [PARAMETER_KIND]: "array";
-  readonly value: readonly (T | null)[];
+  readonly value: readonly PgArrayScalar<T, NullableElements>[];
 };
 
 export type JsonPrimitive = string | number | boolean | null;
@@ -94,7 +100,10 @@ export function json<T>(value: T & JsonCompatible<T>): JsonParameter<T> {
   return { [PARAMETER_KIND]: "json", value };
 }
 
-export function array<T>(value: readonly (T | null)[]): PgArrayParameter<T> {
+export function array<const Values extends readonly unknown[]>(
+  value: Values,
+): PgArrayParameter<PgArrayElement<Values>, PgArrayContainsNull<Values>>;
+export function array(value: readonly unknown[]): PgArrayParameter {
   return { [PARAMETER_KIND]: "array", value };
 }
 
@@ -141,6 +150,10 @@ function quoteArrayElement(raw: string): string {
 export function encodePgArrayLiteral(arr: unknown[]): string {
   const parts: string[] = [];
   for (const v of arr) {
+    if (Array.isArray(v)) {
+      parts.push(encodePgArrayLiteral(v));
+      continue;
+    }
     if (v === null || v === undefined) {
       parts.push("NULL");
       continue;
@@ -185,7 +198,8 @@ export function parsePgArrayLiteral<T = string>(
   input: string,
   parseElement: (value: string) => T = (value) => value as T,
 ): PgArrayValue<T>[] {
-  let i = 0;
+  const dimensions = /^(?:\[-?\d+:-?\d+\])+=/.exec(input);
+  let i = dimensions?.[0].length ?? 0;
 
   const parseQuoted = (): T => {
     i++;

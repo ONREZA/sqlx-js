@@ -1,5 +1,6 @@
 {
   "query": "INSERT INTO posts (user_id, title) VALUES ($1, $2) RETURNING id AS \"id!\"",
+  "validation": "planned",
   "hasInline": true,
   "inlineQueries": [
     "INSERT INTO posts (user_id, title) VALUES ($1, $2) RETURNING id AS \"id!\""

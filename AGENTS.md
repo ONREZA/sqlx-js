@@ -30,7 +30,7 @@ The library is **PostgreSQL-only** and **compile-time-only by design** — no ru
 │   ├── typed.ts              Public typed overload helpers
 │   ├── commands/
 │   │   ├── doctor.ts         Runtime/config/DB/cache/tsconfig diagnostics
-│   │   ├── prepare.ts        runPrepare + openSession + prepareOnce + describeAll pool
+│   │   ├── prepare.ts        runPrepare + openSession + prepareOnce + validateAll pool
 │   │   ├── migrate.ts        CLI migrateRun + shared applyPending
 │   │   ├── schema.ts         schema dump/check + shadow migration helper
 │   │   ├── init.ts           sqlx-js init scaffolding
@@ -60,15 +60,16 @@ A `prepare` run executes the following pipeline:
 
 1. **Scan** (`src/scan/scanner.ts`) — TypeScript AST walk over files selected by the root `tsconfig.json` and its project references, with optional `scan.include` / `scan.exclude` overrides. Finds direct named imports and namespace imports from `@onreza/sqlx-js`, including `sql(...)`, `sql.one(...)`, `sql.optional(...)`, `sql.execute(...)`, `sql.file(...)`, reusable `defineQuery` definitions, direct bindings returned by imported `createSqlClient(...)`, and the same SQL surface inside recognized transaction callbacks. Refuses non-literal query/file arguments.
 2. **Describe** (`src/pg/wire.ts`) — for each unique query, sends `Parse` + `Describe Statement` + `Sync` to PostgreSQL. Returns parameter OIDs and `RowDescription` (column name, type OID, source table OID, source column attno).
-3. **Schema introspection** (`src/pg/schema.ts`) — batch-loads `pg_class`, `pg_attribute`, `pg_type`, `pg_enum` for everything touched by the queries. Cached per-session.
-4. **AST analysis** (`src/pg/analyze.ts`) — parses each query via `libpg-query`, builds a scope of aliases with their join-nullability, walks each target to determine per-column nullability and direct source provenance, and combines branch contracts for `UNION` / `INTERSECT` / `EXCEPT`. Calls into `src/pg/narrow.ts` for WHERE-clause forced-non-null tracking.
-5. **Param mapping** (`src/pg/param-map.ts`) — maps `$N` to a `(table, column)` target for supported INSERT VALUES / INSERT SELECT, ON CONFLICT UPDATE, UPDATE SET, WHERE/JOIN equality, and IN-list positions.
-6. **Type resolution** — combines OID, custom enum/array info, schema's `jsonbTypes` / direct-scalar `columnTypes` assertions, and analysis output into the final TS type strings for every column and parameter.
-7. **Persistence** — after every query validates successfully, publishes the complete query set through atomic per-file replacement, writes the version/config manifest, and emits `sqlx-js-env.d.ts` with `KnownQueries` / `KnownFileQueries` declarations for `@onreza/sqlx-js`.
+3. **Plan** (`src/pg/wire.ts`) — after Describe establishes the server-side parameter contract, statements accepted by PostgreSQL's SQL `PREPARE` surface are prepared on the same session and run through `EXPLAIN EXECUTE` under `plan_cache_mode = force_generic_plan`. This invokes a parameter-independent PostgreSQL plan without `ANALYZE` or query execution. Statements outside that server-owned surface are persisted and reported as `parse-only`.
+4. **Schema introspection** (`src/pg/schema.ts`) — batch-loads `pg_class`, `pg_attribute`, `pg_type`, `pg_enum` for everything touched by the queries. Cached per-session.
+5. **AST analysis** (`src/pg/analyze.ts`) — parses each query via `libpg-query`, builds a scope of aliases with their join-nullability, walks each target to determine per-column nullability and direct source provenance, and combines branch contracts for `UNION` / `INTERSECT` / `EXCEPT`. Calls into `src/pg/narrow.ts` for WHERE-clause forced-non-null tracking.
+6. **Param mapping** (`src/pg/param-map.ts`) — maps `$N` to a `(table, column)` target for supported INSERT VALUES / INSERT SELECT, ON CONFLICT UPDATE, UPDATE SET, WHERE/JOIN equality, and IN-list positions.
+7. **Type resolution** — combines OID, custom enum/array info, schema's `jsonbTypes` / direct-scalar `columnTypes` assertions, and analysis output into the final TS type strings for every column and parameter.
+8. **Persistence** — after every query validates successfully, publishes the complete query set through atomic per-file replacement, writes the version/config manifest, and emits `sqlx-js-env.d.ts` with `KnownQueries` / `KnownFileQueries` declarations for `@onreza/sqlx-js`.
 
-`prepare --check` skips steps 2–6 and read-only verifies cache/generator versions, the type-affecting config hash, every scanned fingerprint, the function cache, and the generated declaration. `prepare --offline` deliberately regenerates the declaration from committed cache. `prepare --verify` performs a fresh live prepare in a temporary directory and compares all generated artifacts without modifying the worktree.
+`prepare --check` skips steps 2–7 and read-only verifies cache/generator versions, the type-affecting config hash, every scanned fingerprint, the function cache, and the generated declaration. `prepare --offline` deliberately regenerates the declaration from committed cache. `prepare --verify` performs a fresh live prepare in a temporary directory and compares all generated artifacts without modifying the worktree.
 
-`prepare --watch` keeps the `PgClient` + `SchemaCache` warm and re-runs steps 1–7 on every debounced filesystem event.
+`prepare --watch` keeps the `PgClient` + `SchemaCache` warm and re-runs steps 1–8 on every debounced filesystem event.
 
 The runtime (`src/index.ts` + `src/runtime.ts` + `src/postgres-runtime.ts`) is a thin layer over `client.unsafe(query, params)` using Postgres.js with prepared `unsafe` calls. Strict typing comes from an overload keyed on the active query registry — the global convenience API uses `KnownQueries`, while `createSqlClient<SqlxJsGeneratedRegistry>()` can bind an independent pool to one generated project contract. `defineQuery` keeps a SQL literal/cardinality contract reusable across the root and transaction `SqlExecutor` surfaces; runtime observers receive the same stable query ID used by prepare/cache. Transaction deadlines cancel pending driver queries and expire the scoped executor before Postgres.js rolls the transaction back.
 
@@ -79,7 +80,7 @@ The runtime (`src/index.ts` + `src/runtime.ts` + `src/postgres-runtime.ts`) is a
 - Node ≥ 24 for the published CLI and default runtime. Bun ≥ 1.3 is required
   for the test suite (`bun test --timeout 120000`) and can run the package through npm tooling.
   The runtime uses Postgres.js; CI currently smoke-tests Node and Bun entrypoints.
-- A reachable PostgreSQL 14+ (15+ recommended for full SCRAM-SHA-256 coverage)
+- A reachable PostgreSQL 16+
 - `DATABASE_URL` exported in your shell
 
 ### Running tests
@@ -127,7 +128,7 @@ Edit `src/pg/oids.ts`. Add to `SCALAR` (single types) or `ARRAY` (where the valu
 
 ### Working on the wire protocol
 
-`src/pg/wire.ts` is a from-scratch implementation. Encoding/decoding is straightforward — the only subtle area is SCRAM-SHA-256 authentication, which requires PBKDF2 + HMAC + XOR steps in a fixed order. Don't tweak it unless you have a regression test that hits the auth path against PG 14+.
+`src/pg/wire.ts` is a from-scratch implementation. Encoding/decoding is straightforward — the only subtle area is SCRAM-SHA-256 authentication, which requires PBKDF2 + HMAC + XOR steps in a fixed order. Don't tweak it unless you have a regression test that hits the auth path against PG 16+.
 
 ### Releasing a version
 

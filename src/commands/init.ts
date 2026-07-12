@@ -9,6 +9,8 @@ export default defineConfig({
   jsonbTypes: {},
   // Assert narrower TypeScript types for direct scalar columns.
   columnTypes: {},
+  // Assert application-enforced non-null elements for direct array columns.
+  arrayElementNullability: {},
   // Map PostgreSQL type names to TypeScript types, e.g.
   //   geometry: "GeoJSON.Geometry",
   customTypes: {},
@@ -28,12 +30,13 @@ export default defineConfig({
   },
   jsonbTypes: {},
   columnTypes: {},
+  arrayElementNullability: {},
   customTypes: {},
   functionCatalog: {},
 });
 `;
 
-const ENV_TEMPLATE = `# Connection string used by sqlx-js prepare/migrate and the runtime.
+const ENV_TEMPLATE = `# PostgreSQL 16+ connection string used by sqlx-js prepare/migrate and the runtime.
 DATABASE_URL=postgres://user:password@localhost:5432/your_db
 # Managed Postgres with TLS:
 # DATABASE_URL=postgres://user:password@db.example.com:5432/your_db?sslmode=verify-full

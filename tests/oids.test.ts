@@ -14,10 +14,10 @@ test("scalar OIDs map to expected TS types", () => {
   expect(oidToTs(3802).ts).toBe(JSON_VALUE);
 });
 
-test("array OIDs map to (T)[]", () => {
-  expect(oidToTs(1007).ts).toBe("(number)[]");
-  expect(oidToTs(1009).ts).toBe("(string)[]");
-  expect(oidToTs(1016).ts).toBe("(bigint)[]");
+test("array OIDs include nullable elements by default", () => {
+  expect(oidToTs(1007).ts).toBe("(number | null)[]");
+  expect(oidToTs(1009).ts).toBe("(string | null)[]");
+  expect(oidToTs(1016).ts).toBe("(bigint | null)[]");
 });
 
 test("unknown OID falls back to unknown", () => {
@@ -39,20 +39,20 @@ test("range types resolve to string", () => {
   expect(oidToTs(3926).ts).toBe("string");
 });
 
-test("range array types resolve to (string)[]", () => {
-  expect(oidToTs(3905).ts).toBe("(string)[]");
-  expect(oidToTs(3907).ts).toBe("(string)[]");
-  expect(oidToTs(3909).ts).toBe("(string)[]");
-  expect(oidToTs(3911).ts).toBe("(string)[]");
-  expect(oidToTs(3913).ts).toBe("(string)[]");
-  expect(oidToTs(3927).ts).toBe("(string)[]");
+test("range array types include nullable elements", () => {
+  expect(oidToTs(3905).ts).toBe("(string | null)[]");
+  expect(oidToTs(3907).ts).toBe("(string | null)[]");
+  expect(oidToTs(3909).ts).toBe("(string | null)[]");
+  expect(oidToTs(3911).ts).toBe("(string | null)[]");
+  expect(oidToTs(3913).ts).toBe("(string | null)[]");
+  expect(oidToTs(3927).ts).toBe("(string | null)[]");
 });
 
 test("multirange types resolve to string", () => {
   expect(oidToTs(4451).ts).toBe("string");
   expect(oidToTs(4536).ts).toBe("string");
-  expect(oidToTs(6150).ts).toBe("(string)[]");
-  expect(oidToTs(6157).ts).toBe("(string)[]");
+  expect(oidToTs(6150).ts).toBe("(string | null)[]");
+  expect(oidToTs(6157).ts).toBe("(string | null)[]");
 });
 
 test("geometric types resolve to string", () => {
@@ -68,25 +68,25 @@ test("geometric types resolve to string", () => {
 test("bit-string types resolve to string", () => {
   expect(oidToTs(1560).ts).toBe("string");
   expect(oidToTs(1562).ts).toBe("string");
-  expect(oidToTs(1561).ts).toBe("(string)[]");
-  expect(oidToTs(1563).ts).toBe("(string)[]");
+  expect(oidToTs(1561).ts).toBe("(string | null)[]");
+  expect(oidToTs(1563).ts).toBe("(string | null)[]");
 });
 
-test("network array types resolve to (string)[]", () => {
-  expect(oidToTs(1040).ts).toBe("(string)[]");
-  expect(oidToTs(1041).ts).toBe("(string)[]");
-  expect(oidToTs(651).ts).toBe("(string)[]");
-  expect(oidToTs(775).ts).toBe("(string)[]");
+test("network array types include nullable elements", () => {
+  expect(oidToTs(1040).ts).toBe("(string | null)[]");
+  expect(oidToTs(1041).ts).toBe("(string | null)[]");
+  expect(oidToTs(651).ts).toBe("(string | null)[]");
+  expect(oidToTs(775).ts).toBe("(string | null)[]");
 });
 
 test("json array type maps via _json (199)", () => {
-  expect(oidToTs(199).ts).toBe(`(${JSON_VALUE})[]`);
+  expect(oidToTs(199).ts).toBe(`(${JSON_VALUE} | null)[]`);
   expect(isBuiltinOid(199)).toBe(true);
 });
 
 test("xml/money arrays resolve correctly", () => {
-  expect(oidToTs(143).ts).toBe("(string)[]");
-  expect(oidToTs(791).ts).toBe("(string)[]");
+  expect(oidToTs(143).ts).toBe("(string | null)[]");
+  expect(oidToTs(791).ts).toBe("(string | null)[]");
 });
 
 test("internal OIDs (name, xid, tid, cid, pg_lsn, regclass, regtype) resolve to string", () => {
@@ -97,6 +97,6 @@ test("internal OIDs (name, xid, tid, cid, pg_lsn, regclass, regtype) resolve to 
   expect(oidToTs(2205).ts).toBe("string");
   expect(oidToTs(2206).ts).toBe("string");
   expect(oidToTs(3220).ts).toBe("string");
-  expect(oidToTs(1003).ts).toBe("(string)[]");
-  expect(oidToTs(3221).ts).toBe("(string)[]");
+  expect(oidToTs(1003).ts).toBe("(string | null)[]");
+  expect(oidToTs(3221).ts).toBe("(string | null)[]");
 });

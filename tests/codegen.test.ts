@@ -380,6 +380,7 @@ test("query definitions, executor helpers, and structural JSON compile together"
   ]);
   writeFileSync(join(root, "consumer.ts"), `
 import {
+  array,
   defineQuery,
   json,
   sql,
@@ -388,6 +389,7 @@ import {
   type QueryRegistry,
   type QueryResult,
   type QueryRow,
+  type PgArrayParameter,
   type SqlClient,
   type SqlExecutor,
 } from "@onreza/sqlx-js";
@@ -558,6 +560,20 @@ json(["ok", undefined]);
 const metadata = Symbol("metadata");
 // @ts-expect-error symbol-keyed fields are not serialized by JSON.stringify
 json({ id: "visible", [metadata]: "hidden" });
+
+const nonNullArray: PgArrayParameter<string, false> = array(["one", "two"]);
+const nullableArray: PgArrayParameter<string, boolean> = array(["one", null]);
+const widenedArray: PgArrayParameter<string, boolean> = nonNullArray;
+const typedNonNullArray: PgArrayParameter<string, false> = sql.array(["one"]);
+// @ts-expect-error a nullable element cannot satisfy a non-null element contract
+const invalidNonNullArray: PgArrayParameter<string, false> = sql.array(["one", null]);
+// @ts-expect-error multidimensional arrays need an explicit result-shape contract
+const invalidNestedNonNullArray: PgArrayParameter<number, false> = sql.array([[1, null]]);
+void nullableArray;
+void widenedArray;
+void typedNonNullArray;
+void invalidNonNullArray;
+void invalidNestedNonNullArray;
 `);
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
     compilerOptions: {

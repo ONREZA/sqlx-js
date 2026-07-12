@@ -6,7 +6,7 @@ import { queryId } from "./query-id";
 import { rewriteNamedParameters } from "./sql-params";
 
 export const CACHE_FORMAT_VERSION = 3;
-export const GENERATOR_REVISION = 8;
+export const GENERATOR_REVISION = 10;
 export const CACHE_MANIFEST_FILE = "cache-manifest.json";
 
 export class CacheManifestStaleError extends Error {
@@ -32,6 +32,7 @@ export type CacheColumn = {
 
 export type CacheEntry = {
   query: string;
+  validation?: "planned" | "parse-only";
   inlineQueries?: string[];
   paramOids: number[];
   paramTsTypes: string[];
@@ -79,6 +80,9 @@ function assertEntryShape(fp: string, raw: unknown): CacheEntry {
   }
   const cols = (raw as { columns: unknown[] }).columns;
   const entry = raw as Record<string, unknown>;
+  if (entry.validation !== undefined && entry.validation !== "planned" && entry.validation !== "parse-only") {
+    throw new Error(`sqlx-js: cache entry ${fp}.json has invalid validation metadata. Run \`sqlx-js prepare\`.`);
+  }
   let expectedNames: string[];
   try {
     if (typeof entry.query !== "string") throw new Error("query must be a string");
@@ -235,7 +239,7 @@ export function assertCacheManifest(cacheDir: string, configHash: string): Cache
     throw new Error(`sqlx-js: cache manifest is missing. Run \`sqlx-js prepare\` to regenerate the cache.`);
   }
   if (manifest.configHash !== configHash) {
-    throw new Error("sqlx-js: cache was generated with a different jsonbTypes/customTypes config or other type/function catalog settings. Run `sqlx-js prepare`.");
+    throw new Error("sqlx-js: cache was generated with different type-affecting config or function catalog settings. Run `sqlx-js prepare`.");
   }
   return manifest;
 }
