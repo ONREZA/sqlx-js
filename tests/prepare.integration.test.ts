@@ -1834,6 +1834,61 @@ if (!haveIntegrationDatabase) {
     expect(dts).toContain('"title": string');
   });
 
+  test("prepare caches post-update target nullability without widening UPDATE FROM sources", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        DROP TABLE IF EXISTS tmp_update_returning;
+        CREATE TABLE tmp_update_returning (
+          pending_first_seq integer,
+          pending_last_seq integer,
+          pending_payload_digest text
+        )
+      `);
+    } finally {
+      await setup.end();
+    }
+
+    const targetQuery = "UPDATE tmp_update_returning SET pending_first_seq = NULL, pending_last_seq = NULL, pending_payload_digest = NULL WHERE pending_first_seq = $firstSeq AND pending_last_seq = $lastSeq AND pending_payload_digest = $payloadDigest RETURNING pending_first_seq, pending_last_seq, pending_payload_digest";
+    const sourceQuery = "UPDATE tmp_join_users u SET external_id = NULL FROM tmp_join_posts p WHERE u.id = p.id AND u.external_id IS NOT NULL AND p.user_external_id IS NOT NULL RETURNING u.external_id AS target_external_id, p.user_external_id AS source_external_id";
+    const selfJoinQuery = "UPDATE tmp_join_users u SET external_id = NULL FROM tmp_join_users WHERE u.id = tmp_join_users.id AND tmp_join_users.external_id IS NOT NULL RETURNING u.external_id AS target_external_id, tmp_join_users.external_id AS source_external_id";
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      `await sql(${JSON.stringify(targetQuery)}, { firstSeq: 1, lastSeq: 2, payloadDigest: "digest" });\n` +
+      `await sql(${JSON.stringify(sourceQuery)});\n` +
+      `await sql(${JSON.stringify(selfJoinQuery)});\n`,
+    );
+    const r = prepare();
+    expect(r.code, r.stderr).toBe(0);
+    const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain('"pending_first_seq": number | null; "pending_last_seq": number | null; "pending_payload_digest": string | null');
+    expect(dts).toContain('"target_external_id": string | null; "source_external_id": string');
+
+    const targetEntry = JSON.parse(
+      readFileSync(join(tmp, ".sqlx-js", `${fingerprint(targetQuery)}.json`), "utf8"),
+    ) as { columns: { name: string; nullable: boolean }[] };
+    expect(targetEntry.columns.map(({ name, nullable }) => ({ name, nullable }))).toEqual([
+      { name: "pending_first_seq", nullable: true },
+      { name: "pending_last_seq", nullable: true },
+      { name: "pending_payload_digest", nullable: true },
+    ]);
+    const sourceEntry = JSON.parse(
+      readFileSync(join(tmp, ".sqlx-js", `${fingerprint(sourceQuery)}.json`), "utf8"),
+    ) as { columns: { name: string; nullable: boolean }[] };
+    expect(sourceEntry.columns.map(({ name, nullable }) => ({ name, nullable }))).toEqual([
+      { name: "target_external_id", nullable: true },
+      { name: "source_external_id", nullable: false },
+    ]);
+    const selfJoinEntry = JSON.parse(
+      readFileSync(join(tmp, ".sqlx-js", `${fingerprint(selfJoinQuery)}.json`), "utf8"),
+    ) as { columns: { name: string; nullable: boolean }[] };
+    expect(selfJoinEntry.columns.map(({ name, nullable }) => ({ name, nullable }))).toEqual([
+      { name: "target_external_id", nullable: true },
+      { name: "source_external_id", nullable: false },
+    ]);
+  });
+
   test("sql.one and sql.optional reach KnownQueries via the scanner", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +

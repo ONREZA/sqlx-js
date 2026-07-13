@@ -549,7 +549,7 @@ describe("analyze: RETURNING from DML", () => {
     expect(result.perColumnNullable[1]).toBe(true);
   });
 
-  test("UPDATE ... RETURNING with narrowing on WHERE", async () => {
+  test("UPDATE ... RETURNING does not carry target WHERE narrowing into the new row", async () => {
     const schema = fakeSchema([{
       name: "users",
       oid: 16400,
@@ -558,10 +558,108 @@ describe("analyze: RETURNING from DML", () => {
         { name: "bio", attno: 2, notNull: false },
       ],
     }]);
-    const sql = "UPDATE users SET bio = $1 WHERE id = $2 AND bio IS NOT NULL RETURNING bio";
+    const sql = "UPDATE users SET bio = NULL WHERE id = $1 AND bio IS NOT NULL RETURNING bio";
     const rd = rowDesc([{ name: "bio", tableOid: 16400, attno: 2 }]);
     const result = await analyzeQuery(sql, rd, schema);
-    expect(result.perColumnNullable[0]).toBe(false);
+    expect(result.perColumnNullable[0]).toBe(true);
+  });
+
+  test("UPDATE ... RETURNING treats every target column as post-update state", async () => {
+    const schema = fakeSchema([{
+      name: "users",
+      oid: 16400,
+      columns: [
+        { name: "id", attno: 1, notNull: true },
+        { name: "bio", attno: 2, notNull: false },
+      ],
+    }]);
+    const sql = "UPDATE users SET id = id WHERE bio IS NOT NULL RETURNING bio";
+    const result = await analyzeQuery(sql, rowDesc([{ name: "bio", tableOid: 16400, attno: 2 }]), schema);
+    expect(result.perColumnNullable).toEqual([true]);
+  });
+
+  test("UPDATE ... RETURNING keeps FROM-row narrowing but not target-row narrowing", async () => {
+    const schema = fakeSchema([
+      {
+        name: "users",
+        oid: 16400,
+        columns: [
+          { name: "id", attno: 1, notNull: true },
+          { name: "bio", attno: 2, notNull: false },
+        ],
+      },
+      {
+        name: "posts",
+        oid: 16401,
+        columns: [
+          { name: "user_id", attno: 1, notNull: true },
+          { name: "title", attno: 2, notNull: false },
+        ],
+      },
+    ]);
+    const sql = "UPDATE users u SET bio = NULL FROM posts p WHERE u.id = p.user_id AND u.bio IS NOT NULL AND title IS NOT NULL RETURNING u.bio, p.title";
+    const rd = rowDesc([
+      { name: "bio", tableOid: 16400, attno: 2 },
+      { name: "title", tableOid: 16401, attno: 2 },
+    ]);
+    const result = await analyzeQuery(sql, rd, schema);
+    expect(result.perColumnNullable).toEqual([true, false]);
+  });
+
+  test("UPDATE self-join keeps narrowing for a source using the target relation name", async () => {
+    const schema = fakeSchema([{
+      name: "users",
+      oid: 16400,
+      columns: [
+        { name: "id", attno: 1, notNull: true },
+        { name: "bio", attno: 2, notNull: false },
+      ],
+    }]);
+    const sql = "UPDATE users u SET bio = NULL FROM users WHERE u.id = users.id AND users.bio IS NOT NULL RETURNING u.bio AS target_bio, users.bio AS source_bio";
+    const result = await analyzeQuery(sql, rowDesc([
+      { name: "target_bio", tableOid: 16400, attno: 2 },
+      { name: "source_bio", tableOid: 16400, attno: 2 },
+    ]), schema);
+    expect(result.perColumnNullable).toEqual([true, false]);
+  });
+
+  test("UPDATE ... RETURNING star uses schema nullability for the new row", async () => {
+    const schema = fakeSchema([{
+      name: "users",
+      oid: 16400,
+      columns: [
+        { name: "id", attno: 1, notNull: true },
+        { name: "bio", attno: 2, notNull: false },
+      ],
+    }]);
+    const sql = "UPDATE users SET bio = NULL WHERE bio IS NOT NULL RETURNING *";
+    const result = await analyzeQuery(sql, rowDesc([
+      { name: "id", tableOid: 16400, attno: 1 },
+      { name: "bio", tableOid: 16400, attno: 2 },
+    ]), schema);
+    expect(result.perColumnNullable).toEqual([false, true]);
+  });
+
+  test("UPDATE ... RETURNING still proves post-update expressions non-null", async () => {
+    const schema = fakeSchema([{
+      name: "users",
+      oid: 16400,
+      columns: [{ name: "bio", attno: 1, notNull: false }],
+    }]);
+    const sql = "UPDATE users SET bio = NULL WHERE bio IS NOT NULL RETURNING COALESCE(bio, '') AS bio";
+    const result = await analyzeQuery(sql, rowDesc([{ name: "bio" }]), schema);
+    expect(result.perColumnNullable).toEqual([false]);
+  });
+
+  test("data-modifying CTE exposes post-update target nullability", async () => {
+    const schema = fakeSchema([{
+      name: "users",
+      oid: 16400,
+      columns: [{ name: "bio", attno: 1, notNull: false }],
+    }]);
+    const sql = "WITH changed AS (UPDATE users SET bio = NULL WHERE bio IS NOT NULL RETURNING bio) SELECT bio FROM changed";
+    const result = await analyzeQuery(sql, rowDesc([{ name: "bio" }]), schema);
+    expect(result.perColumnNullable).toEqual([true]);
   });
 
   test("DELETE ... RETURNING surfaces table column nullability", async () => {
@@ -581,6 +679,17 @@ describe("analyze: RETURNING from DML", () => {
     const result = await analyzeQuery(sql, rd, schema);
     expect(result.perColumnNullable[0]).toBe(false);
     expect(result.perColumnNullable[1]).toBe(true);
+  });
+
+  test("DELETE ... RETURNING retains WHERE narrowing for the old row", async () => {
+    const schema = fakeSchema([{
+      name: "users",
+      oid: 16400,
+      columns: [{ name: "bio", attno: 1, notNull: false }],
+    }]);
+    const sql = "DELETE FROM users WHERE bio IS NOT NULL RETURNING bio";
+    const result = await analyzeQuery(sql, rowDesc([{ name: "bio", tableOid: 16400, attno: 1 }]), schema);
+    expect(result.perColumnNullable).toEqual([false]);
   });
 
   test("DELETE ... USING RETURNING includes USING table scope", async () => {

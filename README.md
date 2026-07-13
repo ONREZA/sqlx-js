@@ -963,6 +963,8 @@ Generator revision 12 propagates DML target provenance through value-producing `
 
 Generator revision 13 discovers direct parameter provenance inside data-modifying CTEs and retains every DML target for reused parameters. Generated inputs now allow SQL `NULL` only when every stored-value use either targets a nullable column or handles the value through a null-aware expression or non-null write guard, and any predicate use is null-aware. Compatible `jsonbTypes` / `columnTypes` declarations are preserved across all DML targets, while conflicting declarations are rejected instead of selecting the last visited column. Re-run live `sqlx-js prepare` so committed cache entries and declarations use the complete parameter contract.
 
+Generator revision 14 separates pre-update predicate narrowing from post-update `RETURNING` values. `UPDATE` target columns now fall back to their live schema nullability because `RETURNING` observes the new row, including changes made by triggers, while columns from unchanged `FROM` rows retain valid `WHERE` refinements. The same rule applies inside data-modifying CTEs. Re-run live `sqlx-js prepare` so nullable target columns changed after matching no longer keep an unsafe non-null result contract.
+
 Runtime observers and SQL-file caching are also stricter production boundaries. An exception from `onQuery` no longer replaces a successful query result; handle it through `onQueryHookError`. `sql.file()` no longer performs an mtime check on every call—use `reloadSqlFiles: true` during development or call `clearSqlFileCache()` explicitly after changing a file.
 
 ## License

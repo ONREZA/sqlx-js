@@ -211,9 +211,34 @@ async function analyzeDml(
       referencedTables: tablesFromRelation(stmt.relation),
     };
   }
-  const fakeSelect = dmlAsSelect(stmt, kind, returningList);
-  const scope = await buildScope(fakeSelect, schema);
+  const scope = await buildDmlScope(stmt, kind, returningList, schema);
   return await runTargets(returningList, rowDesc, scope);
+}
+
+async function buildDmlScope(
+  stmt: any,
+  kind: "insert" | "update" | "delete",
+  targetList: any[],
+  schema: SchemaCache,
+  inheritedCtes: CteColumnInfo = new Map(),
+): Promise<Scope> {
+  const scope = await buildScope(dmlAsSelect(stmt, kind, targetList), schema, inheritedCtes);
+  if (kind === "update") discardUpdateTargetNarrowing(scope, stmt.relation);
+  return scope;
+}
+
+function discardUpdateTargetNarrowing(scope: Scope, relation: any): void {
+  const targetAlias = relation?.alias?.aliasname ?? relation?.relname;
+  const targetOid = typeof targetAlias === "string" ? scope.aliasOidByName.get(targetAlias) : undefined;
+  const targetColumns = targetOid === undefined ? undefined : scope.schema.columnsOf(targetOid);
+  for (const key of scope.forcedNonNull) {
+    const separator = key.indexOf("|");
+    const alias = key.slice(0, separator);
+    const column = key.slice(separator + 1);
+    if (alias === targetAlias || (alias === "" && (!targetColumns || targetColumns.has(column)))) {
+      scope.forcedNonNull.delete(key);
+    }
+  }
 }
 
 function dmlAsSelect(stmt: any, kind: "insert" | "update" | "delete", targetList: any[]): any {
@@ -378,7 +403,7 @@ async function analyzeCteColumns(
     ? undefined
     : isSelect
       ? await buildScope(inner, schema, inheritedCtes)
-      : await buildScope(dmlAsSelect(inner, dmlKind!, targetList), schema, inheritedCtes);
+      : await buildDmlScope(inner, dmlKind!, targetList, schema, inheritedCtes);
   return await analyzedOutputColumns(targetList, analysis, scope, explicitColNames);
 }
 
