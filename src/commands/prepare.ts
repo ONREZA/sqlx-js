@@ -33,7 +33,13 @@ import {
 } from "../config";
 import { functionCacheExists, readFunctionCache, writeFunctionCache, type FunctionEntry } from "../function-cache";
 import { introspectFunctions } from "../pg/functions";
-import { buildParamMap, type ParamMap, type ParamMapResult } from "../pg/param-map";
+import {
+  buildParamMap,
+  effectiveParamTargets,
+  type ParamMap,
+  type ParamMapResult,
+  type ParamTarget,
+} from "../pg/param-map";
 import { mergeExtensionTypes } from "../pg/extensions";
 import { compareArtifacts } from "../artifacts";
 import { containsUnknownType } from "../type-inspection";
@@ -140,40 +146,44 @@ function configuredColumnTs(
 
 function resolveParamTs(
   paramIndex: number,
+  paramLabel: string,
   paramOid: number,
   paramMap: ParamMap,
   schema: SchemaCache,
   cfg: SqlxJsConfig,
 ): string {
-  const target = paramMap.get(paramIndex);
-  const targetColumn = target ? resolveTargetColumn(target, schema) : undefined;
-  const targetTable = target ? resolvedTargetTable(target, schema) : undefined;
-  const configuredNonNullElements = !!(targetColumn && targetTable
-    && lookupArrayElementNullability(cfg, targetTable.schema, targetTable.name, targetColumn) === "non-null");
+  const sources = resolveParamSources(effectiveParamTargets(paramMap.get(paramIndex)), schema);
+  const configuredNonNullElements = sources.some((source) =>
+    lookupArrayElementNullability(cfg, source.schema, source.table, source.column) === "non-null");
   const schemaNonNullElements = schema.arrayElement(paramOid)?.nullability === "non-null";
   const nonNullElements = configuredNonNullElements || schemaNonNullElements;
-  if (isScalarColumnType(paramOid, schema) && target) {
-    const column = resolveTargetColumn(target, schema);
-    const table = resolvedTargetTable(target, schema);
-    const decl = column && table ? lookupColumnType(cfg, table.schema, table.name, column) : undefined;
+  if (isScalarColumnType(paramOid, schema)) {
+    const decl = resolveConfiguredParamDeclaration(
+      paramLabel,
+      "columnTypes",
+      sources,
+      (source) => lookupColumnType(cfg, source.schema, source.table, source.column),
+    );
     if (decl) return decl;
   }
   if (JSON_OIDS.has(paramOid)) {
-    if (target) {
-      const column = resolveTargetColumn(target, schema);
-      const table = resolvedTargetTable(target, schema);
-      const decl = column && table ? lookupJsonbType(cfg, table.schema, table.name, column) : undefined;
-      if (decl) return jsonParameter(decl);
-    }
+    const decl = resolveConfiguredParamDeclaration(
+      paramLabel,
+      "jsonbTypes",
+      sources,
+      (source) => lookupJsonbType(cfg, source.schema, source.table, source.column),
+    );
+    if (decl) return jsonParameter(decl);
     return jsonParameter(JSON_INPUT_VALUE);
   }
   if (JSON_ARRAY_OIDS.has(paramOid)) {
-    if (target) {
-      const column = resolveTargetColumn(target, schema);
-      const table = resolvedTargetTable(target, schema);
-      const decl = column && table ? lookupJsonbType(cfg, table.schema, table.name, column) : undefined;
-      if (decl) return arrayParameter(jsonParameter(decl), nonNullElements);
-    }
+    const decl = resolveConfiguredParamDeclaration(
+      paramLabel,
+      "jsonbTypes",
+      sources,
+      (source) => lookupJsonbType(cfg, source.schema, source.table, source.column),
+    );
+    if (decl) return arrayParameter(jsonParameter(decl), nonNullElements);
     return arrayParameter(jsonParameter(JSON_INPUT_VALUE), nonNullElements);
   }
   const array = schema.arrayElement(paramOid);
@@ -183,6 +193,40 @@ function resolveParamTs(
     return resolveTs(paramOid, () => custom);
   }
   return resolveTs(paramOid, (oid) => schema.customType(oid));
+}
+
+function resolveParamSources(targets: ParamTarget[], schema: SchemaCache): ColumnSource[] {
+  const sources = new Map<string, ColumnSource>();
+  for (const target of targets) {
+    const column = resolveTargetColumn(target, schema);
+    const table = resolvedTargetTable(target, schema);
+    if (!column || !table) continue;
+    const source = { schema: table.schema, table: table.name, column };
+    sources.set(JSON.stringify([source.schema, source.table, source.column]), source);
+  }
+  return [...sources.values()];
+}
+
+function resolveConfiguredParamDeclaration(
+  paramLabel: string,
+  configKey: "columnTypes" | "jsonbTypes",
+  sources: ColumnSource[],
+  lookup: (source: ColumnSource) => string | undefined,
+): string | undefined {
+  const declarations = new Map<string, string[]>();
+  for (const source of sources) {
+    const declaration = lookup(source);
+    if (!declaration) continue;
+    const columns = declarations.get(declaration) ?? [];
+    columns.push(`${source.schema}.${source.table}.${source.column}`);
+    declarations.set(declaration, columns);
+  }
+  if (declarations.size <= 1) return declarations.keys().next().value;
+  const details = [...declarations]
+    .map(([declaration, columns]) => `${columns.sort().join(", ")} -> ${declaration}`)
+    .sort()
+    .join("; ");
+  throw new Error(`sqlx-js: parameter ${paramLabel} maps to conflicting ${configKey} declarations: ${details}`);
 }
 
 function resolvedTargetTable(
@@ -208,19 +252,20 @@ function resolveParamNullable(
   pm: ParamMapResult,
   schema: SchemaCache,
 ): boolean {
-  if (pm.forceNullable.has(paramIndex)) return true;
-  if (pm.dmlBound.has(paramIndex)) {
-    const t = pm.targets.get(paramIndex);
-    if (!t) return false;
-    const oid = schema.resolveTable(t.schema, t.table);
+  const binding = pm.bindings.get(paramIndex);
+  const dmlTargets = binding?.dmlTargets ?? [];
+  if (dmlTargets.length === 0) return pm.forceNullable.has(paramIndex);
+  const propagated = dmlTargets.filter((candidate) => !candidate.nullSafe);
+  const dmlAcceptsNull = propagated.length === 0 || propagated.every(({ target }) => {
+    const oid = schema.resolveTable(target.schema, target.table);
     if (oid === undefined) return false;
-    const column = resolveTargetColumn(t, schema);
+    const column = resolveTargetColumn(target, schema);
     if (!column) return false;
     const col = schema.columnsOf(oid)?.get(column);
-    if (!col) return false;
-    return !col.notNull;
-  }
-  return false;
+    return col ? !col.notNull : false;
+  });
+  if (!dmlAcceptsNull) return false;
+  return binding?.referenceTargets.length === 0 || pm.forceNullable.has(paramIndex);
 }
 
 const ALIAS_OVERRIDE = /^(.+?)([!?])$/;
@@ -704,19 +749,18 @@ export async function prepareOnce(
     }
   }
 
-  const dmlTablesToLoad = new Map<string, { schema?: string; name: string }>();
+  const paramTablesToLoad = new Map<string, { schema?: string; name: string }>();
   for (const pm of paramMaps.values()) {
-    for (const idx of pm.dmlBound) {
-      const t = pm.targets.get(idx);
-      if (t) {
+    for (const binding of pm.bindings.values()) {
+      for (const t of effectiveParamTargets(binding)) {
         const key = JSON.stringify([t.schema ?? null, t.table]);
-        dmlTablesToLoad.set(key, t.schema ? { schema: t.schema, name: t.table } : { name: t.table });
+        paramTablesToLoad.set(key, t.schema ? { schema: t.schema, name: t.table } : { name: t.table });
       }
     }
   }
   try {
-    if (dmlTablesToLoad.size > 0) {
-      const names = [...dmlTablesToLoad.values()];
+    if (paramTablesToLoad.size > 0) {
+      const names = [...paramTablesToLoad.values()];
       await schema.loadTableNames(names);
       const oids: number[] = [];
       for (const n of names) {
@@ -735,17 +779,41 @@ export async function prepareOnce(
     if (failedFps.has(r.fp)) continue;
     const analysis = analyses.get(r.fp)!;
     const pm: ParamMapResult = paramMaps.get(r.fp) ?? {
-      targets: new Map(),
+      bindings: new Map(),
       forceNullable: new Set(),
-      dmlBound: new Set(),
     };
+    let paramTsTypes: string[];
+    let paramNullable: boolean[];
+    try {
+      paramTsTypes = r.paramOids.map((oid, idx) => resolveParamTs(
+        idx + 1,
+        r.paramNames[idx] ? `$${r.paramNames[idx]}` : `$${idx + 1}`,
+        oid,
+        pm.bindings,
+        schema,
+        userCfg,
+      ));
+      paramNullable = r.paramOids.map((_oid, idx) => resolveParamNullable(idx + 1, pm, schema));
+    } catch (e) {
+      failures++;
+      failedFps.add(r.fp);
+      diagnostics.push({
+        severity: "error",
+        phase: "param-map",
+        message: (e as Error).message,
+        ...siteDiagnostic(r.sites[0]!),
+      });
+      err(`  ✗ ${formatSite(r.sites[0]!)} — parameter inference failed: ${(e as Error).message}`);
+      err(`      query: ${snippet(r.sites[0]!.query)}`);
+      continue;
+    }
     const entry: CacheEntry = {
       query: r.sites[0]!.query,
       validation: r.validation,
       ...siteUsage(r.sites),
       paramOids: r.paramOids.map(portableCacheOid),
-      paramTsTypes: r.paramOids.map((o, idx) => resolveParamTs(idx + 1, o, pm.targets, schema, userCfg)),
-      paramNullable: r.paramOids.map((_o, idx) => resolveParamNullable(idx + 1, pm, schema)),
+      paramTsTypes,
+      paramNullable,
       ...(r.paramNames.length > 0 ? { paramNames: r.paramNames } : {}),
       columns: r.fields.map((f, i) => {
         const parsed = parseColumnOverride(f.name);

@@ -46,7 +46,7 @@ The library is **PostgreSQL-only** and **compile-time-only by design** — no ru
 │       ├── extensions.ts     Built-in extension type registry
 │       ├── analyze.ts        libpg-query-based nullability inference
 │       ├── narrow.ts         WHERE-clause non-null narrowing
-│       └── param-map.ts      Maps $N → (table, column) for INSERT/UPDATE/WHERE
+│       └── param-map.ts      Maps $N → DML targets and predicate references
 ├── tests/                    Bun-test unit + integration tests
 ├── example/                  End-to-end fixture project used by CI integration
 ├── .github/workflows/        CI + npm publish
@@ -64,7 +64,7 @@ A `prepare` run executes the following pipeline:
 3. **Plan** (`src/pg/wire.ts`) — after Describe establishes the server-side parameter contract, statements accepted by PostgreSQL's SQL `PREPARE` surface are prepared on the same session and run through `EXPLAIN EXECUTE` under `plan_cache_mode = force_generic_plan`. This invokes a parameter-independent PostgreSQL plan without `ANALYZE` or query execution. Statements outside that server-owned surface are persisted and reported as `parse-only`.
 4. **Schema introspection** (`src/pg/schema.ts`) — batch-loads `pg_class`, `pg_attribute`, `pg_type`, `pg_enum` for everything touched by the queries. Cached per-session.
 5. **AST analysis** (`src/pg/analyze.ts`) — parses each query via `libpg-query`, builds a scope of aliases with their join-nullability, walks each target to determine per-column nullability and direct source provenance, and combines branch contracts for `UNION` / `INTERSECT` / `EXCEPT`. Calls into `src/pg/narrow.ts` for WHERE-clause forced-non-null tracking.
-6. **Param mapping** (`src/pg/param-map.ts`) — maps `$N` to a `(table, column)` target for supported INSERT VALUES / INSERT SELECT, set-operation inputs, ON CONFLICT UPDATE, UPDATE SET (including row assignments), value-producing CASE/COALESCE/GREATEST/LEAST branches and the stored side of NULLIF, WHERE/JOIN equality, and IN-list positions.
+6. **Param mapping** (`src/pg/param-map.ts`) — maps `$N` to every direct `(table, column)` target across top-level statements and data-modifying CTEs for supported INSERT VALUES / INSERT SELECT, set-operation inputs, ON CONFLICT UPDATE, UPDATE SET (including row assignments), value-producing CASE/COALESCE/GREATEST/LEAST branches and the stored side of NULLIF, WHERE/JOIN equality, and IN-list positions. DML targets provide type provenance while strict predicate references still constrain nullability; compatible application-owned declarations are aggregated and conflicting declarations fail prepare.
 7. **Type resolution** — combines OID, custom enum/array info, schema's `jsonbTypes` / direct-scalar `columnTypes` assertions, and analysis output into the final TS type strings for every column and parameter.
 8. **Persistence** — after every query validates successfully, publishes the complete query set through atomic per-file replacement, writes the version/config manifest, and emits `sqlx-js-env.d.ts` with `KnownQueries` / `KnownFileQueries` declarations for `@onreza/sqlx-js`.
 
@@ -125,7 +125,7 @@ Edit `src/pg/oids.ts`. Add to `SCALAR` (single types) or `ARRAY` (where the valu
 
 ### Adding a new param-mapping case
 
-`src/pg/param-map.ts`. Statement walkers (`walkInsert`, `walkUpdate`, `walkDelete`, `walkSelect`) delegate expression traversal through `walkExpr`. New column/parameter equality-like patterns should reuse `tryBind(...)` or `bindParam(...)` so DML-bound nullability precedence stays intact.
+`src/pg/param-map.ts`. `walkStatement` recursively dispatches top-level and CTE statements to `walkInsert`, `walkUpdate`, `walkDelete`, or `walkSelect`; expression traversal flows through `walkExpr`. New column/parameter equality-like patterns should reuse `tryBind(...)` or `bindParam(...)` so every target is retained and DML nullability precedence stays intact.
 
 ### Working on the wire protocol
 

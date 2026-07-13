@@ -1449,6 +1449,102 @@ if (!haveIntegrationDatabase) {
     expect(dts).toMatch(/INSERT INTO tmp_users.*params: \[string, string, string \| null\]/);
   });
 
+  test("data-modifying CTEs preserve nullable target parameter contracts", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        CREATE TABLE IF NOT EXISTS tmp_cte_params (
+          id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+          name text NOT NULL,
+          note text
+        );
+        CREATE TABLE IF NOT EXISTS tmp_cte_param_a (
+          value text,
+          payload jsonb,
+          payloads jsonb[],
+          labels text[]
+        );
+        CREATE TABLE IF NOT EXISTS tmp_cte_param_b (
+          value text,
+          payload jsonb,
+          payloads jsonb[],
+          labels text[]
+        );
+        CREATE TABLE IF NOT EXISTS tmp_cte_param_required (value text NOT NULL)
+      `);
+    } finally {
+      await setup.end();
+    }
+    const root = isolatedRoot("cte-param-nullability");
+    writeRootFile(root, "types.ts", "export type CtePayload = { state: string };\n");
+    writeRootFile(root, "sqlx-js.config.ts", `export default {
+      jsonbTypes: {
+        "public.tmp_cte_param_a.payload": 'import("./types").CtePayload',
+        "public.tmp_cte_param_b.payload": 'import("./types").CtePayload',
+        "public.tmp_cte_param_a.payloads": 'import("./types").CtePayload',
+        "public.tmp_cte_param_b.payloads": 'import("./types").CtePayload',
+      },
+      columnTypes: {
+        "public.tmp_cte_param_a.value": '"ready" | "done"',
+        "public.tmp_cte_param_b.value": '"ready" | "done"',
+        "public.tmp_cte_param_required.value": '"ready" | "done"',
+      },
+      arrayElementNullability: {
+        "public.tmp_cte_param_a.payloads": "non-null",
+        "public.tmp_cte_param_a.labels": "non-null",
+      },
+    };\n`);
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(`WITH inserted AS MATERIALIZED (\n" +
+      "  INSERT INTO tmp_cte_params (name, note) VALUES ($name, $note)\n" +
+      "  RETURNING id, name, note\n" +
+      ") SELECT id, name, note FROM inserted`, { name: \"ready\", note: null });\n" +
+      "await sql(`WITH first AS (\n" +
+      "  INSERT INTO tmp_cte_param_a (value, payload, payloads, labels)\n" +
+      "  VALUES ($value, $payload::jsonb, $payloads::jsonb[], $labels::text[]) RETURNING value\n" +
+      "), second AS (\n" +
+      "  INSERT INTO tmp_cte_param_b (value, payload, payloads, labels)\n" +
+      "  VALUES ($value, $payload::jsonb, $payloads::jsonb[], $labels::text[]) RETURNING value\n" +
+      ") SELECT first.value FROM first CROSS JOIN second`,\n" +
+      "  { value: null, payload: null, payloads: null, labels: null });\n" +
+      "await sql(`WITH first AS (\n" +
+      "  INSERT INTO tmp_cte_param_a (value) VALUES ($value) RETURNING value\n" +
+      "), second AS (\n" +
+      "  INSERT INTO tmp_cte_param_required (value) VALUES ($value) RETURNING value\n" +
+      ") SELECT first.value FROM first CROSS JOIN second`, { value: \"ready\" });\n" +
+      "await sql(`INSERT INTO tmp_cte_param_required (value)\n" +
+      "  VALUES ($value), (COALESCE($value, 'ready'))`, { value: \"ready\" });\n" +
+      "await sql(`WITH direct_value AS (\n" +
+      "  INSERT INTO tmp_cte_param_a (value) VALUES ($value) RETURNING value\n" +
+      "), masked_value AS (\n" +
+      "  INSERT INTO tmp_cte_param_required (value) VALUES (COALESCE($value, 'ready')) RETURNING value\n" +
+      ") SELECT direct_value.value FROM direct_value CROSS JOIN masked_value`, { value: null });\n" +
+      "await sql(`WITH guarded_value AS (\n" +
+      "  INSERT INTO tmp_cte_param_required (value) SELECT $value::text\n" +
+      "  WHERE $value::text IS NOT NULL RETURNING value\n" +
+      ") SELECT COUNT(*)::int AS count FROM guarded_value`, { value: null });\n" +
+      "await sql(`UPDATE tmp_cte_param_a SET value = $value::text\n" +
+      "  WHERE value = $value::text`, { value: \"ready\" });\n" +
+      "await sql(`UPDATE tmp_cte_param_a SET value = $value::text\n" +
+      "  WHERE $value::text IS NULL OR value = $value::text`, { value: null });\n",
+    );
+    const result = prepareRoot(root, ["--strict-inference"]);
+    expect(result.code, result.stderr).toBe(0);
+    const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toMatch(/WITH inserted AS MATERIALIZED.*params: \{ "name": string; "note": string \| null \}/);
+    expect(dts).toMatch(
+      /tmp_cte_param_b.*params: \{ "value": "ready" \| "done" \| null; "payload": import\("@onreza\/sqlx-js"\)\.JsonParameter<import\("\.\/types"\)\.CtePayload> \| null; "payloads": import\("@onreza\/sqlx-js"\)\.PgArrayParameter<import\("@onreza\/sqlx-js"\)\.JsonParameter<import\("\.\/types"\)\.CtePayload>, false> \| null; "labels": import\("@onreza\/sqlx-js"\)\.PgArrayParameter<string, false> \| null \}/,
+    );
+    expect(dts).toMatch(/tmp_cte_param_required.*params: \{ "value": "ready" \| "done" \}/);
+    expect(dts).toMatch(/VALUES \(\$value\), \(COALESCE.*params: \{ "value": "ready" \| "done" \}/);
+    expect(dts).toMatch(/masked_value.*params: \{ "value": "ready" \| "done" \| null \}/);
+    expect(dts).toMatch(/guarded_value.*params: \{ "value": "ready" \| "done" \| null \}/);
+    expect(dts).toMatch(/WHERE value = \$value::text.*params: \{ "value": "ready" \| "done" \}/);
+    expect(dts).toMatch(/WHERE \$value::text IS NULL OR value = \$value::text.*params: \{ "value": "ready" \| "done" \| null \}/);
+  });
+
   test("INSERT VALUES without column list resolves nullable params by table order", () => {
     writeFile("migrations/0005_insert_values_order.up.sql",
       "CREATE TABLE IF NOT EXISTS tmp_insert_values_order (\n" +

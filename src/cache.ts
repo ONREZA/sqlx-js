@@ -6,7 +6,7 @@ import { queryId } from "./query-id";
 import { rewriteNamedParameters } from "./sql-params";
 
 export const CACHE_FORMAT_VERSION = 3;
-export const GENERATOR_REVISION = 12;
+export const GENERATOR_REVISION = 13;
 export const CACHE_MANIFEST_FILE = "cache-manifest.json";
 
 export class CacheManifestStaleError extends Error {

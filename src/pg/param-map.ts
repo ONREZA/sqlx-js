@@ -1,29 +1,36 @@
 import { parse } from "libpg-query";
 
 export type ParamTarget = { schema?: string; table: string; column?: string; columnIndex?: number };
-export type ParamMap = Map<number, ParamTarget>;
+export type DmlParamTarget = { target: ParamTarget; nullSafe: boolean };
+export type ParamBinding = {
+  dmlTargets: DmlParamTarget[];
+  referenceTargets: ParamTarget[];
+};
+export type ParamMap = Map<number, ParamBinding>;
 
 export type ParamMapResult = {
-  targets: ParamMap;
+  bindings: ParamMap;
   forceNullable: Set<number>;
-  dmlBound: Set<number>;
 };
 
 export async function buildParamMap(sql: string): Promise<ParamMapResult> {
-  const targets: ParamMap = new Map();
+  const bindings: ParamMap = new Map();
   const forceNullable = new Set<number>();
-  const dmlBound = new Set<number>();
   const ast = await parse(sql);
   const stmt = ast?.stmts?.[0]?.stmt;
-  if (!stmt) return { targets, forceNullable, dmlBound };
+  if (!stmt) return { bindings, forceNullable };
 
-  if (stmt.InsertStmt) walkInsert(stmt.InsertStmt, targets, dmlBound);
-  else if (stmt.UpdateStmt) walkUpdate(stmt.UpdateStmt, targets, dmlBound);
-  else if (stmt.SelectStmt) walkSelect(stmt.SelectStmt, targets, dmlBound);
-  else if (stmt.DeleteStmt) walkDelete(stmt.DeleteStmt, targets, dmlBound);
+  walkStatement(stmt, bindings);
 
   walkForceNullable(stmt, false, forceNullable);
-  return { targets, forceNullable, dmlBound };
+  return { bindings, forceNullable };
+}
+
+export function effectiveParamTargets(binding: ParamBinding | undefined): ParamTarget[] {
+  if (!binding) return [];
+  return binding.dmlTargets.length > 0
+    ? binding.dmlTargets.map((candidate) => candidate.target)
+    : binding.referenceTargets;
 }
 
 type Rel = { schema?: string; table: string };
@@ -34,7 +41,21 @@ type Scope = {
   defaultRel: Rel | null;
 };
 
-function walkInsert(ins: any, map: ParamMap, dmlBound: Set<number>): void {
+function walkStatement(stmt: any, map: ParamMap): void {
+  if (stmt?.InsertStmt) walkInsert(stmt.InsertStmt, map);
+  else if (stmt?.UpdateStmt) walkUpdate(stmt.UpdateStmt, map);
+  else if (stmt?.SelectStmt) walkSelect(stmt.SelectStmt, map);
+  else if (stmt?.DeleteStmt) walkDelete(stmt.DeleteStmt, map);
+}
+
+function walkWithClause(withClause: any, map: ParamMap): void {
+  for (const wrapper of withClause?.ctes ?? []) {
+    walkStatement(wrapper?.CommonTableExpr?.ctequery, map);
+  }
+}
+
+function walkInsert(ins: any, map: ParamMap): void {
+  walkWithClause(ins.withClause, map);
   const rel = relOf(ins.relation);
   if (!rel) return;
   const scope = scopeFromRelationNode(ins.relation, rel);
@@ -43,145 +64,156 @@ function walkInsert(ins: any, map: ParamMap, dmlBound: Set<number>): void {
     .filter((n: any): n is string => typeof n === "string");
   const select = ins.selectStmt?.SelectStmt;
   if (select) {
-    bindSelectValueParams(select, (index) => insertTarget(rel, cols, index), map, dmlBound);
-    walkSelect(select, map, dmlBound);
+    bindSelectValueParams(select, (index) => insertTarget(rel, cols, index), map);
+    walkSelect(select, map);
   }
-  if (ins.returningList) walkExpr(ins.returningList, scope, map, dmlBound);
-  walkOnConflict(ins.onConflictClause, rel, scope, map, dmlBound);
-  walkExpr(ins.whereClause, scope, map, dmlBound);
+  if (ins.returningList) walkExpr(ins.returningList, scope, map);
+  walkOnConflict(ins.onConflictClause, rel, scope, map);
+  walkExpr(ins.whereClause, scope, map);
 }
 
-function walkOnConflict(conflict: any, rel: Rel, scope: Scope, map: ParamMap, dmlBound: Set<number>): void {
+function walkOnConflict(conflict: any, rel: Rel, scope: Scope, map: ParamMap): void {
   if (!conflict || conflict.action !== "ONCONFLICT_UPDATE") return;
+  const guards = nonNullGuardParams(conflict.whereClause);
   for (const rt of conflict.targetList ?? []) {
     const colName = rt?.ResTarget?.name;
     if (typeof colName !== "string") continue;
-    bindAssignmentValueParams(rt.ResTarget.val, { ...rel, column: colName }, map, dmlBound);
-    walkExpr(rt.ResTarget.val, scope, map, dmlBound);
+    bindAssignmentValueParams(rt.ResTarget.val, { ...rel, column: colName }, map, guards);
+    walkExpr(rt.ResTarget.val, scope, map);
   }
-  walkExpr(conflict.whereClause, scope, map, dmlBound);
+  walkExpr(conflict.whereClause, scope, map);
 }
 
-function walkUpdate(upd: any, map: ParamMap, dmlBound: Set<number>): void {
+function walkUpdate(upd: any, map: ParamMap): void {
+  walkWithClause(upd.withClause, map);
   const rel = relOf(upd.relation);
   if (!rel) return;
   const scope = scopeFromRelationNode(upd.relation, rel);
   addRangeVars(upd.fromClause ?? [], scope);
+  const guards = nonNullGuardParams(upd.whereClause);
   for (const rt of upd.targetList ?? []) {
     const colName = rt?.ResTarget?.name;
     if (typeof colName !== "string") continue;
-    bindAssignmentValueParams(rt.ResTarget.val, { ...rel, column: colName }, map, dmlBound);
-    walkExpr(rt.ResTarget.val, scope, map, dmlBound);
+    bindAssignmentValueParams(rt.ResTarget.val, { ...rel, column: colName }, map, guards);
+    walkExpr(rt.ResTarget.val, scope, map);
   }
-  walkExpr(upd.whereClause, scope, map, dmlBound);
+  walkExpr(upd.whereClause, scope, map);
 }
 
-function walkDelete(del: any, map: ParamMap, dmlBound: Set<number>): void {
+function walkDelete(del: any, map: ParamMap): void {
+  walkWithClause(del.withClause, map);
   const rel = relOf(del.relation);
   if (!rel) return;
   const scope = scopeFromRelationNode(del.relation, rel);
   addRangeVars(del.usingClause ?? [], scope);
-  walkExpr(del.whereClause, scope, map, dmlBound);
+  walkExpr(del.whereClause, scope, map);
 }
 
-function walkSelect(select: any, map: ParamMap, dmlBound: Set<number>): void {
-  if (select?.larg) walkSelect(select.larg, map, dmlBound);
-  if (select?.rarg) walkSelect(select.rarg, map, dmlBound);
+function walkSelect(select: any, map: ParamMap): void {
+  walkWithClause(select?.withClause, map);
+  if (select?.larg) walkSelect(select.larg, map);
+  if (select?.rarg) walkSelect(select.rarg, map);
   const scope = scopeFromSelect(select);
-  walkJoinQuals(select.fromClause ?? [], scope, map, dmlBound);
-  walkExpr(select.whereClause, scope, map, dmlBound);
+  walkJoinQuals(select.fromClause ?? [], scope, map);
+  walkExpr(select.whereClause, scope, map);
 }
 
 function bindSelectValueParams(
   select: any,
   targetAt: (index: number) => ParamTarget | undefined,
   map: ParamMap,
-  dmlBound: Set<number>,
+  inheritedGuards: ReadonlySet<number> = new Set(),
 ): void {
   if (select?.larg || select?.rarg) {
-    if (select.larg) bindSelectValueParams(select.larg, targetAt, map, dmlBound);
-    if (select.rarg) bindSelectValueParams(select.rarg, targetAt, map, dmlBound);
+    if (select.larg) bindSelectValueParams(select.larg, targetAt, map, inheritedGuards);
+    if (select.rarg) bindSelectValueParams(select.rarg, targetAt, map, inheritedGuards);
     return;
   }
+  const guards = unionParams(inheritedGuards, nonNullGuardParams(select?.whereClause));
   for (const row of select?.valuesLists ?? []) {
     const items = row?.List?.items ?? [];
     for (let i = 0; i < items.length; i++) {
       const target = targetAt(i);
-      if (target) bindValueParams(items[i], target, map, dmlBound);
+      if (target) bindValueParams(items[i], target, map, false, guards);
     }
   }
   if (select?.valuesLists || !Array.isArray(select?.targetList)) return;
   for (let i = 0; i < select.targetList.length; i++) {
     const target = targetAt(i);
-    if (target) bindValueParams(select.targetList[i]?.ResTarget?.val, target, map, dmlBound);
+    if (target) bindValueParams(select.targetList[i]?.ResTarget?.val, target, map, false, guards);
   }
 }
 
-function bindAssignmentValueParams(node: any, target: ParamTarget, map: ParamMap, dmlBound: Set<number>): void {
+function bindAssignmentValueParams(
+  node: any,
+  target: ParamTarget,
+  map: ParamMap,
+  guards: ReadonlySet<number> = new Set(),
+): void {
   const multi = node?.MultiAssignRef;
   if (!multi || typeof multi.colno !== "number") {
-    bindValueParams(node, target, map, dmlBound);
+    bindValueParams(node, target, map, false, guards);
     return;
   }
   const index = multi.colno - 1;
   const rowValue = multi.source?.RowExpr?.args?.[index];
   if (rowValue) {
-    bindValueParams(rowValue, target, map, dmlBound);
+    bindValueParams(rowValue, target, map, false, guards);
     return;
   }
   const select = multi.source?.SubLink?.subselect?.SelectStmt;
   if (!select) return;
-  bindSelectValueParams(select, (candidate) => candidate === index ? target : undefined, map, dmlBound);
-  walkSelect(select, map, dmlBound);
+  bindSelectValueParams(select, (candidate) => candidate === index ? target : undefined, map, guards);
+  walkSelect(select, map);
 }
 
-function walkExpr(node: any, scope: Scope, map: ParamMap, dmlBound: Set<number>): void {
+function walkExpr(node: any, scope: Scope, map: ParamMap): void {
   if (!node) return;
   if (Array.isArray(node)) {
-    for (const item of node) walkExpr(item, scope, map, dmlBound);
+    for (const item of node) walkExpr(item, scope, map);
     return;
   }
   if (node.BoolExpr) {
-    for (const a of node.BoolExpr.args ?? []) walkExpr(a, scope, map, dmlBound);
+    for (const a of node.BoolExpr.args ?? []) walkExpr(a, scope, map);
     return;
   }
   if (node.A_Expr) {
-    collectFromExpr(node, scope, map, dmlBound);
-    walkExpr(node.A_Expr.lexpr, scope, map, dmlBound);
-    walkExpr(node.A_Expr.rexpr, scope, map, dmlBound);
+    collectFromExpr(node, scope, map);
+    walkExpr(node.A_Expr.lexpr, scope, map);
+    walkExpr(node.A_Expr.rexpr, scope, map);
     return;
   }
   if (node.TypeCast) {
-    walkExpr(node.TypeCast.arg, scope, map, dmlBound);
+    walkExpr(node.TypeCast.arg, scope, map);
     return;
   }
   if (node.NullTest) {
-    walkExpr(node.NullTest.arg, scope, map, dmlBound);
+    walkExpr(node.NullTest.arg, scope, map);
     return;
   }
   if (node.CoalesceExpr) {
-    walkExpr(node.CoalesceExpr.args ?? [], scope, map, dmlBound);
+    walkExpr(node.CoalesceExpr.args ?? [], scope, map);
     return;
   }
   if (node.FuncCall) {
-    walkExpr(node.FuncCall.args ?? [], scope, map, dmlBound);
+    walkExpr(node.FuncCall.args ?? [], scope, map);
     return;
   }
   if (node.CaseExpr) {
-    walkExpr(node.CaseExpr.arg, scope, map, dmlBound);
-    walkExpr(node.CaseExpr.args ?? [], scope, map, dmlBound);
-    walkExpr(node.CaseExpr.defresult, scope, map, dmlBound);
+    walkExpr(node.CaseExpr.arg, scope, map);
+    walkExpr(node.CaseExpr.args ?? [], scope, map);
+    walkExpr(node.CaseExpr.defresult, scope, map);
     return;
   }
   if (node.CaseWhen) {
-    walkExpr(node.CaseWhen.expr, scope, map, dmlBound);
-    walkExpr(node.CaseWhen.result, scope, map, dmlBound);
+    walkExpr(node.CaseWhen.expr, scope, map);
+    walkExpr(node.CaseWhen.result, scope, map);
     return;
   }
   if (node.SubLink) {
     const sub = node.SubLink.subselect?.SelectStmt;
-    if (sub) walkSelect(sub, map, dmlBound);
-    walkExpr(node.SubLink.testexpr, scope, map, dmlBound);
+    if (sub) walkSelect(sub, map);
+    walkExpr(node.SubLink.testexpr, scope, map);
     return;
   }
 }
@@ -190,15 +222,14 @@ function collectFromExpr(
   node: any,
   scope: Scope,
   map: ParamMap,
-  dmlBound: Set<number>,
 ): void {
   if (!node) return;
   if (node.A_Expr) {
     const e = node.A_Expr;
     const opName = e.name?.[0]?.String?.sval;
     if (e.kind === "AEXPR_OP" && opName === "=") {
-      tryBind(e.lexpr, e.rexpr, scope, map, dmlBound);
-      tryBind(e.rexpr, e.lexpr, scope, map, dmlBound);
+      tryBind(e.lexpr, e.rexpr, scope, map);
+      tryBind(e.rexpr, e.lexpr, scope, map);
     }
     if (e.kind === "AEXPR_IN") {
       const target = targetOfColumnRef(e.lexpr, scope);
@@ -206,7 +237,7 @@ function collectFromExpr(
         const list = Array.isArray(e.rexpr) ? e.rexpr : e.rexpr?.List?.items ?? [];
         for (const item of list) {
           const pn = paramNumber(item);
-          if (pn !== null) bindParam(map, dmlBound, pn, target, false);
+          if (pn !== null) bindParam(map, pn, target, false);
         }
       }
     }
@@ -218,51 +249,118 @@ function tryBind(
   valSide: any,
   scope: Scope,
   map: ParamMap,
-  dmlBound: Set<number>,
 ): void {
   const target = targetOfColumnRef(colSide, scope);
   const pn = paramNumber(valSide);
-  if (target && pn !== null) bindParam(map, dmlBound, pn, target, false);
+  if (target && pn !== null) bindParam(map, pn, target, false);
 }
 
-function bindParam(map: ParamMap, dmlBound: Set<number>, pn: number, target: ParamTarget, dml: boolean): void {
-  if (!dml && dmlBound.has(pn)) return;
-  map.set(pn, target);
-  if (dml) dmlBound.add(pn);
+function sameTarget(left: ParamTarget, right: ParamTarget): boolean {
+  return left.schema === right.schema
+    && left.table === right.table
+    && left.column === right.column
+    && left.columnIndex === right.columnIndex;
 }
 
-function bindValueParams(node: any, target: ParamTarget, map: ParamMap, dmlBound: Set<number>): void {
+function bindParam(
+  map: ParamMap,
+  pn: number,
+  target: ParamTarget,
+  dml: boolean,
+  nullSafe = false,
+): void {
+  let binding = map.get(pn);
+  if (!binding) {
+    binding = { dmlTargets: [], referenceTargets: [] };
+    map.set(pn, binding);
+  }
+  if (!dml) {
+    if (!binding.referenceTargets.some((candidate) => sameTarget(candidate, target))) {
+      binding.referenceTargets.push(target);
+    }
+    return;
+  }
+  const existing = binding.dmlTargets.find((candidate) => sameTarget(candidate.target, target));
+  if (existing) {
+    existing.nullSafe = existing.nullSafe && nullSafe;
+    return;
+  }
+  binding.dmlTargets.push({ target, nullSafe });
+}
+
+function bindValueParams(
+  node: any,
+  target: ParamTarget,
+  map: ParamMap,
+  nullSafe = false,
+  guards: ReadonlySet<number> = new Set(),
+): void {
   const pn = paramNumber(node);
   if (pn !== null) {
-    bindParam(map, dmlBound, pn, target, true);
+    bindParam(map, pn, target, true, nullSafe || guards.has(pn));
     return;
   }
   if (node?.TypeCast) {
-    bindValueParams(node.TypeCast.arg, target, map, dmlBound);
+    bindValueParams(node.TypeCast.arg, target, map, nullSafe, guards);
     return;
   }
   if (node?.CollateClause) {
-    bindValueParams(node.CollateClause.arg, target, map, dmlBound);
+    bindValueParams(node.CollateClause.arg, target, map, nullSafe, guards);
     return;
   }
   if (node?.CaseExpr) {
     for (const item of node.CaseExpr.args ?? []) {
-      bindValueParams(item?.CaseWhen?.result, target, map, dmlBound);
+      bindValueParams(item?.CaseWhen?.result, target, map, nullSafe, guards);
     }
-    bindValueParams(node.CaseExpr.defresult, target, map, dmlBound);
+    bindValueParams(node.CaseExpr.defresult, target, map, nullSafe, guards);
     return;
   }
   if (node?.CoalesceExpr) {
-    for (const item of node.CoalesceExpr.args ?? []) bindValueParams(item, target, map, dmlBound);
+    for (const item of node.CoalesceExpr.args ?? []) bindValueParams(item, target, map, true, guards);
     return;
   }
   if (node?.MinMaxExpr) {
-    for (const item of node.MinMaxExpr.args ?? []) bindValueParams(item, target, map, dmlBound);
+    for (const item of node.MinMaxExpr.args ?? []) bindValueParams(item, target, map, nullSafe, guards);
     return;
   }
   if (node?.A_Expr?.kind === "AEXPR_NULLIF") {
-    bindValueParams(node.A_Expr.lexpr, target, map, dmlBound);
+    bindValueParams(node.A_Expr.lexpr, target, map, nullSafe, guards);
   }
+}
+
+function unionParams(left: ReadonlySet<number>, right: ReadonlySet<number>): Set<number> {
+  return new Set([...left, ...right]);
+}
+
+function intersectParams(sets: Set<number>[]): Set<number> {
+  if (sets.length === 0) return new Set();
+  return new Set([...sets[0]!].filter((param) => sets.slice(1).every((set) => set.has(param))));
+}
+
+function nonNullGuardParams(node: any): Set<number> {
+  const nullTest = node?.NullTest;
+  if (nullTest?.nulltesttype === "IS_NOT_NULL") {
+    const pn = paramNumber(nullTest.arg);
+    return pn === null ? new Set() : new Set([pn]);
+  }
+  const bool = node?.BoolExpr;
+  if (!bool) return new Set();
+  const args = bool.args ?? [];
+  if (bool.boolop === "AND_EXPR") {
+    return args.reduce(
+      (guards: Set<number>, arg: any) => unionParams(guards, nonNullGuardParams(arg)),
+      new Set<number>(),
+    );
+  }
+  if (bool.boolop === "OR_EXPR") {
+    return intersectParams(args.map((arg: any) => nonNullGuardParams(arg)));
+  }
+  const negated = args.length === 1 ? args[0]?.NullTest : undefined;
+  if (bool.boolop === "NOT_EXPR" && negated?.nulltesttype === "IS_NULL") {
+    const pn = paramNumber(negated.arg);
+    return pn === null ? new Set() : new Set([pn]);
+  }
+  return new Set();
 }
 
 function stringFields(node: any): string[] | null {
@@ -349,11 +447,11 @@ function addRangeVars(nodes: any[], scope: Scope): void {
   }
 }
 
-function walkJoinQuals(nodes: any[], scope: Scope, map: ParamMap, dmlBound: Set<number>): void {
+function walkJoinQuals(nodes: any[], scope: Scope, map: ParamMap): void {
   for (const node of nodes) {
     if (!node?.JoinExpr) continue;
-    walkExpr(node.JoinExpr.quals, scope, map, dmlBound);
-    walkJoinQuals([node.JoinExpr.larg, node.JoinExpr.rarg], scope, map, dmlBound);
+    walkExpr(node.JoinExpr.quals, scope, map);
+    walkJoinQuals([node.JoinExpr.larg, node.JoinExpr.rarg], scope, map);
   }
 }
 
