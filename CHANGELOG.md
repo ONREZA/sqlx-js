@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/ONREZA/sqlx-js/compare/v0.13.0...v0.13.1) (2026-07-13)
+
+
+### Bug Fixes
+
+* **prepare:** infer update returning nullability ([ee422ac](https://github.com/ONREZA/sqlx-js/commit/ee422ace0b14c5b95a6b2c500b384caca2a0a170))
+
 ## [0.13.0](https://github.com/ONREZA/sqlx-js/compare/v0.12.0...v0.13.0) (2026-07-13)
 
 
