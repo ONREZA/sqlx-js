@@ -92,6 +92,116 @@ test("prepare config hash includes column and function catalog contracts", () =>
   expect(prepareConfigHash({ arrayElementNullability: { "users.tags": "non-null" } })).not.toBe(base);
   expect(prepareConfigHash({ functionCatalog: false })).not.toBe(base);
   expect(prepareConfigHash({ functionCatalog: { includeExtensionOwned: true } })).not.toBe(base);
+  expect(prepareConfigHash({ enumCatalog: { output: "src/db-enums.ts", schemas: ["public"] } })).not.toBe(base);
+});
+
+test("enum catalog config requires a project output and explicit schemas", async () => {
+  const valid = root();
+  writeFileSync(join(valid, "sqlx-js.config.mjs"), `export default {
+    enumCatalog: {
+      output: "src/db-enums.ts",
+      schemas: ["public", "app"],
+      include: ["public.status"],
+      aliases: { "public.status": "AccountStatus" },
+      registry: true,
+    },
+  };\n`);
+  expect(await loadConfig(valid)).toEqual({
+    enumCatalog: {
+      output: "src/db-enums.ts",
+      schemas: ["public", "app"],
+      include: ["public.status"],
+      aliases: { "public.status": "AccountStatus" },
+      registry: true,
+    },
+  });
+
+  const outside = root();
+  writeFileSync(join(outside, "sqlx-js.config.mjs"), `export default {
+    enumCatalog: { output: "../db-enums.ts", schemas: ["public"] },
+  };\n`);
+  await expect(loadConfig(outside)).rejects.toThrow(/root-relative \.ts, \.mts, or \.cts path inside the project/);
+
+  const outputDirectory = root();
+  mkdirSync(join(outputDirectory, "db-enums.ts"));
+  writeFileSync(join(outputDirectory, "sqlx-js.config.mjs"), `export default {
+    enumCatalog: { output: "db-enums.ts", schemas: ["public"] },
+  };\n`);
+  await expect(loadConfig(outputDirectory)).rejects.toThrow(/output must resolve to a file/);
+
+  const invalidParent = root();
+  writeFileSync(join(invalidParent, "generated"), "not a directory\n");
+  writeFileSync(join(invalidParent, "sqlx-js.config.mjs"), `export default {
+    enumCatalog: { output: "generated/db-enums.ts", schemas: ["public"] },
+  };\n`);
+  await expect(loadConfig(invalidParent)).rejects.toThrow(/output parent must resolve to a directory/);
+
+  const noSchemas = root();
+  writeFileSync(join(noSchemas, "sqlx-js.config.mjs"), `export default {
+    enumCatalog: { output: "src/db-enums.ts", schemas: [] },
+  };\n`);
+  await expect(loadConfig(noSchemas)).rejects.toThrow(/must contain at least one non-empty schema name/);
+
+  const invalidAlias = root();
+  writeFileSync(join(invalidAlias, "sqlx-js.config.mjs"), `export default {
+    enumCatalog: {
+      output: "src/db-enums.ts",
+      schemas: ["public"],
+      aliases: { "public.status": "default" },
+    },
+  };\n`);
+  await expect(loadConfig(invalidAlias)).rejects.toThrow(/must be a valid TypeScript export name/);
+
+  const unqualifiedNames = root();
+  writeFileSync(join(unqualifiedNames, "sqlx-js.config.mjs"), `export default {
+    enumCatalog: {
+      output: "src/db-enums.ts",
+      schemas: ["public"],
+      include: ["status"],
+    },
+  };\n`);
+  await expect(loadConfig(unqualifiedNames)).rejects.toThrow(/include must contain.*schema-qualified enum name/);
+
+  const unqualifiedAlias = root();
+  writeFileSync(join(unqualifiedAlias, "sqlx-js.config.mjs"), `export default {
+    enumCatalog: {
+      output: "src/db-enums.ts",
+      schemas: ["public"],
+      aliases: { status: "Status" },
+    },
+  };\n`);
+  await expect(loadConfig(unqualifiedAlias)).rejects.toThrow(/aliases keys must be schema-qualified enum names/);
+
+  const conflictingSelection = root();
+  writeFileSync(join(conflictingSelection, "sqlx-js.config.mjs"), `export default {
+    enumCatalog: {
+      output: "src/db-enums.ts",
+      schemas: ["public"],
+      include: ["public.status"],
+      exclude: ["public.internal_status"],
+    },
+  };\n`);
+  await expect(loadConfig(conflictingSelection)).rejects.toThrow(/include and enumCatalog\.exclude cannot be used together/);
+});
+
+test("enum catalog cache hash follows schemas rather than output-only options", () => {
+  expect(prepareConfigHash({
+    enumCatalog: {
+      output: "src/db-enums.ts",
+      schemas: ["app", "public"],
+      include: ["public.status"],
+      aliases: { "public.status": "AccountStatus" },
+      registry: true,
+    },
+  })).toBe(prepareConfigHash({
+    enumCatalog: {
+      output: "generated/enums.ts",
+      schemas: ["public", "app"],
+      exclude: ["app.internal_status"],
+      aliases: { "public.status": "Status" },
+      registry: false,
+    },
+  }));
 });
 
 test("loadConfig validates array element nullability assertions", async () => {
@@ -144,6 +254,33 @@ test("doctor follows tsconfig project references when checking generated declara
     dtsPath: join(dir, "sqlx-js-env.d.ts"),
   });
   expect(checks.find((check) => check.name === "tsconfig")).toMatchObject({ status: "ok" });
+});
+
+test("doctor checks the configured enum catalog output", async () => {
+  const dir = root();
+  writeFileSync(join(dir, "sqlx-js.config.mjs"), `export default {
+    enumCatalog: { output: "db-enums.ts", schemas: ["public"] },
+  };\n`);
+
+  let checks = await inspectDoctor({
+    root: dir,
+    databaseUrl: "",
+    cacheDir: join(dir, ".sqlx-js"),
+    dtsPath: join(dir, "sqlx-js-env.d.ts"),
+  });
+  expect(checks.find((check) => check.name === "enumCatalog")).toMatchObject({
+    status: "error",
+    message: expect.stringContaining("generated enum catalog not found"),
+  });
+
+  writeFileSync(join(dir, "db-enums.ts"), "export {};\n");
+  checks = await inspectDoctor({
+    root: dir,
+    databaseUrl: "",
+    cacheDir: join(dir, ".sqlx-js"),
+    dtsPath: join(dir, "sqlx-js-env.d.ts"),
+  });
+  expect(checks.find((check) => check.name === "enumCatalog")).toMatchObject({ status: "ok" });
 });
 
 test("doctor does not treat an unrelated .env file as DATABASE_URL configuration", async () => {

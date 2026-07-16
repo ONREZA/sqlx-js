@@ -1,4 +1,60 @@
 {
   "version": 1,
-  "functions": []
+  "functions": [
+    {
+      "schema": "public",
+      "name": "list_users",
+      "signature": "public.list_users(filter_role user_role, search_text text, after_id bigint, result_limit integer)",
+      "kind": "function",
+      "params": [
+        {
+          "mode": "in",
+          "tsType": "\"admin\" | \"editor\" | \"viewer\"",
+          "name": "filter_role"
+        },
+        {
+          "mode": "in",
+          "tsType": "string",
+          "name": "search_text"
+        },
+        {
+          "mode": "in",
+          "tsType": "bigint",
+          "name": "after_id"
+        },
+        {
+          "mode": "in",
+          "tsType": "number",
+          "name": "result_limit"
+        },
+        {
+          "mode": "table",
+          "tsType": "bigint",
+          "name": "id"
+        },
+        {
+          "mode": "table",
+          "tsType": "string",
+          "name": "name"
+        },
+        {
+          "mode": "table",
+          "tsType": "string",
+          "name": "email"
+        },
+        {
+          "mode": "table",
+          "tsType": "\"admin\" | \"editor\" | \"viewer\"",
+          "name": "role"
+        },
+        {
+          "mode": "table",
+          "tsType": "Date",
+          "name": "created_at"
+        }
+      ],
+      "returns": "{ id: bigint | null; name: string | null; email: string | null; role: \"admin\" | \"editor\" | \"viewer\" | null; created_at: Date | null }",
+      "returnsSet": true
+    }
+  ]
 }

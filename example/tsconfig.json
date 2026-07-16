@@ -16,5 +16,5 @@
       "@onreza/sqlx-js": ["../src/index.ts"]
     }
   },
-  "include": ["app.ts", "v*.ts", "json-types.d.ts", "sqlx-js-env.d.ts"]
+  "include": ["app.ts", "v*.ts", "db-enums.ts", "json-types.d.ts", "sqlx-js-env.d.ts"]
 }

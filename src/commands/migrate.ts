@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { PgClient, parseDatabaseUrl, decodeText } from "../pg/wire";
 import {
@@ -506,7 +506,13 @@ async function prepareWorkflowArtifacts(opts: MigrationWorkflowOptions, database
       console.error(`\n${r.failures} query/queries failed to prepare`);
       return false;
     }
-    console.log(`\nprepared ${r.entries} unique query/queries → ${opts.dtsPath}`);
+    const enumOutput = session.userCfg.enumCatalog
+      ? resolve(opts.root, session.userCfg.enumCatalog.output)
+      : undefined;
+    console.log(
+      `\nprepared ${r.entries} unique query/queries, ${r.functions} function(s), ${r.enums} enum(s) `
+      + `→ ${opts.dtsPath}${enumOutput ? `, ${enumOutput}` : ""}`,
+    );
     return true;
   } finally {
     await session.client.end();

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseEnv } from "node:util";
 
@@ -8,6 +8,15 @@ export type ScanConfig = {
   include?: string[];
   exclude?: string[];
   modules?: string[];
+};
+
+export type EnumCatalogConfig = {
+  output: string;
+  schemas: string[];
+  include?: string[];
+  exclude?: string[];
+  aliases?: Record<string, string>;
+  registry?: boolean;
 };
 
 export type SqlxJsConfig = {
@@ -18,6 +27,7 @@ export type SqlxJsConfig = {
   functionCatalog?: false | {
     includeExtensionOwned?: boolean;
   };
+  enumCatalog?: EnumCatalogConfig;
   scan?: ScanConfig;
   schema?: {
     provider?: "builtin" | "pgschema";
@@ -105,6 +115,104 @@ function validateModuleArray(value: unknown, path: string): void {
   }
 }
 
+function validateEnumCatalog(value: unknown, path: string): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`sqlx-js: ${path} enumCatalog must be an object`);
+  }
+  const catalog = value as Record<string, unknown>;
+  if (typeof catalog.output !== "string" || catalog.output.trim() === "") {
+    throw new Error(`sqlx-js: ${path} enumCatalog.output must be a non-empty root-relative TypeScript module path`);
+  }
+  const output = catalog.output;
+  const normalized = normalize(output);
+  const isTypeScriptModule = /\.(?:[cm]?ts)$/.test(output) && !/\.d\.(?:[cm]?ts)$/.test(output);
+  if (
+    isAbsolute(output)
+    || normalized === ".."
+    || normalized.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
+    || !isTypeScriptModule
+  ) {
+    throw new Error(`sqlx-js: ${path} enumCatalog.output must be a root-relative .ts, .mts, or .cts path inside the project`);
+  }
+  const outputPath = resolve(dirname(path), output);
+  const configPath = resolve(path);
+  if (
+    outputPath === configPath
+    || (existsSync(outputPath) && realpathSync.native(outputPath) === realpathSync.native(configPath))
+  ) {
+    throw new Error(`sqlx-js: ${path} enumCatalog.output cannot overwrite the config file`);
+  }
+  if (existsSync(outputPath) && !statSync(outputPath).isFile()) {
+    throw new Error(`sqlx-js: ${path} enumCatalog.output must resolve to a file`);
+  }
+  let outputParent = dirname(outputPath);
+  while (!existsSync(outputParent)) outputParent = dirname(outputParent);
+  if (!statSync(outputParent).isDirectory()) {
+    throw new Error(`sqlx-js: ${path} enumCatalog.output parent must resolve to a directory`);
+  }
+  const realParent = realpathSync.native(outputParent);
+  const realRoot = realpathSync.native(dirname(path));
+  const parentFromRoot = relative(realRoot, realParent);
+  if (
+    isAbsolute(parentFromRoot)
+    || parentFromRoot === ".."
+    || parentFromRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
+  ) {
+    throw new Error(`sqlx-js: ${path} enumCatalog.output must stay inside the project after resolving symlinks`);
+  }
+  validateStringArray(catalog.schemas, "enumCatalog.schemas", path);
+  const schemas = catalog.schemas as string[];
+  if (schemas.length === 0 || schemas.some((schema) => schema.trim() === "")) {
+    throw new Error(`sqlx-js: ${path} enumCatalog.schemas must contain at least one non-empty schema name`);
+  }
+  for (const option of ["include", "exclude"] as const) {
+    const selection = catalog[option];
+    if (selection === undefined) continue;
+    validateStringArray(selection, `enumCatalog.${option}`, path);
+    const names = selection as string[];
+    if (names.length === 0 || names.some((name) => !isSchemaQualifiedEnumName(name))) {
+      throw new Error(
+        `sqlx-js: ${path} enumCatalog.${option} must contain at least one non-empty schema-qualified enum name`,
+      );
+    }
+  }
+  if (catalog.include !== undefined && catalog.exclude !== undefined) {
+    throw new Error(`sqlx-js: ${path} enumCatalog.include and enumCatalog.exclude cannot be used together`);
+  }
+  if (catalog.aliases !== undefined) {
+    validateStringRecord(catalog.aliases, "enumCatalog.aliases", path);
+    for (const [type, exportName] of Object.entries(catalog.aliases as Record<string, string>)) {
+      if (!isSchemaQualifiedEnumName(type)) {
+        throw new Error(`sqlx-js: ${path} enumCatalog.aliases keys must be schema-qualified enum names`);
+      }
+      if (!isTypeScriptExportName(exportName)) {
+        throw new Error(`sqlx-js: ${path} enumCatalog.aliases.${type} must be a valid TypeScript export name`);
+      }
+    }
+  }
+  if (catalog.registry !== undefined && typeof catalog.registry !== "boolean") {
+    throw new Error(`sqlx-js: ${path} enumCatalog.registry must be a boolean`);
+  }
+}
+
+function isSchemaQualifiedEnumName(value: string): boolean {
+  const separator = value.indexOf(".");
+  return separator > 0 && separator < value.length - 1;
+}
+
+const RESERVED_BINDING_NAMES = new Set([
+  "arguments", "as", "await", "break", "case", "catch", "class", "const", "continue", "debugger",
+  "default", "delete", "do", "else", "enum", "eval", "export", "extends", "false", "finally",
+  "for", "function", "if", "implements", "import", "in", "instanceof", "interface", "let", "new",
+  "null", "package", "private", "protected", "public", "return", "static", "super", "switch", "this",
+  "throw", "true", "try", "typeof", "var", "void", "while", "with", "yield",
+]);
+
+export function isTypeScriptExportName(value: string): boolean {
+  return /^[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*$/u.test(value)
+    && !RESERVED_BINDING_NAMES.has(value);
+}
+
 function validateConfig(value: unknown, path: string): SqlxJsConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`sqlx-js: ${path} must default-export a config object`);
@@ -133,6 +241,7 @@ function validateConfig(value: unknown, path: string): SqlxJsConfig {
       throw new Error(`sqlx-js: ${path} functionCatalog.includeExtensionOwned must be a boolean`);
     }
   }
+  if (config.enumCatalog !== undefined) validateEnumCatalog(config.enumCatalog, path);
   if (config.scan !== undefined) {
     if (!config.scan || typeof config.scan !== "object" || Array.isArray(config.scan)) {
       throw new Error(`sqlx-js: ${path} scan must be an object`);
@@ -169,6 +278,9 @@ export function prepareConfigHash(cfg: SqlxJsConfig): string {
     functionCatalog: cfg.functionCatalog === false
       ? false
       : { includeExtensionOwned: cfg.functionCatalog?.includeExtensionOwned === true },
+    enumCatalog: cfg.enumCatalog
+      ? { schemas: [...new Set(cfg.enumCatalog.schemas)].sort() }
+      : false,
   });
   return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
 }

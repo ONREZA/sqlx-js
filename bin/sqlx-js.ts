@@ -446,6 +446,7 @@ if (cmd === "init") {
         failures: 1,
         pruned: 0,
         functions: 0,
+        enums: 0,
         diagnostics: [{ severity: "error", phase, message, ...location }],
       }, null, 2));
     } else {

@@ -13,6 +13,7 @@ import {
 import { decodeText, parseDatabaseUrl, PgClient } from "../pg/wire";
 import { mergeExtensionTypes } from "../pg/extensions";
 import { SchemaCache } from "../pg/schema";
+import { assertDistinctEnumCatalogOutput, enumCatalogOutputPath } from "../enum-catalog";
 import { probePgschema } from "./pgschema";
 
 export type DoctorCheck = {
@@ -139,6 +140,26 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
     status: tsconfig.ok ? "ok" : "error",
     message: tsconfig.message,
   });
+
+  if (configLoaded && config.enumCatalog) {
+    try {
+      assertDistinctEnumCatalogOutput(opts.root, config, opts.dtsPath);
+      const output = enumCatalogOutputPath(opts.root, config)!;
+      checks.push(existsSync(output)
+        ? {
+            name: "enumCatalog",
+            status: "ok",
+            message: `generated enum catalog exists at ${output}`,
+          }
+        : {
+            name: "enumCatalog",
+            status: "error",
+            message: `generated enum catalog not found at ${output}; run sqlx-js prepare`,
+          });
+    } catch (error) {
+      checks.push({ name: "enumCatalog", status: "error", message: (error as Error).message });
+    }
+  }
 
   if (!opts.databaseUrl) {
     checks.push({ name: "database", status: "error", message: "DATABASE_URL is required for the database check" });

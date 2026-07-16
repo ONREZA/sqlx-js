@@ -5,6 +5,8 @@ import { CACHE_MANIFEST_FILE } from "./cache";
 export type ArtifactSet = {
   cacheDir: string;
   dtsPath: string;
+  enumOutputPath?: string;
+  enumArtifactName?: string;
 };
 
 export type ArtifactComparison = {
@@ -21,8 +23,13 @@ function readGeneratedFiles(set: ArtifactSet): Map<string, string> {
     }
     const functions = join(set.cacheDir, "functions/functions.json");
     if (existsSync(functions)) files.set("cache/functions/functions.json", readFileSync(functions, "utf8"));
+    const enums = join(set.cacheDir, "enums/enums.json");
+    if (existsSync(enums)) files.set("cache/enums/enums.json", readFileSync(enums, "utf8"));
   }
   if (existsSync(set.dtsPath)) files.set("sqlx-js-env.d.ts", readFileSync(set.dtsPath, "utf8"));
+  if (set.enumOutputPath && existsSync(set.enumOutputPath)) {
+    files.set(set.enumArtifactName ?? "sqlx-js-enums.ts", readFileSync(set.enumOutputPath, "utf8"));
+  }
   return files;
 }
 

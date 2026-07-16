@@ -25,7 +25,7 @@ export type JsonInputObject = { readonly [key: string]: JsonInputValue | undefin
 export type JsonInputArray = readonly JsonInputValue[];
 
 export { defineConfig } from "./config";
-export type { ScanConfig, SqlxJsConfig } from "./config";
+export type { EnumCatalogConfig, ScanConfig, SqlxJsConfig } from "./config";
 export type { SslMode, ConnConfig } from "./pg/wire";
 export { PgError, ConnectionLostError } from "./pg/wire";
 export { NoRowsError, TooManyRowsError, TransactionTimeoutError, SQLSTATE, isPgError } from "./runtime";

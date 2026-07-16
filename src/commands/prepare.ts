@@ -42,6 +42,19 @@ import {
 } from "../pg/param-map";
 import { mergeExtensionTypes } from "../pg/extensions";
 import { compareArtifacts } from "../artifacts";
+import {
+  assertDistinctEnumCatalogOutput,
+  enumCatalogCacheExists,
+  enumCatalogOutputPath,
+  introspectEnumCatalog,
+  readEnumCatalogCache,
+  removeEnumCatalogCache,
+  renderEnumCatalog,
+  selectedEnumCatalogCount,
+  writeEnumCatalogCache,
+  writeEnumCatalogModule,
+  type EnumCatalogEntry,
+} from "../enum-catalog";
 import { containsUnknownType } from "../type-inspection";
 import { originalPosition, rewriteNamedParameters } from "../sql-params";
 
@@ -296,6 +309,7 @@ export type PrepareOptions = {
   databaseUrl: string;
   cacheDir: string;
   dtsPath: string;
+  enumOutputPath?: string;
   check: boolean;
   offline?: boolean;
   verify?: boolean;
@@ -368,6 +382,7 @@ export type PrepareResult = {
   failures: number;
   pruned: number;
   functions: number;
+  enums: number;
   diagnostics: PrepareDiagnostic[];
 };
 
@@ -456,12 +471,18 @@ export type PrepareIncrementalInput = {
   sites?: QueryCallSite[];
   reuseCacheFps?: ReadonlySet<string>;
   reuseFunctions?: boolean;
+  reuseEnumCatalog?: boolean;
 };
 
 export async function openSession(opts: PrepareOptions): Promise<PrepareSession> {
   let userCfg: SqlxJsConfig;
   try {
     userCfg = await loadConfig(opts.root);
+  } catch (error) {
+    throw fatal("config", error);
+  }
+  try {
+    assertDistinctEnumCatalogOutput(opts.root, userCfg, opts.dtsPath, opts.enumOutputPath);
   } catch (error) {
     throw fatal("config", error);
   }
@@ -856,7 +877,7 @@ export async function prepareOnce(
   }
 
   if (failures > 0) {
-    return { sites: sites.length, entries: entries.length, failures, pruned: 0, functions: 0, diagnostics };
+    return { sites: sites.length, entries: entries.length, failures, pruned: 0, functions: 0, enums: 0, diagnostics };
   }
 
   let functions: FunctionEntry[];
@@ -873,17 +894,54 @@ export async function prepareOnce(
       throw fatal("introspect", error);
     }
   }
+  let enums: EnumCatalogEntry[] = [];
+  let enumCount = 0;
+  let enumModule: { path: string; content: string } | undefined;
+  if (userCfg.enumCatalog) {
+    if (input.reuseEnumCatalog && enumCatalogCacheExists(opts.cacheDir)) {
+      enums = readEnumCatalogCache(opts.cacheDir);
+    } else {
+      try {
+        enums = await introspectEnumCatalog(client, userCfg.enumCatalog.schemas);
+      } catch (error) {
+        throw fatal("introspect", error);
+      }
+    }
+    const path = enumCatalogOutputPath(opts.root, userCfg, opts.enumOutputPath)!;
+    try {
+      enumModule = { path, content: renderEnumCatalog(enums, userCfg.enumCatalog) };
+      enumCount = selectedEnumCatalogCount(enums, userCfg.enumCatalog);
+    } catch (error) {
+      throw fatal("introspect", error);
+    }
+  }
   let pruned: number;
   try {
     pruned = cache.replaceAll(generated, opts.prune !== false).length;
     if (pruned > 0) log(`pruned ${pruned} orphaned cache entry/entries`);
     writeFunctionCache(opts.cacheDir, functions);
+    if (userCfg.enumCatalog) writeEnumCatalogCache(opts.cacheDir, enums);
+    else if (enumCatalogCacheExists(opts.cacheDir)) {
+      removeEnumCatalogCache(opts.cacheDir);
+      const message = "enum catalog disabled: removed its cache; delete the previous generated enum module if it is no longer used";
+      diagnostics.push({ severity: "warning", phase: "cache", message });
+      log(message);
+    }
     writeCacheManifest(opts.cacheDir, prepareConfigHash(userCfg));
     emitDts(opts.dtsPath, entries, functions, userCfg.customTypes);
+    if (enumModule) writeEnumCatalogModule(enumModule.path, enumModule.content);
   } catch (error) {
     throw fatal("cache", error);
   }
-  return { sites: sites.length, entries: entries.length, failures, pruned, functions: functions.length, diagnostics };
+  return {
+    sites: sites.length,
+    entries: entries.length,
+    failures,
+    pruned,
+    functions: functions.length,
+    enums: enumCount,
+    diagnostics,
+  };
 }
 
 export async function runPrepare(opts: PrepareOptions): Promise<void> {
@@ -910,6 +968,11 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
     let userCfg: SqlxJsConfig;
     try {
       userCfg = await loadConfig(opts.root);
+    } catch (error) {
+      throw fatal("config", error);
+    }
+    try {
+      assertDistinctEnumCatalogOutput(opts.root, userCfg, opts.dtsPath, opts.enumOutputPath);
     } catch (error) {
       throw fatal("config", error);
     }
@@ -960,6 +1023,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
           failures: diagnostics.length,
           pruned: 0,
           functions: 0,
+          enums: 0,
           diagnostics,
         }, null, 2));
       } else {
@@ -971,6 +1035,9 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
     const entries: CacheEntry[] = [];
     let inferenceFailures = 0;
     let functions: FunctionEntry[];
+    let enums: EnumCatalogEntry[] = [];
+    let enumCount = 0;
+    const enumOutput = enumCatalogOutputPath(opts.root, userCfg, opts.enumOutputPath);
     try {
       for (const u of unique.values()) {
         const entry = cache.read(u.fp);
@@ -1005,6 +1072,26 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         });
         inferenceFailures++;
       }
+      if (userCfg.enumCatalog) {
+        if (enumCatalogCacheExists(opts.cacheDir)) {
+          enums = readEnumCatalogCache(opts.cacheDir);
+          enumCount = selectedEnumCatalogCount(enums, userCfg.enumCatalog);
+        } else {
+          diagnostics.push({
+            severity: "error",
+            phase: "cache",
+            message: "enum catalog cache is missing",
+          });
+          inferenceFailures++;
+        }
+      } else if (enumCatalogCacheExists(opts.cacheDir)) {
+        diagnostics.push({
+          severity: "error",
+          phase: "cache",
+          message: "enum catalog cache exists but enumCatalog is disabled; run live `sqlx-js prepare`",
+        });
+        inferenceFailures++;
+      }
       if (opts.check && inferenceFailures === 0) {
         const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-check-"));
         const generatedDts = join(tmp, "sqlx-js-env.d.ts");
@@ -1018,6 +1105,18 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
               file: relative(opts.root, opts.dtsPath).replace(/\\/g, "/"),
             });
             inferenceFailures++;
+          }
+          if (enumOutput) {
+            const generatedEnums = renderEnumCatalog(enums, userCfg.enumCatalog);
+            if (!existsSync(enumOutput) || readFileSync(enumOutput, "utf8") !== generatedEnums) {
+              diagnostics.push({
+                severity: "error",
+                phase: "cache",
+                message: "generated enum catalog is stale or missing",
+                file: relative(opts.root, enumOutput).replace(/\\/g, "/"),
+              });
+              inferenceFailures++;
+            }
           }
         } finally {
           rmSync(tmp, { recursive: true, force: true });
@@ -1034,6 +1133,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
             failures: inferenceFailures,
             pruned: 0,
             functions: functions.length,
+            enums: enumCount,
             diagnostics,
           }, null, 2));
         } else {
@@ -1047,7 +1147,10 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         process.exitCode = 1;
         return;
       }
-      if (opts.offline) emitDts(opts.dtsPath, entries, functions, userCfg.customTypes);
+      if (opts.offline) {
+        emitDts(opts.dtsPath, entries, functions, userCfg.customTypes);
+        if (enumOutput) writeEnumCatalogModule(enumOutput, renderEnumCatalog(enums, userCfg.enumCatalog));
+      }
     } catch (error) {
       throw fatal("cache", error);
     }
@@ -1061,14 +1164,15 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         failures: 0,
         pruned: 0,
         functions: functions.length,
+        enums: enumCount,
         diagnostics,
       }, null, 2));
     } else {
       for (const diagnostic of diagnostics) {
         console.error(`${diagnostic.phase} warning: ${diagnostic.file}:${diagnostic.line}:${diagnostic.column} — ${diagnostic.message}`);
       }
-      const suffix = opts.offline ? ", types regenerated" : ", generated artifacts are current";
-      console.log(`ok — ${entries.length} unique queries, ${functions.length} function(s)${suffix}`);
+      const suffix = opts.offline ? ", generated files regenerated" : ", generated artifacts are current";
+      console.log(`ok — ${entries.length} unique queries, ${functions.length} function(s), ${enumCount} enum(s)${suffix}`);
     }
     return;
   }
@@ -1089,7 +1193,13 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    if (!opts.json) console.log(`\nprepared ${r.entries} unique query/queries, ${r.functions} function(s) → ${opts.dtsPath}`);
+    if (!opts.json) {
+      const enumOutput = enumCatalogOutputPath(opts.root, session.userCfg, opts.enumOutputPath);
+      console.log(
+        `\nprepared ${r.entries} unique query/queries, ${r.functions} function(s), ${r.enums} enum(s) `
+        + `→ ${opts.dtsPath}${enumOutput ? `, ${enumOutput}` : ""}`,
+      );
+    }
   } finally {
     await session.client.end();
   }
@@ -1113,7 +1223,10 @@ export async function verifyPrepareArtifacts(
   };
   let session: PrepareSession | undefined;
   try {
-    session = await openSession(verifyOpts);
+    session = await openSession(opts);
+    const expectedEnumOutput = enumCatalogOutputPath(opts.root, session.userCfg, opts.enumOutputPath);
+    const generatedEnumOutput = expectedEnumOutput ? join(tmp, "sqlx-js-enums.ts") : undefined;
+    verifyOpts.enumOutputPath = generatedEnumOutput;
     const result = await prepareOnce(verifyOpts, session, log, err);
     if (result.failures > 0) {
       err(`\n${result.failures} query/queries failed to prepare`);
@@ -1122,8 +1235,22 @@ export async function verifyPrepareArtifacts(
     let comparison: ReturnType<typeof compareArtifacts>;
     try {
       comparison = compareArtifacts(
-        { cacheDir: opts.cacheDir, dtsPath: opts.dtsPath },
-        { cacheDir, dtsPath },
+        {
+          cacheDir: opts.cacheDir,
+          dtsPath: opts.dtsPath,
+          enumOutputPath: expectedEnumOutput,
+          enumArtifactName: expectedEnumOutput
+            ? relative(opts.root, expectedEnumOutput).replace(/\\/g, "/")
+            : undefined,
+        },
+        {
+          cacheDir,
+          dtsPath,
+          enumOutputPath: generatedEnumOutput,
+          enumArtifactName: expectedEnumOutput
+            ? relative(opts.root, expectedEnumOutput).replace(/\\/g, "/")
+            : undefined,
+        },
       );
     } catch (error) {
       throw fatal("verify", error);
@@ -1134,7 +1261,10 @@ export async function verifyPrepareArtifacts(
       err("Run `sqlx-js prepare` and commit the regenerated artifacts.");
       return { ok: false, result, changed: comparison.changed };
     }
-    log(`verified ${result.entries} query/queries and ${result.functions} function(s); generated artifacts are current`);
+    log(
+      `verified ${result.entries} query/queries, ${result.functions} function(s), and ${result.enums} enum(s); `
+      + "generated artifacts are current",
+    );
     return { ok: true, result, changed: [] };
   } finally {
     if (session) await session.client.end();

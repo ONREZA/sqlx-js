@@ -14,7 +14,7 @@ import { PrepareFatalError, type PrepareIncrementalInput, type PrepareResult, ty
 import { fingerprint } from "../src/cache";
 
 function result(entries = 1): PrepareResult {
-  return { sites: entries, entries, failures: 0, pruned: 0, functions: 0, diagnostics: [] };
+  return { sites: entries, entries, failures: 0, pruned: 0, functions: 0, enums: 0, diagnostics: [] };
 }
 
 function session(name: string, closed: string[]): PrepareSession {
@@ -125,6 +125,7 @@ test("watch reuses unchanged fingerprints and scans only the changed source", as
     expect(inputs[1]!.sites?.map((site) => site.query).sort()).toEqual(["SELECT 2", "SELECT 3"]);
     expect(inputs[1]!.reuseCacheFps).toEqual(new Set([fingerprint("SELECT 3")]));
     expect(inputs[1]!.reuseFunctions).toBe(true);
+    expect(inputs[1]!.reuseEnumCatalog).toBe(true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -207,6 +208,7 @@ test("watch reacts to source, SQL, config, and tsconfig graph changes", () => {
   expect(shouldWatchFile("package.json")).toBe(false);
   expect(shouldWatchFile("dist/sqlx-js.config.js")).toBe(false);
   expect(shouldWatchFile("sqlx-js-env.d.ts")).toBe(false);
+  expect(shouldWatchFile("src/db-enums.ts", ["src/db-enums.ts"])).toBe(false);
 });
 
 test("watch JSONL events are one versioned document per line", () => {

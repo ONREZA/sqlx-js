@@ -10,6 +10,7 @@ import {
 } from "./prepare";
 import { configHash, loadConfig } from "../config";
 import { fingerprint } from "../cache";
+import { enumCatalogOutputPath } from "../enum-catalog";
 import { findSourceFiles, scanFile, scanProject, type QueryCallSite } from "../scan/scanner";
 
 const EXT_RE = /\.(ts|tsx|mts|cts|sql)$/;
@@ -22,8 +23,9 @@ const CONFIG_FILES = new Set([
   "sqlx-js.config.mjs",
 ]);
 
-export function shouldWatchFile(filename: string): boolean {
+export function shouldWatchFile(filename: string, ignoredFiles: readonly string[] = []): boolean {
   const file = filename.replace(/\\/g, "/");
+  if (ignoredFiles.some((ignored) => normalizePath(ignored) === normalizePath(file))) return false;
   if (SKIP_DIRS.some((dir) => file === dir || file.startsWith(`${dir}/`) || file.includes(`/${dir}/`))) {
     return false;
   }
@@ -168,6 +170,7 @@ export async function prepareWatchedOnce(
     sites,
     reuseCacheFps,
     reuseFunctions: !full,
+    reuseEnumCatalog: !full,
   });
   state.sitesByFile = nextSites;
   if (result.failures === 0) {
@@ -221,6 +224,7 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
       failures: result.failures,
       pruned: result.pruned,
       functions: result.functions,
+      enums: result.enums,
       ...(durationMs === undefined ? {} : { durationMs }),
     });
   };
@@ -276,7 +280,11 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
 
   const watcher = fsWatch(opts.root, { recursive: true }, (_event, filename) => {
     if (!filename) return;
-    if (!shouldWatchFile(filename.toString())) return;
+    const enumOutput = state.session
+      ? enumCatalogOutputPath(opts.root, state.session.userCfg)
+      : undefined;
+    const ignored = enumOutput ? [relative(opts.root, enumOutput)] : [];
+    if (!shouldWatchFile(filename.toString(), ignored)) return;
     changedFiles.add(normalizePath(filename.toString()));
     trigger();
   });

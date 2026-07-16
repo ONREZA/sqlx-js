@@ -1,0 +1,70 @@
+{
+  "query": "SELECT\n     id AS \"id!\",\n     name AS \"name!\",\n     email AS \"email!\",\n     role AS \"role!\",\n     created_at AS \"createdAt!\"\n   FROM public.list_users(\n     COALESCE($role, NULL::public.user_role),\n     COALESCE($search, NULL::text),\n     COALESCE($afterId, NULL::bigint),\n     $limit\n   )",
+  "validation": "planned",
+  "hasInline": true,
+  "inlineQueries": [
+    "SELECT\n     id AS \"id!\",\n     name AS \"name!\",\n     email AS \"email!\",\n     role AS \"role!\",\n     created_at AS \"createdAt!\"\n   FROM public.list_users(\n     COALESCE($role, NULL::public.user_role),\n     COALESCE($search, NULL::text),\n     COALESCE($afterId, NULL::bigint),\n     $limit\n   )"
+  ],
+  "paramOids": [
+    0,
+    25,
+    20,
+    23
+  ],
+  "paramTsTypes": [
+    "\"admin\" | \"editor\" | \"viewer\"",
+    "string",
+    "bigint",
+    "number"
+  ],
+  "paramNullable": [
+    true,
+    true,
+    true,
+    false
+  ],
+  "paramNames": [
+    "role",
+    "search",
+    "afterId",
+    "limit"
+  ],
+  "columns": [
+    {
+      "name": "id",
+      "typeOid": 20,
+      "tsType": "bigint",
+      "nullable": true,
+      "override": "non-null"
+    },
+    {
+      "name": "name",
+      "typeOid": 25,
+      "tsType": "string",
+      "nullable": true,
+      "override": "non-null"
+    },
+    {
+      "name": "email",
+      "typeOid": 25,
+      "tsType": "string",
+      "nullable": true,
+      "override": "non-null"
+    },
+    {
+      "name": "role",
+      "typeOid": 0,
+      "tsType": "\"admin\" | \"editor\" | \"viewer\"",
+      "nullable": true,
+      "override": "non-null"
+    },
+    {
+      "name": "createdAt",
+      "typeOid": 1184,
+      "tsType": "Date",
+      "nullable": true,
+      "override": "non-null"
+    }
+  ],
+  "hasResultSet": true
+}

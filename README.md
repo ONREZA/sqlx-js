@@ -23,7 +23,7 @@ const rows = await sql(
 - **Compile-time validation** against a live PostgreSQL via `Parse` + `Describe Statement` followed by non-executing, parameter-independent generic planning for supported query statements.
 - **Precise nullability inference** through `libpg-query`: `JOIN` direction (LEFT/RIGHT/FULL), inner `JOIN ... ON` predicates, `UNION`/`INTERSECT`/`EXCEPT`, DML `RETURNING`, `COALESCE`, `CASE`, `COUNT`, expression propagation. Null-aware predicates and expressions accept nullable parameters when their SQL semantics allow it; parameters propagated into stored values must satisfy every direct `INSERT`, `UPDATE`, `ON CONFLICT DO UPDATE`, and data-modifying CTE target.
 - **WHERE narrowing**: `IS NOT NULL`, equality chains, `IN`, `LIKE`, `BETWEEN` make columns non-null. Tracks `AND`/`OR` semantics.
-- **PostgreSQL enums** generated as TypeScript literal unions (read + write side).
+- **PostgreSQL enums** generated as TypeScript literal unions (read + write side), with an optional schema-owned `as const` object catalog for reusable runtime values.
 - **Schema-aware `jsonb`** via config-driven column → application type mappings. Works for both result columns and `INSERT`/`UPDATE`/`WHERE` parameters. Unmapped `json`/`jsonb` falls back to `JsonValue` for rows and an explicitly wrapped, structurally checked JSON parameter.
 - **End-to-end extension types**: `pgvector` (`vector`, `halfvec`, `sparsevec`), `hstore`, `citext`, `ltree`/`lquery`/`ltxtquery`. Prepare infers their TypeScript types; the runtime discovers database-local OIDs and installs matching scalar/array codecs before the first query. Add your own through `customTypes` and `typeCodecs`.
 - **Domains** resolve to their base TypeScript type (`CREATE DOMAIN email AS text` → `string`), including domains over extension types or other domains.
@@ -38,7 +38,7 @@ const rows = await sql(
 - **Migration squash baselines** via `migrate squash`: generate a schema-only baseline from a shadow database, then hash-adopt it on already-migrated databases.
 - **Runtime `migrate()`** with PostgreSQL advisory lock, safe for multi-replica startup.
 - **Optional pgschema workflow** via `init --schema-provider pgschema` and `sqlx-js db install|check|plan|apply` for PostgreSQL schema-as-code projects.
-- **Versioned offline cache** committed to your repo. `prepare --check` validates fingerprints, generator revision, and type-affecting config without a database; `prepare --verify` compares fresh live/shadow artifacts without writing.
+- **Versioned offline cache** committed to your repo. `prepare --check` validates fingerprints, generator revision, type/function contracts, enum schema selection, and generated files without a database; `prepare --verify` compares fresh live/shadow artifacts without writing.
 - **Schema snapshot + LLM manifest** via `schema dump` / `schema check`: tables, columns, constraints, indexes, types, and function/procedure metadata are introspected from PostgreSQL.
 - **Generated function catalog** via `KnownFunctions`: `prepare` records application-owned PostgreSQL functions/procedures from `pg_proc` with approximate parameter and return TypeScript types while excluding extension-owned internals by default.
 - **Shadow database validation** via `migrate dev` / `migrate verify`: auto-create a disposable shadow DB, apply migrations, validate SQL, and drop it afterwards.
@@ -46,7 +46,7 @@ const rows = await sql(
 - **Single runtime adapter**: Postgres.js backs the runtime on Node/Bun-compatible environments — no Bun.SQL-specific adapter to choose.
 - **Incremental watch mode**: debounced re-prepare with a warm `PgClient` + `SchemaCache`; source/SQL edits only rescan affected files and re-describe changed fingerprints, while config/tsconfig/schema changes trigger a full rebuild.
 - **Cache pruning** removes orphaned entries automatically (toggleable with `--no-prune`).
-- **Environment doctor** checks runtime versions, config loading, `.env`, database connectivity/permissions, runtime-addressable `customTypes`, cache metadata, tsconfig inclusion, and pgschema availability.
+- **Environment doctor** checks runtime versions, config loading, `.env`, database connectivity/permissions, runtime-addressable `customTypes`, cache metadata, generated enum output presence, tsconfig inclusion, and pgschema availability.
 - **Strict inference gate** promotes degraded nullability analysis and generated `unknown` query types to CI errors.
 - **GitHub/editor diagnostics adapter** converts versioned prepare JSON into workflow annotations or Unix problem-matcher output.
 - **Versioned query inventory** via `queries --json`, including stable query IDs, definition names, cardinality, call sites, SQL files, and cache state. The same command can emit a deterministic embedded-SQL module for bundled applications.
@@ -138,7 +138,7 @@ During local development, validate the migration and regenerate query artifacts 
 npx @onreza/sqlx-js migrate dev
 ```
 
-`migrate dev` does not touch your application database. It creates a temporary shadow database using `DATABASE_URL` credentials, applies migrations from scratch, validates that the latest migration's `.down.sql` restores the previous schema (squash baselines may omit `.down.sql`), prepares SQL queries against the resulting schema, writes `.sqlx-js/` and `sqlx-js-env.d.ts`, then drops the shadow database.
+`migrate dev` does not touch your application database. It creates a temporary shadow database using `DATABASE_URL` credentials, applies migrations from scratch, validates that the latest migration's `.down.sql` restores the previous schema (squash baselines may omit `.down.sql`), prepares SQL queries against the resulting schema, writes `.sqlx-js/`, `sqlx-js-env.d.ts`, and any configured enum catalog, then drops the shadow database.
 
 When you want to update your local application database, run:
 
@@ -242,6 +242,32 @@ type InsertEventsWire = QueryWireParams<typeof insertEvents>;    // { events: Js
 ```
 
 The mapper receives only `json` and `array` parameter helpers. Once `prepare` has emitted `KnownQueries`, its output is checked exactly at the definition against the generated wire contract: missing, extra, and incompatible fields are compile errors. An application input can therefore narrow or reorganize the API without widening PostgreSQL parameters. The mapper executes once per call before named-parameter binding; root, generic scoped, and transaction executors keep the same result, observer, and query-ID behavior. This is the intended boundary for discriminated unions such as `preserve | clear | set`: the application owns the union and maps it to the physical flags and nullable values required by SQL.
+
+### Typed database functions for reusable filtered reads
+
+For a large filtered dataset, keep filtering and pagination in PostgreSQL. Do not fetch `SELECT *` and filter in application code, interpolate clauses through `unsafe`, or copy the same query for parameter-value combinations. When the database owns a stable parameterized read API, call it through one literal `defineQuery` so prepare validates the invocation and emits its exact parameter and row contract:
+
+```ts
+export const listFilteredUsers = defineQuery(
+  "users.listFiltered",
+  `SELECT
+     id AS "id!",
+     name AS "name!",
+     email AS "email!",
+     role AS "role!",
+     created_at AS "createdAt!"
+   FROM public.list_users(
+     COALESCE($role, NULL::public.user_role),
+     COALESCE($search, NULL::text),
+     COALESCE($afterId, NULL::bigint),
+     $limit
+   )`,
+);
+```
+
+The example migration owns the function, while application code depends only on the prepared call. The null-aware wrappers make optional filter inputs explicit to sqlx-js without parsing the function body. PostgreSQL does not expose `NOT NULL` metadata for `RETURNS TABLE` fields, so the `!` aliases explicitly assert the non-null contract implemented by this function; keep those assertions aligned with its SQL. `KnownFunctions` remains useful inventory metadata; the executable call contract above comes from PostgreSQL `Describe` of the literal `SELECT`. See [the complete example](./example/v12_database_function.ts) and [its migration](./example/migrations/0004_add_filtered_user_function.up.sql).
+
+This is a sqlx-js usage pattern, not a universal PostgreSQL design. A real workload may need different indexes, keyset pagination, plan inspection, a security model, or a materialized view with an explicit refresh strategy. Choose that database design for the workload rather than hiding it behind dynamic application SQL. Relevant PostgreSQL references: [table functions](https://www.postgresql.org/docs/current/queries-table-expressions.html#QUERIES-TABLEFUNCTIONS), [`EXPLAIN`](https://www.postgresql.org/docs/current/sql-explain.html), [materialized views and refresh](https://www.postgresql.org/docs/current/rules-materializedviews.html), and [function security](https://www.postgresql.org/docs/current/sql-createfunction.html#SQL-CREATEFUNCTION-SECURITY).
 
 ### `sql.file(path, ...params)`
 
@@ -539,8 +565,8 @@ Regular `prepare` describes and plans queries across a small connection pool (de
 
 | Flag                  | Meaning                                                                              |
 |-----------------------|--------------------------------------------------------------------------------------|
-| `--check`             | Read-only offline verification of the active query cache, function catalog, and generated declaration. |
-| `--offline`           | Regenerate `sqlx-js-env.d.ts` from committed cache without a database.                |
+| `--check`             | Read-only offline verification of query/function/enum caches and generated files.     |
+| `--offline`           | Regenerate declarations and an enabled enum module from committed cache without a database. |
 | `--verify`            | Prepare against the live/shadow schema and compare generated artifacts without writing. |
 | `--watch`             | Persistent connection, re-prepare on file change.                                    |
 | `--root <dir>`        | Source/cache/migrations root (default: cwd).                                         |
@@ -595,7 +621,7 @@ sqlx-js migrate add add_users
 sqlx-js migrate dev
 ```
 
-`migrate dev` creates a disposable shadow database, applies all migrations from scratch, validates that the latest migration's `.down.sql` restores the previous schema (squash baselines may omit `.down.sql`), prepares project SQL against the shadow schema, writes `.sqlx-js/` plus `sqlx-js-env.d.ts`, and drops the shadow database. This means you can keep editing a local WIP migration before it is merged. You do not need to drop your application database or create a new migration for every local edit.
+`migrate dev` creates a disposable shadow database, applies all migrations from scratch, validates that the latest migration's `.down.sql` restores the previous schema (squash baselines may omit `.down.sql`), prepares project SQL against the shadow schema, writes `.sqlx-js/`, `sqlx-js-env.d.ts`, and any configured enum catalog, then drops the shadow database. This means you can keep editing a local WIP migration before it is merged. You do not need to drop your application database or create a new migration for every local edit.
 
 The built-in `migrate` workflow is kept for simple projects and embedded application startup. PostgreSQL-heavy schema lifecycle features belong in pgschema rather than in sqlx-js.
 
@@ -608,7 +634,7 @@ sqlx-js doctor --json
 tsc --noEmit
 ```
 
-`migrate verify` runs the same shadow-database migration/down/SQL validation as `migrate dev`, generates prepare output in a temporary directory, and fails when the committed `.sqlx-js/` or `sqlx-js-env.d.ts` differs. It never modifies those artifacts.
+`migrate verify` runs the same shadow-database migration/down/SQL validation as `migrate dev`, generates prepare output in a temporary directory, and fails when the committed `.sqlx-js/`, `sqlx-js-env.d.ts`, or configured enum catalog differs. It never modifies those artifacts.
 
 Use `migrate run` in production/staging:
 
@@ -732,6 +758,16 @@ export default defineConfig({
     // Extension-owned functions are excluded by default.
     includeExtensionOwned: false,
   },
+  enumCatalog: {
+    output: "src/database/db-enums.ts",
+    schemas: ["public", "billing"],
+    include: ["public.user_role", "public.status", "billing.status"],
+    aliases: {
+      "public.status": "AccountStatus",
+      "billing.status": "BillingStatus",
+    },
+    registry: true,
+  },
 });
 ```
 
@@ -759,6 +795,70 @@ After re-running `prepare`, every direct `jsonb` column or mapped parameter uses
 `columnTypes` is an explicit application-owned type assertion for a direct scalar table column. It affects result fields that PostgreSQL attributes to that exact column, compatible set-operation branches reconstructed by sqlx-js, and parameters mapped back through `INSERT`, `UPDATE`, data-modifying CTE, `WHERE`, or `JOIN` analysis. For stored values, sqlx-js aggregates every DML target and accepts one unique configured declaration; when no DML target exists, predicate references provide the parameter declaration instead. Conflicting declarations within the effective target set fail prepare rather than depending on traversal order. It never changes arbitrary expressions such as `upper(action)`, and it does not apply to PostgreSQL/JSON array columns. Use a schema-qualified key when table names can collide. Mapping the same logical column through both `jsonbTypes` and `columnTypes` is rejected.
 
 This assertion does not validate stored values at runtime. Prefer a PostgreSQL enum/domain when the database truly owns a closed value set; use `columnTypes` when the database deliberately stores a broader scalar such as `text` and the application accepts responsibility for the narrower TypeScript contract.
+
+### Generated enum catalog
+
+Query parameters and rows use PostgreSQL enum labels as literal unions automatically. Enable `enumCatalog` when application code also needs reusable runtime values for forms, validators, tests, or business logic:
+
+```ts
+export default defineConfig({
+  enumCatalog: {
+    output: "src/database/db-enums.ts",
+    schemas: ["public", "billing"],
+    include: ["public.user_role", "public.status", "billing.status"],
+    aliases: {
+      "public.status": "AccountStatus",
+      "billing.status": "BillingStatus",
+    },
+    registry: true,
+  },
+});
+```
+
+`prepare` introspects every enum in the explicitly listed schemas, including types not referenced by a scanned query, and writes a root-relative TypeScript module:
+
+```ts
+export const UserRole = {
+  ["admin"]: "admin",
+  ["editor"]: "editor",
+  ["viewer"]: "viewer",
+} as const;
+
+export type UserRole = (typeof UserRole)[keyof typeof UserRole];
+```
+
+The generated object is an ordinary runtime value while its same-named type remains the exact string union, so `UserRole.admin` is directly assignable to an enum-typed SQL parameter. PostgreSQL labels are preserved verbatim as computed string keys, including special JavaScript property names such as `__proto__`; no native TypeScript `enum` or runtime validation is introduced. PostgreSQL type names are converted to PascalCase exports (`user_role` → `UserRole`), with `Pg` prefixed when a name starts with a digit. If selected schemas contain names that normalize to the same export, prepare fails with both schema-qualified types. Resolve intentional collisions with `aliases`, keyed by the exact schema-qualified PostgreSQL name.
+
+Use `include` as an exact schema-qualified allowlist or `exclude` as an exact blocklist; they cannot be combined. With neither option, every enum from `schemas` is generated. Unknown selections fail instead of silently producing an incomplete catalog, aliases must target selected enums, and registry entries follow the same filtered set. The committed cache still keeps every enum from `schemas`, so changing either filter remains an offline generation operation:
+
+```ts
+enumCatalog: {
+  output: "src/database/db-enums.ts",
+  schemas: ["public"],
+  exclude: ["public.internal_status", "public.legacy_state"],
+}
+```
+
+`registry: true` additionally emits an opt-in schema-qualified registry for dynamic access. It is disabled by default:
+
+```ts
+export const DbEnums = {
+  ["billing.status"]: BillingStatus,
+  ["public.status"]: AccountStatus,
+  ["public.user_role"]: UserRole,
+} as const;
+
+export type DbEnumName = keyof typeof DbEnums;
+export type DbEnumValue<Name extends DbEnumName> = /* exact value union */;
+```
+
+Use `DbEnums["public.user_role"].admin` when code chooses a database enum dynamically; prefer the direct `UserRole.admin` export for ordinary imports.
+
+The catalog snapshot is committed at `.sqlx-js/enums/enums.json`. `prepare --offline` regenerates the configured module from that snapshot, `prepare --check` verifies both files without writing, and `prepare --verify` compares them against the live/shadow database without touching the worktree. Changing only `output`, `include`, `exclude`, `aliases`, or `registry` can therefore be completed with `prepare --offline`; changing `schemas` requires a live prepare.
+
+The enum module and declaration output must be different files. If `--dts` overrides the declaration destination, prepare and doctor reject a colliding `enumCatalog.output` before writing either artifact.
+
+Moving `output` or disabling the catalog does not delete the previous TypeScript module, because the new configuration no longer identifies that path safely. Update imports and remove the old generated file explicitly; the next live prepare removes a disabled catalog's cache and prints a reminder.
 
 ### Array element nullability assertions
 
@@ -883,7 +983,7 @@ sqlx-js ci
 
 For the built-in migration provider it runs shadow migration verification with strict inference, followed by the read-only offline artifact check. For pgschema it checks the configured provider, fails when the desired schema produces an unapplied plan, performs live `prepare --verify --strict-inference`, and then verifies committed artifacts offline. If a committed schema snapshot exists, both flows also run `schema check`. `--json` returns a versioned per-step report suitable for CI systems.
 
-Commit the generated `sqlx-js-env.d.ts` and the `.sqlx-js/` cache directory to your repo. In CI:
+Commit the generated `sqlx-js-env.d.ts`, `.sqlx-js/` cache directory, and configured enum catalog output to your repo. In CI:
 
 ```yaml
 - run: bun install
@@ -900,11 +1000,11 @@ Commit the generated `sqlx-js-env.d.ts` and the `.sqlx-js/` cache directory to y
 - run: bun run build              # emits publishable JS + declarations under dist/
 ```
 
-The `migrate verify` step needs `DATABASE_URL` credentials that can either create a temporary database or use `--shadow-admin-url` / `--shadow-url`. It does not write `.sqlx-js/` or `sqlx-js-env.d.ts`. For pgschema projects, `sqlx-js db plan` checks the desired `schema.sql` against the target database and leaves application query typing to `prepare`. `prepare --check` is read-only and fails when either the committed cache or declaration is stale. Use `prepare --offline` when a developer intentionally needs to restore the declaration from a valid committed cache. Add `prepare --verify` when CI has a canonical database/shadow schema and must prove byte-for-byte artifact freshness. `schema check` intentionally uses a live database because it verifies the committed schema contract against PostgreSQL.
+The `migrate verify` step needs `DATABASE_URL` credentials that can either create a temporary database or use `--shadow-admin-url` / `--shadow-url`. It does not write generated artifacts. For pgschema projects, `sqlx-js db plan` checks the desired `schema.sql` against the target database and leaves application query typing to `prepare`. `prepare --check` is read-only and fails when committed caches or generated files are stale. Use `prepare --offline` when a developer intentionally needs to restore generated files from valid committed caches. Add `prepare --verify` when CI has a canonical database/shadow schema and must prove byte-for-byte artifact freshness. `schema check` intentionally uses a live database because it verifies the committed schema contract against PostgreSQL.
 
 The managed pgschema binary is installed under `node_modules/.cache/sqlx-js/pgschema/`, not `.sqlx-js/`, so it is not part of the committed offline cache.
 
-Generated declarations and cache files should be excluded from formatters and linters. They remain included in `tsconfig.json` for type checking, but rules such as Biome's empty-interface or confusing-void checks are not meaningful for declaration-merging points and PostgreSQL procedure contracts.
+Generated declarations, enum modules, and cache files should be excluded from formatters and linters. TypeScript artifacts remain included in `tsconfig.json` for type checking, but rules such as Biome's empty-interface or confusing-void checks are not meaningful for generated contracts.
 
 ## Contributing
 
@@ -939,11 +1039,11 @@ See [ROADMAP.md](./ROADMAP.md) for what's planned.
 
 ### Cache, codegen, and parameter contract changes (pre-1.0)
 
-Generated cache includes `.sqlx-js/cache-manifest.json` with an explicit cache format, generator revision, and hash of type/function-catalog settings. Cache without this manifest is rejected. Delete `.sqlx-js/` and re-run `sqlx-js prepare` against your database — there is no data loss because the cache is generated.
+Generated cache includes `.sqlx-js/cache-manifest.json` with an explicit cache format, generator revision, and hash of type/function contracts plus enum schema selection. Cache without this manifest is rejected. Delete `.sqlx-js/` and re-run `sqlx-js prepare` against your database — there is no data loss because the cache is generated.
 
 Generated JSON and PostgreSQL array parameters now require `sql.json(...)` and `sql.array(...)`. This removes the ambiguous runtime guess where a JavaScript array could mean either a PostgreSQL array or a JSON array. Replace raw array JSON params with `sql.json(value)` and PostgreSQL arrays with `sql.array(value)` before regenerating declarations.
 
-CI (`prepare --check`) will also fail loudly until the cache is regenerated; this is intentional so a stale schema can't silently emit incorrect `.d.ts`.
+CI (`prepare --check`) will also fail loudly until the cache is regenerated; this is intentional so a stale schema can't silently emit incorrect generated files.
 
 Generator revision 4 changes the declaration layout so it exports `SqlxJsGeneratedRegistry` for scoped clients while continuing to augment the global `KnownQueries` convenience API. Re-run live `sqlx-js prepare` after upgrading. `prepare --check` is now strictly read-only; use `prepare --offline` when deliberate cache-to-declaration regeneration is required.
 
@@ -964,6 +1064,8 @@ Generator revision 12 propagates DML target provenance through value-producing `
 Generator revision 13 discovers direct parameter provenance inside data-modifying CTEs and retains every DML target for reused parameters. Generated inputs now allow SQL `NULL` only when every stored-value use either targets a nullable column or handles the value through a null-aware expression or non-null write guard, and any predicate use is null-aware. Compatible `jsonbTypes` / `columnTypes` declarations are preserved across all DML targets, while conflicting declarations are rejected instead of selecting the last visited column. Re-run live `sqlx-js prepare` so committed cache entries and declarations use the complete parameter contract.
 
 Generator revision 14 separates pre-update predicate narrowing from post-update `RETURNING` values. `UPDATE` target columns now fall back to their live schema nullability because `RETURNING` observes the new row, including changes made by triggers, while columns from unchanged `FROM` rows retain valid `WHERE` refinements. The same rule applies inside data-modifying CTEs. Re-run live `sqlx-js prepare` so nullable target columns changed after matching no longer keep an unsafe non-null result contract.
+
+Generator revision 15 adds the opt-in PostgreSQL enum catalog. Enabled catalogs persist every enum from explicitly selected schemas in `.sqlx-js/enums/enums.json` and emit root-relative `as const` object/type pairs. Exact `include`/`exclude` filters select generated exports, schema-qualified `aliases` resolve collisions, and `registry: true` adds opt-in dynamic access through `DbEnums`. Offline, check, verify, watch, and shadow migration workflows treat both files as generated artifacts. Re-run live `sqlx-js prepare` after upgrading before enabling or validating a catalog.
 
 Runtime observers and SQL-file caching are also stricter production boundaries. An exception from `onQuery` no longer replaces a successful query result; handle it through `onQueryHookError`. `sql.file()` no longer performs an mtime check on every call—use `reloadSqlFiles: true` during development or call `clearSqlFileCache()` explicitly after changing a file.
 

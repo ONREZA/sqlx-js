@@ -314,6 +314,194 @@ if (!haveIntegrationDatabase) {
     expect(readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8")).toBe(before);
   });
 
+  test("enum catalog generates all configured schema enums across prepare modes", async () => {
+    const root = isolatedRoot("enum-catalog");
+    const client = new PgClient(parseDatabaseUrl(dbUrl));
+    await client.connect();
+    try {
+      await client.simpleQuery(`
+        DROP SCHEMA IF EXISTS tmp_enum_catalog CASCADE;
+        DROP SCHEMA IF EXISTS tmp_enum_billing CASCADE;
+        CREATE SCHEMA tmp_enum_catalog;
+        CREATE SCHEMA tmp_enum_billing;
+        CREATE TYPE tmp_enum_catalog.user_role AS ENUM ('admin', 'in-progress');
+        CREATE TYPE tmp_enum_catalog.status AS ENUM ('active', 'disabled');
+        CREATE TYPE tmp_enum_billing.status AS ENUM ('pending', 'paid')
+      `);
+      writeRootFile(root, "a.ts", "export {};\n");
+      const fullCatalogConfig = `export default {
+        functionCatalog: false,
+        enumCatalog: {
+          output: "src/db-enums.ts",
+          schemas: ["tmp_enum_catalog", "tmp_enum_billing"],
+          aliases: {
+            "tmp_enum_catalog.status": "AccountStatus",
+            "tmp_enum_billing.status": "BillingStatus",
+          },
+          registry: true,
+        },
+      };\n`;
+      writeRootFile(root, "sqlx-js.config.ts", fullCatalogConfig);
+
+      let prepared = prepareRoot(root);
+      expect(prepared.code, prepared.stderr).toBe(0);
+      const outputPath = join(root, "src/db-enums.ts");
+      const cachePath = join(root, ".sqlx-js/enums/enums.json");
+      const initial = readFileSync(outputPath, "utf8");
+      expect(initial).toContain("export const UserRole = {");
+      expect(initial).toContain("export const AccountStatus = {");
+      expect(initial).toContain("export const BillingStatus = {");
+      expect(initial).toContain('["in-progress"]: "in-progress"');
+      expect(initial).toContain("export type UserRole = (typeof UserRole)[keyof typeof UserRole];");
+      expect(initial).toContain('["tmp_enum_catalog.status"]: AccountStatus');
+      expect(initial).toContain('["tmp_enum_billing.status"]: BillingStatus');
+      expect(initial).toContain("export type DbEnumValue<Name extends DbEnumName> =");
+      expect(JSON.parse(readFileSync(cachePath, "utf8"))).toEqual({
+        version: 1,
+        enums: [
+          {
+            schema: "tmp_enum_billing",
+            name: "status",
+            values: ["pending", "paid"],
+          },
+          {
+            schema: "tmp_enum_catalog",
+            name: "status",
+            values: ["active", "disabled"],
+          },
+          {
+            schema: "tmp_enum_catalog",
+            name: "user_role",
+            values: ["admin", "in-progress"],
+          },
+        ],
+      });
+      expect(prepareRoot(root, ["--check"]).code).toBe(0);
+
+      const beforeCollision = {
+        output: readFileSync(outputPath, "utf8"),
+        cache: readFileSync(cachePath, "utf8"),
+        dts: readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8"),
+        manifest: readFileSync(join(root, ".sqlx-js/cache-manifest.json"), "utf8"),
+      };
+      writeRootFile(root, "sqlx-js.config.ts", `export default {
+        functionCatalog: false,
+        enumCatalog: {
+          output: "src/db-enums.ts",
+          schemas: ["tmp_enum_catalog", "tmp_enum_billing"],
+          aliases: {
+            "tmp_enum_catalog.status": "Status",
+            "tmp_enum_billing.status": "Status",
+          },
+        },
+      };\n`);
+      const collision = prepareRoot(root, ["--json"]);
+      expect(collision.code).toBe(1);
+      expect(JSON.parse(collision.stdout).diagnostics).toEqual([
+        expect.objectContaining({
+          phase: "introspect",
+          message: expect.stringContaining("Status is ambiguous"),
+        }),
+      ]);
+      expect({
+        output: readFileSync(outputPath, "utf8"),
+        cache: readFileSync(cachePath, "utf8"),
+        dts: readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8"),
+        manifest: readFileSync(join(root, ".sqlx-js/cache-manifest.json"), "utf8"),
+      }).toEqual(beforeCollision);
+
+      writeRootFile(root, "sqlx-js.config.ts", `export default {
+        functionCatalog: false,
+        enumCatalog: {
+          output: "src/db-enums.ts",
+          schemas: ["tmp_enum_catalog", "tmp_enum_billing"],
+          include: ["tmp_enum_billing.status", "tmp_enum_catalog.user_role"],
+          aliases: {
+            "tmp_enum_billing.status": "BillingStatus",
+          },
+          registry: true,
+        },
+      };\n`);
+      const filteredOffline = prepareRoot(root, ["--offline", "--json"]);
+      expect(filteredOffline.code).toBe(0);
+      expect(JSON.parse(filteredOffline.stdout).enums).toBe(2);
+      const filtered = readFileSync(outputPath, "utf8");
+      expect([...filtered.matchAll(/^export const (\w+)/gm)].map((match) => match[1])).toEqual([
+        "BillingStatus",
+        "UserRole",
+        "DbEnums",
+      ]);
+      expect(prepareRoot(root, ["--check"]).code).toBe(0);
+
+      writeRootFile(root, "sqlx-js.config.ts", fullCatalogConfig);
+      expect(prepareRoot(root, ["--offline"]).code).toBe(0);
+      expect(readFileSync(outputPath, "utf8")).toBe(initial);
+
+      writeRootFile(root, "src/db-enums.ts", "export {};\n");
+      const stale = prepareRoot(root, ["--check", "--json"]);
+      expect(stale.code).toBe(1);
+      expect(JSON.parse(stale.stdout).diagnostics).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          message: "generated enum catalog is stale or missing",
+          file: "src/db-enums.ts",
+        }),
+      ]));
+      expect(prepareRoot(root, ["--offline"]).code).toBe(0);
+      expect(readFileSync(outputPath, "utf8")).toBe(initial);
+
+      await client.simpleQuery("ALTER TYPE tmp_enum_catalog.user_role ADD VALUE 'viewer'");
+      const verified = prepareRoot(root, ["--verify", "--json"]);
+      expect(verified.code).toBe(1);
+      expect(JSON.parse(verified.stdout).changed).toEqual([
+        "cache/enums/enums.json",
+        "src/db-enums.ts",
+      ]);
+      expect(readFileSync(outputPath, "utf8")).toBe(initial);
+
+      prepared = prepareRoot(root);
+      expect(prepared.code, prepared.stderr).toBe(0);
+      expect(readFileSync(outputPath, "utf8")).toContain('["viewer"]: "viewer"');
+      expect(prepareRoot(root, ["--verify"]).code).toBe(0);
+      expect(prepareRoot(root, ["--check"]).code).toBe(0);
+
+      const generatedBeforeDisable = readFileSync(outputPath, "utf8");
+      writeRootFile(root, "sqlx-js.config.ts", "export default { functionCatalog: false };\n");
+      const disabled = prepareRoot(root);
+      expect(disabled.code, disabled.stderr).toBe(0);
+      expect(disabled.stdout).toContain("enum catalog disabled: removed its cache");
+      expect(existsSync(cachePath)).toBe(false);
+      expect(readFileSync(outputPath, "utf8")).toBe(generatedBeforeDisable);
+      expect(prepareRoot(root, ["--check"]).code).toBe(0);
+    } finally {
+      await client.simpleQuery("DROP SCHEMA IF EXISTS tmp_enum_catalog CASCADE").catch(() => {});
+      await client.simpleQuery("DROP SCHEMA IF EXISTS tmp_enum_billing CASCADE").catch(() => {});
+      await client.end();
+    }
+  });
+
+  test("enum catalog cannot overwrite a custom declaration output in any prepare mode", () => {
+    const root = isolatedRoot("enum-output-collision");
+    const output = join(root, "generated/types.ts");
+    writeRootFile(root, "a.ts", "export {};\n");
+    writeRootFile(root, "generated/types.ts", "export const sentinel = true;\n");
+    writeRootFile(root, "sqlx-js.config.ts", `export default {
+      functionCatalog: false,
+      enumCatalog: { output: "generated/types.ts", schemas: ["public"] },
+    };\n`);
+
+    for (const args of [[], ["--check"], ["--offline"], ["--verify"]]) {
+      const result = prepareRoot(root, [...args, "--dts", "generated/types.ts", "--json"]);
+      expect(result.code).toBe(1);
+      expect(JSON.parse(result.stdout).diagnostics).toEqual([
+        expect.objectContaining({
+          phase: "config",
+          message: expect.stringContaining("enumCatalog.output must differ"),
+        }),
+      ]);
+      expect(readFileSync(output, "utf8")).toBe("export const sentinel = true;\n");
+    }
+  });
+
   test("prepare --verify rejects planner-only ON CONFLICT errors without executing DML", async () => {
     const setup = new PgClient(parseDatabaseUrl(dbUrl));
     await setup.connect();
