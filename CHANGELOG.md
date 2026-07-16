@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/ONREZA/sqlx-js/compare/v0.13.1...v0.14.0) (2026-07-16)
+
+
+### Features
+
+* **prepare:** generate postgres enum catalog ([7c2cc12](https://github.com/ONREZA/sqlx-js/commit/7c2cc1265b16b6e59deb06779849d8309b8baaed))
+
 ## [0.13.1](https://github.com/ONREZA/sqlx-js/compare/v0.13.0...v0.13.1) (2026-07-13)
 
 
