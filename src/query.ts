@@ -1,5 +1,6 @@
 import { queryId } from "./query-id";
-import type { ExecuteResult } from "./runtime";
+import { rewriteNamedParameters } from "./sql-params";
+import type { ExecuteResult, QueryExecutionOptions } from "./runtime";
 import type { TypedSqlForRegistry } from "./typed";
 
 export type QueryExecutionMode = "many" | "one" | "optional" | "execute";
@@ -11,6 +12,7 @@ export type QueryExecutorMethod = (
   query: string,
   params: unknown[],
   metadata: QueryExecutionMetadata,
+  options?: QueryExecutionOptions,
 ) => Promise<unknown>;
 
 type NamedQueryEntry = { params: Record<string, unknown>; row: unknown };
@@ -56,10 +58,18 @@ export type QueryDefinition<
   run<Registry extends { queries: Record<Query, NamedQueryEntry>; fileQueries: object }>(
     executor: TypedSqlForRegistry<Registry>,
     params: RegistryParams<Query, Registry>,
+    options?: QueryExecutionOptions,
   ): Promise<QueryResultFor<QueryDefinition<Query, Mode>, Registry>>;
   run<Registry extends { queries: Record<Query, PositionalQueryEntry>; fileQueries: object }>(
     executor: TypedSqlForRegistry<Registry>,
     ...params: RegistryParams<Query, Registry> & readonly unknown[]
+  ): Promise<QueryResultFor<QueryDefinition<Query, Mode>, Registry>>;
+  runWith<Registry extends { queries: Record<Query, QueryEntry>; fileQueries: object }>(
+    options: QueryExecutionOptions,
+    executor: TypedSqlForRegistry<Registry>,
+    ...params: RegistryParams<Query, Registry> extends readonly unknown[]
+      ? RegistryParams<Query, Registry>
+      : [RegistryParams<Query, Registry>]
   ): Promise<QueryResultFor<QueryDefinition<Query, Mode>, Registry>>;
 };
 
@@ -81,6 +91,12 @@ export type MappedQueryDefinition<
   readonly queryName?: string;
   readonly [MAPPED_QUERY_INPUT]: Input;
   run<Registry extends { queries: Record<Query, QueryEntry>; fileQueries: object }>(
+    executor: TypedSqlForRegistry<Registry>,
+    input: Input,
+    options?: QueryExecutionOptions,
+  ): Promise<QueryResultFor<MappedQueryDefinition<Query, Mode, Input>, Registry>>;
+  runWith<Registry extends { queries: Record<Query, QueryEntry>; fileQueries: object }>(
+    options: QueryExecutionOptions,
     executor: TypedSqlForRegistry<Registry>,
     input: Input,
   ): Promise<QueryResultFor<MappedQueryDefinition<Query, Mode, Input>, Registry>>;
@@ -125,6 +141,7 @@ function definitionMethod<Mode extends QueryExecutionMode>(mode: Mode): DefineQu
       queryId: queryId(query),
       ...(name ? { queryName: name } : {}),
     };
+    const named = rewriteNamedParameters(query).names.length > 0;
     type RuntimeExecutor = {
       (query: string, ...params: unknown[]): Promise<unknown>;
       one(query: string, ...params: unknown[]): Promise<unknown>;
@@ -134,9 +151,12 @@ function definitionMethod<Mode extends QueryExecutionMode>(mode: Mode): DefineQu
       array: QueryParameterHelpers["array"];
       readonly [QUERY_EXECUTOR]?: QueryExecutorMethod;
     };
-    const run = async (executor: RuntimeExecutor, params: unknown[]) => {
+    const run = async (executor: RuntimeExecutor, params: unknown[], options?: QueryExecutionOptions) => {
       const execute = executor[QUERY_EXECUTOR];
-      if (execute) return await execute(mode, query, params, metadata);
+      if (execute) return await execute(mode, query, params, metadata, options);
+      if (options) {
+        throw new Error("sqlx-js.defineQuery: execution options require a managed sqlx-js executor");
+      }
       if (mode === "one") return await executor.one(query, ...params);
       if (mode === "optional") return await executor.optional(query, ...params);
       if (mode === "execute") return await executor.execute(query, ...params);
@@ -155,14 +175,24 @@ function definitionMethod<Mode extends QueryExecutionMode>(mode: Mode): DefineQu
           mode,
           queryId: metadata.queryId,
           ...(name ? { queryName: name } : {}),
-          async run(executor: RuntimeExecutor, input: Input) {
+          async run(executor: RuntimeExecutor, input: Input, options?: QueryExecutionOptions) {
             const mapped = mapper(input, { json: executor.json, array: executor.array });
-            return await run(executor, Array.isArray(mapped) ? [...mapped] : [mapped]);
+            return await run(executor, Array.isArray(mapped) ? [...mapped] : [mapped], options);
+          },
+          async runWith(options: QueryExecutionOptions, executor: RuntimeExecutor, input: Input) {
+            const mapped = mapper(input, { json: executor.json, array: executor.array });
+            return await run(executor, Array.isArray(mapped) ? [...mapped] : [mapped], options);
           },
         });
       },
       async run(executor: RuntimeExecutor, ...params: unknown[]) {
-        return await run(executor, params);
+        const options = named && params.length > 1
+          ? params.pop() as QueryExecutionOptions
+          : undefined;
+        return await run(executor, params, options);
+      },
+      async runWith(options: QueryExecutionOptions, executor: RuntimeExecutor, ...params: unknown[]) {
+        return await run(executor, params, options);
       },
     };
     return Object.freeze(definition);

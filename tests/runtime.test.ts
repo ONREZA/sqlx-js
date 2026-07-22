@@ -156,6 +156,67 @@ test("query definitions execute through root and transaction executors with stab
   expect(events[1]).toMatchObject({ queryId: findUser.queryId, queryName: "users.findById" });
 });
 
+test("query definitions pass execution options outside SQL parameters", async () => {
+  const controller = new AbortController();
+  const requests: import("../src/runtime").RuntimeQueryRequest[] = [];
+  const client: RuntimeClient = {
+    query: async () => [],
+    execute: async (request) => {
+      requests.push(request);
+      return [];
+    },
+    transaction: async (fn) => fn(client),
+    close: async () => {},
+  };
+  const runtime = createSqlRuntime(() => client);
+  const named = defineQuery("users.find", "SELECT id FROM users WHERE id = $id");
+  const positional = defineQuery("users.byEmail", "SELECT id FROM users WHERE email = $1");
+
+  await named.run(runtime.sql as never, { id: 7 }, { signal: controller.signal, timeoutMs: 100 });
+  await positional.runWith({ signal: controller.signal }, runtime.sql as never, "a@b");
+
+  expect(requests[0]).toMatchObject({
+    params: [7],
+    options: { signal: controller.signal, timeoutMs: 100 },
+  });
+  expect(requests[1]).toMatchObject({
+    params: ["a@b"],
+    options: { signal: controller.signal },
+  });
+});
+
+test("query definitions fail closed when an executor cannot honor execution options", async () => {
+  let calls = 0;
+  const executor = Object.assign(async () => {
+    calls++;
+    return [];
+  }, {
+    one: async () => null,
+    optional: async () => null,
+    execute: async () => ({ rowCount: 0, command: "" }),
+    json,
+    array,
+  });
+
+  await expect(defineQuery("SELECT 1").runWith({}, executor as never)).rejects.toThrow(
+    "execution options require a managed sqlx-js executor",
+  );
+  expect(calls).toBe(0);
+});
+
+test("query definitions fail closed through a runtime client without managed execution", async () => {
+  const client: RuntimeClient = {
+    query: async () => [],
+    transaction: async (fn) => fn(client),
+    close: async () => {},
+  };
+  const runtime = createSqlRuntime(() => client);
+
+  await expect(defineQuery("SELECT 1").runWith({}, runtime.sql as never)).rejects.toThrow(
+    "execution options require a managed sqlx-js executor",
+  );
+});
+
 test("mapped query definitions encode application input through root and transaction executors", async () => {
   const received: { query: string; params: unknown[] }[] = [];
   const events: OnQueryEvent[] = [];

@@ -340,10 +340,18 @@ const client = createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
 void client;
 
 const rawClient = createClient<SqlxJsGeneratedRegistry>(undefined, {
-  typeCodecs: {
+  types: {
     geometry: {
+      to: 50_000,
+      from: [50_000],
       parse: (value) => ({ x: Number(value), y: Number(value) }),
       serialize: (value) => \`${"${value.x},${value.y}"}\`,
+    },
+    application_tag: {
+      to: 50_001,
+      from: [50_001],
+      parse: String,
+      serialize: String,
     },
   },
 });
@@ -395,7 +403,7 @@ createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
 
 // @ts-expect-error customTypes require corresponding runtime codecs
 createSqlClient<SqlxJsGeneratedRegistry>();
-// @ts-expect-error raw clients bound to generated customTypes require codecs too
+// @ts-expect-error raw clients bound to generated customTypes require numeric Postgres.js types
 createClient<SqlxJsGeneratedRegistry>();
 `);
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
@@ -592,6 +600,18 @@ export function runClient(client: SqlClient<SqlxJsGeneratedRegistry>, params: Pa
   return findUserOne.run(client.sql, params);
 }
 
+export function runWithSignal(
+  client: SqlClient<SqlxJsGeneratedRegistry>,
+  params: Params,
+  signal: AbortSignal,
+) {
+  void client.ready({ timeoutMs: 5_000 });
+  void client.ping({ timeoutMs: 1_000 });
+  void client.snapshot();
+  void client.close({ graceMs: 5_000, forceAfterMs: 10_000 });
+  return findUserOne.run(client.sql, params, { signal, timeoutMs: 2_000 });
+}
+
 export function runTransaction(params: AmbientParams) {
   return sql.transaction((tx) => findUserOne.run(tx, params));
 }
@@ -657,6 +677,14 @@ export function runPositionalRegistryGeneric<Registry extends CompatiblePosition
   params: QueryParams<typeof positional, Registry>,
 ) {
   return positional.run(executor, ...params);
+}
+
+export function runPositionalWithSignal(
+  executor: SqlExecutor<SqlxJsGeneratedRegistry>,
+  params: PositionalParams,
+  signal: AbortSignal,
+) {
+  return positional.runWith({ signal }, executor, ...params);
 }
 
 const executeResult: Promise<ExecuteResult> = runExecute(executor, { active: true, id: params.id });

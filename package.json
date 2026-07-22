@@ -26,6 +26,7 @@
     "dist",
     "README.md",
     "ROADMAP.md",
+    "docs",
     "LICENSE"
   ],
   "publishConfig": {

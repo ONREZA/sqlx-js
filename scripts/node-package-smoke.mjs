@@ -80,18 +80,22 @@ try {
   run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "-p", join(temp, "tsconfig.json")], temp);
   writeFileSync(join(temp, "app.mjs"), `
     import assert from "node:assert/strict";
-    import { close, createClient, defineQuery, queryId, ready, setClient, sql, TransactionTimeoutError } from "@onreza/sqlx-js";
+    import { createSqlClient, defineQuery, queryId, TransactionTimeoutError } from "@onreza/sqlx-js";
 
+    let db;
     try {
       const events = [];
       const runtimeUrl = new URL(process.env.DATABASE_URL);
       runtimeUrl.searchParams.set("schema", "public");
-      setClient(createClient(runtimeUrl.toString(), {
+      db = createSqlClient(runtimeUrl.toString(), {
         max: 1,
         onQuery: (event) => events.push(event),
         sqlFiles: { "queries/embedded.sql": "SELECT 9::int4 AS value" },
-      }));
-      await ready();
+      });
+      const { sql } = db;
+      await db.ready({ timeoutMs: 5000 });
+      await db.ping({ timeoutMs: 5000 });
+      assert.equal(db.snapshot().state, "healthy");
       const row = await sql.one(
         "SELECT 42::int4 AS value, $1::jsonb AS payload, $2::int4[] AS numbers",
         sql.json({ ok: true }),
@@ -123,7 +127,7 @@ try {
       assert.ok(events.some((event) => event.queryId === answerQuery.queryId && event.queryName === "smoke.answer"));
       assert.ok(events.some((event) => event.queryId === echoQuery.queryId && event.queryName === "smoke.echo"));
     } finally {
-      await close();
+      await db?.close();
     }
     console.log("node packed runtime ok");
   `);
@@ -135,6 +139,9 @@ try {
     throw new Error("packed package metadata is missing the sqlx-js-diagnostics bin");
   }
   const packageRoot = join(temp, "node_modules/@onreza/sqlx-js");
+  if (!existsSync(join(packageRoot, "docs/upgrades/0.15.0.md"))) {
+    throw new Error("packed package is missing the current upgrade guide");
+  }
   const cliPath = join(packageRoot, packageJson.bin["sqlx-js"]);
   const cliVersion = run("node", [cliPath, "--version"], temp).trim();
   if (cliVersion !== packageJson.version) throw new Error(`packed CLI version ${cliVersion} does not match ${packageJson.version}`);

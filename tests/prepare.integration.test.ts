@@ -2309,25 +2309,100 @@ if (!haveIntegrationDatabase) {
     }
   });
 
-  test("setClient installs required array codecs before the first query", async () => {
-    const postgres = (await import("postgres")).default;
-    const { sql, setClient, close } = await import("../src/index");
-    const external = postgres(dbUrl);
-    setClient(external as never);
+  test("createClient installs required array codecs for raw use", async () => {
+    const { createClient } = await import("../src/index");
+    const external = createClient(dbUrl);
     const timestamp = new Date("2026-01-02T03:04:05.000Z");
     try {
-      const rows = await sql(
+      const rows = await external.unsafe(
         "SELECT $1::jsonb[] AS js, $2::bytea[] AS bs, $3::timestamptz[] AS ds",
-        sql.array([sql.json({ kind: "external" }), null]),
-        sql.array([new Uint8Array([0xde, 0xad])]),
-        sql.array([timestamp]),
+        [
+          external.typed([JSON.stringify({ kind: "external" }), null], 3807),
+          external.typed([new Uint8Array([0xde, 0xad])], 0),
+          external.typed([timestamp], 0),
+        ],
       );
       const row = rows[0] as { js: unknown[]; bs: Uint8Array[]; ds: Date[] };
       expect(row.js).toEqual([{ kind: "external" }, null]);
       expect(row.bs.map((value) => Array.from(value))).toEqual([[0xde, 0xad]]);
       expect(row.ds).toEqual([timestamp]);
     } finally {
-      await close();
+      await external.end({ timeout: 0 });
+    }
+  });
+
+  test("operation timeout recycles the pool and keeps the managed client usable", async () => {
+    const { createSqlClient, QueryTimeoutError } = await import("../src/index");
+    const transitions: string[] = [];
+    const db = createSqlClient(dbUrl, {
+      operationTimeoutMs: 100,
+      cancelGraceMs: 100,
+      onClientStateChange: ({ from, to }) => transitions.push(`${from}->${to}`),
+    });
+    try {
+      let timeoutError: unknown;
+      try {
+        await db.sql("SELECT pg_sleep(1)");
+      } catch (error) {
+        timeoutError = error;
+      }
+      expect(timeoutError).toBeInstanceOf(QueryTimeoutError);
+      expect(timeoutError).toMatchObject({
+        timeoutMs: 100,
+        phase: "execution",
+        outcome: "unknown",
+        generation: 1,
+      });
+
+      await db.ping({ timeoutMs: 1_000 });
+      for (let attempt = 0; attempt < 100 && db.snapshot().state === "recycling"; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(db.snapshot()).toMatchObject({
+        generation: 2,
+        state: "healthy",
+        activeOperations: 0,
+        recycleCount: 1,
+      });
+      expect(transitions).toEqual([
+        "healthy->poisoned",
+        "poisoned->recycling",
+        "recycling->healthy",
+      ]);
+    } finally {
+      await db.close({ graceMs: 100, forceAfterMs: 1_000 });
+    }
+  });
+
+  test("AbortSignal cancels a dispatched query without recycling a clean pool", async () => {
+    const { createSqlClient, defineQuery, QueryAbortedError } = await import("../src/index");
+    const db = createSqlClient(dbUrl, { cancelGraceMs: 1_000 });
+    const controller = new AbortController();
+    try {
+      await db.ready({ timeoutMs: 1_000 });
+      const pending = defineQuery("SELECT pg_sleep(1)").runWith(
+        { signal: controller.signal },
+        db.sql as never,
+      );
+      setTimeout(() => controller.abort("request closed"), 50);
+
+      let abortError: unknown;
+      try {
+        await pending;
+      } catch (error) {
+        abortError = error;
+      }
+      expect(abortError).toBeInstanceOf(QueryAbortedError);
+      expect(abortError).toMatchObject({
+        phase: "execution",
+        outcome: "unknown",
+        generation: 1,
+        reason: "request closed",
+      });
+      await db.ping({ timeoutMs: 1_000 });
+      expect(db.snapshot()).toMatchObject({ generation: 1, state: "healthy", recycleCount: 0 });
+    } finally {
+      await db.close({ graceMs: 100, forceAfterMs: 1_000 });
     }
   });
 

@@ -431,21 +431,15 @@ type MigrateOptions = {
 
 When `lockTimeoutMs` is set, acquisition uses `pg_try_advisory_lock` in a polling loop and throws if not obtained within the timeout — useful for CI / multi-replica startup to avoid an indefinitely-blocked pod.
 
-### `getClient()` / `setClient()` / `close()`
+### Managed and raw clients
 
-Low-level access to the underlying Postgres.js client, in case you need to manage the connection directly.
-Use `createClient(...)` when replacing the default client; it preserves the built-in `bigint` and PostgreSQL array parsers expected by generated types.
+`createSqlClient(...)` owns its Postgres.js pools. It applies operation deadlines, replaces poisoned pool generations, initializes runtime codecs, exposes lifecycle state, and performs bounded shutdown. It deliberately does not expose its raw pool because a retained raw reference would bypass generation replacement.
 
-```ts
-import { createClient, ready, setClient } from "@onreza/sqlx-js";
+`createClient(...)` is the explicit raw Postgres.js escape hatch. It preserves sqlx-js's built-in bigint and PostgreSQL array codecs, but it has no managed deadline, recovery, lifecycle, or name-based `typeCodecs` guarantees. The caller owns its queries and `end()` lifecycle.
 
-setClient(createClient(process.env.DATABASE_URL));
-await ready();
-```
+Upgrading from `0.14.x` requires application changes. See the detailed [0.15.0 upgrade guide](./docs/upgrades/0.15.0.md) for API migration, timeout semantics, rollout order, and verification.
 
-`sql()`, `unsafe()`, and transactions await runtime type discovery automatically. Call `ready()` only before using the raw object returned by `getClient()`, or `db.ready()` before a scoped client's raw `db.client`. A standalone Postgres.js object returned by `createClient()` is initialized after it is passed to `setClient()`; direct raw use without that runtime boundary remains ordinary Postgres.js behavior.
-
-For dependency injection, read replicas, tests, or several independent pools in one process, create a scoped runtime instead of replacing the global client:
+For dependency injection, read replicas, tests, or several independent pools in one process, create independent managed clients:
 
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
@@ -454,12 +448,18 @@ import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env";
 const primary = createSqlClient<SqlxJsGeneratedRegistry>(process.env.DATABASE_URL);
 const replica = createSqlClient<SqlxJsGeneratedRegistry>(process.env.REPLICA_DATABASE_URL);
 
-await Promise.all([primary.ready(), replica.ready()]); // optional pre-warm
+await Promise.all([
+  primary.ready({ timeoutMs: 5_000 }),
+  replica.ready({ timeoutMs: 5_000 }),
+]);
 
 await primary.sql(`INSERT INTO audit_log (message) VALUES ($1)`, "created");
 const rows = await replica.sql(`SELECT id, message FROM audit_log ORDER BY id DESC`);
 
-await Promise.all([primary.close(), replica.close()]);
+await Promise.all([
+  primary.close({ graceMs: 5_000, forceAfterMs: 10_000 }),
+  replica.close({ graceMs: 5_000, forceAfterMs: 10_000 }),
+]);
 ```
 
 Each generated `sqlx-js-env.d.ts` exports its own `SqlxJsGeneratedRegistry`. Passing it to `createSqlClient<...>()` keeps a scoped client on that project's query contract even when a monorepo TypeScript program includes declarations for several databases. The global `sql` export remains available for the single-client convenience path.
@@ -468,15 +468,20 @@ When a workspace package exports database source to other TypeScript programs, b
 
 The scanner recognizes clients assigned directly from an imported `createSqlClient(...)` (including aliased and namespace imports), so `client.sql(...)`, its cardinality helpers, file queries, and transactions participate in `prepare` exactly like the global `sql` surface.
 
-`createClient(url, options)` accepts every Postgres.js option plus sqlx-js runtime options:
+`createSqlClient(url, options)` accepts every Postgres.js option plus sqlx-js managed-runtime options. `operationTimeoutMs` is opt-in because the library cannot choose one correct wall-clock limit for both interactive queries and long-running jobs.
 
 The `schema` query parameter used by Prisma PostgreSQL URLs is accepted directly: sqlx-js removes it before handing the URL to Postgres.js. Other query parameters remain untouched, including PostgreSQL session parameters intentionally supported by Postgres.js.
 
 ```ts
-setClient(createClient(process.env.DATABASE_URL, {
+const db = createSqlClient(process.env.DATABASE_URL, {
   // Server-side per-connection statement timeout (ms). Also settable via
   // ?statement_timeout=5000 in DATABASE_URL.
   statementTimeoutMs: 5000,
+  // Entire managed path: codec bootstrap, pool/connect wait, execution, and
+  // decode. A timeout after driver dispatch has outcome "unknown".
+  operationTimeoutMs: 15_000,
+  // Best-effort cancellation window before the old generation is destroyed.
+  cancelGraceMs: 1_000,
   // Base directory for root-relative sql.file(...) calls.
   fileRoot: import.meta.dirname,
   // Development-only: re-stat sql.file() files on every call. The default
@@ -501,11 +506,39 @@ setClient(createClient(process.env.DATABASE_URL, {
     if (error) logger.error({ queryId, queryName, query, error });
     else if (durationMs > 200) logger.warn({ queryId, queryName, durationMs, rowCount });
   },
+  onQueryStart: ({ queryId, queryName, generation }) => {
+    metrics.databaseStarted.add(1, { queryId, queryName, generation });
+  },
+  onQueryTimeout: ({ queryId, queryName, generation, durationMs, phase, outcome }) => {
+    logger.error({ queryId, queryName, generation, durationMs, phase, outcome });
+  },
+  onClientStateChange: ({ from, to, generation }) => {
+    logger.info({ from, to, generation }, "database client state changed");
+  },
   onQueryHookError: (error) => logger.error({ error }, "query observer failed"),
-}));
+  onLifecycleHookError: (error) => logger.error({ error }, "database lifecycle observer failed"),
+});
 ```
 
-The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. `queryId` is the stable prepare/cache fingerprint and is suitable for metric labels; `queryName` is present for named `defineQuery` calls. The hook is a non-blocking observer: synchronous throws and asynchronous rejections preserve the database result/error and are passed to `onQueryHookError` when configured. The event carries the raw wire `params`; mapped definitions report the mapper output rather than their application input. Parameters may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
+The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. `queryId` is the stable prepare/cache fingerprint and is suitable for metric labels; `queryName` is present for named `defineQuery` calls. The hook is a non-blocking observer: synchronous throws and asynchronous rejections preserve the database result/error and are passed to `onQueryHookError` when configured. The event preserves source-level parameters for direct queries (including the named-parameter object); mapped definitions report the mapper output rather than their application input. Parameters may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
+
+Lifecycle events intentionally omit SQL text and parameters. `onQueryStart` fires before codec bootstrap. `onQueryTimeout` reports the stable ID, generation, phase, and outcome while the managed runtime cancels the query and retires the poisoned generation. `onClientStateChange` reports `healthy`, `poisoned`, `recycling`, `failed`, `closing`, and `closed` transitions.
+
+`db.snapshot()` synchronously returns `{ generation, state, activeOperations, lastSuccessAt, lastTimeoutAt, recycleCount }`. `db.ready({ timeoutMs })` bounds codec discovery. `db.ping({ timeoutMs })` performs `SELECT 1` through the same bootstrap, deadline, pool, and observer path as application SQL.
+
+`db.close({ graceMs, forceAfterMs })` is terminal for that scoped client: admission stops immediately, active operations receive the grace window, and remaining promises plus pools are forcibly terminated within the total `forceAfterMs` bound. Repeated calls share the same close promise.
+
+`query.cancel()` is best-effort. Once a user statement has been handed to Postgres.js, a timeout is always reported as `outcome: "unknown"`: the statement may have completed, so sqlx-js never retries it automatically. All active operations from a poisoned generation are rejected and late driver results are ignored. A hundred concurrent timeouts from one generation still create only one replacement pool.
+
+Name-based and mapped query definitions accept execution options without mixing them into SQL parameters. Positional definitions use `runWith(...)` because a trailing object may itself be a valid PostgreSQL parameter:
+
+```ts
+await findUser.run(db.sql, { id }, { signal: request.signal });
+await positionalQuery.runWith({ signal: request.signal }, db.sql, id);
+```
+
+Execution options fail closed when the supplied executor is not a managed sqlx-js executor; they are never silently ignored by a structural test double or third-party adapter.
+Inside a transaction, a query-level timeout or abort expires the whole scoped transaction so Postgres.js can roll it back before the connection is reused.
 
 ### `clearSqlFileCache()`
 
@@ -514,32 +547,49 @@ Drops the in-memory cache used by `sql.file(...)`. Files are immutable after the
 ### Typed errors
 
 ```ts
-import { NoRowsError, TooManyRowsError, TransactionTimeoutError, SQLSTATE, isPgError } from "@onreza/sqlx-js";
+import {
+  NoRowsError,
+  QueryAbortedError,
+  QueryTimeoutError,
+  TooManyRowsError,
+  TransactionTimeoutError,
+  SQLSTATE,
+  isPgError,
+} from "@onreza/sqlx-js";
 
 try {
   const u = await sql.one(`SELECT id FROM users WHERE id = $1`, 99);
 } catch (e) {
   if (e instanceof NoRowsError) return null;
   if (e instanceof TooManyRowsError) console.error("ambiguous query, got", e.actual);
-  if (e instanceof TransactionTimeoutError) console.error("transaction deadline:", e.timeoutMs);
+  if (e instanceof QueryTimeoutError) console.error(e.phase, e.outcome, e.generation);
+  if (e instanceof QueryAbortedError) console.error(e.outcome, e.reason);
+  if (e instanceof TransactionTimeoutError) console.error(e.timeoutMs, e.outcome);
   if (isPgError(e, SQLSTATE.uniqueViolation)) console.error("duplicate:", e.constraint);
   throw e;
 }
 ```
 
-`sql.one` throws `NoRowsError` on 0 rows and `TooManyRowsError` (with `.actual`) on >1. An expired transaction throws `TransactionTimeoutError` with the configured `.timeoutMs`. Any database error raised by the default runtime is normalized into a `PgError`; `isPgError(error, code?)` is the concise type guard for SQLSTATE handling. `SQLSTATE` contains the common unique, foreign-key, not-null, check, serialization, and deadlock codes. `PgError` exposes `.code`, `.position`, `.hint`, `.detail`, `.severity`, `.schema`, `.table`, `.column`, `.constraint`, and the original driver error on `.cause`. A zero-row update/delete is not a PostgreSQL error: use `sql.execute(...).rowCount`, `sql.optional`, or `sql.one` for that invariant. Non-database failures are rethrown unchanged.
+`sql.one` throws `NoRowsError` on 0 rows and `TooManyRowsError` (with `.actual`) on >1. `QueryTimeoutError` and `QueryAbortedError` expose `.phase`, `.outcome`, `.queryId`, and `.generation`. Collateral operations rejected during generation recovery receive `GenerationRecycledError`. `ClientClosingError` carries the same fields when shutdown interrupts an accepted operation; an admission rejected after shutdown begins has no operation fields. An expired transaction throws `TransactionTimeoutError` with `.timeoutMs`, `.generation`, and `.outcome` (`rolled_back` only after a clean rollback is confirmed; otherwise `unknown`). Any database error raised by the default runtime is normalized into a `PgError`; `isPgError(error, code?)` is the concise type guard for SQLSTATE handling. A server-side `statement_timeout` remains PostgreSQL error `57014`, not a managed `QueryTimeoutError`.
 
 ### Transactions with options
 
 `sql.transaction(fn)` and `sql.transaction(opts, fn)`:
 
 ```ts
-await sql.transaction({ isolation: "serializable", readOnly: true, timeoutMs: 120_000 }, async (tx) => {
+await sql.transaction({
+  isolation: "serializable",
+  readOnly: true,
+  timeoutMs: 120_000,
+  signal: request.signal,
+}, async (tx) => {
   return await tx(`SELECT id FROM accounts WHERE owner = $1`, ownerId);
 });
 ```
 
-Options: `{ isolation?: "read uncommitted" | "read committed" | "repeatable read" | "serializable"; readOnly?: boolean; deferrable?: boolean; timeoutMs?: number }`. Transaction characteristics are applied via `SET TRANSACTION` immediately after `BEGIN`. `timeoutMs` is a `1..2_147_483_647` millisecond deadline for the complete callback on every supported PostgreSQL version. When it expires, sqlx-js marks the scoped executor as expired, requests cancellation of active Postgres.js queries, rejects with `TransactionTimeoutError`, and lets the driver roll the transaction back on its live connection; later queries through that `tx` fail without reaching PostgreSQL. Postgres.js cancellation is best-effort, so completion can take longer than the deadline if an active query cannot be interrupted immediately. Arbitrary non-database work already running inside the callback cannot be forcibly stopped by JavaScript, so external side effects should still be abortable or idempotent.
+Options: `{ isolation?: "read uncommitted" | "read committed" | "repeatable read" | "serializable"; readOnly?: boolean; deferrable?: boolean; timeoutMs?: number; signal?: AbortSignal }`. Transaction characteristics are applied via `SET TRANSACTION` immediately after `BEGIN`. The deadline starts before codec bootstrap and covers pool acquisition, `BEGIN`, the callback, `COMMIT`, and `ROLLBACK`. On expiration the scoped executor is disabled, active statements are cancelled, and Postgres.js is given `cancelGraceMs` to confirm rollback. A clean rollback produces `outcome: "rolled_back"`; an unconfirmed `BEGIN`, `COMMIT`, or `ROLLBACK` produces `unknown` and retires the entire pool generation. Arbitrary non-database work already running inside the callback cannot be forcibly stopped by JavaScript, so external side effects should observe their own signal or be idempotent.
+
+The transaction-scoped executor is valid only while its callback is active. Capturing `tx` and using it after commit or rollback fails locally without dispatching SQL.
 
 ### Namespace imports
 
@@ -912,7 +962,7 @@ Composite types (`CREATE TYPE foo AS (a int, b text)`) resolve to a struct liter
 
 PostgreSQL assigns database-local OIDs to enums, domains, composites, and extension types. The runtime resolves those OIDs once per pool before the first application query, then installs both scalar and array parsers/serializers in the shared Postgres.js registry. Enums use their string labels, domains delegate to their base type, composites become objects keyed by attribute name, and built-in `vector`/`halfvec`/`hstore` mappings match the TypeScript table above. Existing numeric Postgres.js `types` entries remain authoritative. Apply migrations before creating the application pool; recreate the client after adding or replacing database types so discovery sees the new catalog.
 
-For an application-defined `customTypes` representation, provide the matching name-based runtime codec. Explicit mappings can override non-system base/extension, enum, range, and composite representations. Every configured `customTypes` entry is emitted into `SqlxJsGeneratedRegistry["runtimeTypes"]`; binding that registry to `createSqlClient<SqlxJsGeneratedRegistry>(...)` or `createClient<SqlxJsGeneratedRegistry>(...)` makes missing codecs and incompatible parser/serializer values TypeScript errors:
+For an application-defined `customTypes` representation, provide the matching name-based runtime codec. Explicit mappings can override non-system base/extension, enum, range, and composite representations. Every configured `customTypes` entry is emitted into `SqlxJsGeneratedRegistry["runtimeTypes"]`; binding that registry to `createSqlClient<SqlxJsGeneratedRegistry>(...)` makes missing codecs and incompatible parser/serializer values TypeScript errors:
 
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
@@ -939,19 +989,25 @@ const db = createSqlClient<SqlxJsGeneratedRegistry>(process.env.DATABASE_URL, {
 });
 ```
 
-The same contract is available for the global client setup:
+Raw clients do not perform name-to-OID discovery. Bind generated custom types to explicit numeric Postgres.js `types` when raw access is required:
 
 ```ts
-import { createClient, setClient } from "@onreza/sqlx-js";
+import { createClient } from "@onreza/sqlx-js";
 import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env";
-import { typeCodecs } from "./database-codecs";
 
-setClient(createClient<SqlxJsGeneratedRegistry>(process.env.DATABASE_URL, {
-  typeCodecs,
-}));
+const raw = createClient<SqlxJsGeneratedRegistry>(process.env.DATABASE_URL, {
+  types: {
+    geometry: {
+      to: 50_000,
+      from: [50_000],
+      parse: parseGeometry,
+      serialize: serializeGeometry,
+    },
+  },
+});
 ```
 
-The contract is scoped rather than ambient, so separate database packages can use the same PostgreSQL type name with different application representations. The lazy global `sql` export cannot prove that runtime options were installed; use a registry-bound `createClient` as above or prefer the scoped client for strict end-to-end enforcement.
+The contract is scoped rather than ambient, so separate database packages can use the same PostgreSQL type name with different application representations. Prefer the registry-bound managed client for strict end-to-end discovery, deadline, and recovery guarantees.
 
 Generated `customTypes` contracts use bare keys matching `pg_type.typname`. Bare codec keys apply to every matching type name; schema-qualified keys such as `postgis.geometry` are available for additional manually configured codecs but do not replace a generated bare-key requirement. A configured key that does not exist fails during bootstrap instead of silently leaving a mismatched runtime value. Codecs receive the scalar PostgreSQL text representation; their parser and serializer are composed automatically for composite attributes and arrays.
 
@@ -1029,45 +1085,16 @@ Releases are automated via `release-please`: pushes to `main` accumulate into a 
 - Column names whose **real** name (not an alias) ends with `!` or `?` are not supported — the runtime strips those suffixes assuming an override. Use `AS "alias"` if you have such a column.
 - Result columns must have unique names because Postgres.js returns object rows. Alias join projections such as `users.id AS user_id, posts.id AS post_id`; `prepare` rejects duplicate output names before generating declarations.
 - Migrations run inside `BEGIN/COMMIT`. DDL that disallows transactions (`CREATE INDEX CONCURRENTLY`, `VACUUM`, `REINDEX CONCURRENTLY`, …) will fail; split such operations into separate migrations executed outside the runner.
-- The **internal** wire client (used by `migrate run`, `prepare`, and the runtime `migrate()` helper) reads `sslmode`, `sslrootcert`/`sslcert`/`sslkey`, `application_name`, `options`, `connect_timeout`, and `statement_timeout` from `DATABASE_URL`. The default runtime `sql()` path delegates connection handling to Postgres.js; configure TLS, pooling, and timeouts through the `DATABASE_URL` and `createClient(...)` options it understands (`statementTimeoutMs` is a convenience that maps to a per-connection `statement_timeout`).
+- The **internal** wire client (used by `migrate run`, `prepare`, and the runtime `migrate()` helper) reads `sslmode`, `sslrootcert`/`sslcert`/`sslkey`, `application_name`, `options`, `connect_timeout`, and `statement_timeout` from `DATABASE_URL`. The default runtime `sql()` path delegates connection handling to Postgres.js; configure TLS and pooling through the `DATABASE_URL` and `createSqlClient(...)` options (`statementTimeoutMs` maps to a per-connection server timeout, while `operationTimeoutMs` bounds the managed end-to-end path).
 - `connect_timeout` bounds the entire internal-client connect, including the TLS handshake and SCRAM authentication.
+- JavaScript timers cannot preempt synchronous application code or a synchronous custom codec that blocks the event loop. Managed deadlines are checked again after bootstrap and driver completion, but their wall-clock delivery still requires the event loop to make progress.
 - Runtime `sql.file(path)` resolves against `fileRoot` while prepare resolves against `--root`. They are both root-relative, but applications started outside the project root must set `fileRoot` explicitly or provide the generated `sqlFiles` map.
 
 See [ROADMAP.md](./ROADMAP.md) for what's planned.
 
 ## Upgrading
 
-### Cache, codegen, and parameter contract changes (pre-1.0)
-
-Generated cache includes `.sqlx-js/cache-manifest.json` with an explicit cache format, generator revision, and hash of type/function contracts plus enum schema selection. Cache without this manifest is rejected. Delete `.sqlx-js/` and re-run `sqlx-js prepare` against your database — there is no data loss because the cache is generated.
-
-Generated JSON and PostgreSQL array parameters now require `sql.json(...)` and `sql.array(...)`. This removes the ambiguous runtime guess where a JavaScript array could mean either a PostgreSQL array or a JSON array. Replace raw array JSON params with `sql.json(value)` and PostgreSQL arrays with `sql.array(value)` before regenerating declarations.
-
-CI (`prepare --check`) will also fail loudly until the cache is regenerated; this is intentional so a stale schema can't silently emit incorrect generated files.
-
-Generator revision 4 changes the declaration layout so it exports `SqlxJsGeneratedRegistry` for scoped clients while continuing to augment the global `KnownQueries` convenience API. Re-run live `sqlx-js prepare` after upgrading. `prepare --check` is now strictly read-only; use `prepare --offline` when deliberate cache-to-declaration regeneration is required.
-
-Generator revision 6 adds `columnTypes` and function-catalog scope to the generated contract. Extension-owned functions are no longer emitted by default. Re-run live `sqlx-js prepare`; set `functionCatalog.includeExtensionOwned: true` only if application code intentionally indexes those signatures.
-
-Generator revision 7 adds strict nullability inference and compatible application-owned type provenance for `UNION`, `INTERSECT`, and `EXCEPT`, including inherited/sequential CTE scopes and `VALUES` branches. Re-run live `sqlx-js prepare` after upgrading so committed cache entries use the new branch-combined row contracts.
-
-Generator revision 8 treats `ARRAY[...]`, `ARRAY(SELECT ...)`, and `EXISTS(...)` expressions as non-null, including typed empty-array fallbacks inside `COALESCE`. Re-run live `sqlx-js prepare` after upgrading so generated row contracts remove obsolete `| null` branches.
-
-Generator revision 9 separates array-value nullability from element nullability. Ordinary PostgreSQL arrays now emit `(T | null)[]`; SQL expression proofs, `NOT NULL` element domains, and `arrayElementNullability` assertions narrow them to `T[]`. `PgArrayParameter` also carries an element-nullability flag inferred by `sql.array(...)`. Re-run live `sqlx-js prepare` after upgrading; review widened result types and add assertions only for invariants the application genuinely enforces.
-
-Generator revision 10 adds non-executing generic-plan validation after `Describe`. Live prepare now catches planner-only PostgreSQL errors such as an `ON CONFLICT` target without a matching unique or exclusion constraint, including errors hidden by value-dependent custom-plan simplification. Cache entries record whether a statement was `planned` or only `parse-only`; re-run live `sqlx-js prepare` before relying on `--check` or `--offline` after upgrading. This revision also raises the supported database baseline to PostgreSQL 16.
-
-Generator revision 11 adds a scoped runtime codec contract to generated declarations. Every explicit `customTypes` mapping now requires matching name-based `typeCodecs` or typed numeric Postgres.js `types` when the generated registry is bound to `createSqlClient<SqlxJsGeneratedRegistry>()` or `createClient<SqlxJsGeneratedRegistry>()`. Explicit enum and composite mappings now affect query types as well as the runtime codec contract. Domain-specific mappings are rejected because PostgreSQL exposes the base type OID for domain results. Re-run live `sqlx-js prepare` after upgrading; this also validates that committed declarations and cache manifests use the new contract.
-
-Generator revision 12 propagates DML target provenance through value-producing `CASE`, `COALESCE`, `GREATEST`/`LEAST`, and the stored side of `NULLIF`, plus set-operation inputs and multi-column row assignments. Conditional parameters now inherit application-owned column types and nullable-column contracts without typing control predicates or `NULLIF` sentinels as stored values. It also expands unambiguous single-relation star projections inside CTEs and derived tables so non-null base columns survive materialization and lateral fallbacks. Re-run live `sqlx-js prepare` so committed cache entries and declarations use the stronger contracts.
-
-Generator revision 13 discovers direct parameter provenance inside data-modifying CTEs and retains every DML target for reused parameters. Generated inputs now allow SQL `NULL` only when every stored-value use either targets a nullable column or handles the value through a null-aware expression or non-null write guard, and any predicate use is null-aware. Compatible `jsonbTypes` / `columnTypes` declarations are preserved across all DML targets, while conflicting declarations are rejected instead of selecting the last visited column. Re-run live `sqlx-js prepare` so committed cache entries and declarations use the complete parameter contract.
-
-Generator revision 14 separates pre-update predicate narrowing from post-update `RETURNING` values. `UPDATE` target columns now fall back to their live schema nullability because `RETURNING` observes the new row, including changes made by triggers, while columns from unchanged `FROM` rows retain valid `WHERE` refinements. The same rule applies inside data-modifying CTEs. Re-run live `sqlx-js prepare` so nullable target columns changed after matching no longer keep an unsafe non-null result contract.
-
-Generator revision 15 adds the opt-in PostgreSQL enum catalog. Enabled catalogs persist every enum from explicitly selected schemas in `.sqlx-js/enums/enums.json` and emit root-relative `as const` object/type pairs. Exact `include`/`exclude` filters select generated exports, schema-qualified `aliases` resolve collisions, and `registry: true` adds opt-in dynamic access through `DbEnums`. Offline, check, verify, watch, and shadow migration workflows treat both files as generated artifacts. Re-run live `sqlx-js prepare` after upgrading before enabling or validating a catalog.
-
-Runtime observers and SQL-file caching are also stricter production boundaries. An exception from `onQuery` no longer replaces a successful query result; handle it through `onQueryHookError`. `sql.file()` no longer performs an mtime check on every call—use `reloadSqlFiles: true` during development or call `clearSqlFileCache()` explicitly after changing a file.
+Breaking changes and migration instructions are maintained as versioned [upgrade guides](./docs/upgrades/README.md). For the next release, see [upgrading from 0.14.x to 0.15.0](./docs/upgrades/0.15.0.md). Earlier cache and generator migrations are archived in the [pre-0.15 guide](./docs/upgrades/pre-0.15.0.md).
 
 ## License
 

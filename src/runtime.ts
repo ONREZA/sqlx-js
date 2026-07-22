@@ -24,6 +24,20 @@ export type OnQueryEvent = {
 export type OnQueryHook = (event: OnQueryEvent) => void | Promise<void>;
 export type OnQueryHookError = (error: unknown, event: OnQueryEvent) => void | Promise<void>;
 
+export type QueryExecutionOptions = {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+};
+
+export type RuntimeQueryRequest = {
+  query: string;
+  params: unknown[];
+  observedQuery: string;
+  observedParams: unknown[];
+  metadata: QueryExecutionMetadata;
+  options?: QueryExecutionOptions;
+};
+
 export type RuntimeQueryResult = unknown[] & {
   count?: number | null;
   command?: string | null;
@@ -31,10 +45,12 @@ export type RuntimeQueryResult = unknown[] & {
 
 export type RuntimeTransactionOptions = {
   timeoutMs?: number;
+  signal?: AbortSignal;
 };
 
 export type RuntimeClient = {
   query: (query: string, params: unknown[]) => Promise<RuntimeQueryResult>;
+  execute?: (request: RuntimeQueryRequest) => Promise<RuntimeQueryResult>;
   transformParams?: (params: unknown[]) => unknown[] | PromiseLike<unknown[]>;
   transaction: <R>(fn: (client: RuntimeClient) => Promise<R>, options?: RuntimeTransactionOptions) => Promise<R>;
   close: () => Promise<void>;
@@ -284,8 +300,86 @@ export class TooManyRowsError extends Error {
   }
 }
 
+export type QueryTimeoutPhase = "bootstrap" | "execution";
+export type QueryOutcome = "not_sent" | "unknown";
+
+type QueryInterruptionDetails = {
+  phase: QueryTimeoutPhase;
+  outcome: QueryOutcome;
+  queryId: string;
+  generation: number;
+};
+
+export class QueryTimeoutError extends Error {
+  readonly phase: QueryTimeoutPhase;
+  readonly outcome: QueryOutcome;
+  readonly queryId: string;
+  readonly generation: number;
+
+  constructor(public readonly timeoutMs: number, details: QueryInterruptionDetails) {
+    super(`query exceeded ${timeoutMs}ms during ${details.phase}`);
+    this.name = "QueryTimeoutError";
+    this.phase = details.phase;
+    this.outcome = details.outcome;
+    this.queryId = details.queryId;
+    this.generation = details.generation;
+  }
+}
+
+export class QueryAbortedError extends Error {
+  readonly phase: QueryTimeoutPhase;
+  readonly outcome: QueryOutcome;
+  readonly queryId: string;
+  readonly generation: number;
+  readonly reason: unknown;
+
+  constructor(details: QueryInterruptionDetails, reason?: unknown) {
+    super(`query aborted during ${details.phase}`);
+    this.name = "QueryAbortedError";
+    this.phase = details.phase;
+    this.outcome = details.outcome;
+    this.queryId = details.queryId;
+    this.generation = details.generation;
+    this.reason = reason;
+  }
+}
+
+export class GenerationRecycledError extends Error {
+  readonly outcome: QueryOutcome;
+  readonly queryId: string;
+  readonly generation: number;
+
+  constructor(details: Pick<QueryInterruptionDetails, "outcome" | "queryId" | "generation">, cause?: unknown) {
+    super(`database client generation ${details.generation} was recycled`, { cause });
+    this.name = "GenerationRecycledError";
+    this.outcome = details.outcome;
+    this.queryId = details.queryId;
+    this.generation = details.generation;
+  }
+}
+
+export class ClientClosingError extends Error {
+  readonly phase?: QueryTimeoutPhase;
+  readonly outcome?: QueryOutcome;
+  readonly queryId?: string;
+  readonly generation?: number;
+
+  constructor(details?: QueryInterruptionDetails) {
+    super("database client is closing");
+    this.name = "ClientClosingError";
+    this.phase = details?.phase;
+    this.outcome = details?.outcome;
+    this.queryId = details?.queryId;
+    this.generation = details?.generation;
+  }
+}
+
 export class TransactionTimeoutError extends Error {
-  constructor(public readonly timeoutMs: number) {
+  constructor(
+    public readonly timeoutMs: number,
+    public readonly outcome: "rolled_back" | "unknown" = "unknown",
+    public readonly generation = 0,
+  ) {
     super(`transaction exceeded ${timeoutMs}ms`);
     this.name = "TransactionTimeoutError";
   }
@@ -388,12 +482,27 @@ async function runRawQuery(
   query: string,
   params: unknown[],
   metadata?: QueryExecutionMetadata,
+  options?: QueryExecutionOptions,
 ): Promise<RuntimeQueryResult> {
   const observedQuery = query;
   const observedParams = params;
   const bound = bindNamedParameters(rewriteNamedParameters(query), params);
   query = bound.query;
   params = bound.params;
+  const observed = observedMetadata(observedQuery, metadata);
+  if (client.execute) {
+    return await client.execute({
+      query,
+      params,
+      observedQuery,
+      observedParams,
+      metadata: observed,
+      options,
+    });
+  }
+  if (options) {
+    throw new Error("sqlx-js.defineQuery: execution options require a managed sqlx-js executor");
+  }
   const onQuery = client.onQuery;
   if (!onQuery) {
     try {
@@ -406,7 +515,6 @@ async function runRawQuery(
       throw toPgError(e) ?? e;
     }
   }
-  const observed = observedMetadata(observedQuery, metadata);
   const start = performance.now();
   try {
     const transformed = client.transformParams
@@ -455,8 +563,9 @@ async function runQuery(
   query: string,
   params: unknown[],
   metadata?: QueryExecutionMetadata,
+  options?: QueryExecutionOptions,
 ): Promise<unknown[]> {
-  return renameRows(await runRawQuery(client, query, params, metadata));
+  return renameRows(await runRawQuery(client, query, params, metadata, options));
 }
 
 async function runExecute(
@@ -464,8 +573,9 @@ async function runExecute(
   query: string,
   params: unknown[],
   metadata?: QueryExecutionMetadata,
+  options?: QueryExecutionOptions,
 ): Promise<ExecuteResult> {
-  const result = await runRawQuery(client, query, params, metadata);
+  const result = await runRawQuery(client, query, params, metadata, options);
   return {
     rowCount: result.count ?? result.length,
     command: result.command ?? "",
@@ -477,8 +587,9 @@ async function runOne(
   query: string,
   params: unknown[],
   metadata?: QueryExecutionMetadata,
+  options?: QueryExecutionOptions,
 ): Promise<unknown> {
-  const rows = await runQuery(client, query, params, metadata);
+  const rows = await runQuery(client, query, params, metadata, options);
   if (rows.length === 1) return rows[0];
   if (rows.length === 0) throw new NoRowsError();
   throw new TooManyRowsError(rows.length, "1");
@@ -489,8 +600,9 @@ async function runOptional(
   query: string,
   params: unknown[],
   metadata?: QueryExecutionMetadata,
+  options?: QueryExecutionOptions,
 ): Promise<unknown | null> {
-  const rows = await runQuery(client, query, params, metadata);
+  const rows = await runQuery(client, query, params, metadata, options);
   if (rows.length === 0) return null;
   if (rows.length === 1) return rows[0];
   throw new TooManyRowsError(rows.length, "0 or 1");
@@ -675,11 +787,12 @@ function executeDefinedQuery(
   query: string,
   params: unknown[],
   metadata: QueryExecutionMetadata,
+  options?: QueryExecutionOptions,
 ): Promise<unknown> {
-  if (mode === "one") return runOne(client, query, params, metadata);
-  if (mode === "optional") return runOptional(client, query, params, metadata);
-  if (mode === "execute") return runExecute(client, query, params, metadata);
-  return runQuery(client, query, params, metadata);
+  if (mode === "one") return runOne(client, query, params, metadata, options);
+  if (mode === "optional") return runOptional(client, query, params, metadata, options);
+  if (mode === "execute") return runExecute(client, query, params, metadata, options);
+  return runQuery(client, query, params, metadata, options);
 }
 
 function makeBoundCallable(client: RuntimeClient): SqlCallable {
@@ -711,8 +824,8 @@ function makeBoundCallable(client: RuntimeClient): SqlCallable {
   (fn as SqlCallable).id = id;
   (fn as SqlCallable).json = json;
   (fn as SqlCallable).array = array;
-  (fn as SqlCallable)[QUERY_EXECUTOR] = (mode, query, params, metadata) => {
-    return executeDefinedQuery(client, mode, query, params, metadata);
+  (fn as SqlCallable)[QUERY_EXECUTOR] = (mode, query, params, metadata, options) => {
+    return executeDefinedQuery(client, mode, query, params, metadata, options);
   };
   return fn as SqlCallable;
 }
@@ -722,6 +835,7 @@ export type TransactionOptions = {
   readOnly?: boolean;
   deferrable?: boolean;
   timeoutMs?: number;
+  signal?: AbortSignal;
 };
 
 export type SqlRoot = SqlCallable & {
@@ -787,8 +901,8 @@ export function createSqlRuntime(getClient: () => RuntimeClient): RuntimeApi {
   root.id = id;
   root.json = json;
   root.array = array;
-  root[QUERY_EXECUTOR] = (mode, query, params, metadata) => {
-    return executeDefinedQuery(getClient(), mode, query, params, metadata);
+  root[QUERY_EXECUTOR] = (mode, query, params, metadata, options) => {
+    return executeDefinedQuery(getClient(), mode, query, params, metadata, options);
   };
 
   root.transaction = (async <R>(
@@ -811,7 +925,7 @@ export function createSqlRuntime(getClient: () => RuntimeClient): RuntimeApi {
       if (setTx) await txClient.query(setTx, []);
       const tx = makeBoundCallable(txClient);
       return await cb(tx);
-    }, { timeoutMs: opts.timeoutMs });
+    }, { timeoutMs: opts.timeoutMs, signal: opts.signal });
   }) as SqlRoot["transaction"];
 
   const unsafe = (async (query: string, ...params: unknown[]): Promise<Record<string, unknown>[]> => {
