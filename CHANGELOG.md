@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.15.0](https://github.com/ONREZA/sqlx-js/compare/v0.14.0...v0.15.0) (2026-07-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **runtime:** remove getClient, setClient, and SqlClient.client. Use createSqlClient for managed execution or createClient for raw access.
+
+### Features
+
+* **runtime:** harden managed query lifecycle ([e0eca46](https://github.com/ONREZA/sqlx-js/commit/e0eca463091879d0efb8d59cea4e9cf72c44588e))
+
 ## [0.14.0](https://github.com/ONREZA/sqlx-js/compare/v0.13.1...v0.14.0) (2026-07-16)
 
 
