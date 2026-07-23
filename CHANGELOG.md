@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/ONREZA/sqlx-js/compare/v0.15.0...v0.16.0) (2026-07-23)
+
+
+### Features
+
+* **profiles:** bind queries to database roles ([818df3c](https://github.com/ONREZA/sqlx-js/commit/818df3c1b46f7b73fb71af668a8a1a66f08d9bcc))
+
 ## [0.15.0](https://github.com/ONREZA/sqlx-js/compare/v0.14.0...v0.15.0) (2026-07-22)
 
 
