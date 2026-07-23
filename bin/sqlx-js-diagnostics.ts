@@ -10,6 +10,7 @@ type Diagnostic = {
   line?: number;
   column?: number;
   code?: string;
+  profile?: string;
 };
 
 type DiagnosticPayload = {
@@ -45,6 +46,7 @@ function parsePayload(value: unknown): DiagnosticPayload {
     if (typeof item.message !== "string") throw new Error(`diagnostics[${index}].message must be a string`);
     optionalString(item.file, `diagnostics[${index}].file`);
     optionalString(item.code, `diagnostics[${index}].code`);
+    optionalString(item.profile, `diagnostics[${index}].profile`);
     optionalPosition(item.line, `diagnostics[${index}].line`);
     optionalPosition(item.column, `diagnostics[${index}].column`);
     return {
@@ -55,6 +57,7 @@ function parsePayload(value: unknown): DiagnosticPayload {
       ...(item.line !== undefined ? { line: item.line } : {}),
       ...(item.column !== undefined ? { column: item.column } : {}),
       ...(item.code !== undefined ? { code: item.code } : {}),
+      ...(item.profile !== undefined ? { profile: item.profile } : {}),
     };
   });
   return { formatVersion: 1, ok: value.ok, diagnostics };
@@ -74,8 +77,9 @@ function renderGithub(diagnostic: Diagnostic): string {
   if (diagnostic.line !== undefined) properties.push(`line=${diagnostic.line}`);
   if (diagnostic.column !== undefined) properties.push(`col=${diagnostic.column}`);
   const propertyText = properties.length > 0 ? ` ${properties.join(",")}` : "";
+  const profile = diagnostic.profile ? ` profile:${diagnostic.profile}` : "";
   const code = diagnostic.code ? ` ${diagnostic.code}` : "";
-  return `::${diagnostic.severity}${propertyText}::${githubData(`[${diagnostic.phase}${code}] ${diagnostic.message}`)}`;
+  return `::${diagnostic.severity}${propertyText}::${githubData(`[${diagnostic.phase}${profile}${code}] ${diagnostic.message}`)}`;
 }
 
 function renderUnix(diagnostic: Diagnostic): string {
@@ -83,8 +87,9 @@ function renderUnix(diagnostic: Diagnostic): string {
   const file = clean(diagnostic.file ?? "<project>");
   const line = diagnostic.line ?? 1;
   const column = diagnostic.column ?? 1;
+  const profile = diagnostic.profile ? ` profile:${clean(diagnostic.profile)}` : "";
   const code = diagnostic.code ? ` ${clean(diagnostic.code)}` : "";
-  return `${file}:${line}:${column}: ${diagnostic.severity}: [${clean(diagnostic.phase)}${code}] ${clean(diagnostic.message)}`;
+  return `${file}:${line}:${column}: ${diagnostic.severity}: [${clean(diagnostic.phase)}${profile}${code}] ${clean(diagnostic.message)}`;
 }
 
 function usage(): never {

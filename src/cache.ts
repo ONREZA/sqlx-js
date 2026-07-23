@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { isBuiltinOid } from "./pg/oids";
@@ -6,7 +6,7 @@ import { queryId } from "./query-id";
 import { rewriteNamedParameters } from "./sql-params";
 
 export const CACHE_FORMAT_VERSION = 3;
-export const GENERATOR_REVISION = 15;
+export const GENERATOR_REVISION = 16;
 export const CACHE_MANIFEST_FILE = "cache-manifest.json";
 
 export class CacheManifestStaleError extends Error {
@@ -32,6 +32,7 @@ export type CacheColumn = {
 
 export type CacheEntry = {
   query: string;
+  profile?: string;
   validation?: "planned" | "parse-only";
   inlineQueries?: string[];
   paramOids: number[];
@@ -51,6 +52,16 @@ export function portableCacheOid(oid: number): number {
 
 export function fingerprint(query: string): string {
   return queryId(query);
+}
+
+export function profileFingerprint(profile: string | undefined, query: string): string {
+  if (!profile) return fingerprint(query);
+  return createHash("sha256")
+    .update(profile)
+    .update("\0")
+    .update(fingerprint(query))
+    .digest("hex")
+    .slice(0, 16);
 }
 
 
@@ -82,6 +93,9 @@ function assertEntryShape(fp: string, raw: unknown): CacheEntry {
   const entry = raw as Record<string, unknown>;
   if (entry.validation !== undefined && entry.validation !== "planned" && entry.validation !== "parse-only") {
     throw new Error(`sqlx-js: cache entry ${fp}.json has invalid validation metadata. Run \`sqlx-js prepare\`.`);
+  }
+  if (entry.profile !== undefined && (typeof entry.profile !== "string" || entry.profile.trim() === "")) {
+    throw new Error(`sqlx-js: cache entry ${fp}.json has invalid profile metadata. Run \`sqlx-js prepare\`.`);
   }
   let expectedNames: string[];
   try {
@@ -239,7 +253,10 @@ export function assertCacheManifest(cacheDir: string, configHash: string): Cache
     throw new Error(`sqlx-js: cache manifest is missing. Run \`sqlx-js prepare\` to regenerate the cache.`);
   }
   if (manifest.configHash !== configHash) {
-    throw new Error("sqlx-js: cache was generated with different type-affecting config or function catalog settings. Run `sqlx-js prepare`.");
+    throw new Error(
+      "sqlx-js: cache was generated with different type-affecting config, connection profiles, "
+      + "or function catalog settings. Run `sqlx-js prepare`.",
+    );
   }
   return manifest;
 }

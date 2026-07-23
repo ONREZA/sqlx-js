@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, relative } from "node:path";
-import { Cache, CacheManifestStaleError, readCacheManifest } from "../cache";
+import { Cache, CacheManifestStaleError, profileFingerprint, readCacheManifest } from "../cache";
 import { loadConfig, prepareConfigHash } from "../config";
 import { queryId } from "../query-id";
 import type { QueryExecutionMode } from "../query";
@@ -42,9 +42,10 @@ export type QueryInventoryItem = {
   queryId: string;
   queryNames: string[];
   query: string;
+  profiles: string[];
   cardinalities: QueryExecutionMode[];
   sqlFilePaths: string[];
-  callSites: { file: string; line: number; column: number }[];
+  callSites: { file: string; line: number; column: number; profiles: string[] }[];
   cacheStatus: "current" | "stale" | "missing";
   validation: "planned" | "parse-only" | null;
 };
@@ -65,7 +66,7 @@ export async function buildQueryInventory(root: string, cacheDir: string): Promi
   }
   let sites: ReturnType<typeof scanProject>;
   try {
-    sites = scanProject(root, config.scan);
+    sites = scanProject(root, config.scan, Object.keys(config.profiles ?? {}));
   } catch (error) {
     throw queriesError("scan", error);
   }
@@ -96,21 +97,44 @@ export async function buildQueryInventory(root: string, cacheDir: string): Promi
     grouped.set(id, group);
   }
   const queries = [...grouped.entries()].map(([id, group]): QueryInventoryItem => {
-    const cachedEntry = cached.get(id);
+    const profiles = [...new Set(group.flatMap((site) => site.profiles ?? []))].sort();
+    const cacheProfiles = profiles.length > 0 ? profiles : [undefined];
+    const cachedEntries = cacheProfiles.map((profile) => cached.get(profileFingerprint(profile, group[0]!.query)));
+    const presentEntries = cachedEntries.filter((entry) => entry !== undefined);
+    const cacheStatus = presentEntries.length !== cacheProfiles.length
+      ? "missing"
+      : manifestCurrent && presentEntries.every((entry) => entry.validation)
+        ? "current"
+        : "stale";
+    const validation = presentEntries.length === 0 || presentEntries.some((entry) => !entry.validation)
+      ? null
+      : presentEntries.every((entry) => entry.validation === "planned")
+        ? "planned"
+        : "parse-only";
     return {
       queryId: id,
       queryNames: [...new Set(group.flatMap((site) => site.queryName ? [site.queryName] : []))].sort(),
       query: group[0]!.query,
+      profiles,
       cardinalities: [...new Set(group.map((site) => site.cardinality ?? "many"))].sort(),
       sqlFilePaths: [...new Set(group.flatMap((site) => site.sqlFilePath ? [site.sqlFilePath] : []))].sort(),
       callSites: group
-        .map(({ file, line, column }) => ({ file, line, column }))
+        .map(({ file, line, column, profiles: siteProfiles }) => ({
+          file,
+          line,
+          column,
+          profiles: siteProfiles ?? [],
+        }))
         .sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column),
-      cacheStatus: !cachedEntry ? "missing" : manifestCurrent && cachedEntry.validation ? "current" : "stale",
-      validation: cachedEntry?.validation ?? null,
+      cacheStatus,
+      validation,
     };
   }).sort((a, b) => a.queryId.localeCompare(b.queryId));
-  const active = new Set(queries.map((query) => query.queryId));
+  const active = new Set(sites.flatMap((site) =>
+    site.profiles && site.profiles.length > 0
+      ? site.profiles.map((profile) => profileFingerprint(profile, site.query))
+      : [profileFingerprint(undefined, site.query)]
+  ));
   const orphanedCacheIds = cacheEntries.map(({ fp }) => fp).filter((fp) => !active.has(fp)).sort();
   return { formatVersion: 1, ok: true, queries, orphanedCacheIds };
 }
@@ -163,7 +187,8 @@ export async function runQueries(options: {
   for (const query of inventory.queries) {
     const names = query.queryNames.length > 0 ? ` ${query.queryNames.join(",")}` : "";
     const validation = query.validation ? ` ${query.validation}` : "";
-    console.log(`${query.queryId}${names} ${query.cardinalities.join(",")} ${query.cacheStatus}${validation}`);
+    const profiles = query.profiles.length > 0 ? ` profiles=${query.profiles.join(",")}` : "";
+    console.log(`${query.queryId}${names} ${query.cardinalities.join(",")} ${query.cacheStatus}${validation}${profiles}`);
     for (const site of query.callSites) console.log(`  ${site.file}:${site.line}:${site.column}`);
   }
   if (inventory.queries.length === 0) console.log("no sqlx-js queries found");

@@ -11,7 +11,7 @@ import {
   type WatchState,
 } from "../src/commands/watch";
 import { PrepareFatalError, type PrepareIncrementalInput, type PrepareResult, type PrepareSession } from "../src/commands/prepare";
-import { fingerprint } from "../src/cache";
+import { profileFingerprint } from "../src/cache";
 
 function result(entries = 1): PrepareResult {
   return { sites: entries, entries, failures: 0, pruned: 0, functions: 0, enums: 0, diagnostics: [] };
@@ -22,6 +22,7 @@ function session(name: string, closed: string[]): PrepareSession {
     client: { end: async () => { closed.push(name); } } as unknown as PrepareSession["client"],
     schema: {} as PrepareSession["schema"],
     userCfg: {},
+    profiles: new Map(),
   };
 }
 
@@ -101,7 +102,15 @@ test("watch reuses unchanged fingerprints and scans only the changed source", as
   const state: WatchState = { session: null };
   const oldA = { file: "a.ts", line: 1, column: 1, query: "SELECT 1", paramCount: 0, kind: "inline" as const };
   const newA = { ...oldA, query: "SELECT 2" };
-  const stableB = { file: "b.ts", line: 1, column: 1, query: "SELECT 3", paramCount: 0, kind: "inline" as const };
+  const stableB = {
+    file: "b.ts",
+    line: 1,
+    column: 1,
+    query: "SELECT 3",
+    paramCount: 0,
+    kind: "inline" as const,
+    profiles: ["api", "worker"],
+  };
   const inputs: PrepareIncrementalInput[] = [];
   writeFileSync(join(root, "a.ts"), "export {};\n");
   writeFileSync(join(root, "b.ts"), "export {};\n");
@@ -123,7 +132,10 @@ test("watch reuses unchanged fingerprints and scans only the changed source", as
     await prepareWatchedOnce(currentOpts, state, () => {}, () => {}, deps, ["a.ts"]);
 
     expect(inputs[1]!.sites?.map((site) => site.query).sort()).toEqual(["SELECT 2", "SELECT 3"]);
-    expect(inputs[1]!.reuseCacheFps).toEqual(new Set([fingerprint("SELECT 3")]));
+    expect(inputs[1]!.reuseCacheFps).toEqual(new Set([
+      profileFingerprint("api", "SELECT 3"),
+      profileFingerprint("worker", "SELECT 3"),
+    ]));
     expect(inputs[1]!.reuseFunctions).toBe(true);
     expect(inputs[1]!.reuseEnumCatalog).toBe(true);
   } finally {

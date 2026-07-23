@@ -92,6 +92,58 @@ test("createSqlClient: scoped sql surface is detected", () => {
   expect(sites[2]!.kind).toBe("file");
 });
 
+test("createSqlClient profile is attached to direct and transactional queries", () => {
+  setup({
+    "a.ts":
+      "import { createSqlClient } from \"@onreza/sqlx-js\";\n" +
+      "const db = createSqlClient(undefined, { profile: profiles.api });\n" +
+      "await db.sql(\"SELECT direct\");\n" +
+      "await db.sql.transaction(async (tx) => {\n" +
+      "  await tx.execute(\"UPDATE jobs SET active = false\");\n" +
+      "});\n",
+  });
+
+  const sites = scanProject(tmp, {}, ["api", "worker"]).sort((a, b) => a.line - b.line);
+  expect(sites.map((site) => site.profiles)).toEqual([["api"], ["api"]]);
+});
+
+test("createSqlClient profile survives transparent TypeScript expressions", () => {
+  setup({
+    "a.ts":
+      "import { createSqlClient, type DatabaseProfile } from \"@onreza/sqlx-js\";\n" +
+      "const db = (createSqlClient(undefined, { profile: profiles.api as DatabaseProfile }) satisfies object);\n" +
+      "await db.sql(\"SELECT direct\");\n",
+  });
+
+  expect(scanProject(tmp, {}, ["api"])[0]?.profiles).toEqual(["api"]);
+});
+
+test("profiled projects reject unassigned and unknown client queries", () => {
+  setup({
+    "a.ts":
+      "import { createSqlClient } from \"@onreza/sqlx-js\";\n" +
+      "const db = createSqlClient();\n" +
+      "await db.sql(\"SELECT unassigned\");\n",
+  });
+  expect(() => scanProject(tmp, {}, ["api"])).toThrow(/query has no connection profile/);
+
+  setup({
+    "a.ts":
+      "import { createSqlClient } from \"@onreza/sqlx-js\";\n" +
+      "const db = createSqlClient(undefined, { profile: profiles.missing });\n" +
+      "await db.sql(\"SELECT unknown\");\n",
+  });
+  expect(() => scanProject(tmp, {}, ["api"])).toThrow(/unknown profile \"missing\"/);
+
+  setup({
+    "a.ts":
+      "import { createSqlClient } from \"@onreza/sqlx-js\";\n" +
+      "let db = createSqlClient(undefined, { profile: profiles.api });\n" +
+      "await db.sql(\"SELECT mutable\");\n",
+  });
+  expect(() => scanProject(tmp, {}, ["api"])).toThrow(/profiled createSqlClient bindings must use const/);
+});
+
 test("namespace createSqlClient is detected and a local client shadow is ignored", () => {
   setup({
     "a.ts":

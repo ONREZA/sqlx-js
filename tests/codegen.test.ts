@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { emitDts } from "../src/codegen";
 import type { CacheEntry } from "../src/cache";
 import type { FunctionEntry } from "../src/function-cache";
+import type { DatabaseProfiles } from "../src/config";
 
 const tmp = join(import.meta.dir, ".tmp-codegen");
 
@@ -16,11 +17,44 @@ function write(
   entries: CacheEntry[],
   functions: FunctionEntry[] = [],
   runtimeTypes: Record<string, string> = {},
+  profiles: DatabaseProfiles = {},
 ): string {
   const out = join(tmp, "sqlx-js-env.d.ts");
-  emitDts(out, entries, functions, runtimeTypes);
+  emitDts(out, entries, functions, runtimeTypes, profiles);
   return readFileSync(out, "utf8");
 }
+
+test("profile registries contain only queries assigned to that connection profile", () => {
+  const dts = write([
+    {
+      profile: "api",
+      query: "SELECT api",
+      paramOids: [],
+      paramTsTypes: [],
+      hasResultSet: true,
+      columns: [{ name: "api", typeOid: 23, tsType: "number", nullable: false }],
+    },
+    {
+      profile: "worker",
+      query: "SELECT worker",
+      paramOids: [],
+      paramTsTypes: [],
+      hasResultSet: true,
+      columns: [{ name: "worker", typeOid: 25, tsType: "string", nullable: false }],
+    },
+  ], [], {}, {
+    api: { name: "api", role: "app_api" },
+    worker: { name: "worker", role: "app_worker" },
+  });
+
+  expect(dts).toContain('"api": {');
+  expect(dts).toContain('"worker": {');
+  expect(dts).toContain('readonly role: "app_api"');
+  expect(dts).toContain('readonly role: "app_worker"');
+  expect(dts).toContain('"SELECT api": { params: []; row: { "api": number } }');
+  expect(dts).toContain('"SELECT worker": { params: []; row: { "worker": string } }');
+  expect(dts).toContain("interface KnownProfiles extends SqlxJsGeneratedProfiles");
+});
 
 test("forceNonNull strips null from inferred-nullable column", () => {
   const dts = write([
@@ -310,6 +344,63 @@ void replicaOnly;
       paths: { "@onreza/sqlx-js": ["src/index.ts"] },
     },
     files: ["consumer.ts", "primary.d.ts", "replica.d.ts"],
+  }));
+
+  const checked = spawnSync("bunx", ["tsc", "-p", join(root, "tsconfig.json")], {
+    cwd: resolve(import.meta.dir, ".."),
+    encoding: "utf8",
+  });
+  expect(checked.status, checked.stdout + checked.stderr).toBe(0);
+});
+
+test("createSqlClient infers the exact generated profile registry", () => {
+  const root = join(tmp, "profile-registry");
+  mkdirSync(root, { recursive: true });
+  emitDts(join(root, "generated.d.ts"), [
+    {
+      profile: "api",
+      query: "SELECT api",
+      paramOids: [],
+      paramTsTypes: [],
+      hasResultSet: true,
+      columns: [{ name: "api", typeOid: 23, tsType: "number", nullable: false }],
+    },
+    {
+      profile: "worker",
+      query: "SELECT worker",
+      paramOids: [],
+      paramTsTypes: [],
+      hasResultSet: true,
+      columns: [{ name: "worker", typeOid: 25, tsType: "string", nullable: false }],
+    },
+  ], [], {}, {
+    api: { name: "api", role: "app_api" },
+    worker: { name: "worker", role: "app_worker" },
+  });
+  writeFileSync(join(root, "consumer.ts"), `
+import { createSqlClient } from "@onreza/sqlx-js";
+
+const api = createSqlClient(undefined, {
+  profile: { name: "api", role: "app_api" },
+});
+void api.sql("SELECT api");
+// @ts-expect-error worker queries are not available through the api profile
+void api.sql("SELECT worker");
+// @ts-expect-error the generated api profile requires the app_api PostgreSQL role
+createSqlClient(undefined, { profile: { name: "api", role: "wrong" } });
+`);
+  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
+    compilerOptions: {
+      strict: true,
+      noEmit: true,
+      module: "Preserve",
+      moduleResolution: "Bundler",
+      target: "ESNext",
+      types: ["bun-types"],
+      baseUrl: resolve(import.meta.dir, ".."),
+      paths: { "@onreza/sqlx-js": ["src/index.ts"] },
+    },
+    files: ["consumer.ts", "generated.d.ts"],
   }));
 
   const checked = spawnSync("bunx", ["tsc", "-p", join(root, "tsconfig.json")], {

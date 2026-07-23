@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   assertSupportedRuntime,
+  defineDatabaseProfiles,
   loadConfig,
   loadRootEnv,
   prepareConfigHash,
@@ -42,6 +43,42 @@ test("loadConfig imports an erasable TypeScript config", async () => {
   `);
 
   expect(await loadConfig(dir)).toEqual({ scan: { include: ["src/**/*.ts"] } });
+});
+
+test("database profiles share exact names and roles between config and runtime", async () => {
+  const profiles = defineDatabaseProfiles({
+    api: { role: "app_api" },
+    worker: { role: "app_worker" },
+  });
+  expect(profiles).toEqual({
+    api: { name: "api", role: "app_api" },
+    worker: { name: "worker", role: "app_worker" },
+  });
+  expect(Object.isFrozen(profiles)).toBe(true);
+  expect(Object.values(profiles).every(Object.isFrozen)).toBe(true);
+
+  const dir = root();
+  writeFileSync(join(dir, "sqlx-js.config.mjs"), `export default {
+    profiles: {
+      api: { name: "api", role: "app_api" },
+      worker: { name: "worker", role: "app_worker" },
+    },
+  };\n`);
+  expect((await loadConfig(dir)).profiles).toEqual(profiles);
+});
+
+test("loadConfig rejects malformed database profile contracts", async () => {
+  const wrongName = root();
+  writeFileSync(join(wrongName, "sqlx-js.config.mjs"), `export default {
+    profiles: { api: { name: "worker", role: "app_api" } },
+  };\n`);
+  await expect(loadConfig(wrongName)).rejects.toThrow(/profiles\.api\.name must be "api"/);
+
+  const emptyRole = root();
+  writeFileSync(join(emptyRole, "sqlx-js.config.mjs"), `export default {
+    profiles: { api: { name: "api", role: " " } },
+  };\n`);
+  await expect(loadConfig(emptyRole)).rejects.toThrow(/profiles\.api\.role must be a non-empty PostgreSQL role/);
 });
 
 test("loadConfig rejects malformed JavaScript config with an actionable path", async () => {
@@ -93,6 +130,9 @@ test("prepare config hash includes column and function catalog contracts", () =>
   expect(prepareConfigHash({ functionCatalog: false })).not.toBe(base);
   expect(prepareConfigHash({ functionCatalog: { includeExtensionOwned: true } })).not.toBe(base);
   expect(prepareConfigHash({ enumCatalog: { output: "src/db-enums.ts", schemas: ["public"] } })).not.toBe(base);
+  expect(prepareConfigHash({
+    profiles: { api: { name: "api", role: "app_api" } },
+  })).not.toBe(base);
 });
 
 test("enum catalog config requires a project output and explicit schemas", async () => {

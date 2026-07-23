@@ -52,6 +52,7 @@ export type QueryDefinition<
   readonly mode: Mode;
   readonly queryId: string;
   readonly queryName?: string;
+  readonly profiles?: readonly string[];
   mapParams<Input, const WireParams extends QueryWireParams>(
     mapper: (input: Input, helpers: QueryParameterHelpers) => CheckedMappedWireParams<Query, WireParams>,
   ): MappedQueryDefinition<Query, Mode, Input>;
@@ -89,6 +90,7 @@ export type MappedQueryDefinition<
   readonly mode: Mode;
   readonly queryId: string;
   readonly queryName?: string;
+  readonly profiles?: readonly string[];
   readonly [MAPPED_QUERY_INPUT]: Input;
   run<Registry extends { queries: Record<Query, QueryEntry>; fileQueries: object }>(
     executor: TypedSqlForRegistry<Registry>,
@@ -130,7 +132,10 @@ type DefineQueryMethod<Mode extends QueryExecutionMode> = {
   <const Query extends string>(name: string, query: Query): QueryDefinition<Query, Mode>;
 };
 
-function definitionMethod<Mode extends QueryExecutionMode>(mode: Mode): DefineQueryMethod<Mode> {
+function definitionMethod<Mode extends QueryExecutionMode>(
+  mode: Mode,
+  profiles: readonly string[] = [],
+): DefineQueryMethod<Mode> {
   return ((nameOrQuery: string, maybeQuery?: string) => {
     const query = maybeQuery ?? nameOrQuery;
     const name = maybeQuery === undefined ? undefined : nameOrQuery;
@@ -141,6 +146,7 @@ function definitionMethod<Mode extends QueryExecutionMode>(mode: Mode): DefineQu
       queryId: queryId(query),
       ...(name ? { queryName: name } : {}),
     };
+    const declaredProfiles = profiles.length > 0 ? Object.freeze([...profiles]) : undefined;
     const named = rewriteNamedParameters(query).names.length > 0;
     type RuntimeExecutor = {
       (query: string, ...params: unknown[]): Promise<unknown>;
@@ -167,6 +173,7 @@ function definitionMethod<Mode extends QueryExecutionMode>(mode: Mode): DefineQu
       mode,
       queryId: metadata.queryId,
       ...(name ? { queryName: name } : {}),
+      ...(declaredProfiles ? { profiles: declaredProfiles } : {}),
       mapParams<Input, WireParams extends QueryWireParams>(
         mapper: (input: Input, helpers: QueryParameterHelpers) => WireParams,
       ) {
@@ -175,6 +182,7 @@ function definitionMethod<Mode extends QueryExecutionMode>(mode: Mode): DefineQu
           mode,
           queryId: metadata.queryId,
           ...(name ? { queryName: name } : {}),
+          ...(declaredProfiles ? { profiles: declaredProfiles } : {}),
           async run(executor: RuntimeExecutor, input: Input, options?: QueryExecutionOptions) {
             const mapped = mapper(input, { json: executor.json, array: executor.array });
             return await run(executor, Array.isArray(mapped) ? [...mapped] : [mapped], options);
@@ -203,4 +211,22 @@ export const defineQuery = Object.assign(definitionMethod("many"), {
   one: definitionMethod("one"),
   optional: definitionMethod("optional"),
   execute: definitionMethod("execute"),
+  for(...profiles: string[]) {
+    if (profiles.length === 0) {
+      throw new Error("sqlx-js.defineQuery.for: at least one profile is required");
+    }
+    if (profiles.some((profile) => profile.trim() === "")) {
+      throw new Error("sqlx-js.defineQuery.for: profile names must not be empty");
+    }
+    if (new Set(profiles).size !== profiles.length) {
+      throw new Error("sqlx-js.defineQuery.for: profile names must be unique");
+    }
+    const declared = Object.freeze([...profiles]);
+    return Object.freeze({
+      many: definitionMethod("many", declared),
+      one: definitionMethod("one", declared),
+      optional: definitionMethod("optional", declared),
+      execute: definitionMethod("execute", declared),
+    });
+  },
 });

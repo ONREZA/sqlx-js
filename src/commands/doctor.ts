@@ -37,6 +37,10 @@ function decodeBoolean(value: Uint8Array | null | undefined): boolean {
   return text === "t" || text === "true" || text === "1";
 }
 
+function quoteIdentifier(value: string): string {
+  return `"${value.replace(/"/g, "\"\"")}"`;
+}
+
 function tsconfigIncludes(root: string, file: string): { ok: boolean; message: string } {
   const path = join(root, "tsconfig.json");
   if (!existsSync(path)) return { ok: false, message: `tsconfig.json not found at ${path}` };
@@ -209,6 +213,35 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
           shadowAdminConfigured: Boolean(shadowAdminDatabaseUrl),
         },
       });
+      if (configLoaded && config.profiles) {
+        const roles: Record<string, string> = {};
+        let profileError: Error | undefined;
+        for (const profile of Object.values(config.profiles)) {
+          try {
+            await client.simpleQuery(`SET ROLE ${quoteIdentifier(profile.role)}`);
+            const roleResult = await client.simpleQuery("SELECT current_user");
+            const currentRole = decodeText(roleResult.rows[0]![0]!);
+            if (!currentRole) throw new Error("PostgreSQL returned an empty current_user");
+            roles[profile.name] = currentRole;
+          } catch (error) {
+            profileError = new Error(
+              `profile ${profile.name} cannot use PostgreSQL role ${profile.role}: ${(error as Error).message}`,
+              { cause: error },
+            );
+            break;
+          } finally {
+            await client.simpleQuery("RESET ROLE").catch(() => {});
+          }
+        }
+        checks.push(profileError
+          ? { name: "profiles", status: "error", message: profileError.message, details: { roles } }
+          : {
+              name: "profiles",
+              status: "ok",
+              message: `${Object.keys(roles).length} connection profile role(s) are available`,
+              details: { roles },
+            });
+      }
       if (configLoaded) {
         const schema = new SchemaCache(client);
         schema.setTypeRegistry(mergeExtensionTypes(config.customTypes), config.customTypes);

@@ -25,6 +25,7 @@ import { arrayElementOid, builtinArrayOids } from "./pg/oids";
 import { PostgresTypeRegistry, type RuntimeTypeCodecs } from "./postgres-codecs";
 import { queryId } from "./query-id";
 import type { QueryExecutionMetadata } from "./query";
+import type { DatabaseProfile } from "./config";
 
 export type PostgresClient = postgres.Sql<{ bigint: bigint }>;
 export type PostgresOptions = postgres.Options<Record<string, postgres.PostgresType>>;
@@ -37,6 +38,8 @@ export type ClientState = "healthy" | "poisoned" | "recycling" | "failed" | "clo
 export type QueryStartEvent = {
   queryId: string;
   queryName?: string;
+  profile?: string;
+  role?: string;
   generation: number;
 };
 
@@ -48,6 +51,8 @@ export type QueryTimeoutEvent = QueryStartEvent & {
 };
 
 export type ClientStateChangeEvent = {
+  profile?: string;
+  role?: string;
   from: ClientState;
   to: ClientState;
   generation: number;
@@ -75,6 +80,7 @@ export type DeadlineOptions = {
 };
 
 export type CreateSqlClientOptions = CreateClientOptions & {
+  profile?: DatabaseProfile;
   onQuery?: OnQueryHook;
   onQueryHookError?: OnQueryHookError;
   onQueryStart?: (event: QueryStartEvent) => void | Promise<void>;
@@ -172,6 +178,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
   private readonly operationTimeoutMs?: number;
   private readonly cancelGraceMs: number;
   private readonly prepare: boolean;
+  private readonly profile?: DatabaseProfile;
   private readonly typeCodecs?: RuntimeTypeCodecs;
   private readonly createPool: () => PostgresClient;
   private current: PoolGeneration;
@@ -198,6 +205,9 @@ class ManagedPostgresRuntime implements RuntimeClient {
     this.operationTimeoutMs = validateOptionalTimeout(options.operationTimeoutMs, "operationTimeoutMs");
     this.cancelGraceMs = validateTimeout(options.cancelGraceMs ?? 1_000, "cancelGraceMs", true);
     this.prepare = options.prepare ?? true;
+    this.profile = options.profile
+      ? Object.freeze({ name: options.profile.name, role: options.profile.role })
+      : undefined;
     this.fileRoot = resolvedFileRoot(options.fileRoot);
     this.reloadSqlFiles = options.reloadSqlFiles ?? false;
     this.sqlFiles = options.sqlFiles;
@@ -841,11 +851,12 @@ class ManagedPostgresRuntime implements RuntimeClient {
   }
 
   private notifyQuery(event: Parameters<OnQueryHook>[0]): void {
+    const profiled = this.profileEvent(event);
     try {
-      const pending = this.onQuery?.(event);
-      if (pending) void pending.catch((error) => this.notifyQueryError(error, event));
+      const pending = this.onQuery?.(profiled);
+      if (pending) void pending.catch((error) => this.notifyQueryError(error, profiled));
     } catch (error) {
-      this.notifyQueryError(error, event);
+      this.notifyQueryError(error, profiled);
     }
   }
 
@@ -860,12 +871,21 @@ class ManagedPostgresRuntime implements RuntimeClient {
     hook: ((event: Event) => void | Promise<void>) | undefined,
     event: Event,
   ): void {
+    const profiled = this.profileEvent(event);
     try {
-      const pending = hook?.(event);
-      if (pending) void pending.catch((error) => this.notifyLifecycleError(error, event));
+      const pending = hook?.(profiled);
+      if (pending) void pending.catch((error) => this.notifyLifecycleError(error, profiled));
     } catch (error) {
-      this.notifyLifecycleError(error, event);
+      this.notifyLifecycleError(error, profiled);
     }
+  }
+
+  private profileEvent<Event extends object>(event: Event): Event & {
+    profile?: string;
+    role?: string;
+  } {
+    if (!this.profile) return event;
+    return { ...event, profile: this.profile.name, role: this.profile.role };
   }
 
   private notifyLifecycleError(error: unknown, event: ClientLifecycleEvent): void {
@@ -1127,6 +1147,7 @@ export function createClient(url = process.env.DATABASE_URL, options: CreateClie
 
 function postgresClientOptions(options: CreateSqlClientOptions): CreateClientOptions {
   const {
+    profile: _profile,
     onQuery: _onQuery,
     onQueryHookError: _onQueryHookError,
     onQueryStart: _onQueryStart,
@@ -1144,9 +1165,56 @@ function postgresClientOptions(options: CreateSqlClientOptions): CreateClientOpt
   return clientOptions;
 }
 
+function hasRoleStartupOption(value: string): boolean {
+  return /(?:^|\s)-c\s*(?:"|')?role(?:\s*=|\s+)/i.test(value);
+}
+
+function profileClientOptions(
+  url: string,
+  options: CreateSqlClientOptions,
+): CreateClientOptions {
+  const clientOptions = postgresClientOptions(options);
+  const profile = options.profile;
+  if (profile === undefined) return clientOptions;
+  if (!profile || typeof profile !== "object") {
+    throw new Error("sqlx-js: profile must be a database profile");
+  }
+  if (typeof profile.name !== "string" || !profile.name.trim()) {
+    throw new Error("sqlx-js: profile.name must be a non-empty string");
+  }
+  if (typeof profile.role !== "string" || !profile.role.trim()) {
+    throw new Error(`sqlx-js: profile ${profile.name} must declare a non-empty PostgreSQL role`);
+  }
+  const configuredRole = clientOptions.connection?.role;
+  if (configuredRole !== undefined && configuredRole !== profile.role) {
+    throw new Error(
+      `sqlx-js: profile ${profile.name} requires role ${profile.role}, but connection.role is ${String(configuredRole)}`,
+    );
+  }
+  const connectionOptions = clientOptions.connection?.options;
+  if (typeof connectionOptions === "string" && hasRoleStartupOption(connectionOptions)) {
+    throw new Error(`sqlx-js: profile ${profile.name} cannot be combined with a role in connection.options`);
+  }
+  if (/^postgres(?:ql)?:\/\//i.test(url)) {
+    const parsed = new URL(url);
+    const urlRole = parsed.searchParams.get("role");
+    if (urlRole !== null && urlRole !== profile.role) {
+      throw new Error(`sqlx-js: profile ${profile.name} requires role ${profile.role}, but DATABASE_URL uses role ${urlRole}`);
+    }
+    const urlOptions = parsed.searchParams.get("options");
+    if (urlOptions && hasRoleStartupOption(urlOptions)) {
+      throw new Error(`sqlx-js: profile ${profile.name} cannot be combined with a role in DATABASE_URL options`);
+    }
+  }
+  return {
+    ...clientOptions,
+    connection: { ...(clientOptions.connection ?? {}), role: profile.role },
+  };
+}
+
 function createManagedClient(url: string | undefined, options: CreateSqlClientOptions): ManagedPostgresRuntime {
   if (!url) throw new Error("sqlx-js: DATABASE_URL is not set");
-  const clientOptions = postgresClientOptions(options);
+  const clientOptions = profileClientOptions(url, options);
   return new ManagedPostgresRuntime(() => createClient(url, clientOptions), options);
 }
 

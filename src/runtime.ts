@@ -14,6 +14,8 @@ import {
 export type OnQueryEvent = {
   queryId: string;
   queryName?: string;
+  profile?: string;
+  role?: string;
   query: string;
   params: unknown[];
   durationMs: number;

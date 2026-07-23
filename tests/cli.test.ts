@@ -61,15 +61,20 @@ test("diagnostics CLI renders versioned prepare JSON for editors and GitHub", ()
       file: "src/users.ts",
       line: 12,
       column: 7,
+      profile: "api",
     }],
   });
   const unix = spawnSync("bun", [diagnosticsBinPath, "unix"], { encoding: "utf8", input });
   expect(unix.status).toBe(0);
-  expect(unix.stdout.trim()).toBe("src/users.ts:12:7: warning: [inference] result column resolved conservatively");
+  expect(unix.stdout.trim()).toBe(
+    "src/users.ts:12:7: warning: [inference profile:api] result column resolved conservatively",
+  );
 
   const github = spawnSync("bun", [diagnosticsBinPath, "github"], { encoding: "utf8", input });
   expect(github.status).toBe(0);
-  expect(github.stdout.trim()).toBe("::warning file=src/users.ts,line=12,col=7::[inference] result column resolved conservatively");
+  expect(github.stdout.trim()).toBe(
+    "::warning file=src/users.ts,line=12,col=7::[inference profile:api] result column resolved conservatively",
+  );
 });
 
 test("CLI init scaffolds project files and is idempotent without DATABASE_URL", () => {

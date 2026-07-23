@@ -19,6 +19,16 @@ export type EnumCatalogConfig = {
   registry?: boolean;
 };
 
+export type DatabaseProfile<
+  Name extends string = string,
+  Role extends string = string,
+> = {
+  readonly name: Name;
+  readonly role: Role;
+};
+
+export type DatabaseProfiles = Readonly<Record<string, DatabaseProfile>>;
+
 export type SqlxJsConfig = {
   jsonbTypes?: Record<string, string>;
   columnTypes?: Record<string, string>;
@@ -28,6 +38,7 @@ export type SqlxJsConfig = {
     includeExtensionOwned?: boolean;
   };
   enumCatalog?: EnumCatalogConfig;
+  profiles?: DatabaseProfiles;
   scan?: ScanConfig;
   schema?: {
     provider?: "builtin" | "pgschema";
@@ -39,6 +50,29 @@ export type SqlxJsConfig = {
 
 export function defineConfig<T extends SqlxJsConfig>(config: T): T {
   return config;
+}
+
+export function defineDatabaseProfiles<
+  const Profiles extends Readonly<Record<string, { readonly role: string }>>,
+>(profiles: Profiles): {
+  readonly [Name in keyof Profiles]: DatabaseProfile<Name & string, Profiles[Name]["role"]>;
+} {
+  const entries = Object.entries(profiles);
+  if (entries.length === 0) {
+    throw new Error("sqlx-js: database profiles must contain at least one profile");
+  }
+  const defined = entries.map(([name, profile]) => {
+    if (name.trim() === "") {
+      throw new Error("sqlx-js: database profile names must not be empty");
+    }
+    if (!profile || typeof profile !== "object" || typeof profile.role !== "string" || profile.role.trim() === "") {
+      throw new Error(`sqlx-js: database profile ${JSON.stringify(name)} must declare a non-empty PostgreSQL role`);
+    }
+    return [name, Object.freeze({ name, role: profile.role })] as const;
+  });
+  return Object.freeze(Object.fromEntries(defined)) as {
+    readonly [Name in keyof Profiles]: DatabaseProfile<Name & string, Profiles[Name]["role"]>;
+  };
 }
 
 export function loadRootEnv(root: string): string | undefined {
@@ -112,6 +146,31 @@ function validateModuleArray(value: unknown, path: string): void {
   validateStringArray(value, "scan.modules", path);
   if ((value as string[]).length === 0 || (value as string[]).some((item) => item.trim() === "")) {
     throw new Error(`sqlx-js: ${path} scan.modules must contain at least one non-empty module name`);
+  }
+}
+
+function validateProfiles(value: unknown, path: string): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`sqlx-js: ${path} profiles must be an object`);
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length === 0) {
+    throw new Error(`sqlx-js: ${path} profiles must contain at least one profile`);
+  }
+  for (const [name, raw] of entries) {
+    if (name.trim() === "") {
+      throw new Error(`sqlx-js: ${path} profile names must not be empty`);
+    }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(`sqlx-js: ${path} profiles.${name} must be a database profile`);
+    }
+    const profile = raw as Record<string, unknown>;
+    if (profile.name !== name) {
+      throw new Error(`sqlx-js: ${path} profiles.${name}.name must be ${JSON.stringify(name)}`);
+    }
+    if (typeof profile.role !== "string" || profile.role.trim() === "") {
+      throw new Error(`sqlx-js: ${path} profiles.${name}.role must be a non-empty PostgreSQL role`);
+    }
   }
 }
 
@@ -242,6 +301,7 @@ function validateConfig(value: unknown, path: string): SqlxJsConfig {
     }
   }
   if (config.enumCatalog !== undefined) validateEnumCatalog(config.enumCatalog, path);
+  if (config.profiles !== undefined) validateProfiles(config.profiles, path);
   if (config.scan !== undefined) {
     if (!config.scan || typeof config.scan !== "object" || Array.isArray(config.scan)) {
       throw new Error(`sqlx-js: ${path} scan must be an object`);
@@ -281,6 +341,7 @@ export function prepareConfigHash(cfg: SqlxJsConfig): string {
     enumCatalog: cfg.enumCatalog
       ? { schemas: [...new Set(cfg.enumCatalog.schemas)].sort() }
       : false,
+    profiles: cfg.profiles ?? false,
   });
   return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
 }

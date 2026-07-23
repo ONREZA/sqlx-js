@@ -31,6 +31,7 @@ const rows = await sql(
 - **External SQL files** via `sql.file("queries/foo.sql", ...)` — prepared and typed through `KnownFileQueries`. Watch mode re-prepares on `.sql` edits too.
 - **One-row helpers**: `sql.one(...)`, `sql.optional(...)`, `sql.file.one(...)`, `sql.file.optional(...)`, and the same chain on the `tx` callback — friendly with `noUncheckedIndexedAccess: true`. The scanner walks all of them.
 - **Reusable query definitions** via `defineQuery`: declare one typed SQL contract and execute it through either a root client or transaction-scoped executor. Optional `mapParams` adapters bind application-owned inputs to the generated PostgreSQL wire contract. `QueryParams`, `QueryWireParams`, `QueryRow`, and `QueryResult` expose both layers without indexing a registry by SQL text.
+- **Role-aware connection profiles** bind every scanned query to a named client profile and PostgreSQL role. `prepare` describes and plans each query after `SET ROLE`; generated clients expose only the queries validated for their exact profile.
 - **Sound PostgreSQL array contracts** keep array-value nullability separate from element nullability. SQL constructors, subqueries, aggregates, CTEs, set operations, `NOT NULL` element domains, and explicit column assertions narrow `(T | null)[]` to `T[]` only when proven. Array params remain unambiguous through `sql.array(...)`.
 - **Typed transactions** via `sql.transaction(async tx => …)` — the `tx` callback parameter is recognized by the scanner, so queries inside the block keep full type checking.
 - **Sourcemap-accurate error reporting**: every prepare failure points to `file:line:column` of the originating `sql(...)` call site, with PG error code, position, and hint.
@@ -49,7 +50,7 @@ const rows = await sql(
 - **Environment doctor** checks runtime versions, config loading, `.env`, database connectivity/permissions, runtime-addressable `customTypes`, cache metadata, generated enum output presence, tsconfig inclusion, and pgschema availability.
 - **Strict inference gate** promotes degraded nullability analysis and generated `unknown` query types to CI errors.
 - **GitHub/editor diagnostics adapter** converts versioned prepare JSON into workflow annotations or Unix problem-matcher output.
-- **Versioned query inventory** via `queries --json`, including stable query IDs, definition names, cardinality, call sites, SQL files, and cache state. The same command can emit a deterministic embedded-SQL module for bundled applications.
+- **Versioned query inventory** via `queries --json`, including stable query IDs, connection profiles, definition names, cardinality, call sites, SQL files, and cache state. The same command can emit a deterministic embedded-SQL module for bundled applications.
 
 ## Install
 
@@ -468,6 +469,56 @@ When a workspace package exports database source to other TypeScript programs, b
 
 The scanner recognizes clients assigned directly from an imported `createSqlClient(...)` (including aliased and namespace imports), so `client.sql(...)`, its cardinality helpers, file queries, and transactions participate in `prepare` exactly like the global `sql` surface.
 
+### Connection profiles and PostgreSQL roles
+
+Use connection profiles when one application process owns several static pools with different PostgreSQL privileges. Define and export the profile objects directly from the config so the CLI and runtime import the same cache-busted source of truth:
+
+```ts
+// sqlx-js.config.ts
+import { defineConfig, defineDatabaseProfiles } from "@onreza/sqlx-js";
+
+export const databaseProfiles = defineDatabaseProfiles({
+  api: { role: "app_api" },
+  worker: { role: "app_worker" },
+});
+
+export default defineConfig({
+  profiles: databaseProfiles,
+});
+```
+
+```ts
+import { createSqlClient } from "@onreza/sqlx-js";
+import { databaseProfiles } from "../sqlx-js.config";
+
+export const apiDb = createSqlClient(process.env.DATABASE_URL, {
+  profile: databaseProfiles.api,
+});
+
+export const workerDb = createSqlClient(process.env.DATABASE_URL, {
+  profile: databaseProfiles.worker,
+});
+
+const users = await apiDb.sql("SELECT id, name FROM users");
+await workerDb.sql.execute("UPDATE jobs SET claimed_at = now() WHERE id = $1", 1n);
+```
+
+Once `profiles` is configured, every scanned query must have an explicit profile. Direct client queries and transaction callbacks inherit it from the client binding. Reusable definitions declare their complete allowlist because the scanner deliberately does not guess dependency-injection dataflow:
+
+```ts
+export const findJob = defineQuery
+  .for("api", "worker")
+  .optional("jobs.find", "SELECT id, state FROM jobs WHERE id = $id");
+```
+
+`prepare` opens a session for each configured profile, applies its role, and runs the normal `Parse`/`Describe`/generic-plan pipeline in that session. The cache key includes both the SQL fingerprint and profile, so the same SQL can resolve through different `search_path`, RLS, type, and privilege contexts. Generated `KnownProfiles` registries make `createSqlClient(..., { profile })` infer only that profile's query set and require the exact configured role. The runtime sends the role as a startup parameter on every Postgres.js pool connection, including replacement generations. The login in `DATABASE_URL` must be allowed to `SET ROLE` to every configured role.
+
+The live `prepare` connection must reach PostgreSQL directly or through a session-pooling proxy: role validation requires `SET ROLE`, `Describe`, and planning to stay on the same backend session. Transaction- or statement-pooling proxies cannot preserve that contract. A runtime proxy must likewise accept and preserve the configured startup role on each pooled connection.
+
+Profile names and role names are static generated-contract inputs. Keep them identical across prepare/CI and deployed runtime environments. Shadow-database workflows use cluster roles rather than database-local objects, so every configured role must already exist on the shadow cluster; keep table/schema grants in migrations.
+
+This is a strong preflight for privileges PostgreSQL checks while parsing and generically planning ordinary `SELECT`/DML, including relation, column, and directly referenced function access. It is not proof that every possible execution will succeed: sequence access, trigger or dynamic-SQL effects, value-dependent RLS `WITH CHECK`, and statements reported as `parse-only` can still fail at runtime. Privilege changes also require a new live `prepare` or `prepare --verify`; offline `prepare --check` only verifies committed artifacts.
+
 `createSqlClient(url, options)` accepts every Postgres.js option plus sqlx-js managed-runtime options. `operationTimeoutMs` is opt-in because the library cannot choose one correct wall-clock limit for both interactive queries and long-running jobs.
 
 The `schema` query parameter used by Prisma PostgreSQL URLs is accepted directly: sqlx-js removes it before handing the URL to Postgres.js. Other query parameters remain untouched, including PostgreSQL session parameters intentionally supported by Postgres.js.
@@ -520,7 +571,7 @@ const db = createSqlClient(process.env.DATABASE_URL, {
 });
 ```
 
-The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. `queryId` is the stable prepare/cache fingerprint and is suitable for metric labels; `queryName` is present for named `defineQuery` calls. The hook is a non-blocking observer: synchronous throws and asynchronous rejections preserve the database result/error and are passed to `onQueryHookError` when configured. The event preserves source-level parameters for direct queries (including the named-parameter object); mapped definitions report the mapper output rather than their application input. Parameters may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
+The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. `queryId` is the stable prepare/cache fingerprint and is suitable for metric labels; `queryName` is present for named `defineQuery` calls. Profiled managed clients also attach the stable `profile` name and PostgreSQL `role` to query, query-start/timeout, client-state, and lifecycle-hook-error events, including events emitted by replacement pool generations. The hook is a non-blocking observer: synchronous throws and asynchronous rejections preserve the database result/error and are passed to `onQueryHookError` when configured. The event preserves source-level parameters for direct queries (including the named-parameter object); mapped definitions report the mapper output rather than their application input. Parameters may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
 
 Lifecycle events intentionally omit SQL text and parameters. `onQueryStart` fires before codec bootstrap. `onQueryTimeout` reports the stable ID, generation, phase, and outcome while the managed runtime cancels the query and retires the poisoned generation. `onClientStateChange` reports `healthy`, `poisoned`, `recycling`, `failed`, `closing`, and `closed` transitions.
 
@@ -641,9 +692,9 @@ Regular `prepare` describes and plans queries across a small connection pool (de
 
 Flags that take a value accept both `--flag value` and `--flag=value` forms.
 
-Prepare and doctor JSON use `formatVersion: 1`. Prepare diagnostics include a stable phase plus root-relative file, 1-based line/column, query ID/name, PostgreSQL code/position/hint when available, and the query text. Degraded inference and generated `unknown` types appear as warnings by default; `--strict-inference` promotes them to errors. This is intended for CI annotations and editor integrations; stdout contains one JSON document and human progress is suppressed. `prepare --watch --jsonl` emits one `start`, `diagnostic`, `prepared`, `error`, `watching`, or `stopping` event per line so an editor can consume diagnostics without waiting for the watch process to exit. Fatal `error` events include the same structured `diagnostic` object as CLI preflight failures, preserving the prepare phase and source location when available.
+Prepare and doctor JSON use `formatVersion: 1`. Prepare diagnostics include a stable phase plus root-relative file, 1-based line/column, query ID/name, connection profile, PostgreSQL code/position/hint when available, and the query text. Degraded inference and generated `unknown` types appear as warnings by default; `--strict-inference` promotes them to errors. This is intended for CI annotations and editor integrations; stdout contains one JSON document and human progress is suppressed. `prepare --watch --jsonl` emits one `start`, `diagnostic`, `prepared`, `error`, `watching`, or `stopping` event per line so an editor can consume diagnostics without waiting for the watch process to exit. Fatal `error` events include the same structured `diagnostic` object as CLI preflight failures, preserving the prepare phase and source location when available.
 
-`queries --json` is database-free and read-only. It emits `formatVersion: 1` inventory entries with `queryId`, optional definition names, cardinalities, root-relative call sites, SQL file paths, `current`/`stale`/`missing` cache status, and `planned`/`parse-only` validation when cached, plus orphaned cache IDs. Config, scan, cache, and embed failures use versioned structured diagnostics with source location when available. Adding `--embed` writes the external-SQL module only after a successful scan.
+`queries --json` is database-free and read-only. It emits `formatVersion: 1` inventory entries with `queryId`, connection profiles, optional definition names, cardinalities, root-relative call sites, SQL file paths, `current`/`stale`/`missing` cache status, and `planned`/`parse-only` validation when cached, plus orphaned cache IDs. Config, scan, cache, and embed failures use versioned structured diagnostics with source location when available. Adding `--embed` writes the external-SQL module only after a successful scan.
 
 `DATABASE_URL` must be set for any command that touches the application database or auto-creates a shadow database. `SHADOW_ADMIN_DATABASE_URL` can point at a maintenance/admin database when the application user cannot `CREATE DATABASE`; `SHADOW_DATABASE_URL` can point at a pre-created disposable shadow database. The internal wire client understands `sslmode`, `sslrootcert`, `sslcert`, `sslkey`, `application_name`, `options` (PostgreSQL startup options such as `-c search_path=app,public`), `connect_timeout` (seconds), and `statement_timeout` (milliseconds). Unqualified relations are resolved using the prepare session's real `search_path`; they are not assumed to live in `public`.
 
@@ -1079,6 +1130,7 @@ Releases are automated via `release-please`: pushes to `main` accumulate into a 
 
 - PostgreSQL only (no MySQL or SQLite).
 - The scanner only follows direct named imports and namespace imports from configured `scan.modules` (default: `@onreza/sqlx-js`); it does not discover re-export graphs, dynamic aliases, or tagged-template calls automatically.
+- Profile inference follows direct `const client = createSqlClient(..., { profile: profiles.name })` bindings and their transaction callbacks. Factories, returned clients, mutable aliases, and dependency-injection graphs require a direct profiled binding at the scanned query site; reusable definitions use `defineQuery.for(...)`.
 - Star projections fall back to conservative nullability when their relation shape is ambiguous. Single-relation CTE and derived-table stars are expanded from the live schema, including `MATERIALIZED` CTEs used with lateral joins; multi-relation unqualified stars and recursive stars may still need explicit columns.
 - Plain `sql(...)` keeps returning rows, so statements without `RETURNING` produce an empty typed array. Use `sql.execute(...)` when affected-row count and command metadata matter.
 - Self-references inside `WITH RECURSIVE` are not analysed transitively — at worst this produces extra `T | null`. Ordinary later CTEs can reference earlier CTEs in the same `WITH`. Use `AS "id!"` overrides if recursive output needs an explicit contract.

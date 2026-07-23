@@ -212,6 +212,35 @@ test("defineQuery definitions are scanned with names and cardinality", () => {
   expect(sites[2]).toMatchObject({ cardinality: "execute" });
 });
 
+test("defineQuery.for assigns reusable queries to explicit profiles", () => {
+  setup({
+    "a.ts": `
+      import { defineQuery } from "@onreza/sqlx-js";
+      export const shared = defineQuery.for("api", "worker").one(
+        "users.find",
+        "SELECT id FROM users WHERE id = $id"
+      );
+    `,
+  });
+  expect(scanProject(tmp, {}, ["api", "worker"])[0]).toMatchObject({
+    queryName: "users.find",
+    cardinality: "one",
+    profiles: ["api", "worker"],
+  });
+});
+
+test("profiled projects require defineQuery.for and configured profile names", () => {
+  setup({
+    "a.ts": `import { defineQuery } from "@onreza/sqlx-js"; defineQuery("SELECT 1");`,
+  });
+  expect(() => scanProject(tmp, {}, ["api"])).toThrow(/query has no connection profile/);
+
+  setup({
+    "a.ts": `import { defineQuery } from "@onreza/sqlx-js"; defineQuery.for("missing").many("SELECT 1");`,
+  });
+  expect(() => scanProject(tmp, {}, ["api"])).toThrow(/unknown profile "missing"/);
+});
+
 test("mapped query definitions keep their SQL inventory metadata", () => {
   setup({
     "queries.ts": `

@@ -233,6 +233,24 @@ test("lifecycle observer failures are isolated from successful queries", async (
   await db.close({ graceMs: 0, forceAfterMs: 0 });
 });
 
+test("profiled clients annotate query and lifecycle events with a stable role", async () => {
+  const profile = { name: "api", role: "app_api" };
+  const queries: Array<{ profile?: string; role?: string }> = [];
+  const starts: Array<{ profile?: string; role?: string }> = [];
+  const db = managed(fakePool(async () => [{ value: 1 }]), {
+    profile,
+    onQuery: (event) => queries.push(event),
+    onQueryStart: (event) => starts.push(event),
+  });
+  profile.role = "changed_after_creation";
+
+  await db.sql("SELECT 1");
+
+  expect(queries).toEqual([expect.objectContaining({ profile: "api", role: "app_api" })]);
+  expect(starts).toEqual([expect.objectContaining({ profile: "api", role: "app_api" })]);
+  await db.close({ graceMs: 0, forceAfterMs: 0 });
+});
+
 describe("managed generations", () => {
   test("checks the operation deadline after constructing the driver query", async () => {
     let created = 0;

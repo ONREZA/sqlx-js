@@ -1,6 +1,7 @@
 import { existsSync, watch as fsWatch } from "node:fs";
 import { basename, relative, resolve } from "node:path";
 import {
+  closePrepareSession,
   openSession,
   prepareOnce,
   PrepareFatalError,
@@ -9,7 +10,7 @@ import {
   type PrepareSession,
 } from "./prepare";
 import { configHash, loadConfig } from "../config";
-import { fingerprint } from "../cache";
+import { profileFingerprint } from "../cache";
 import { enumCatalogOutputPath } from "../enum-catalog";
 import { findSourceFiles, scanFile, scanProject, type QueryCallSite } from "../scan/scanner";
 
@@ -87,7 +88,7 @@ const DEFAULT_DEPS: WatchDeps = { openSession, prepareOnce, loadConfig, scanProj
 
 async function closeSession(session: PrepareSession | null): Promise<void> {
   if (!session) return;
-  try { await session.client.end(); } catch {}
+  await closePrepareSession(session);
 }
 
 export async function prepareWatchedOnce(
@@ -113,9 +114,9 @@ export async function prepareWatchedOnce(
   let nextSites: Map<string, QueryCallSite[]>;
   let changedFps = new Set<string>();
   if (full) {
-    const sites = active.scanProject(opts.root, currentConfig.scan);
+    const sites = active.scanProject(opts.root, currentConfig.scan, Object.keys(currentConfig.profiles ?? {}));
     nextSites = groupSites(sites);
-    changedFps = new Set(sites.map((site) => fingerprint(site.query)));
+    changedFps = new Set(sites.flatMap(siteFingerprints));
   } else {
     const previousSites = state.sitesByFile!;
     const dirtyFiles = state.dirtyFiles ?? new Set<string>();
@@ -139,16 +140,25 @@ export async function prepareWatchedOnce(
     try {
       for (const source of affectedSources) {
         const previous = nextSites.get(source) ?? [];
-        for (const site of previous) changedFps.add(fingerprint(site.query));
+        for (const site of previous) {
+          for (const fp of siteFingerprints(site)) changedFps.add(fp);
+        }
         const absolute = resolve(opts.root, source);
         if (!existsSync(absolute) || !allowed.has(source)) {
           nextSites.delete(source);
           continue;
         }
-        const scanned = active.scanFile(absolute, opts.root, currentConfig.scan?.modules);
+        const scanned = active.scanFile(
+          absolute,
+          opts.root,
+          currentConfig.scan?.modules,
+          Object.keys(currentConfig.profiles ?? {}),
+        );
         if (scanned.length > 0) nextSites.set(source, scanned);
         else nextSites.delete(source);
-        for (const site of scanned) changedFps.add(fingerprint(site.query));
+        for (const site of scanned) {
+          for (const fp of siteFingerprints(site)) changedFps.add(fp);
+        }
       }
       for (const source of affectedSources) dirtyFiles.delete(source);
     } catch (error) {
@@ -163,7 +173,7 @@ export async function prepareWatchedOnce(
   const dirtyFps = state.dirtyFps ?? new Set<string>();
   const reuseCacheFps = new Set(
     sites
-      .map((site) => fingerprint(site.query))
+      .flatMap(siteFingerprints)
       .filter((fp) => !changedFps.has(fp) && !dirtyFps.has(fp)),
   );
   const result = await active.prepareOnce(opts, state.session, log, err, 1, {
@@ -203,6 +213,12 @@ function groupSites(sites: QueryCallSite[]): Map<string, QueryCallSite[]> {
     grouped.set(file, current);
   }
   return grouped;
+}
+
+function siteFingerprints(site: QueryCallSite): string[] {
+  return site.profiles && site.profiles.length > 0
+    ? site.profiles.map((profile) => profileFingerprint(profile, site.query))
+    : [profileFingerprint(undefined, site.query)];
 }
 
 export async function runWatch(opts: WatchOptions): Promise<void> {

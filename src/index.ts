@@ -14,6 +14,7 @@ import type {
 export interface KnownQueries {}
 export interface KnownFileQueries {}
 export interface KnownFunctions {}
+export interface KnownProfiles {}
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
@@ -24,8 +25,14 @@ export type JsonInputValue = JsonPrimitive | JsonInputObject | JsonInputArray;
 export type JsonInputObject = { readonly [key: string]: JsonInputValue | undefined };
 export type JsonInputArray = readonly JsonInputValue[];
 
-export { defineConfig } from "./config";
-export type { EnumCatalogConfig, ScanConfig, SqlxJsConfig } from "./config";
+export { defineConfig, defineDatabaseProfiles } from "./config";
+export type {
+  DatabaseProfile,
+  DatabaseProfiles,
+  EnumCatalogConfig,
+  ScanConfig,
+  SqlxJsConfig,
+} from "./config";
 export type { SslMode, ConnConfig } from "./pg/wire";
 export { PgError, ConnectionLostError } from "./pg/wire";
 export {
@@ -74,6 +81,7 @@ export type QueryRegistry = {
   queries: object;
   fileQueries: object;
   runtimeTypes?: object;
+  profile?: import("./config").DatabaseProfile;
 };
 
 export interface DefaultQueryRegistry {
@@ -106,7 +114,7 @@ type GeneratedPostgresTypesFor<Registry extends QueryRegistry> =
   NonNullable<import("./postgres-runtime").CreateClientOptions["types"]> &
   RuntimePostgresTypesFor<Registry>;
 type GeneratedClientOptionsFor<Registry extends QueryRegistry> =
-  Omit<import("./postgres-runtime").CreateSqlClientOptions, "typeCodecs" | "types"> & (
+  Omit<import("./postgres-runtime").CreateSqlClientOptions, "typeCodecs" | "types" | "profile"> & (
     | {
       typeCodecs: RuntimeTypeCodecsFor<Registry>;
       types?: import("./postgres-runtime").CreateSqlClientOptions["types"];
@@ -115,11 +123,28 @@ type GeneratedClientOptionsFor<Registry extends QueryRegistry> =
       typeCodecs?: never;
       types: GeneratedPostgresTypesFor<Registry>;
     }
+  ) & (
+    Registry extends { profile: infer Profile extends import("./config").DatabaseProfile }
+      ? { profile: Profile }
+      : { profile?: never }
+  );
+type PlainClientOptionsFor<Registry extends QueryRegistry> =
+  Omit<import("./postgres-runtime").CreateSqlClientOptions, "profile"> & (
+    Registry extends { profile: infer Profile extends import("./config").DatabaseProfile }
+      ? { profile: Profile }
+      : { profile?: never }
   );
 type CreateClientArgs<Registry extends QueryRegistry> =
-  keyof RegistryRuntimeTypes<Registry> extends never
-    ? [url?: string, options?: import("./postgres-runtime").CreateSqlClientOptions]
-    : [url: string | undefined, options: GeneratedClientOptionsFor<Registry>];
+  Registry extends { profile: import("./config").DatabaseProfile }
+    ? [
+      url: string | undefined,
+      options: keyof RegistryRuntimeTypes<Registry> extends never
+        ? PlainClientOptionsFor<Registry>
+        : GeneratedClientOptionsFor<Registry>,
+    ]
+    : keyof RegistryRuntimeTypes<Registry> extends never
+      ? [url?: string, options?: PlainClientOptionsFor<Registry>]
+      : [url: string | undefined, options: GeneratedClientOptionsFor<Registry>];
 type CreateRawClientArgs<Registry extends QueryRegistry> =
   keyof RegistryRuntimeTypes<Registry> extends never
     ? [url?: string, options?: import("./postgres-runtime").CreateClientOptions]
@@ -154,11 +179,29 @@ export function createClient<Registry extends QueryRegistry = DefaultQueryRegist
   const [url, options] = args as [string | undefined, import("./postgres-runtime").CreateClientOptions | undefined];
   return rt.createClient(url, options);
 }
+type KnownProfileName = keyof KnownProfiles & string;
+type KnownProfileRegistry<Name extends KnownProfileName> =
+  KnownProfiles[Name] extends QueryRegistry & {
+    profile: import("./config").DatabaseProfile;
+  } ? KnownProfiles[Name] : never;
+type KnownProfileClientOptions<Name extends KnownProfileName> =
+  keyof RegistryRuntimeTypes<KnownProfileRegistry<Name>> extends never
+    ? PlainClientOptionsFor<KnownProfileRegistry<Name>>
+    : GeneratedClientOptionsFor<KnownProfileRegistry<Name>>;
+export function createSqlClient<const Name extends KnownProfileName>(
+  url: string | undefined,
+  options: KnownProfileClientOptions<Name> & {
+    profile: KnownProfileRegistry<Name>["profile"] & { readonly name: Name };
+  },
+): SqlClient<KnownProfileRegistry<Name>>;
 export function createSqlClient<Registry extends QueryRegistry = DefaultQueryRegistry>(
   ...args: CreateClientArgs<Registry>
-): SqlClient<Registry> {
+): SqlClient<Registry>;
+export function createSqlClient(
+  ...args: [url?: string, options?: import("./postgres-runtime").CreateSqlClientOptions]
+): SqlClient<QueryRegistry> {
   const [url, options] = args as [string | undefined, import("./postgres-runtime").CreateSqlClientOptions | undefined];
-  return rt.createSqlClient(url, options) as unknown as SqlClient<Registry>;
+  return rt.createSqlClient(url, options) as unknown as SqlClient<QueryRegistry>;
 }
 export const close = rt.close;
 export const ready = rt.ready;

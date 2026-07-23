@@ -10,6 +10,8 @@ import { validateAll } from "../src/commands/prepare";
 import { SchemaCache, compositeLiteral } from "../src/pg/schema";
 import { mergeExtensionTypes } from "../src/pg/extensions";
 import { fingerprint } from "../src/cache";
+import { createSqlClient as createRuntimeSqlClient } from "../src/postgres-runtime";
+import { QueryTimeoutError } from "../src/runtime";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-integration-"));
@@ -269,6 +271,109 @@ if (!haveIntegrationDatabase) {
     expect(r.stdout).toMatch(/a\.ts:3:18/);
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain("SELECT id, name FROM tmp_users WHERE id = $1");
+  });
+
+  test("connection profiles bind queries to PostgreSQL roles", async () => {
+    if (configuredDbUrl) return;
+    const root = isolatedRoot("connection-profiles");
+    const suffix = String(process.pid);
+    const apiRole = `sqlx_js_api_${suffix}`;
+    const workerRole = `sqlx_js_worker_${suffix}`;
+    const client = new PgClient(parseDatabaseUrl(dbUrl));
+    await client.connect();
+    try {
+      const currentUserResult = await client.simpleQuery("SELECT current_user");
+      const currentUser = new TextDecoder().decode(currentUserResult.rows[0]![0]!);
+      await client.simpleQuery(`
+        CREATE ROLE ${quoteIdent(apiRole)};
+        CREATE ROLE ${quoteIdent(workerRole)};
+        GRANT ${quoteIdent(apiRole)}, ${quoteIdent(workerRole)} TO ${quoteIdent(currentUser)};
+        CREATE SCHEMA ${quoteIdent(apiRole)} AUTHORIZATION ${quoteIdent(apiRole)};
+        CREATE SCHEMA ${quoteIdent(workerRole)} AUTHORIZATION ${quoteIdent(workerRole)};
+        CREATE TABLE ${quoteIdent(apiRole)}.profile_target (value integer NOT NULL);
+        CREATE TABLE ${quoteIdent(workerRole)}.profile_target (value text NOT NULL);
+        GRANT SELECT ON ${quoteIdent(apiRole)}.profile_target TO ${quoteIdent(apiRole)};
+        GRANT SELECT ON ${quoteIdent(workerRole)}.profile_target TO ${quoteIdent(workerRole)};
+        INSERT INTO ${quoteIdent(apiRole)}.profile_target VALUES (42);
+        INSERT INTO ${quoteIdent(workerRole)}.profile_target VALUES ('worker');
+      `);
+      writeRootFile(root, "sqlx-js.config.ts", `export const databaseProfiles = {
+  api: { name: "api", role: ${JSON.stringify(apiRole)} },
+  worker: { name: "worker", role: ${JSON.stringify(workerRole)} },
+} as const;
+
+export default {
+  profiles: databaseProfiles,
+};
+`);
+      writeRootFile(root, "a.ts",
+        "import { createSqlClient } from \"@onreza/sqlx-js\";\n" +
+        "import { databaseProfiles } from \"./sqlx-js.config\";\n" +
+        "const api = createSqlClient(undefined, { profile: databaseProfiles.api });\n" +
+        "const worker = createSqlClient(undefined, { profile: databaseProfiles.worker });\n" +
+        "await api.sql.one(\"SELECT value FROM profile_target\");\n" +
+        "await worker.sql.one(\"SELECT value FROM profile_target\");\n",
+      );
+
+      const prepared = prepareRoot(root);
+      expect(prepared.code, prepared.stderr).toBe(0);
+      expect(prepareRoot(root, ["--check"]).code).toBe(0);
+      expect(prepareRoot(root, ["--offline"]).code).toBe(0);
+      expect(prepareRoot(root, ["--verify"]).code).toBe(0);
+      const entries = queryCacheFiles(root)
+        .map((file) => JSON.parse(readFileSync(join(root, ".sqlx-js", file), "utf8")))
+        .filter((entry) => entry.query === "SELECT value FROM profile_target");
+      expect(entries).toHaveLength(2);
+      expect(entries.map((entry) => entry.profile).sort()).toEqual(["api", "worker"]);
+
+      const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
+      expect(dts).toMatch(
+        /"api": \{\n\s+"SELECT value FROM profile_target": \{ params: \[\]; row: \{ "value": number \} \};/,
+      );
+      expect(dts).toMatch(
+        /"worker": \{\n\s+"SELECT value FROM profile_target": \{ params: \[\]; row: \{ "value": string \} \};/,
+      );
+
+      const doctorResult = spawnSync(
+        "bun",
+        [join(repoRoot, "bin/sqlx-js.ts"), "doctor", "--root", root, "--json"],
+        { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
+      );
+      const doctorReport = JSON.parse(doctorResult.stdout) as {
+        checks: Array<{ name: string; status: string; details?: { roles?: Record<string, string> } }>;
+      };
+      expect(doctorReport.checks.find((check) => check.name === "profiles")).toMatchObject({
+        status: "ok",
+        details: { roles: { api: apiRole, worker: workerRole } },
+      });
+
+      const api = createRuntimeSqlClient(dbUrl, {
+        profile: { name: "api", role: apiRole },
+        operationTimeoutMs: 200,
+      });
+      const worker = createRuntimeSqlClient(dbUrl, { profile: { name: "worker", role: workerRole } });
+      try {
+        expect(await api.unsafe("SELECT current_user AS role, value FROM profile_target"))
+          .toEqual([expect.objectContaining({ role: apiRole, value: 42 })]);
+        expect(await worker.unsafe("SELECT current_user AS role, value FROM profile_target"))
+          .toEqual([expect.objectContaining({ role: workerRole, value: "worker" })]);
+        await expect(api.unsafe("SELECT pg_sleep(1)")).rejects.toBeInstanceOf(QueryTimeoutError);
+        expect(api.snapshot().recycleCount).toBe(1);
+        expect(await api.unsafe("SELECT current_user AS role, value FROM profile_target"))
+          .toEqual([expect.objectContaining({ role: apiRole, value: 42 })]);
+      } finally {
+        await Promise.all([api.close(), worker.close()]);
+      }
+    } finally {
+      await client.simpleQuery(`
+        DROP SCHEMA IF EXISTS ${quoteIdent(apiRole)} CASCADE;
+        DROP SCHEMA IF EXISTS ${quoteIdent(workerRole)} CASCADE;
+        DROP ROLE IF EXISTS ${quoteIdent(apiRole)};
+        DROP ROLE IF EXISTS ${quoteIdent(workerRole)};
+      `).catch(() => {});
+      await client.end();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("prepare publishes no partial artifacts when any query fails", () => {

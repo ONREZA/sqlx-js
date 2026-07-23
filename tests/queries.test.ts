@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { Cache, writeCacheManifest } from "../src/cache";
+import { Cache, profileFingerprint, writeCacheManifest } from "../src/cache";
 import { buildQueryInventory, QueriesError } from "../src/commands/queries";
 import { prepareConfigHash } from "../src/config";
 import { queryId } from "../src/query-id";
@@ -127,6 +127,59 @@ test("queries inventory distinguishes current and orphaned cache entries", async
     });
     const incomplete = await buildQueryInventory(root, cacheDir);
     expect(incomplete.queries[0]).toMatchObject({ cacheStatus: "stale", validation: null });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("queries inventory aggregates profile-specific cache contracts", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-profile-queries-"));
+  try {
+    const query = "SELECT value FROM profile_target";
+    const profiles = {
+      api: { name: "api", role: "app_api" },
+      worker: { name: "worker", role: "app_worker" },
+    } as const;
+    writeFileSync(join(root, "sqlx-js.config.mjs"), `export default {
+      profiles: ${JSON.stringify(profiles)},
+    };\n`);
+    writeFileSync(join(root, "query.ts"), `
+      import { createSqlClient } from "@onreza/sqlx-js";
+      const profiles = ${JSON.stringify(profiles)} as const;
+      const api = createSqlClient(undefined, { profile: profiles.api });
+      const worker = createSqlClient(undefined, { profile: profiles.worker });
+      api.sql(${JSON.stringify(query)});
+      worker.sql(${JSON.stringify(query)});
+    `);
+    const cacheDir = join(root, ".sqlx-js");
+    const cache = new Cache(cacheDir);
+    for (const profile of ["api", "worker"] as const) {
+      cache.write(profileFingerprint(profile, query), {
+        profile,
+        query,
+        validation: "planned",
+        paramOids: [],
+        paramTsTypes: [],
+        columns: [{ name: "value", typeOid: 23, tsType: "number", nullable: false }],
+        hasResultSet: true,
+      });
+    }
+    writeCacheManifest(cacheDir, prepareConfigHash({ profiles }));
+
+    const inventory = await buildQueryInventory(root, cacheDir);
+    expect(inventory.queries).toEqual([
+      expect.objectContaining({
+        query,
+        profiles: ["api", "worker"],
+        cacheStatus: "current",
+        validation: "planned",
+        callSites: [
+          expect.objectContaining({ profiles: ["api"] }),
+          expect.objectContaining({ profiles: ["worker"] }),
+        ],
+      }),
+    ]);
+    expect(inventory.orphanedCacheIds).toEqual([]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

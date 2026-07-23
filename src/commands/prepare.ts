@@ -17,6 +17,7 @@ import {
   assertCacheManifest,
   Cache,
   fingerprint,
+  profileFingerprint,
   effectiveNullable,
   portableCacheOid,
   writeCacheManifest,
@@ -29,6 +30,7 @@ import {
   lookupColumnType,
   lookupJsonbType,
   prepareConfigHash,
+  type DatabaseProfile,
   type SqlxJsConfig,
 } from "../config";
 import { functionCacheExists, readFunctionCache, writeFunctionCache, type FunctionEntry } from "../function-cache";
@@ -371,6 +373,7 @@ export type PrepareDiagnostic = {
   query?: string;
   queryId?: string;
   queryName?: string;
+  profile?: string;
   code?: string;
   position?: number;
   hint?: string;
@@ -387,12 +390,13 @@ export type PrepareResult = {
 };
 
 function formatSite(s: QueryCallSite): string {
-  return `${s.file}:${s.line}:${s.column}${s.queryName ? ` [${s.queryName}]` : ""}`;
+  const profile = s.profiles?.[0] ? ` [profile:${s.profiles[0]}]` : "";
+  return `${s.file}:${s.line}:${s.column}${s.queryName ? ` [${s.queryName}]` : ""}${profile}`;
 }
 
 function siteDiagnostic(site: QueryCallSite): Pick<
   PrepareDiagnostic,
-  "file" | "line" | "column" | "query" | "queryId" | "queryName"
+  "file" | "line" | "column" | "query" | "queryId" | "queryName" | "profile"
 > {
   return {
     file: site.file,
@@ -401,7 +405,24 @@ function siteDiagnostic(site: QueryCallSite): Pick<
     query: site.query,
     queryId: fingerprint(site.query),
     ...(site.queryName ? { queryName: site.queryName } : {}),
+    ...(site.profiles?.[0] ? { profile: site.profiles[0] } : {}),
   };
+}
+
+function expandProfileSites(sites: QueryCallSite[]): QueryCallSite[] {
+  return sites.flatMap((site) =>
+    site.profiles && site.profiles.length > 0
+      ? site.profiles.map((profile) => ({ ...site, profiles: [profile] }))
+      : [site]
+  );
+}
+
+function siteProfile(site: QueryCallSite): string | undefined {
+  return site.profiles?.[0];
+}
+
+function siteCacheKey(site: QueryCallSite): string {
+  return profileFingerprint(siteProfile(site), site.query);
 }
 
 function snippet(query: string, max = 80): string {
@@ -465,6 +486,11 @@ export type PrepareSession = {
   client: PgClient;
   schema: SchemaCache;
   userCfg: SqlxJsConfig;
+  profiles: Map<string, {
+    profile: DatabaseProfile;
+    client: PgClient;
+    schema: SchemaCache;
+  }>;
 };
 
 export type PrepareIncrementalInput = {
@@ -507,7 +533,60 @@ export async function openSession(opts: PrepareOptions): Promise<PrepareSession>
     await client.end().catch(() => {});
     throw fatal("config", error);
   }
-  return { client, schema, userCfg };
+  const profiles = new Map<string, {
+    profile: DatabaseProfile;
+    client: PgClient;
+    schema: SchemaCache;
+  }>();
+  try {
+    for (const profile of Object.values(userCfg.profiles ?? {})) {
+      const profileClient = new PgClient(cfg);
+      try {
+        await profileClient.connect();
+        await setRole(profileClient, profile.role);
+        const profileSchema = new SchemaCache(profileClient);
+        profileSchema.setTypeRegistry(mergeExtensionTypes(userCfg.customTypes), userCfg.customTypes);
+        await profileSchema.validateUserTypeRegistry();
+        profiles.set(profile.name, { profile, client: profileClient, schema: profileSchema });
+      } catch (error) {
+        await profileClient.end().catch(() => {});
+        throw new Error(
+          `sqlx-js: cannot initialize profile ${profile.name} with role ${profile.role}: ${(error as Error).message}`,
+          { cause: error },
+        );
+      }
+    }
+  } catch (error) {
+    await Promise.all([...profiles.values()].map((profile) => profile.client.end().catch(() => {})));
+    await client.end().catch(() => {});
+    throw fatal("connect", error);
+  }
+  return { client, schema, userCfg, profiles };
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replace(/"/g, "\"\"")}"`;
+}
+
+async function setRole(client: PgClient, role: string): Promise<void> {
+  await client.simpleQuery(`SET ROLE ${quoteIdentifier(role)}`);
+}
+
+export async function closePrepareSession(session: PrepareSession): Promise<void> {
+  await Promise.all([
+    session.client.end().catch(() => {}),
+    ...[...session.profiles.values()].map((profile) => profile.client.end().catch(() => {})),
+  ]);
+}
+
+function prepareContext(
+  session: PrepareSession,
+  profile: string | undefined,
+): { client: PgClient; schema: SchemaCache; role?: string } {
+  if (!profile) return { client: session.client, schema: session.schema };
+  const context = session.profiles.get(profile);
+  if (!context) throw new Error(`sqlx-js: prepare profile ${profile} is not configured`);
+  return { client: context.client, schema: context.schema, role: context.profile.role };
 }
 
 type ValidationOutcome =
@@ -528,6 +607,7 @@ export async function validateAll(
   sessionClient: PgClient,
   queries: { fp: string; query: string }[],
   concurrency: number,
+  role?: string,
 ): Promise<Map<string, ValidationOutcome>> {
   const results = new Map<string, ValidationOutcome>();
   if (queries.length === 0) return results;
@@ -560,6 +640,7 @@ export async function validateAll(
       const c = new PgClient(cfg);
       try {
         await c.connect();
+        if (role) await setRole(c, role);
       } catch {
         await c.end().catch(() => {});
         break;
@@ -586,7 +667,7 @@ export async function prepareOnce(
     sites = input.sites;
   } else {
     try {
-      sites = scanProject(opts.root, session.userCfg.scan);
+      sites = scanProject(opts.root, session.userCfg.scan, Object.keys(session.userCfg.profiles ?? {}));
     } catch (error) {
       throw fatal("scan", error);
     }
@@ -597,17 +678,31 @@ export async function prepareOnce(
   const cache = new Cache(opts.cacheDir);
   let failures = 0;
 
-  const unique = new Map<string, { fp: string; query: string; paramNames: string[]; sites: QueryCallSite[] }>();
-  for (const s of sites) {
+  const profiledSites = expandProfileSites(sites);
+  const unique = new Map<string, {
+    fp: string;
+    profile?: string;
+    query: string;
+    paramNames: string[];
+    sites: QueryCallSite[];
+  }>();
+  for (const s of profiledSites) {
     const rewritten = rewriteNamedParameters(s.query);
-    const fp = fingerprint(s.query);
+    const fp = siteCacheKey(s);
     const existing = unique.get(fp);
     if (existing) existing.sites.push(s);
-    else unique.set(fp, { fp, query: rewritten.query, paramNames: rewritten.names, sites: [s] });
+    else unique.set(fp, {
+      fp,
+      profile: siteProfile(s),
+      query: rewritten.query,
+      paramNames: rewritten.names,
+      sites: [s],
+    });
   }
 
   type Raw = {
     fp: string;
+    profile?: string;
     query: string;
     sites: QueryCallSite[];
     paramOids: number[];
@@ -618,12 +713,12 @@ export async function prepareOnce(
   const raw: Raw[] = [];
   const reusedEntries: CacheEntry[] = [];
   const reusedGenerated: { fp: string; entry: CacheEntry }[] = [];
-  const { client, schema, userCfg } = session;
+  const { client, userCfg } = session;
 
   const toPrepare: typeof unique = new Map();
   for (const [fp, item] of unique) {
     const cached = input.reuseCacheFps?.has(fp) ? cache.read(fp) : null;
-    if (!cached?.validation) {
+    if (!cached?.validation || cached.profile !== item.profile) {
       toPrepare.set(fp, item);
       continue;
     }
@@ -642,9 +737,25 @@ export async function prepareOnce(
     log(`  ↺ ${formatSite(item.sites[0]!)} → reused ${entry.paramOids.length} param(s), ${entry.columns.length} col(s)${validationTag}`);
   }
 
-  const validationList = [...toPrepare.values()].map((u) => ({ fp: u.fp, query: u.query }));
-  const validationResults = await validateAll(parseDatabaseUrl(opts.databaseUrl), client, validationList, concurrency);
-  for (const { fp, query, sites: ss } of toPrepare.values()) {
+  const validationResults = new Map<string, ValidationOutcome>();
+  const byProfile = new Map<string | undefined, typeof unique>();
+  for (const item of toPrepare.values()) {
+    const group = byProfile.get(item.profile) ?? new Map();
+    group.set(item.fp, item);
+    byProfile.set(item.profile, group);
+  }
+  for (const [profile, group] of byProfile) {
+    const context = prepareContext(session, profile);
+    const results = await validateAll(
+      parseDatabaseUrl(opts.databaseUrl),
+      context.client,
+      [...group.values()].map((item) => ({ fp: item.fp, query: item.query })),
+      concurrency,
+      context.role,
+    );
+    for (const [fp, result] of results) validationResults.set(fp, result);
+  }
+  for (const { fp, profile, query, sites: ss } of toPrepare.values()) {
     const site = ss[0]!;
     const outcome = validationResults.get(fp)!;
     if (outcome.ok) {
@@ -670,6 +781,7 @@ export async function prepareOnce(
       });
       raw.push({
         fp,
+        profile,
         query,
         sites: ss,
         paramOids: outcome.paramOids,
@@ -711,25 +823,32 @@ export async function prepareOnce(
     }
   }
 
-  const allAttrRefs: { tableOid: number; attno: number }[] = [];
-  const allTableOids: number[] = [];
-  for (const r of raw) {
-    for (const f of r.fields) {
-      if (f.tableOid !== 0 && f.columnAttr !== 0) {
-        allAttrRefs.push({ tableOid: f.tableOid, attno: f.columnAttr });
-        allTableOids.push(f.tableOid);
-      }
-    }
-  }
   try {
-    await schema.loadAttributes(allAttrRefs);
-    await schema.loadTableNamesByOid(allTableOids);
-    const unknownOids = new Set<number>();
-    for (const r of raw) {
-      for (const o of r.paramOids) if (!isBuiltinOid(o)) unknownOids.add(o);
-      for (const f of r.fields) if (!isBuiltinOid(f.typeOid)) unknownOids.add(f.typeOid);
+    const rawByProfile = new Map<string | undefined, Raw[]>();
+    for (const item of raw) {
+      const group = rawByProfile.get(item.profile) ?? [];
+      group.push(item);
+      rawByProfile.set(item.profile, group);
     }
-    await schema.loadCustomTypes([...unknownOids]);
+    for (const [profile, group] of rawByProfile) {
+      const schema = prepareContext(session, profile).schema;
+      const allAttrRefs: { tableOid: number; attno: number }[] = [];
+      const allTableOids: number[] = [];
+      const unknownOids = new Set<number>();
+      for (const item of group) {
+        for (const field of item.fields) {
+          if (field.tableOid !== 0 && field.columnAttr !== 0) {
+            allAttrRefs.push({ tableOid: field.tableOid, attno: field.columnAttr });
+            allTableOids.push(field.tableOid);
+          }
+          if (!isBuiltinOid(field.typeOid)) unknownOids.add(field.typeOid);
+        }
+        for (const oid of item.paramOids) if (!isBuiltinOid(oid)) unknownOids.add(oid);
+      }
+      await schema.loadAttributes(allAttrRefs);
+      await schema.loadTableNamesByOid(allTableOids);
+      await schema.loadCustomTypes([...unknownOids]);
+    }
   } catch (error) {
     throw fatal("introspect", error);
   }
@@ -739,6 +858,7 @@ export async function prepareOnce(
   const failedFps = new Set<string>();
   for (const r of raw) {
     const site = r.sites[0]!;
+    const schema = prepareContext(session, r.profile).schema;
     try {
       analyses.set(r.fp, await analyzeQuery(r.query, r.fields, schema));
     } catch (e) {
@@ -770,18 +890,27 @@ export async function prepareOnce(
     }
   }
 
-  const paramTablesToLoad = new Map<string, { schema?: string; name: string }>();
-  for (const pm of paramMaps.values()) {
+  const paramTablesToLoad = new Map<
+    string | undefined,
+    Map<string, { schema?: string; name: string }>
+  >();
+  for (const r of raw) {
+    const pm = paramMaps.get(r.fp);
+    if (!pm) continue;
+    const profileTables = paramTablesToLoad.get(r.profile) ?? new Map();
     for (const binding of pm.bindings.values()) {
       for (const t of effectiveParamTargets(binding)) {
         const key = JSON.stringify([t.schema ?? null, t.table]);
-        paramTablesToLoad.set(key, t.schema ? { schema: t.schema, name: t.table } : { name: t.table });
+        profileTables.set(key, t.schema ? { schema: t.schema, name: t.table } : { name: t.table });
       }
     }
+    paramTablesToLoad.set(r.profile, profileTables);
   }
   try {
-    if (paramTablesToLoad.size > 0) {
-      const names = [...paramTablesToLoad.values()];
+    for (const [profile, tables] of paramTablesToLoad) {
+      if (tables.size === 0) continue;
+      const schema = prepareContext(session, profile).schema;
+      const names = [...tables.values()];
       await schema.loadTableNames(names);
       const oids: number[] = [];
       for (const n of names) {
@@ -798,6 +927,7 @@ export async function prepareOnce(
   const generated: { fp: string; entry: CacheEntry }[] = [...reusedGenerated];
   for (const r of raw) {
     if (failedFps.has(r.fp)) continue;
+    const schema = prepareContext(session, r.profile).schema;
     const analysis = analyses.get(r.fp)!;
     const pm: ParamMapResult = paramMaps.get(r.fp) ?? {
       bindings: new Map(),
@@ -830,6 +960,7 @@ export async function prepareOnce(
     }
     const entry: CacheEntry = {
       query: r.sites[0]!.query,
+      ...(r.profile ? { profile: r.profile } : {}),
       validation: r.validation,
       ...siteUsage(r.sites),
       paramOids: r.paramOids.map(portableCacheOid),
@@ -887,7 +1018,7 @@ export async function prepareOnce(
     functions = readFunctionCache(opts.cacheDir);
   } else {
     try {
-      functions = await introspectFunctions(client, schema, {
+      functions = await introspectFunctions(client, session.schema, {
         includeExtensionOwned: userCfg.functionCatalog?.includeExtensionOwned === true,
       });
     } catch (error) {
@@ -928,7 +1059,7 @@ export async function prepareOnce(
       log(message);
     }
     writeCacheManifest(opts.cacheDir, prepareConfigHash(userCfg));
-    emitDts(opts.dtsPath, entries, functions, userCfg.customTypes);
+    emitDts(opts.dtsPath, entries, functions, userCfg.customTypes, userCfg.profiles);
     if (enumModule) writeEnumCatalogModule(enumModule.path, enumModule.content);
   } catch (error) {
     throw fatal("cache", error);
@@ -978,7 +1109,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
     }
     let sites: QueryCallSite[];
     try {
-      sites = scanProject(opts.root, userCfg.scan);
+      sites = scanProject(opts.root, userCfg.scan, Object.keys(userCfg.profiles ?? {}));
     } catch (error) {
       throw fatal("scan", error);
     }
@@ -989,12 +1120,17 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
     } catch (error) {
       throw fatal("cache", error);
     }
-    const unique = new Map<string, { fp: string; query: string; sites: QueryCallSite[] }>();
-    for (const s of sites) {
-      const fp = fingerprint(s.query);
+    const unique = new Map<string, {
+      fp: string;
+      profile?: string;
+      query: string;
+      sites: QueryCallSite[];
+    }>();
+    for (const s of expandProfileSites(sites)) {
+      const fp = siteCacheKey(s);
       const existing = unique.get(fp);
       if (existing) existing.sites.push(s);
-      else unique.set(fp, { fp, query: s.query, sites: [s] });
+      else unique.set(fp, { fp, profile: siteProfile(s), query: s.query, sites: [s] });
     }
     const diagnostics: PrepareDiagnostic[] = [];
     for (const { fp, query, sites: ss } of unique.values()) {
@@ -1042,6 +1178,16 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
       for (const u of unique.values()) {
         const entry = cache.read(u.fp);
         if (!entry) continue;
+        if (entry.profile !== u.profile) {
+          diagnostics.push({
+            severity: "error",
+            phase: "cache",
+            message: "cache entry profile does not match the scanned connection profile; run live `sqlx-js prepare`",
+            ...siteDiagnostic(u.sites[0]!),
+          });
+          inferenceFailures++;
+          continue;
+        }
         if (!entry.validation) {
           diagnostics.push({
             severity: "error",
@@ -1096,7 +1242,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-check-"));
         const generatedDts = join(tmp, "sqlx-js-env.d.ts");
         try {
-          emitDts(generatedDts, entries, functions, userCfg.customTypes);
+          emitDts(generatedDts, entries, functions, userCfg.customTypes, userCfg.profiles);
           if (!existsSync(opts.dtsPath) || readFileSync(opts.dtsPath, "utf8") !== readFileSync(generatedDts, "utf8")) {
             diagnostics.push({
               severity: "error",
@@ -1148,7 +1294,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         return;
       }
       if (opts.offline) {
-        emitDts(opts.dtsPath, entries, functions, userCfg.customTypes);
+        emitDts(opts.dtsPath, entries, functions, userCfg.customTypes, userCfg.profiles);
         if (enumOutput) writeEnumCatalogModule(enumOutput, renderEnumCatalog(enums, userCfg.enumCatalog));
       }
     } catch (error) {
@@ -1201,7 +1347,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
       );
     }
   } finally {
-    await session.client.end();
+    await closePrepareSession(session);
   }
 }
 
@@ -1267,7 +1413,7 @@ export async function verifyPrepareArtifacts(
     );
     return { ok: true, result, changed: [] };
   } finally {
-    if (session) await session.client.end();
+    if (session) await closePrepareSession(session);
     rmSync(tmp, { recursive: true, force: true });
   }
 }
