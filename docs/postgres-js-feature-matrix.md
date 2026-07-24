@@ -124,9 +124,13 @@ criterion. The integrated driver is ready to replace it only when:
 6. any intentionally unsupported Postgres.js surface is represented above as
    either `Нет` or `Нет и не будет`.
 
-`bun run benchmark:postgres` compares the integrated runtime with the pinned
-Postgres.js 3.4.9 development reference. It disables named prepared statements
-for both clients, uses `max_pipeline: 1` as the strict serial control, and keeps
-the Postgres.js default for the separate pipelined scenario. It alternates
-execution order and reports multi-round throughput plus p50/p95/p99 latency.
-Benchmark results are observational and never act as a correctness gate.
+`bun run benchmark:postgres` compares both the managed and raw integrated
+clients with the pinned Postgres.js 3.4.9 development reference. The default
+comparison does not configure an operation deadline because the reference
+client has no equivalent end-to-end deadline. It disables named prepared
+statements for both clients, uses `max_pipeline: 1` as the strict serial
+control, and keeps the Postgres.js default for the separate pipelined scenario.
+It alternates execution order and reports multi-round throughput plus
+p50/p95/p99 latency. `SQLX_JS_BENCHMARK_SCENARIO` and
+`SQLX_JS_BENCHMARK_DRIVER` select one named case for profiling. Benchmark
+results are observational and never act as a correctness gate.

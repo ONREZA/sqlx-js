@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import process from "node:process";
 import { promisify } from "node:util";
 import postgres from "postgres";
-import { createSqlClient } from "../dist/src/index.js";
+import { createClient, createSqlClient } from "../dist/src/index.js";
 
 const execFileAsync = promisify(execFile);
 const suffix = `${process.pid}-${Date.now()}`;
@@ -13,6 +13,8 @@ const warmupMs = Number(process.env.SQLX_JS_BENCHMARK_WARMUP_MS ?? 1_000);
 const durationMs = Number(process.env.SQLX_JS_BENCHMARK_DURATION_MS ?? 3_000);
 const rounds = Number(process.env.SQLX_JS_BENCHMARK_ROUNDS ?? 3);
 const providedDatabaseUrl = process.env.SQLX_JS_BENCHMARK_DATABASE_URL;
+const scenarioFilter = process.env.SQLX_JS_BENCHMARK_SCENARIO;
+const driverFilter = process.env.SQLX_JS_BENCHMARK_DRIVER;
 const results = [];
 
 function delay(ms) {
@@ -108,7 +110,6 @@ async function internalAdapter(databaseUrl, max, name) {
     max,
     applicationName: name,
     connectTimeoutMs: 5_000,
-    operationTimeoutMs: 10_000,
   });
   await client.ready({ timeoutMs: 5_000 });
   return {
@@ -122,6 +123,27 @@ async function internalAdapter(databaseUrl, max, name) {
       return [first[0].value, second[0].value];
     }),
     close: async () => await client.close({ graceMs: 1_000, forceAfterMs: 5_000 }),
+  };
+}
+
+async function rawAdapter(databaseUrl, max, name) {
+  const client = createClient(databaseUrl, {
+    max,
+    applicationName: name,
+    connectTimeoutMs: 5_000,
+  });
+  await client.unsafe("SELECT 1");
+  return {
+    simple: async (value) => (await client.unsafe("SELECT $1::int4 AS value", [value]))[0].value,
+    rows100: async () => (await client.unsafe(
+      "SELECT generate_series(1, 100)::int4 AS value",
+    )).length,
+    transaction: async (value) => await client.begin(async (tx) => {
+      const first = await tx.unsafe("SELECT $1::int4 AS value", [value]);
+      const second = await tx.unsafe("SELECT $1::int4 AS value", [value + 1]);
+      return [first[0].value, second[0].value];
+    }),
+    close: async () => await client.end(),
   };
 }
 
@@ -191,7 +213,8 @@ const scenarios = [
   },
 ];
 const drivers = [
-  { name: "sqlx-js", create: internalAdapter },
+  { name: "sqlx-js-managed", create: internalAdapter },
+  { name: "sqlx-js-raw", create: rawAdapter },
 ];
 const postgresJsSerial = {
   name: "postgres.js-serial",
@@ -204,14 +227,16 @@ const postgresJsPipelined = {
 
 function scenarioDrivers(scenario) {
   return [
-    drivers[0],
+    ...drivers,
     scenario.postgresPipeline ? postgresJsPipelined : postgresJsSerial,
-  ];
+  ].filter((driver) => !driverFilter || driver.name === driverFilter);
 }
 
 async function runBenchmark(databaseUrl) {
   for (let round = 0; round < rounds; round++) {
-    for (const scenario of scenarios) {
+    for (const scenario of scenarios.filter(
+      (candidate) => !scenarioFilter || candidate.name === scenarioFilter,
+    )) {
       const comparisonDrivers = scenarioDrivers(scenario);
       const orderedDrivers = round % 2 === 0
         ? comparisonDrivers
@@ -250,22 +275,24 @@ async function runBenchmark(databaseUrl) {
 }
 
 function summarize() {
-  return scenarios.flatMap((scenario) => scenarioDrivers(scenario).map((driver) => {
-    const samples = results.filter(
-      (result) => result.scenario === scenario.name && result.driver === driver.name,
-    );
-    return {
-      scenario: scenario.name,
-      driver: driver.name,
-      maxConnections: scenario.max,
-      concurrency: scenario.concurrency,
-      rounds: samples.length,
-      medianOperationsPerSecond: median(samples.map((sample) => sample.operationsPerSecond)),
-      medianP50Ms: median(samples.map((sample) => sample.p50Ms)),
-      medianP95Ms: median(samples.map((sample) => sample.p95Ms)),
-      medianP99Ms: median(samples.map((sample) => sample.p99Ms)),
-    };
-  }));
+  return scenarios
+    .filter((scenario) => !scenarioFilter || scenario.name === scenarioFilter)
+    .flatMap((scenario) => scenarioDrivers(scenario).map((driver) => {
+      const samples = results.filter(
+        (result) => result.scenario === scenario.name && result.driver === driver.name,
+      );
+      return {
+        scenario: scenario.name,
+        driver: driver.name,
+        maxConnections: scenario.max,
+        concurrency: scenario.concurrency,
+        rounds: samples.length,
+        medianOperationsPerSecond: median(samples.map((sample) => sample.operationsPerSecond)),
+        medianP50Ms: median(samples.map((sample) => sample.p50Ms)),
+        medianP95Ms: median(samples.map((sample) => sample.p95Ms)),
+        medianP99Ms: median(samples.map((sample) => sample.p99Ms)),
+      };
+    }));
 }
 
 let databaseUrl = providedDatabaseUrl;
