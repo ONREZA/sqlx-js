@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.18.0](https://github.com/ONREZA/sqlx-js/compare/v0.17.0...v0.18.0) (2026-07-24)
+
+
+### Features
+
+* **prepare:** validate function contracts ([fa8c58a](https://github.com/ONREZA/sqlx-js/commit/fa8c58ae56a76006d6fee0d97dfb839243f68506))
+
+
+### Documentation
+
+* **roadmap:** refine planned investments ([8a5f142](https://github.com/ONREZA/sqlx-js/commit/8a5f142391e51d3970c0fae59c28e6fce86eb098))
+
 ## [0.17.0](https://github.com/ONREZA/sqlx-js/compare/v0.16.0...v0.17.0) (2026-07-24)
 
 
