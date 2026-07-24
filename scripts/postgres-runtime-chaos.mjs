@@ -364,7 +364,11 @@ async function main() {
     assert.equal(snapshot.state, "healthy");
     assert.equal(snapshot.activeOperations, 0);
     assert.ok(snapshot.recycleCount >= 2);
-    assert.equal(metrics.unexpectedErrors.length, 0);
+    assert.equal(
+      metrics.unexpectedErrors.length,
+      0,
+      `unexpected chaos errors: ${metrics.unexpectedErrors.join("; ")}`,
+    );
 
     await client.close({ graceMs: 1_000, forceAfterMs: 5_000 });
     await waitFor(() => backendCount().then((count) => count === 0), "chaos backends remained after close");

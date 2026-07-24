@@ -428,7 +428,11 @@ async function performSslHandshake(
     };
     const onError = (error: Error) => finish({ error });
     const onClose = () => {
-      finish({ error: new Error("sqlx-js: connection closed during SSL negotiation") });
+      finish({
+        error: new ConnectionLostError(
+          new Error("sqlx-js: connection closed during SSL negotiation"),
+        ),
+      });
     };
     const onAbort = () => {
       sock.destroy();
@@ -476,7 +480,11 @@ async function performSslHandshake(
         finish({ error });
       };
       const onClose = () => {
-        finish({ error: new Error("sqlx-js: connection closed during TLS handshake") });
+        finish({
+          error: new ConnectionLostError(
+            new Error("sqlx-js: connection closed during TLS handshake"),
+          ),
+        });
       };
       const onAbort = () => {
         t.destroy();
