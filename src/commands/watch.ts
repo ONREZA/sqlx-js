@@ -173,7 +173,6 @@ export async function prepareWatchedOnce(
   const result = await active.prepareOnce(opts, state.session, log, err, 1, {
     sites,
     reuseCacheFps,
-    reuseFunctions: !full,
     reuseEnumCatalog: !full,
   });
   state.sitesByFile = nextSites;

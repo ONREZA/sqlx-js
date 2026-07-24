@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "functions": [
     {
       "schema": "public",
@@ -54,7 +54,16 @@
         }
       ],
       "returns": "{ id: bigint | null; name: string | null; email: string | null; role: \"admin\" | \"editor\" | \"viewer\" | null; created_at: Date | null }",
-      "returnsSet": true
+      "returnsSet": true,
+      "volatility": "stable",
+      "securityDefiner": false,
+      "leakproof": false,
+      "parallelSafety": "unsafe",
+      "owner": "postgres",
+      "ownerSuperuser": true,
+      "publicExecute": true,
+      "searchPath": null,
+      "extensionOwned": false
     }
   ]
 }

@@ -41,7 +41,7 @@ const rows = await sql(
 - **Optional pgschema workflow** via `init --schema-provider pgschema`, provider-aware `dev` / `verify`, and explicit `pgschema install|plan|apply` deployment commands.
 - **Versioned offline cache** committed to your repo. `prepare --check` validates fingerprints, generator revision, type/function contracts, enum schema selection, and generated files without a database; `prepare --verify` compares fresh artifacts against `DATABASE_URL` without writing.
 - **Schema snapshot + LLM manifest** via `snapshot dump` / `snapshot check`: tables, columns, constraints, indexes, types, and function/procedure metadata are introspected from PostgreSQL.
-- **Generated function catalog** via `KnownFunctions`: `prepare` records application-owned PostgreSQL functions/procedures from `pg_proc` with approximate parameter and return TypeScript types while excluding extension-owned internals by default.
+- **Generated function contract catalog** via `KnownFunctions`: `prepare` records application-owned PostgreSQL functions/procedures from `pg_proc` with approximate TypeScript signatures plus volatility, security, parallel-safety, owner, public-execute, and function-local `search_path` metadata. Unsafe declarations produce reviewable warnings; extension-owned internals are excluded by default.
 - **Provider-aware shadow validation** via `dev` / `verify`: build either migrations or `schema.sql`, validate SQL, and drop the disposable database afterwards.
 - **Safe identifier quoting** via `sql.id(...)`, backed by the committed schema snapshot whitelist.
 - **Single runtime adapter**: Postgres.js backs the runtime on Node/Bun-compatible environments — no Bun.SQL-specific adapter to choose.
@@ -931,7 +931,7 @@ export default defineConfig({
     "analytics_event.tags": "non-null",
   },
   functionCatalog: {
-    // Extension-owned functions are excluded by default.
+    // Extension-owned functions and their contract warnings are excluded by default.
     includeExtensionOwned: false,
   },
   enumCatalog: {
@@ -1051,7 +1051,26 @@ Arrays of that domain are inferred as `string[]` without config. Ordinary `text[
 
 ### Function catalog scope
 
-Application-owned functions and procedures from non-system schemas are generated into `KnownFunctions`. Objects owned by installed extensions are excluded through `pg_depend`, preventing extension internals from dominating committed artifacts. Set `functionCatalog.includeExtensionOwned: true` only when those approximate signatures are needed, or set `functionCatalog: false` to disable catalog generation entirely.
+Application-owned functions and procedures from non-system schemas are generated into `KnownFunctions`. Each signature records approximate parameter/return types together with `volatility`, `securityDefiner`, `leakproof`, `parallelSafety`, `owner`, `ownerSuperuser`, `publicExecute`, `searchPath`, and `extensionOwned`. A `null` `searchPath` means the function has no function-local `SET search_path` clause and inherits the session setting. `publicExecute` reflects the effective PostgreSQL function ACL, including the default `EXECUTE TO PUBLIC` grant when `proacl` is null.
+
+The same metadata is committed in `.sqlx-js/functions/functions.json`, so `prepare --check` and `prepare --offline` reproduce the live diagnostics from cache, while `prepare --verify` detects database drift without modifying the worktree. Catalog and generator revisions fail closed with regeneration guidance after an incompatible upgrade; run one live `prepare`. Schema snapshots carry the same metadata and likewise require `snapshot dump` when their format changes.
+
+Owner attributes and effective ACLs are intentionally environment-sensitive contract data. A shadow or verification database must create routines under the intended owner and apply the same grants, or the committed artifacts will drift. Prefer explicit `ALTER FUNCTION ... OWNER TO ...` / `ALTER PROCEDURE ... OWNER TO ...`, `REVOKE`, and `GRANT` statements when those boundaries must be identical across environments.
+
+`prepare` emits non-blocking `function-contract` warnings for these high-risk application-owned declarations:
+
+| Diagnostic code | Review required |
+|-----------------|-----------------|
+| `security-definer-missing-search-path` | Add a function-local path containing only trusted schemas with `pg_temp` last. |
+| `security-definer-unsafe-search-path` | Move explicit `pg_temp` to the final path position. |
+| `security-definer-superuser-owner` | Prefer a dedicated least-privilege owner for the privilege boundary. |
+| `security-definer-public-execute` | Revoke `PUBLIC` access and grant `EXECUTE` only to intended roles. |
+| `leakproof` | Confirm the function cannot reveal argument information before security barriers. |
+| `volatile-parallel-safe` | Confirm worker safety or mark the function `PARALLEL UNSAFE`. |
+
+These diagnostics validate declared metadata, not function bodies. In particular, sqlx-js cannot infer which application roles may create objects in an arbitrary schema, so an explicit path ending in `pg_temp` still requires a human review that every preceding schema is trusted. The `PUBLIC` check also cannot prove that the remaining role grants are the intended least-privilege set.
+
+Objects owned by installed extensions are excluded through `pg_depend`, preventing extension internals from dominating committed artifacts or warnings. Set `functionCatalog.includeExtensionOwned: true` only when those approximate signatures and metadata are needed; extension-owned entries remain exempt from application diagnostics. Set `functionCatalog: false` to disable catalog generation entirely.
 
 ### Extension types, `customTypes`, and `typeCodecs`
 
@@ -1234,7 +1253,7 @@ See [ROADMAP.md](./ROADMAP.md) for what's planned.
 
 Breaking changes and migration instructions are maintained as versioned
 [upgrade guides](./docs/upgrades/README.md). For the next release, see
-[upgrading from 0.16.x to 0.17.0](./docs/upgrades/0.17.0.md). Earlier cache and
+[upgrading from 0.17.x to 0.18.0](./docs/upgrades/0.18.0.md). Earlier cache and
 generator migrations are archived in the
 [pre-0.15 guide](./docs/upgrades/pre-0.15.0.md).
 

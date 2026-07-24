@@ -9,6 +9,7 @@ export interface SqlxJsGeneratedFileQueries {
 }
 
 export interface SqlxJsGeneratedFunctions {
+  "public.pgschema_normalize_name(value text)": { kind: "function"; params: [string]; returns: string | null; returnsSet: false; volatility: "immutable"; securityDefiner: false; leakproof: false; parallelSafety: "unsafe"; owner: "postgres"; ownerSuperuser: true; publicExecute: true; searchPath: null; extensionOwned: false };
 }
 
 export interface SqlxJsGeneratedRuntimeTypes {

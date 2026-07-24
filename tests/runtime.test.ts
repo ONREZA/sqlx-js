@@ -592,7 +592,7 @@ describe("id", () => {
     const dir = mkdtempSync(join(tmpdir(), "sqlx-js-id-"));
     const path = join(dir, "schema.json");
     writeFileSync(path, JSON.stringify({
-      version: 1,
+      version: 2,
       schemas: ["app", "public"],
       relations: [
         {

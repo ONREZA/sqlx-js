@@ -99,6 +99,31 @@ test("diagnostics CLI renders versioned prepare JSON for editors and GitHub", ()
   );
 });
 
+test("diagnostics CLI preserves function contract subjects", () => {
+  const input = JSON.stringify({
+    formatVersion: 1,
+    ok: true,
+    diagnostics: [{
+      severity: "warning",
+      phase: "function-contract",
+      code: "security-definer-missing-search-path",
+      functionSignature: "public.read_secret()",
+      message: "SECURITY DEFINER has no function-local search_path",
+    }],
+  });
+  const unix = spawnSync("bun", [diagnosticsBinPath, "unix"], { encoding: "utf8", input });
+  expect(unix.status).toBe(0);
+  expect(unix.stdout.trim()).toBe(
+    "<project>:1:1: warning: [function-contract security-definer-missing-search-path] public.read_secret(): SECURITY DEFINER has no function-local search_path",
+  );
+
+  const github = spawnSync("bun", [diagnosticsBinPath, "github"], { encoding: "utf8", input });
+  expect(github.status).toBe(0);
+  expect(github.stdout.trim()).toBe(
+    "::warning::[function-contract security-definer-missing-search-path] public.read_secret(): SECURITY DEFINER has no function-local search_path",
+  );
+});
+
 test("CLI init scaffolds project files and is idempotent without DATABASE_URL", () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-init-"));
   try {

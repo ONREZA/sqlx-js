@@ -5,6 +5,7 @@ import { decodeText, parseDatabaseUrl, PgClient, type PgRowResult } from "./pg/w
 export type SchemaRelationKind = "table" | "partitioned_table" | "view" | "materialized_view" | "foreign_table";
 export type SchemaConstraintKind = "primary_key" | "foreign_key" | "unique" | "check" | "exclude";
 export type SchemaFunctionKind = "function" | "procedure" | "aggregate" | "window";
+export type SchemaFunctionParallelSafety = "unsafe" | "restricted" | "safe";
 
 export type SchemaColumnSnapshot = {
   name: string;
@@ -93,11 +94,18 @@ export type SchemaFunctionSnapshot = {
   volatility: "immutable" | "stable" | "volatile";
   strict: boolean;
   securityDefiner: boolean;
+  leakproof: boolean;
+  parallelSafety: SchemaFunctionParallelSafety;
+  owner: string;
+  ownerSuperuser: boolean;
+  publicExecute: boolean;
+  searchPath: string | null;
+  extensionOwned: boolean;
   language: string;
 };
 
 export type SchemaSnapshot = {
-  version: 1;
+  version: 2;
   schemas: string[];
   relations: SchemaRelationSnapshot[];
   types: SchemaTypeSnapshot[];
@@ -165,6 +173,14 @@ function volatility(raw: string | null | undefined): SchemaFunctionSnapshot["vol
     case "i": return "immutable";
     case "s": return "stable";
     default: return "volatile";
+  }
+}
+
+function parallelSafety(raw: string | null | undefined): SchemaFunctionParallelSafety {
+  switch (raw) {
+    case "s": return "safe";
+    case "r": return "restricted";
+    default: return "unsafe";
   }
 }
 
@@ -364,10 +380,33 @@ export async function introspectConnected(client: PgClient): Promise<SchemaSnaps
       p.provolatile::text AS volatility,
       p.proisstrict AS strict,
       p.prosecdef AS security_definer,
+      p.proleakproof AS leakproof,
+      p.proparallel::text AS parallel_safety,
+      owner.rolname AS owner,
+      owner.rolsuper AS owner_superuser,
+      EXISTS (
+        SELECT 1
+        FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) privilege
+        WHERE privilege.grantee = 0
+          AND privilege.privilege_type = 'EXECUTE'
+      ) AS public_execute,
+      (
+        SELECT substring(setting FROM length('search_path=') + 1)
+        FROM unnest(p.proconfig) setting
+        WHERE setting LIKE 'search_path=%'
+        LIMIT 1
+      ) AS search_path,
+      extension_dependency.objid IS NOT NULL AS extension_owned,
       l.lanname AS language
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
     JOIN pg_language l ON l.oid = p.prolang
+    JOIN pg_roles owner ON owner.oid = p.proowner
+    LEFT JOIN pg_depend extension_dependency
+      ON extension_dependency.classid = 'pg_proc'::regclass
+      AND extension_dependency.objid = p.oid
+      AND extension_dependency.refclassid = 'pg_extension'::regclass
+      AND extension_dependency.deptype = 'e'
     WHERE ${systemSchemaFilter("n")}
     ORDER BY n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)
   `));
@@ -485,6 +524,13 @@ export async function introspectConnected(client: PgClient): Promise<SchemaSnaps
     volatility: volatility(r.volatility),
     strict: bool(r.strict),
     securityDefiner: bool(r.security_definer),
+    leakproof: bool(r.leakproof),
+    parallelSafety: parallelSafety(r.parallel_safety),
+    owner: r.owner!,
+    ownerSuperuser: bool(r.owner_superuser),
+    publicExecute: bool(r.public_execute),
+    searchPath: r.search_path ?? null,
+    extensionOwned: bool(r.extension_owned),
     language: r.language!,
   }));
 
@@ -497,7 +543,7 @@ export async function introspectConnected(client: PgClient): Promise<SchemaSnaps
   ])].sort();
 
   return {
-    version: 1,
+    version: 2,
     schemas,
     relations,
     types: [...Array.from(enumMap.values()), ...domains, ...composites],
@@ -515,7 +561,11 @@ export function writeSchemaSnapshot(path: string, snapshot: SchemaSnapshot): voi
 }
 
 export function readSchemaSnapshot(path: string): SchemaSnapshot {
-  return JSON.parse(readFileSync(path, "utf8")) as SchemaSnapshot;
+  const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  if (!raw || typeof raw !== "object" || (raw as { version?: unknown }).version !== 2) {
+    throw new Error(`sqlx-js: schema snapshot format is stale: ${path}. Run \`sqlx-js snapshot dump\`.`);
+  }
+  return raw as SchemaSnapshot;
 }
 
 export function schemaSnapshotEqual(a: SchemaSnapshot, b: SchemaSnapshot): boolean {
@@ -588,6 +638,12 @@ export function renderSchemaManifest(snapshot: SchemaSnapshot): string {
       fn.volatility,
       fn.strict ? "strict" : "",
       fn.securityDefiner ? "security definer" : "",
+      fn.leakproof ? "leakproof" : "",
+      `parallel ${fn.parallelSafety}`,
+      `owner ${fn.owner}${fn.ownerSuperuser ? " (superuser)" : ""}`,
+      fn.publicExecute ? "public execute" : "",
+      fn.searchPath === null ? "" : `search_path ${JSON.stringify(fn.searchPath)}`,
+      fn.extensionOwned ? "extension owned" : "",
       fn.returnsSet ? "returns set" : "",
     ].filter(Boolean).join(", ");
     lines.push(`- ${fn.schema}.${fn.name}(${fn.identityArguments}) -> ${fn.returnType} [${attrs}]`);

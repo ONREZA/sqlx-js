@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { renderSchemaManifest, stableSchemaJson, type SchemaSnapshot } from "../src/schema-snapshot";
 
 const snapshot: SchemaSnapshot = {
-  version: 1,
+  version: 2,
   schemas: ["public"],
   relations: [{
     schema: "public",
@@ -43,6 +43,13 @@ const snapshot: SchemaSnapshot = {
       volatility: "immutable",
       strict: true,
       securityDefiner: false,
+      leakproof: false,
+      parallelSafety: "safe",
+      owner: "app_owner",
+      ownerSuperuser: false,
+      publicExecute: true,
+      searchPath: "app, pg_temp",
+      extensionOwned: false,
       language: "sql",
     },
   ],
@@ -62,4 +69,5 @@ test("renderSchemaManifest includes constraints, indexes, types, and functions",
   expect(text).toContain("posts_user_id_idx: btree [user_id]");
   expect(text).toContain("enum public.role");
   expect(text).toContain("public.normalize_email(value text) -> text");
+  expect(text).toContain('parallel safe, owner app_owner, public execute, search_path "app, pg_temp"');
 });

@@ -878,12 +878,14 @@ export default {
     expect(r.code).toBe(0);
     let dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain("interface KnownFunctions");
-    expect(dts).toContain('"public.tmp_catalog_slug(value text)": { kind: "function"; params: [string]; returns: string | null; returnsSet: false }');
-    expect(dts).toContain('"public.tmp_catalog_pair(value text)": { kind: "function"; params: [string]; returns: { slug: string | null; score: number | null }; returnsSet: true }');
-    expect(dts).toContain('"public.tmp_catalog_json_table(value jsonb)": { kind: "function"; params: [import("@onreza/sqlx-js").JsonInput]; returns: { payload: import("@onreza/sqlx-js").JsonValue | null }; returnsSet: true }');
-    expect(dts).toContain('"public.tmp_catalog_json_out(value text, OUT payload jsonb)": { kind: "function"; params: [string]; returns: { payload: import("@onreza/sqlx-js").JsonValue | null }; returnsSet: false }');
-    expect(dts).toMatch(/"public\.tmp_catalog_json_inout\([^"]*jsonb\)": \{ kind: "function"; params: \[import\("@onreza\/sqlx-js"\)\.JsonInput\]; returns: \{ payload: import\("@onreza\/sqlx-js"\)\.JsonValue \| null \}; returnsSet: false \}/);
-    expect(dts).toContain('"public.tmp_catalog_json_array(value jsonb[])": { kind: "function"; params: [(import("@onreza/sqlx-js").JsonInput | null)[]]; returns: (import("@onreza/sqlx-js").JsonValue | null)[] | null; returnsSet: false }');
+    expect(dts).toContain('"public.tmp_catalog_slug(value text)": { kind: "function"; params: [string]; returns: string | null; returnsSet: false;');
+    expect(dts).toContain('"public.tmp_catalog_pair(value text)": { kind: "function"; params: [string]; returns: { slug: string | null; score: number | null }; returnsSet: true;');
+    expect(dts).toContain('"public.tmp_catalog_json_table(value jsonb)": { kind: "function"; params: [import("@onreza/sqlx-js").JsonInput]; returns: { payload: import("@onreza/sqlx-js").JsonValue | null }; returnsSet: true;');
+    expect(dts).toContain('"public.tmp_catalog_json_out(value text, OUT payload jsonb)": { kind: "function"; params: [string]; returns: { payload: import("@onreza/sqlx-js").JsonValue | null }; returnsSet: false;');
+    expect(dts).toMatch(/"public\.tmp_catalog_json_inout\([^"]*jsonb\)": \{ kind: "function"; params: \[import\("@onreza\/sqlx-js"\)\.JsonInput\]; returns: \{ payload: import\("@onreza\/sqlx-js"\)\.JsonValue \| null \}; returnsSet: false;/);
+    expect(dts).toContain('"public.tmp_catalog_json_array(value jsonb[])": { kind: "function"; params: [(import("@onreza/sqlx-js").JsonInput | null)[]]; returns: (import("@onreza/sqlx-js").JsonValue | null)[] | null; returnsSet: false;');
+    expect(dts).toMatch(/"public\.tmp_catalog_slug\(value text\)".*volatility: "immutable"; securityDefiner: false; leakproof: false; parallelSafety: "unsafe"; owner: "[^"]+"; ownerSuperuser: (?:true|false); publicExecute: true; searchPath: null; extensionOwned: false/);
+    expect(JSON.parse(readFileSync(join(tmp, ".sqlx-js/functions/functions.json"), "utf8")).version).toBe(2);
     expect(dts).not.toContain('"public.hstore(');
 
     r = prepare(["--check"]);
@@ -916,6 +918,72 @@ export default {
     expect(dts).not.toContain('"public.tmp_catalog_slug(value text)":');
     r = prepareRoot(disabledCatalogRoot, ["--check"]);
     expect(r.code, r.stderr).toBe(0);
+  });
+
+  test("function contract warnings survive the offline cache boundary", async () => {
+    const root = isolatedRoot("function-contract-diagnostics");
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT tmp_contract_unsafe()\");\n",
+    );
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        CREATE OR REPLACE FUNCTION tmp_contract_unsafe() RETURNS boolean
+        LANGUAGE sql STABLE SECURITY DEFINER
+        AS $$ SELECT true $$;
+        CREATE OR REPLACE FUNCTION tmp_contract_safe() RETURNS boolean
+        LANGUAGE sql STABLE SECURITY DEFINER
+        SET search_path = public, pg_temp
+        AS $$ SELECT true $$;
+        REVOKE ALL ON FUNCTION tmp_contract_safe() FROM PUBLIC;
+      `);
+
+      let result = prepareRoot(root, ["--json"]);
+      expect(result.code, result.stderr).toBe(0);
+      let payload = JSON.parse(result.stdout) as {
+        diagnostics: { phase: string; code?: string; functionSignature?: string }[];
+      };
+      expect(payload.diagnostics).toContainEqual(expect.objectContaining({
+        phase: "function-contract",
+        code: "security-definer-missing-search-path",
+        functionSignature: "public.tmp_contract_unsafe()",
+      }));
+      expect(payload.diagnostics).toContainEqual(expect.objectContaining({
+        phase: "function-contract",
+        code: "security-definer-public-execute",
+        functionSignature: "public.tmp_contract_unsafe()",
+      }));
+      expect(readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8")).toMatch(
+        /"public\.tmp_contract_safe\(\)".*securityDefiner: true;.*publicExecute: false; searchPath: "public, pg_temp"/,
+      );
+
+      result = prepareRoot(root, ["--check", "--json"]);
+      expect(result.code, result.stderr).toBe(0);
+      payload = JSON.parse(result.stdout) as {
+        diagnostics: { phase: string; code?: string; functionSignature?: string }[];
+      };
+      expect(payload.diagnostics).toContainEqual(expect.objectContaining({
+        phase: "function-contract",
+        code: "security-definer-missing-search-path",
+        functionSignature: "public.tmp_contract_unsafe()",
+      }));
+
+      writeRootFile(root, "sqlx-js-env.d.ts", "export {};\n");
+      result = prepareRoot(root, ["--check"]);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(
+        "function-contract warning: public.tmp_contract_unsafe() — SECURITY DEFINER has no function-local search_path",
+      );
+    } finally {
+      await setup.simpleQuery(`
+        DROP FUNCTION IF EXISTS tmp_contract_unsafe();
+        DROP FUNCTION IF EXISTS tmp_contract_safe();
+      `).catch(() => {});
+      await setup.end();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("columnTypes override direct scalar results and mapped parameters only", async () => {
@@ -1313,7 +1381,7 @@ export default {
     const raw = readFileSync(join(tmp, ".sqlx-js/schema/schema.json"), "utf8");
     const schemaSnapshot = JSON.parse(raw) as {
       relations: { schema: string; name: string; constraints: { kind: string; references?: { table: string } }[]; indexes: { name: string }[] }[];
-      functions: { name: string; volatility: string; strict: boolean }[];
+      functions: { name: string; volatility: string; strict: boolean; publicExecute: boolean }[];
     };
     const rel = schemaSnapshot.relations.find((r) => r.name === "tmp_contract_posts");
     expect(rel).toBeTruthy();
@@ -1322,6 +1390,7 @@ export default {
     expect(rel!.constraints.some((c) => c.kind === "check")).toBe(true);
     expect(rel!.indexes.some((i) => i.name === "tmp_contract_posts_user_id_idx")).toBe(true);
     expect(schemaSnapshot.functions.some((f) => f.name === "tmp_contract_slug" && f.volatility === "immutable" && f.strict)).toBe(true);
+    expect(schemaSnapshot.functions.find((f) => f.name === "tmp_contract_slug")?.publicExecute).toBe(true);
 
     const manifest = readFileSync(join(tmp, ".sqlx-js/schema/schema.md"), "utf8");
     expect(manifest).toContain("tmp_contract_posts");
@@ -1484,9 +1553,19 @@ export default {
         "CREATE TABLE tmp_migrate_verify_auto_shadow_users (\n" +
         "  id BIGSERIAL PRIMARY KEY,\n" +
         "  email TEXT NOT NULL\n" +
-        ");\n",
+        ");\n" +
+        "\n" +
+        "CREATE FUNCTION tmp_migrate_verify_auto_shadow_normalize(value text)\n" +
+        "RETURNS text\n" +
+        "LANGUAGE sql\n" +
+        "IMMUTABLE\n" +
+        "STRICT\n" +
+        "AS $$\n" +
+        "  SELECT lower(value)\n" +
+        "$$;\n",
       );
       writeRootFile(root, "migrations/0301_base.down.sql",
+        "DROP FUNCTION IF EXISTS tmp_migrate_verify_auto_shadow_normalize(text);\n" +
         "DROP TABLE IF EXISTS tmp_migrate_verify_auto_shadow_users;\n",
       );
       writeRootFile(root, "a.ts",
@@ -1497,6 +1576,8 @@ export default {
       const generated = workflowCommand("dev", root);
       expect(generated.code).toBe(0);
       const beforeDts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
+      expect(beforeDts).toContain("\"public.tmp_migrate_verify_auto_shadow_normalize(value text)\"");
+      expect(beforeDts).toContain("publicExecute: true");
       const beforeCache = queryCacheFiles(root)
         .sort()
         .map((name) => [name, readFileSync(join(root, ".sqlx-js", name), "utf8")]);

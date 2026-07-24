@@ -33,7 +33,13 @@ import {
   type DatabaseProfile,
   type SqlxJsConfig,
 } from "../config";
-import { functionCacheExists, readFunctionCache, writeFunctionCache, type FunctionEntry } from "../function-cache";
+import {
+  functionCacheExists,
+  functionContractDiagnostics,
+  readFunctionCache,
+  writeFunctionCache,
+  type FunctionEntry,
+} from "../function-cache";
 import { introspectFunctions } from "../pg/functions";
 import {
   buildParamMap,
@@ -331,6 +337,7 @@ export type PrepareDiagnosticPhase =
   | "analyze"
   | "param-map"
   | "inference"
+  | "function-contract"
   | "cache"
   | "verify";
 
@@ -376,6 +383,7 @@ export type PrepareDiagnostic = {
   code?: string;
   position?: number;
   hint?: string;
+  functionSignature?: string;
 };
 
 export type PrepareResult = {
@@ -387,6 +395,31 @@ export type PrepareResult = {
   enums: number;
   diagnostics: PrepareDiagnostic[];
 };
+
+function addFunctionContractDiagnostics(
+  functions: readonly FunctionEntry[],
+  diagnostics: PrepareDiagnostic[],
+  report: (message: string) => void = () => {},
+): void {
+  for (const warning of functionContractDiagnostics(functions)) {
+    const diagnostic: PrepareDiagnostic = {
+      severity: "warning",
+      phase: "function-contract",
+      code: warning.code,
+      functionSignature: warning.functionSignature,
+      message: warning.message,
+    };
+    diagnostics.push(diagnostic);
+    report(formatPrepareWarning(diagnostic));
+  }
+}
+
+function formatPrepareWarning(diagnostic: PrepareDiagnostic): string {
+  const subject = diagnostic.file
+    ? `${diagnostic.file}${diagnostic.line ? `:${diagnostic.line}:${diagnostic.column ?? 1}` : ""}`
+    : diagnostic.functionSignature;
+  return `${diagnostic.phase} warning: ${subject ? `${subject} — ` : ""}${diagnostic.message}`;
+}
 
 function formatSite(s: QueryCallSite): string {
   const profile = s.profiles?.[0] ? ` [profile:${s.profiles[0]}]` : "";
@@ -495,7 +528,6 @@ export type PrepareSession = {
 export type PrepareIncrementalInput = {
   sites?: QueryCallSite[];
   reuseCacheFps?: ReadonlySet<string>;
-  reuseFunctions?: boolean;
   reuseEnumCatalog?: boolean;
 };
 
@@ -1013,8 +1045,6 @@ export async function prepareOnce(
   let functions: FunctionEntry[];
   if (userCfg.functionCatalog === false) {
     functions = [];
-  } else if (input.reuseFunctions && functionCacheExists(opts.cacheDir)) {
-    functions = readFunctionCache(opts.cacheDir);
   } else {
     try {
       functions = await introspectFunctions(client, session.schema, {
@@ -1024,6 +1054,7 @@ export async function prepareOnce(
       throw fatal("introspect", error);
     }
   }
+  addFunctionContractDiagnostics(functions, diagnostics, err);
   let enums: EnumCatalogEntry[] = [];
   let enumCount = 0;
   let enumModule: { path: string; content: string } | undefined;
@@ -1217,6 +1248,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         });
         inferenceFailures++;
       }
+      addFunctionContractDiagnostics(functions, diagnostics);
       if (userCfg.enumCatalog) {
         if (enumCatalogCacheExists(opts.cacheDir)) {
           enums = readEnumCatalogCache(opts.cacheDir);
@@ -1283,6 +1315,10 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
           }, null, 2));
         } else {
           for (const diagnostic of diagnostics) {
+            if (diagnostic.severity === "warning") {
+              console.error(formatPrepareWarning(diagnostic));
+              continue;
+            }
             const location = diagnostic.file
               ? `${diagnostic.file}${diagnostic.line ? `:${diagnostic.line}:${diagnostic.column ?? 1}` : ""} — `
               : "";
@@ -1314,7 +1350,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
       }, null, 2));
     } else {
       for (const diagnostic of diagnostics) {
-        console.error(`${diagnostic.phase} warning: ${diagnostic.file}:${diagnostic.line}:${diagnostic.column} — ${diagnostic.message}`);
+        console.error(formatPrepareWarning(diagnostic));
       }
       const suffix = opts.offline ? ", generated files regenerated" : ", generated artifacts are current";
       console.log(`ok — ${entries.length} unique queries, ${functions.length} function(s), ${enumCount} enum(s)${suffix}`);

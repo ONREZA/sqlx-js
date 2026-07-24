@@ -6,7 +6,6 @@ Items already shipped live in the [README](./README.md) feature list; this file 
 
 | Feature | ROI | Notes |
 |---------|-----|-------|
-| PostgreSQL function contract integrity | 7 | Strengthen the existing catalog with volatility, security-definer, leakproof, parallel-safety, owner, and `search_path` metadata. Add reviewable diagnostics for unsafe application-owned functions before considering a generated call API. |
 | RLS session-context guardrails | 7 | Add transaction-local helpers and doctor checks for application settings used by RLS policies. Keep tenant context explicit and bound to a transaction; profile-scoped planning already proves role permissions but cannot prove runtime policy outcomes. |
 | Prisma migration assistant | 7 | Import Prisma Migrate SQL history and Prisma TypedSQL/raw SQL into `sqlx-js`; classify Prisma Client CRUD/nested-write sites as assisted/manual instead of promising a fully automatic ORM rewrite. The shipped `queries --json` inventory covers sqlx-js definitions/call sites after conversion, not Prisma reference-graph discovery. |
 | Query-plan inventory | 6 | Capture normalized generic `EXPLAIN` metadata in a separate, environment-scoped snapshot. Local databases provide structural feedback; cost and scan comparisons are advisory and become meaningful only against controlled seed data or a representative database. |

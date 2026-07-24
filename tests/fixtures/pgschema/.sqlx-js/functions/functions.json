@@ -1,4 +1,29 @@
 {
-  "version": 1,
-  "functions": []
+  "version": 2,
+  "functions": [
+    {
+      "schema": "public",
+      "name": "pgschema_normalize_name",
+      "signature": "public.pgschema_normalize_name(value text)",
+      "kind": "function",
+      "params": [
+        {
+          "mode": "in",
+          "tsType": "string",
+          "name": "value"
+        }
+      ],
+      "returns": "string | null",
+      "returnsSet": false,
+      "volatility": "immutable",
+      "securityDefiner": false,
+      "leakproof": false,
+      "parallelSafety": "unsafe",
+      "owner": "postgres",
+      "ownerSuperuser": true,
+      "publicExecute": true,
+      "searchPath": null,
+      "extensionOwned": false
+    }
+  ]
 }

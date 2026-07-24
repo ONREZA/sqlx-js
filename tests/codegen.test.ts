@@ -276,6 +276,15 @@ test("KnownFunctions emits pg_proc catalog entries", () => {
       params: [{ mode: "in", name: "value", tsType: "string" }],
       returns: "string | null",
       returnsSet: false,
+      volatility: "immutable",
+      securityDefiner: false,
+      leakproof: false,
+      parallelSafety: "safe",
+      owner: "app_owner",
+      ownerSuperuser: false,
+      publicExecute: true,
+      searchPath: null,
+      extensionOwned: false,
     },
     {
       schema: "public",
@@ -285,11 +294,20 @@ test("KnownFunctions emits pg_proc catalog entries", () => {
       params: [{ mode: "in", name: "query", tsType: "string" }],
       returns: "{ slug: string | null; score: number | null }",
       returnsSet: true,
+      volatility: "stable",
+      securityDefiner: true,
+      leakproof: false,
+      parallelSafety: "restricted",
+      owner: "reporting_owner",
+      ownerSuperuser: false,
+      publicExecute: false,
+      searchPath: "reporting, pg_temp",
+      extensionOwned: false,
     },
   ]);
   expect(dts).toContain("interface KnownFunctions");
-  expect(dts).toContain('"public.slugify(value text)": { kind: "function"; params: [string]; returns: string | null; returnsSet: false }');
-  expect(dts).toContain('"public.search_posts(query text)": { kind: "function"; params: [string]; returns: { slug: string | null; score: number | null }; returnsSet: true }');
+  expect(dts).toContain('"public.slugify(value text)": { kind: "function"; params: [string]; returns: string | null; returnsSet: false; volatility: "immutable"; securityDefiner: false; leakproof: false; parallelSafety: "safe"; owner: "app_owner"; ownerSuperuser: false; publicExecute: true; searchPath: null; extensionOwned: false }');
+  expect(dts).toContain('"public.search_posts(query text)": { kind: "function"; params: [string]; returns: { slug: string | null; score: number | null }; returnsSet: true; volatility: "stable"; securityDefiner: true; leakproof: false; parallelSafety: "restricted"; owner: "reporting_owner"; ownerSuperuser: false; publicExecute: false; searchPath: "reporting, pg_temp"; extensionOwned: false }');
   expect(dts).toContain("export interface SqlxJsGeneratedRegistry");
   expect(dts).toContain("interface KnownQueries extends SqlxJsGeneratedQueries");
 });

@@ -10,7 +10,7 @@ function writeSet(root: string, query = "SELECT 1") {
   mkdirSync(join(cacheDir, "functions"), { recursive: true });
   writeFileSync(join(cacheDir, "cache-manifest.json"), '{"cacheFormat":2}\n');
   writeFileSync(join(cacheDir, "0123456789abcdef.json"), JSON.stringify({ query }));
-  writeFileSync(join(cacheDir, "functions/functions.json"), '{"version":1,"functions":[]}');
+  writeFileSync(join(cacheDir, "functions/functions.json"), '{"version":2,"functions":[]}');
   writeFileSync(dtsPath, `declare const query: ${JSON.stringify(query)};\n`);
   return { cacheDir, dtsPath };
 }

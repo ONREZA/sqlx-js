@@ -11,6 +11,7 @@ type Diagnostic = {
   column?: number;
   code?: string;
   profile?: string;
+  functionSignature?: string;
 };
 
 type DiagnosticPayload = {
@@ -47,6 +48,7 @@ function parsePayload(value: unknown): DiagnosticPayload {
     optionalString(item.file, `diagnostics[${index}].file`);
     optionalString(item.code, `diagnostics[${index}].code`);
     optionalString(item.profile, `diagnostics[${index}].profile`);
+    optionalString(item.functionSignature, `diagnostics[${index}].functionSignature`);
     optionalPosition(item.line, `diagnostics[${index}].line`);
     optionalPosition(item.column, `diagnostics[${index}].column`);
     return {
@@ -58,6 +60,7 @@ function parsePayload(value: unknown): DiagnosticPayload {
       ...(item.column !== undefined ? { column: item.column } : {}),
       ...(item.code !== undefined ? { code: item.code } : {}),
       ...(item.profile !== undefined ? { profile: item.profile } : {}),
+      ...(item.functionSignature !== undefined ? { functionSignature: item.functionSignature } : {}),
     };
   });
   return { formatVersion: 1, ok: value.ok, diagnostics };
@@ -79,7 +82,8 @@ function renderGithub(diagnostic: Diagnostic): string {
   const propertyText = properties.length > 0 ? ` ${properties.join(",")}` : "";
   const profile = diagnostic.profile ? ` profile:${diagnostic.profile}` : "";
   const code = diagnostic.code ? ` ${diagnostic.code}` : "";
-  return `::${diagnostic.severity}${propertyText}::${githubData(`[${diagnostic.phase}${profile}${code}] ${diagnostic.message}`)}`;
+  const subject = diagnostic.functionSignature ? `${diagnostic.functionSignature}: ` : "";
+  return `::${diagnostic.severity}${propertyText}::${githubData(`[${diagnostic.phase}${profile}${code}] ${subject}${diagnostic.message}`)}`;
 }
 
 function renderUnix(diagnostic: Diagnostic): string {
@@ -89,7 +93,8 @@ function renderUnix(diagnostic: Diagnostic): string {
   const column = diagnostic.column ?? 1;
   const profile = diagnostic.profile ? ` profile:${clean(diagnostic.profile)}` : "";
   const code = diagnostic.code ? ` ${clean(diagnostic.code)}` : "";
-  return `${file}:${line}:${column}: ${diagnostic.severity}: [${clean(diagnostic.phase)}${profile}${code}] ${clean(diagnostic.message)}`;
+  const subject = diagnostic.functionSignature ? `${clean(diagnostic.functionSignature)}: ` : "";
+  return `${file}:${line}:${column}: ${diagnostic.severity}: [${clean(diagnostic.phase)}${profile}${code}] ${subject}${clean(diagnostic.message)}`;
 }
 
 function usage(): never {

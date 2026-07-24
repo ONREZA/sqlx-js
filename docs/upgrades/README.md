@@ -5,6 +5,8 @@ main README can stay focused on the current API.
 
 ## Guides
 
+- [0.18.0](./0.18.0.md) — PostgreSQL function security/planner metadata,
+  reviewable diagnostics, and generated-artifact regeneration.
 - [0.17.0](./0.17.0.md) — provider-aware `dev` / `verify`, explicit
   `pgschema` / `snapshot` namespaces, and source-of-truth CI semantics.
 - [0.15.0](./0.15.0.md) — managed pool generations, end-to-end deadlines,

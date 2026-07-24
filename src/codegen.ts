@@ -74,7 +74,15 @@ function emitRegistry(
     if (functionSeen.has(fn.signature)) continue;
     functionSeen.add(fn.signature);
     const params = inputParams(fn);
-    lines.push(`  ${JSON.stringify(fn.signature)}: { kind: ${JSON.stringify(fn.kind)}; params: ${params}; returns: ${fn.returns}; returnsSet: ${fn.returnsSet} };`);
+    const searchPath = fn.searchPath === null ? "null" : JSON.stringify(fn.searchPath);
+    lines.push(
+      `  ${JSON.stringify(fn.signature)}: { kind: ${JSON.stringify(fn.kind)}; params: ${params}; `
+      + `returns: ${fn.returns}; returnsSet: ${fn.returnsSet}; volatility: ${JSON.stringify(fn.volatility)}; `
+      + `securityDefiner: ${fn.securityDefiner}; leakproof: ${fn.leakproof}; `
+      + `parallelSafety: ${JSON.stringify(fn.parallelSafety)}; owner: ${JSON.stringify(fn.owner)}; `
+      + `ownerSuperuser: ${fn.ownerSuperuser}; publicExecute: ${fn.publicExecute}; `
+      + `searchPath: ${searchPath}; extensionOwned: ${fn.extensionOwned} };`,
+    );
   }
 
   lines.push("}");

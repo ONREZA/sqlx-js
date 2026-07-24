@@ -132,7 +132,6 @@ test("watch reuses unchanged fingerprints and scans only the changed source", as
       profileFingerprint("api", "SELECT 3"),
       profileFingerprint("worker", "SELECT 3"),
     ]));
-    expect(inputs[1]!.reuseFunctions).toBe(true);
     expect(inputs[1]!.reuseEnumCatalog).toBe(true);
   } finally {
     rmSync(root, { recursive: true, force: true });
