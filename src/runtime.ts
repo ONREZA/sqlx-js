@@ -131,17 +131,18 @@ export function parameterKind(value: unknown): "json" | "array" | undefined {
   return (value as { [PARAMETER_KIND]?: "json" | "array" })[PARAMETER_KIND];
 }
 
-const SUFFIX = /[!?]$/;
-
 function renameRows(rows: unknown[]): unknown[] {
   if (rows.length === 0) return rows;
   const first = rows[0];
   if (first === null || typeof first !== "object") return rows;
-  const rename = new Map<string, string>();
+  let rename: Map<string, string> | undefined;
   for (const k of Object.keys(first as Record<string, unknown>)) {
-    if (SUFFIX.test(k)) rename.set(k, k.slice(0, -1));
+    if (k.endsWith("!") || k.endsWith("?")) {
+      rename ??= new Map();
+      rename.set(k, k.slice(0, -1));
+    }
   }
-  if (rename.size === 0) return rows;
+  if (!rename) return rows;
   const out = new Array<unknown>(rows.length);
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i] as Record<string, unknown>;

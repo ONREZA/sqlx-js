@@ -620,6 +620,10 @@ function builtinParsers(): Record<number, (value: string) => unknown> {
   for (const oid of builtinArrayOids()) {
     const elementOid = arrayElementOid(oid);
     if (elementOid === undefined) continue;
+    if (elementOid === 21 || elementOid === 23 || elementOid === 26) {
+      parsers[oid] = parseIntegerArray;
+      continue;
+    }
     parsers[oid] = (value) => parsePgArrayLiteral(value, parsers[elementOid] ?? String);
   }
   return parsers;
@@ -785,6 +789,10 @@ function decodeDataRow<Row extends Record<string, unknown>>(
       const parser = parsers[field.typeOid];
       if (parser === parseBoolean) {
         value = payload[offset] === 0x74;
+      } else if (parser === parseBytea && field.typeOid === 17) {
+        value = parseByteaBytes(payload, offset, offset + length);
+      } else if (parser === parseIntegerArray) {
+        value = parseIntegerArrayBytes(payload, offset, offset + length);
       } else if (
         parser === Number
         && (field.typeOid === 21 || field.typeOid === 23 || field.typeOid === 26)
@@ -862,6 +870,95 @@ function parseInteger(value: Uint8Array, start: number, end: number): number {
     result = result * 10 + value[start++]! - 0x30;
   }
   return result * sign;
+}
+
+function parseByteaBytes(value: Uint8Array, start: number, end: number): Uint8Array {
+  if (value[start] === 0x5c && value[start + 1] === 0x78) {
+    start += 2;
+    const bytes = new Uint8Array((end - start) / 2);
+    for (let index = 0; index < bytes.length; index++) {
+      const high = value[start++]!;
+      const low = value[start++]!;
+      bytes[index] = (
+        (high <= 0x39 ? high - 0x30 : (high | 0x20) - 0x57) * 16
+        + (low <= 0x39 ? low - 0x30 : (low | 0x20) - 0x57)
+      );
+    }
+    return bytes;
+  }
+  const bytes = new Uint8Array(end - start);
+  let length = 0;
+  while (start < end) {
+    const current = value[start++]!;
+    if (current !== 0x5c) {
+      bytes[length++] = current;
+      continue;
+    }
+    const escaped = value[start++]!;
+    if (escaped === 0x5c) {
+      bytes[length++] = escaped;
+      continue;
+    }
+    bytes[length++] = (
+      (escaped - 0x30) * 64
+      + (value[start++]! - 0x30) * 8
+      + value[start++]! - 0x30
+    );
+  }
+  return length === bytes.length ? bytes : bytes.slice(0, length);
+}
+
+type PgIntegerArray = (number | null | PgIntegerArray)[];
+
+function parseIntegerArrayBytes(value: Uint8Array, start: number, end: number): PgIntegerArray {
+  while (start < end && value[start] !== 0x7b) start++;
+  const root: PgIntegerArray = [];
+  const stack = [root];
+  start++;
+  while (start < end) {
+    const current = stack[stack.length - 1]!;
+    const code = value[start]!;
+    if (code === 0x7b) {
+      const nested: PgIntegerArray = [];
+      current.push(nested);
+      stack.push(nested);
+      start++;
+      continue;
+    }
+    if (code === 0x7d) {
+      stack.pop();
+      start++;
+      if (stack.length === 0) return root;
+      continue;
+    }
+    if (code === 0x2c) {
+      start++;
+      continue;
+    }
+    if (code === 0x4e) {
+      current.push(null);
+      start += 4;
+      continue;
+    }
+    let sign = 1;
+    if (code === 0x2d) {
+      sign = -1;
+      start++;
+    }
+    let integer = 0;
+    while (start < end) {
+      const digit = value[start]!;
+      if (digit === 0x2c || digit === 0x7d) break;
+      integer = integer * 10 + digit - 0x30;
+      start++;
+    }
+    current.push(integer * sign);
+  }
+  return root;
+}
+
+function parseIntegerArray(value: string): PgIntegerArray {
+  return parsePgArrayLiteral(value, Number);
 }
 
 function parseBytea(value: string): Uint8Array {

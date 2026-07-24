@@ -252,23 +252,27 @@ class ManagedPostgresRuntime implements RuntimeClient {
     try {
       const result = await Promise.race([work, operation.interruption.promise]);
       this.lastSuccessAt = Date.now();
-      this.notifyQuery({
-        ...request.metadata,
-        query: request.observedQuery,
-        params: request.observedParams,
-        durationMs: performance.now() - operation.startedAt,
-        rowCount: result.count ?? result.length,
-      });
+      if (this.onQuery) {
+        this.notifyQuery({
+          ...request.metadata,
+          query: request.observedQuery,
+          params: request.observedParams,
+          durationMs: performance.now() - operation.startedAt,
+          rowCount: result.count ?? result.length,
+        });
+      }
       return result;
     } catch (cause) {
       const error = operation.interrupted ?? toPgError(cause) ?? cause;
-      this.notifyQuery({
-        ...request.metadata,
-        query: request.observedQuery,
-        params: request.observedParams,
-        durationMs: performance.now() - operation.startedAt,
-        error,
-      });
+      if (this.onQuery) {
+        this.notifyQuery({
+          ...request.metadata,
+          query: request.observedQuery,
+          params: request.observedParams,
+          durationMs: performance.now() - operation.startedAt,
+          error,
+        });
+      }
       throw error;
     } finally {
       this.finishOperation(operation);
@@ -475,10 +479,12 @@ class ManagedPostgresRuntime implements RuntimeClient {
     if (timeoutMs !== undefined) {
       operation.timer = setTimeout(() => this.timeoutOperation(operation, timeoutMs), timeoutMs);
     }
-    this.notifyLifecycle(this.onQueryStart, {
-      ...metadata,
-      generation: generation.id,
-    });
+    if (this.onQueryStart) {
+      this.notifyLifecycle(this.onQueryStart, {
+        ...metadata,
+        generation: generation.id,
+      });
+    }
     if (signal) {
       operation.abortListener = () => this.abortOperation(operation, signal.reason);
       if (signal.aborted) operation.abortListener();
@@ -520,14 +526,10 @@ class ManagedPostgresRuntime implements RuntimeClient {
     pending.execute?.();
     const driver = Promise.resolve(pending);
     operation.driver = driver;
-    generation.driverPending.add(driver);
-    void driver.finally(() => {
-      operation.driverSettled = true;
-      generation.driverPending.delete(driver);
-    }).catch(() => {});
     try {
       return await driver as RuntimeQueryResult;
     } finally {
+      operation.driverSettled = true;
       this.checkOperation(operation);
     }
   }
@@ -549,12 +551,11 @@ class ManagedPostgresRuntime implements RuntimeClient {
       return await Promise.race([fn(scoped), state.interrupt.promise]);
     }) as Promise<R>;
     operation.driver = driver;
-    generation.driverPending.add(driver);
-    void driver.finally(() => {
+    try {
+      return await driver;
+    } finally {
       operation.driverSettled = true;
-      generation.driverPending.delete(driver);
-    }).catch(() => {});
-    return await driver;
+    }
   }
 
   async executeTransactionQuery(
@@ -566,7 +567,9 @@ class ManagedPostgresRuntime implements RuntimeClient {
     this.checkTransactionState(state);
     const timeoutMs = validateOptionalTimeout(request.options?.timeoutMs, "timeoutMs");
     const startedAt = performance.now();
-    this.notifyLifecycle(this.onQueryStart, { ...request.metadata, generation: generation.id });
+    if (this.onQueryStart) {
+      this.notifyLifecycle(this.onQueryStart, { ...request.metadata, generation: generation.id });
+    }
     this.checkTransactionState(state);
     const deadlineAt = timeoutMs === undefined ? undefined : startedAt + timeoutMs;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -635,8 +638,6 @@ class ManagedPostgresRuntime implements RuntimeClient {
       sent = true;
       pending.execute?.();
       const driver = Promise.resolve(pending);
-      generation.driverPending.add(driver);
-      void driver.finally(() => generation.driverPending.delete(driver)).catch(() => {});
       let result: RuntimeQueryResult;
       try {
         result = await Promise.race([driver, state.interrupt.promise]) as RuntimeQueryResult;
@@ -647,23 +648,27 @@ class ManagedPostgresRuntime implements RuntimeClient {
         }
         if (state.expired) throw state.expired;
       }
-      this.notifyQuery({
-        ...request.metadata,
-        query: request.observedQuery,
-        params: request.observedParams,
-        durationMs: performance.now() - startedAt,
-        rowCount: result.count ?? result.length,
-      });
+      if (this.onQuery) {
+        this.notifyQuery({
+          ...request.metadata,
+          query: request.observedQuery,
+          params: request.observedParams,
+          durationMs: performance.now() - startedAt,
+          rowCount: result.count ?? result.length,
+        });
+      }
       return result;
     } catch (cause) {
       const error = state.expired ?? toPgError(cause) ?? cause;
-      this.notifyQuery({
-        ...request.metadata,
-        query: request.observedQuery,
-        params: request.observedParams,
-        durationMs: performance.now() - startedAt,
-        error,
-      });
+      if (this.onQuery) {
+        this.notifyQuery({
+          ...request.metadata,
+          query: request.observedQuery,
+          params: request.observedParams,
+          durationMs: performance.now() - startedAt,
+          error,
+        });
+      }
       throw error;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
@@ -762,7 +767,9 @@ class ManagedPostgresRuntime implements RuntimeClient {
       this.interruptGenerationForShutdown(generation, trigger);
       return;
     }
+    this.trackDriver(generation, trigger);
     for (const operation of generation.active.values()) {
+      this.trackDriver(generation, operation);
       this.cancelPending(operation.pending);
       if (operation === trigger || operation.interrupted) continue;
       const error = new GenerationRecycledError({
@@ -799,6 +806,16 @@ class ManagedPostgresRuntime implements RuntimeClient {
         }
       },
     );
+  }
+
+  private trackDriver(generation: PoolGeneration, operation: OperationRecord): void {
+    const driver = operation.driver;
+    if (!driver || operation.driverSettled || generation.driverPending.has(driver)) return;
+    generation.driverPending.add(driver);
+    void driver.finally(() => {
+      operation.driverSettled = true;
+      generation.driverPending.delete(driver);
+    }).catch(() => {});
   }
 
   private async retireGeneration(generation: PoolGeneration): Promise<void> {
