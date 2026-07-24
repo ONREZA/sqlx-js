@@ -34,7 +34,7 @@ The library is **PostgreSQL-only** and **compile-time-only by design** — no ru
 │   │   ├── doctor.ts         Runtime/config/DB/cache/generated-output/tsconfig diagnostics
 │   │   ├── prepare.ts        runPrepare + openSession + prepareOnce + validateAll pool
 │   │   ├── migrate.ts        CLI migrateRun + shared applyPending
-│   │   ├── schema.ts         schema dump/check + shadow migration helper
+│   │   ├── schema.ts         snapshot dump/check + shadow migration helper
 │   │   ├── init.ts           sqlx-js init scaffolding
 │   │   ├── queries.ts        Read-only query inventory + embedded SQL emitter
 │   │   └── watch.ts          fs.watch loop with debounced re-prepare

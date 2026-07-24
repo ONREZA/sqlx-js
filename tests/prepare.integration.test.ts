@@ -96,6 +96,19 @@ if (!haveIntegrationDatabase) {
     return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   }
 
+  function workflowCommand(
+    command: "dev" | "verify",
+    root = tmp,
+    databaseUrl = dbUrl,
+  ): { code: number; stdout: string; stderr: string } {
+    const r = spawnSync(
+      "bun",
+      [join(repoRoot, "bin/sqlx-js.ts"), command, "--root", root],
+      { env: { ...process.env, DATABASE_URL: databaseUrl }, encoding: "utf8" },
+    );
+    return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  }
+
   function databaseUrlWithDatabase(databaseUrl: string, database: string): string {
     const url = new URL(databaseUrl);
     url.pathname = `/${database}`;
@@ -117,10 +130,10 @@ if (!haveIntegrationDatabase) {
     return databaseUrlWithDatabase(dbUrl, name);
   }
 
-  function schema(args: string[] = []): { code: number; stdout: string; stderr: string } {
+  function snapshot(args: string[] = []): { code: number; stdout: string; stderr: string } {
     const r = spawnSync(
       "bun",
-      [join(repoRoot, "bin/sqlx-js.ts"), "schema", ...args, "--root", tmp],
+      [join(repoRoot, "bin/sqlx-js.ts"), "snapshot", ...args, "--root", tmp],
       { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
     );
     return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
@@ -1284,7 +1297,7 @@ export default {
     expect(r.stderr + r.stdout).toMatch(/a\.ts:2:16.*nope\.sql/s);
   });
 
-  test("schema dump/check writes snapshot and LLM manifest with constraints and functions", () => {
+  test("snapshot dump/check writes schema contract and LLM manifest", () => {
     writeFile("migrations/0008_schema_contract.up.sql",
       "CREATE TABLE IF NOT EXISTS tmp_contract_posts (\n" +
       "  id BIGSERIAL PRIMARY KEY,\n" +
@@ -1306,28 +1319,28 @@ export default {
     const mig = migrate();
     expect(mig.code).toBe(0);
 
-    const dump = schema(["dump"]);
+    const dump = snapshot(["dump"]);
     expect(dump.code).toBe(0);
     const raw = readFileSync(join(tmp, ".sqlx-js/schema/schema.json"), "utf8");
-    const snapshot = JSON.parse(raw) as {
+    const schemaSnapshot = JSON.parse(raw) as {
       relations: { schema: string; name: string; constraints: { kind: string; references?: { table: string } }[]; indexes: { name: string }[] }[];
       functions: { name: string; volatility: string; strict: boolean }[];
     };
-    const rel = snapshot.relations.find((r) => r.name === "tmp_contract_posts");
+    const rel = schemaSnapshot.relations.find((r) => r.name === "tmp_contract_posts");
     expect(rel).toBeTruthy();
-    expect(snapshot.relations.some((r) => r.name === "keep_me" && r.schema === "pgx")).toBe(true);
+    expect(schemaSnapshot.relations.some((r) => r.name === "keep_me" && r.schema === "pgx")).toBe(true);
     expect(rel!.constraints.some((c) => c.kind === "foreign_key" && c.references?.table === "tmp_users")).toBe(true);
     expect(rel!.constraints.some((c) => c.kind === "check")).toBe(true);
     expect(rel!.indexes.some((i) => i.name === "tmp_contract_posts_user_id_idx")).toBe(true);
-    expect(snapshot.functions.some((f) => f.name === "tmp_contract_slug" && f.volatility === "immutable" && f.strict)).toBe(true);
+    expect(schemaSnapshot.functions.some((f) => f.name === "tmp_contract_slug" && f.volatility === "immutable" && f.strict)).toBe(true);
 
     const manifest = readFileSync(join(tmp, ".sqlx-js/schema/schema.md"), "utf8");
     expect(manifest).toContain("tmp_contract_posts");
     expect(manifest).toContain("tmp_contract_slug(value text) -> text");
 
-    const check = schema(["check"]);
+    const check = snapshot(["check"]);
     expect(check.code).toBe(0);
-    expect(check.stdout).toContain("schema: ok");
+    expect(check.stdout).toContain("snapshot: ok");
   });
 
   test("migrate revert --dry-run validates reversible down on an automatic shadow database", () => {
@@ -1475,7 +1488,7 @@ export default {
     expect(r.stdout).toContain("revert dry-run: 0212_add_email restores schema");
   });
 
-  test("migrate verify auto-creates a shadow database and compares committed prepare artifacts", () => {
+  test("verify uses built-in migrations in a shadow database", () => {
     const root = isolatedRoot("migrate-verify-auto-shadow");
     try {
       writeRootFile(root, "migrations/0301_base.up.sql",
@@ -1492,14 +1505,14 @@ export default {
         "await sql(\"SELECT id, email FROM tmp_migrate_verify_auto_shadow_users WHERE email = $1\", \"x\");\n",
       );
 
-      const generated = migrateCommand(["dev"], root);
+      const generated = workflowCommand("dev", root);
       expect(generated.code).toBe(0);
       const beforeDts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
       const beforeCache = queryCacheFiles(root)
         .sort()
         .map((name) => [name, readFileSync(join(root, ".sqlx-js", name), "utf8")]);
 
-      const r = migrateCommand(["verify"], root);
+      const r = workflowCommand("verify", root);
 
       expect({ code: r.code, stderr: r.stderr }).toEqual({ code: 0, stderr: "" });
       expect(r.stdout).toContain("shadow: created");
@@ -1515,7 +1528,7 @@ export default {
     }
   });
 
-  test("migrate dev auto-creates a shadow database and writes prepare artifacts", () => {
+  test("dev uses built-in migrations and writes prepare artifacts", () => {
     const root = isolatedRoot("migrate-dev-auto-shadow");
     try {
       writeRootFile(root, "migrations/0311_base.up.sql",
@@ -1532,7 +1545,7 @@ export default {
         "await sql(\"SELECT id, name FROM tmp_migrate_dev_auto_shadow_users WHERE id = $1\", 1);\n",
       );
 
-      const r = migrateCommand(["dev"], root);
+      const r = workflowCommand("dev", root);
 
       expect(r.code).toBe(0);
       expect(r.stderr).toBe("");

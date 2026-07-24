@@ -740,7 +740,7 @@ function buildIdentifierWhitelist(snapshot: unknown): IdentifierWhitelist {
 function loadIdentifierWhitelist(): IdentifierWhitelist {
   const path = identifierSnapshotPath();
   if (!existsSync(path)) {
-    throw new Error(`sqlx-js.id: schema snapshot not found at ${path}. Run \`sqlx-js schema dump\`.`);
+    throw new Error(`sqlx-js.id: schema snapshot not found at ${path}. Run \`sqlx-js snapshot dump\`.`);
   }
   const st = statSync(path);
   if (identifierCache && identifierCache.path === path && identifierCache.mtimeMs === st.mtimeMs && identifierCache.size === st.size) {

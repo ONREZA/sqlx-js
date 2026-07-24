@@ -20,21 +20,14 @@ test("CLI help prints package metadata version", () => {
   expect(r.status).toBe(0);
   expect(r.stderr).toBe("");
   expect(r.stdout).toContain(`v${pkg.version}`);
-  expect(r.stdout).toContain("--dry-run");
-  expect(r.stdout).toContain("--json");
-  expect(r.stdout).toContain("sqlx-js db install");
+  expect(r.stdout).toContain("sqlx-js dev");
+  expect(r.stdout).toContain("sqlx-js verify");
+  expect(r.stdout).toContain("sqlx-js pgschema install|plan|apply");
+  expect(r.stdout).toContain("sqlx-js snapshot dump|check");
   expect(r.stdout).toContain("sqlx-js doctor");
-  expect(r.stdout).toContain("--verify");
-  expect(r.stdout).toContain("--offline");
-  expect(r.stdout).toContain("--jsonl");
   expect(r.stdout).toContain("--schema-provider");
-  expect(r.stdout).toContain("check [--json]");
-  expect(r.stdout).toContain("migrate dev");
-  expect(r.stdout).toContain("verify [--dts <path>] [--shadow-admin-url");
-  expect(r.stdout).toContain("--shadow-admin-url");
-  expect(r.stdout).toContain("revert [--dry-run]");
-  expect(r.stdout).toContain("archive restore");
   expect(r.stdout).toContain("sqlx-js queries");
+  expect(r.stdout).toContain("<subcommand> --help");
 });
 
 test("CLI help lists the init command", () => {
@@ -43,21 +36,18 @@ test("CLI help lists the init command", () => {
 });
 
 test("CLI command help is successful and command-specific", () => {
-  const r = spawnSync("bun", [binPath, "prepare", "--help"], { encoding: "utf8" });
-  expect(r.status).toBe(0);
-  expect(r.stderr).toBe("");
-  expect(r.stdout).toContain("usage: sqlx-js prepare");
-  expect(r.stdout).toContain("--strict-inference");
-});
-
-test("CLI db help lists desired-state shadow workflows", () => {
-  const r = spawnSync("bun", [binPath, "db", "--help"], { encoding: "utf8" });
-  expect(r.status).toBe(0);
-  expect(r.stderr).toBe("");
-  expect(r.stdout).toContain("| dev [--dts <path>]");
-  expect(r.stdout).toContain("verify [--dts <path>]");
-  expect(r.stdout).toContain("--shadow-admin-url");
-  expect(r.stdout).toContain("--strict-inference");
+  const cases = [
+    { args: ["dev", "--help"], expected: ["usage: sqlx-js dev", "Changes target database: no"] },
+    { args: ["pgschema", "plan", "--help"], expected: ["usage: sqlx-js pgschema plan", "without applying"] },
+    { args: ["migrate", "run", "--help"], expected: ["usage: sqlx-js migrate run", "target database"] },
+    { args: ["snapshot", "dump", "--help"], expected: ["usage: sqlx-js snapshot dump", "LLM manifest"] },
+  ];
+  for (const { args, expected } of cases) {
+    const r = spawnSync("bun", [binPath, ...args], { encoding: "utf8" });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe("");
+    for (const text of expected) expect(r.stdout).toContain(text);
+  }
 });
 
 test("diagnostics CLI renders versioned prepare JSON for editors and GitHub", () => {
@@ -108,9 +98,10 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
     expect(JSON.parse(readFileSync(join(root, "package.json"), "utf8")).scripts).toMatchObject({
       test: "bun test",
       "sqlx:prepare": "sqlx-js prepare",
+      "sqlx:dev": "sqlx-js dev --strict-inference",
       "sqlx:check": "sqlx-js prepare --check",
       "sqlx:offline": "sqlx-js prepare --offline",
-      "sqlx:verify": "sqlx-js prepare --verify --strict-inference",
+      "sqlx:verify": "sqlx-js verify --strict-inference",
       "sqlx:ci": "sqlx-js ci",
       "sqlx:queries": "sqlx-js queries --json",
     });
@@ -135,10 +126,10 @@ test("CLI init scaffolds pgschema workflow", () => {
     });
     expect(r.status).toBe(0);
     expect(r.stdout).toContain("created schema.sql");
-    expect(r.stdout).toContain("sqlx-js db install");
-    expect(r.stdout).toContain("sqlx-js db check");
-    expect(r.stdout).toContain("sqlx-js db dev --strict-inference");
-    expect(r.stdout).toContain("sqlx-js db verify --strict-inference");
+    expect(r.stdout).toContain("sqlx-js pgschema install");
+    expect(r.stdout).toContain("sqlx-js doctor");
+    expect(r.stdout).toContain("sqlx-js dev --strict-inference");
+    expect(r.stdout).toContain("sqlx-js verify --strict-inference");
     expect(existsSync(join(root, "sqlx-js.config.ts"))).toBe(true);
     expect(existsSync(join(root, "schema.sql"))).toBe(true);
     expect(readFileSync(join(root, "sqlx-js.config.ts"), "utf8")).toContain('provider: "pgschema"');
@@ -147,53 +138,7 @@ test("CLI init scaffolds pgschema workflow", () => {
   }
 });
 
-test("CLI db check probes pgschema help", () => {
-  const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-check-"));
-  const binDir = join(root, "bin");
-  const capture = join(root, "capture.txt");
-  try {
-    mkdirSync(binDir);
-    writeFileSync(join(root, "sqlx-js.config.ts"), `export default {
-  schema: {
-    provider: "pgschema",
-    file: "schema.sql",
-    schemas: ["public"],
-  },
-};
-`);
-    const fake = join(binDir, "pgschema");
-    writeFileSync(fake, `#!/bin/sh
-: > "$CAPTURE"
-for arg in "$@"; do
-  printf 'arg=%s\\n' "$arg" >> "$CAPTURE"
-done
-if [ "$1" = "--help" ]; then
-  printf 'pgschema help\\n'
-  exit 0
-fi
-printf 'unexpected args\\n' >&2
-exit 1
-`);
-    chmodSync(fake, 0o755);
-
-    const r = spawnSync("bun", [binPath, "db", "check", "--root", root], {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
-        CAPTURE: capture,
-        DATABASE_URL: "",
-      },
-    });
-
-    expect(r.status).toBe(0);
-    expect(readFileSync(capture, "utf8")).toContain("arg=--help");
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("CLI db plan delegates to configured pgschema", () => {
+test("CLI pgschema plan delegates to configured pgschema", () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-"));
   const binDir = join(root, "bin");
   const capture = join(root, "capture.txt");
@@ -224,7 +169,7 @@ printf 'pgsslkey=%s\\n' "$PGSSLKEY" >> "$CAPTURE"
 
     const r = spawnSync(
       "bun",
-      [binPath, "db", "plan", "--root", root, "--", "--root", "pgschema-root", "--output-json", "plan.json"],
+      [binPath, "pgschema", "plan", "--root", root, "--", "--root", "pgschema-root", "--output-json", "plan.json"],
       {
         encoding: "utf8",
         env: {
@@ -262,7 +207,7 @@ printf 'pgsslkey=%s\\n' "$PGSSLKEY" >> "$CAPTURE"
   }
 });
 
-test("CLI db apply accepts pgschema plan without schema file", () => {
+test("CLI pgschema apply accepts a reviewed plan without schema file", () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-apply-plan-"));
   const binDir = join(root, "bin");
   const capture = join(root, "capture.txt");
@@ -285,7 +230,7 @@ done
 `);
     chmodSync(fake, 0o755);
 
-    const r = spawnSync("bun", [binPath, "db", "apply", "--root", root, "--", "--plan", "plan.json", "--auto-approve"], {
+    const r = spawnSync("bun", [binPath, "pgschema", "apply", "--root", root, "--", "--plan", "plan.json", "--auto-approve"], {
       encoding: "utf8",
       env: {
         ...process.env,
@@ -317,7 +262,7 @@ done
   }
 });
 
-test("CLI db plan rejects multi-schema pgschema config", () => {
+test("CLI pgschema plan rejects multi-schema config", () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-multi-"));
   const binDir = join(root, "bin");
   const capture = join(root, "capture.txt");
@@ -339,7 +284,7 @@ exit 0
 `);
     chmodSync(fake, 0o755);
 
-    const r = spawnSync("bun", [binPath, "db", "plan", "--root", root], {
+    const r = spawnSync("bun", [binPath, "pgschema", "plan", "--root", root], {
       encoding: "utf8",
       env: {
         ...process.env,
@@ -467,7 +412,7 @@ test("prepare --check --json preserves scanner source location", () => {
   }
 });
 
-test("ci --json keeps config preflight failures machine-readable", () => {
+test("ci --json keeps provider verification failures machine-readable", () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-ci-json-"));
   try {
     writeFileSync(join(root, "package.json"), '{"type":"module"}');
@@ -476,12 +421,12 @@ test("ci --json keeps config preflight failures machine-readable", () => {
       encoding: "utf8",
       env: { ...process.env, DATABASE_URL: "" },
     });
-    expect(r.status).toBe(2);
+    expect(r.status).toBe(1);
     expect(r.stderr).toBe("");
     expect(JSON.parse(r.stdout)).toMatchObject({
       formatVersion: 1,
       ok: false,
-      results: [{ name: "preflight", ok: false, exitCode: 2 }],
+      results: [{ name: "verify", ok: false, exitCode: 2 }],
     });
   } finally {
     rmSync(root, { recursive: true, force: true });

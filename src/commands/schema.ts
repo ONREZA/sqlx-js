@@ -69,23 +69,23 @@ export async function runSchemaDump(opts: SchemaCommandOptions): Promise<void> {
   const snapshot = await introspectDatabase(effectiveDatabaseUrl(opts));
   writeSchemaSnapshot(opts.snapshotPath, snapshot);
   if (opts.writeManifest) writeSchemaManifest(opts.manifestPath, snapshot);
-  console.log(`schema: wrote ${opts.snapshotPath}`);
-  if (opts.writeManifest) console.log(`schema: wrote ${opts.manifestPath}`);
+  console.log(`snapshot: wrote ${opts.snapshotPath}`);
+  if (opts.writeManifest) console.log(`snapshot: wrote ${opts.manifestPath}`);
 }
 
 export async function runSchemaCheck(opts: SchemaCommandOptions): Promise<void> {
   if (!schemaSnapshotExists(opts.snapshotPath)) {
-    console.error(`schema: missing snapshot ${opts.snapshotPath}`);
-    console.error("schema: run `sqlx-js schema dump` against a live database");
+    console.error(`snapshot: missing snapshot ${opts.snapshotPath}`);
+    console.error("snapshot: run `sqlx-js snapshot dump` against a live database");
     process.exit(1);
   }
   await prepareShadowIfNeeded(opts);
   const expected = readSchemaSnapshot(opts.snapshotPath);
   const actual = await introspectDatabase(effectiveDatabaseUrl(opts));
   if (!schemaSnapshotEqual(expected, actual)) {
-    console.error(`schema: snapshot is stale: ${opts.snapshotPath}`);
-    console.error("schema: run `sqlx-js schema dump` and commit the updated snapshot");
+    console.error(`snapshot: snapshot is stale: ${opts.snapshotPath}`);
+    console.error("snapshot: run `sqlx-js snapshot dump` and commit the updated snapshot");
     process.exit(1);
   }
-  console.log(`schema: ok — ${actual.relations.length} relation(s), ${actual.types.length} type(s), ${actual.functions.length} function(s)`);
+  console.log(`snapshot: ok — ${actual.relations.length} relation(s), ${actual.types.length} type(s), ${actual.functions.length} function(s)`);
 }

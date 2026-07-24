@@ -93,17 +93,19 @@ jobs:
           await sql.end();'
 
       - name: Install and verify pinned pgschema
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_pgschema
         run: |
-          bun bin/sqlx-js.ts db install --root tests/fixtures/pgschema
-          bun bin/sqlx-js.ts db check --root tests/fixtures/pgschema
+          bun bin/sqlx-js.ts pgschema install --root tests/fixtures/pgschema
+          bun bin/sqlx-js.ts doctor --root tests/fixtures/pgschema
 
       - name: Plan and apply schema with the real pgschema binary
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_pgschema
           PLAN_PATH: ${{ runner.temp }}/sqlx-js-pgschema-plan.json
         run: |
-          bun bin/sqlx-js.ts db plan --root tests/fixtures/pgschema -- --output-json "$PLAN_PATH" --no-color
-          bun bin/sqlx-js.ts db apply --root tests/fixtures/pgschema -- --plan "$PLAN_PATH" --auto-approve
+          bun bin/sqlx-js.ts pgschema plan --root tests/fixtures/pgschema -- --output-json "$PLAN_PATH" --no-color
+          bun bin/sqlx-js.ts pgschema apply --root tests/fixtures/pgschema -- --plan "$PLAN_PATH" --auto-approve
           bun -e 'import postgres from "postgres"; const sql = postgres(process.env.DATABASE_URL); const rows = await sql.unsafe("SELECT name FROM pgschema_probe"); if (rows.length !== 0) throw new Error("expected empty probe table"); await sql.end();'
 
       - name: Verify pgschema plan is idempotent
@@ -111,7 +113,7 @@ jobs:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_pgschema
           PLAN_PATH: ${{ runner.temp }}/sqlx-js-pgschema-second-plan.json
         run: |
-          bun bin/sqlx-js.ts db plan --root tests/fixtures/pgschema -- --output-json "$PLAN_PATH" --no-color
+          bun bin/sqlx-js.ts pgschema plan --root tests/fixtures/pgschema -- --output-json "$PLAN_PATH" --no-color
           node -e 'const plan = require(process.env.PLAN_PATH); if (plan.groups?.length) throw new Error("pgschema plan is not idempotent")'
 
       - name: Verify pgschema desired-state shadow workflow
@@ -119,11 +121,11 @@ jobs:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_pgschema
         run: |
           bun -e 'import postgres from "postgres"; const sql = postgres(process.env.DATABASE_URL); await sql.unsafe("DROP TABLE pgschema_probe"); await sql.unsafe("CREATE TABLE pgschema_target_guard (id bigint PRIMARY KEY)"); await sql.end();'
-          bun bin/sqlx-js.ts db verify --root tests/fixtures/pgschema --strict-inference
-          bun bin/sqlx-js.ts db dev --root tests/fixtures/pgschema --strict-inference
+          bun bin/sqlx-js.ts verify --root tests/fixtures/pgschema --strict-inference
+          bun bin/sqlx-js.ts dev --root tests/fixtures/pgschema --strict-inference
           bunx tsc -p tests/fixtures/pgschema
           git diff --exit-code -- tests/fixtures/pgschema
-          bun -e 'import postgres from "postgres"; const sql = postgres(process.env.DATABASE_URL); const rows = await sql.unsafe("SELECT to_regclass($1)::text AS desired, to_regclass($2)::text AS guard", ["public.pgschema_probe", "public.pgschema_target_guard"]); if (rows[0]?.desired !== null || rows[0]?.guard !== "pgschema_target_guard") throw new Error("db dev/verify changed the target database"); await sql.end();'
+          bun -e 'import postgres from "postgres"; const sql = postgres(process.env.DATABASE_URL); const rows = await sql.unsafe("SELECT to_regclass($1)::text AS desired, to_regclass($2)::text AS guard", ["public.pgschema_probe", "public.pgschema_target_guard"]); if (rows[0]?.desired !== null || rows[0]?.guard !== "pgschema_target_guard") throw new Error("dev/verify changed the target database"); await sql.end();'
 
   postgres-compatibility:
     runs-on: ubuntu-latest

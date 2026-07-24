@@ -6,13 +6,13 @@ import type { SqlxJsConfig } from "../config";
 import { parseDatabaseUrl, type ConnConfig } from "../pg/wire";
 import { withWorkflowShadowDatabase } from "./shadow";
 
-export type PgschemaSubcommand = "check" | "plan" | "apply";
+export type PgschemaSubcommand = "plan" | "apply";
 
 export const PGSCHEMA_VERSION = "1.12.0";
 
 const PGSCHEMA_BASE_URL = `https://github.com/pgplex/pgschema/releases/download/v${PGSCHEMA_VERSION}`;
 const WINDOWS_UNSUPPORTED =
-  "sqlx-js db: pgschema is not supported on Windows. Run sqlx-js under WSL/Linux/macOS or use the built-in sqlx-js migrate workflow.";
+  "sqlx-js pgschema: pgschema is not supported on Windows. Run sqlx-js under WSL/Linux/macOS or use the built-in migration workflow.";
 
 export type PgschemaAsset = {
   key: string;
@@ -78,7 +78,7 @@ export type PgschemaProbe = {
 
 export class PgschemaCommandError extends Error {
   constructor(public readonly exitCode: number, command: string) {
-    super(`sqlx-js db: ${command} exited with ${exitCode}`);
+    super(`sqlx-js pgschema: ${command} exited with ${exitCode}`);
     this.name = "PgschemaCommandError";
   }
 }
@@ -89,13 +89,13 @@ export function resolvePgschemaAsset(
 ): PgschemaAsset {
   if (platform === "win32") throw new Error(WINDOWS_UNSUPPORTED);
   const asset = PGSCHEMA_ASSETS[`${platform}:${arch}`];
-  if (!asset) throw new Error(`sqlx-js db install: unsupported platform ${platform}/${arch}`);
+  if (!asset) throw new Error(`sqlx-js pgschema install: unsupported platform ${platform}/${arch}`);
   return asset;
 }
 
 function pgschemaConfig(config: SqlxJsConfig): NonNullable<SqlxJsConfig["schema"]> {
   if (config.schema?.provider !== "pgschema") {
-    throw new Error("sqlx-js db: set schema.provider = \"pgschema\" in sqlx-js.config.ts");
+    throw new Error("sqlx-js pgschema: set schema.provider = \"pgschema\" in sqlx-js.config.ts");
   }
   return config.schema;
 }
@@ -110,7 +110,7 @@ function maybeManagedPgschemaPath(root: string): string | undefined {
     const managed = managedPgschemaPath(root, asset);
     if (!existsSync(managed)) return undefined;
     if (sha256(readFileSync(managed)) !== asset.sha256) {
-      throw new Error(`sqlx-js db: managed pgschema checksum mismatch at ${managed}. Run sqlx-js db install.`);
+      throw new Error(`sqlx-js pgschema: managed binary checksum mismatch at ${managed}. Run sqlx-js pgschema install.`);
     }
     chmodSync(managed, 0o755);
     return managed;
@@ -167,7 +167,7 @@ function appliesPlan(subcommand: PgschemaSubcommand, passthrough: string[] | und
 }
 
 function installHint(command: string): string {
-  return `sqlx-js db: ${command} was not found. Run sqlx-js db install or set schema.command in sqlx-js.config.ts.`;
+  return `sqlx-js pgschema: ${command} was not found. Run sqlx-js pgschema install or set schema.command in sqlx-js.config.ts.`;
 }
 
 function run(command: string, args: string[], env: NodeJS.ProcessEnv): void {
@@ -177,7 +177,7 @@ function run(command: string, args: string[], env: NodeJS.ProcessEnv): void {
     if (code === "ENOENT") throw new Error(installHint(command));
     throw child.error;
   }
-  if (child.signal) throw new Error(`sqlx-js db: ${command} terminated by signal ${child.signal}`);
+  if (child.signal) throw new Error(`sqlx-js pgschema: ${command} terminated by signal ${child.signal}`);
   if (child.status !== null && child.status !== 0) throw new PgschemaCommandError(child.status, command);
 }
 
@@ -211,13 +211,13 @@ export async function runPgschemaInstall(opts: PgschemaInstallOptions): Promise<
   const url = `${baseUrl.replace(/\/$/, "")}/${asset.name}`;
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`sqlx-js db install: failed to download pgschema v${PGSCHEMA_VERSION}: HTTP ${response.status}`);
+    throw new Error(`sqlx-js pgschema install: failed to download pgschema v${PGSCHEMA_VERSION}: HTTP ${response.status}`);
   }
 
   const bytes = new Uint8Array(await response.arrayBuffer());
   const actual = sha256(bytes);
   if (actual !== asset.sha256) {
-    throw new Error(`sqlx-js db install: checksum mismatch for ${asset.name}`);
+    throw new Error(`sqlx-js pgschema install: checksum mismatch for ${asset.name}`);
   }
 
   mkdirSync(dirname(target), { recursive: true });
@@ -242,14 +242,9 @@ export function runPgschemaCommand(opts: PgschemaCommandOptions): void {
   const config = pgschemaConfig(opts.config);
   const command = commandName(opts.root, config);
 
-  if (opts.subcommand === "check") {
-    run(command, ["--help"], process.env);
-    return;
-  }
-
-  if (!opts.databaseUrl) throw new Error("DATABASE_URL is required for sqlx-js db commands");
+  if (!opts.databaseUrl) throw new Error("DATABASE_URL is required for sqlx-js pgschema commands");
   const file = appliesPlan(opts.subcommand, opts.passthrough) ? undefined : schemaFile(opts.root, config);
-  if (file && !existsSync(file)) throw new Error(`sqlx-js db: schema file not found: ${file}`);
+  if (file && !existsSync(file)) throw new Error(`sqlx-js pgschema: schema file not found: ${file}`);
 
   const db = parseDatabaseUrl(opts.databaseUrl);
   const schemas = pgschemaSchemas(config);
@@ -270,7 +265,7 @@ export function runPgschemaCommand(opts: PgschemaCommandOptions): void {
 function validatePgschemaWorkflow(opts: PgschemaWorkflowOptions): void {
   const config = pgschemaConfig(opts.config);
   const file = schemaFile(opts.root, config);
-  if (!existsSync(file)) throw new Error(`sqlx-js db: schema file not found: ${file}`);
+  if (!existsSync(file)) throw new Error(`sqlx-js pgschema: schema file not found: ${file}`);
   pgschemaSchemas(config);
 }
 
@@ -323,8 +318,8 @@ export async function runPgschemaVerify(opts: PgschemaWorkflowOptions): Promise<
       console.log,
       console.error,
       {
-        command: "sqlx-js db verify",
-        regenerateCommand: "sqlx-js db dev",
+        command: "sqlx-js verify",
+        regenerateCommand: "sqlx-js dev",
       },
     );
     ok = verification.ok;
@@ -335,7 +330,7 @@ export async function runPgschemaVerify(opts: PgschemaWorkflowOptions): Promise<
 function pgschemaSchemas(config: NonNullable<SqlxJsConfig["schema"]>): string[] {
   const schemas = config.schemas?.length ? config.schemas : ["public"];
   if (schemas.length > 1) {
-    throw new Error("sqlx-js db: pgschema 1.12.0 supports exactly one --schema value; split plan/apply per schema or use a single schema in sqlx-js.config.ts");
+    throw new Error("sqlx-js pgschema: pgschema 1.12.0 supports exactly one --schema value; split plan/apply per schema or use a single schema in sqlx-js.config.ts");
   }
   return schemas;
 }

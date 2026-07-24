@@ -38,11 +38,11 @@ const rows = await sql(
 - **Linear migrations** with hash tampering detection.
 - **Migration squash baselines** via `migrate squash`: generate a schema-only baseline from a shadow database, then hash-adopt it on already-migrated databases.
 - **Runtime `migrate()`** with PostgreSQL advisory lock, safe for multi-replica startup.
-- **Optional pgschema workflow** via `init --schema-provider pgschema` and `sqlx-js db install|check|dev|verify|plan|apply` for PostgreSQL schema-as-code projects. `db dev` / `db verify` validate application SQL against the desired `schema.sql` in a disposable shadow database without changing the target database.
+- **Optional pgschema workflow** via `init --schema-provider pgschema`, provider-aware `dev` / `verify`, and explicit `pgschema install|plan|apply` deployment commands.
 - **Versioned offline cache** committed to your repo. `prepare --check` validates fingerprints, generator revision, type/function contracts, enum schema selection, and generated files without a database; `prepare --verify` compares fresh live/shadow artifacts without writing.
-- **Schema snapshot + LLM manifest** via `schema dump` / `schema check`: tables, columns, constraints, indexes, types, and function/procedure metadata are introspected from PostgreSQL.
+- **Schema snapshot + LLM manifest** via `snapshot dump` / `snapshot check`: tables, columns, constraints, indexes, types, and function/procedure metadata are introspected from PostgreSQL.
 - **Generated function catalog** via `KnownFunctions`: `prepare` records application-owned PostgreSQL functions/procedures from `pg_proc` with approximate parameter and return TypeScript types while excluding extension-owned internals by default.
-- **Shadow database validation** via `migrate dev` / `migrate verify`: auto-create a disposable shadow DB, apply migrations, validate SQL, and drop it afterwards.
+- **Provider-aware shadow validation** via `dev` / `verify`: build either migrations or `schema.sql`, validate SQL, and drop the disposable database afterwards.
 - **Safe identifier quoting** via `sql.id(...)`, backed by the committed schema snapshot whitelist.
 - **Single runtime adapter**: Postgres.js backs the runtime on Node/Bun-compatible environments — no Bun.SQL-specific adapter to choose.
 - **Incremental watch mode**: debounced re-prepare with a warm `PgClient` + `SchemaCache`; source/SQL edits only rescan affected files and re-describe changed fingerprints, while config/tsconfig/schema changes trigger a full rebuild.
@@ -62,97 +62,104 @@ bun add @onreza/sqlx-js
 bun add --dev typescript
 ```
 
-Node.js 24 or newer and PostgreSQL 16 or newer are required. Bun users need Bun 1.3 or newer. TypeScript is an optional peer so production-only installs do not pull the compiler and its platform package into the application image; source scanning commands (`prepare`, `queries`, `doctor`, `ci`, and migration/schema development and verification) require it in development dependencies.
+Node.js 24 or newer and PostgreSQL 16 or newer are required. Bun users need Bun 1.3 or newer. TypeScript is an optional peer so production-only installs do not pull the compiler and its platform package into the application image; source scanning commands (`prepare`, `queries`, `doctor`, `ci`, `dev`, and `verify`) require it in development dependencies.
 
 The package installs `sqlx-js` and `sqlx-js-diagnostics` binaries. The CLI examples below use `npx @onreza/sqlx-js`; `bunx @onreza/sqlx-js ...` works the same if your project uses Bun.
 
 ## Setup
 
-### 0. Scaffold a project (optional)
+### 1. Choose the schema owner
 
-```bash
-npx @onreza/sqlx-js init
-```
+sqlx-js supports two complete schema workflows. Pick one source of truth:
 
-Creates `sqlx-js.config.ts`, `sqlx-js-env.d.ts`, a `migrations/` directory, and `.env.example` if they don't already exist. For strict-JSON files it adds missing `sqlx:*` scripts to `package.json` and appends the declaration to an existing `files` or `include` array in `tsconfig.json`, without replacing existing values; JSONC files are left unchanged with a manual-update hint. Skip it if you prefer to wire things up manually.
+| Schema owner | Scaffold | Daily development | PR verification | Target deployment |
+| --- | --- | --- | --- | --- |
+| Built-in linear migrations | `sqlx-js init` | `sqlx-js dev` | `sqlx-js verify` | `sqlx-js migrate run` |
+| Declarative pgschema | `sqlx-js init --schema-provider pgschema` | `sqlx-js dev` | `sqlx-js verify` | `sqlx-js pgschema plan/apply` |
 
-For declarative PostgreSQL schema management, scaffold the pgschema workflow instead:
+`dev` and `verify` read `sqlx-js.config.*` and dispatch to the configured
+provider. Both build the proposed schema in a disposable shadow database, so
+they do not apply DDL to the target database. `dev` regenerates committed query
+artifacts; `verify` compares fresh artifacts without writing.
 
-```bash
-npx @onreza/sqlx-js init --schema-provider pgschema
-```
+`init` creates `sqlx-js.config.ts`, `sqlx-js-env.d.ts`, `.env.example`, and
+either `migrations/` or `schema.sql`. For strict JSON it also adds the
+provider-independent `sqlx:dev`, `sqlx:verify`, `sqlx:check`, and `sqlx:ci`
+scripts to `package.json` and includes the declaration file in `tsconfig.json`.
+Existing values are never replaced.
 
-This creates `schema.sql` and configures `schema.provider = "pgschema"` in `sqlx-js.config.ts`. The npm package does not bundle pgschema, but `sqlx-js db install` downloads the pinned pgschema binary into `node_modules/.cache/sqlx-js/pgschema/`; then `sqlx-js db check` verifies it.
-
-The managed pgschema workflow supports Linux and macOS. On Windows, run sqlx-js under WSL/Linux/macOS or use the built-in `sqlx-js migrate` workflow.
-
-### 1. Configure the database URL
+### 2. Configure PostgreSQL
 
 ```bash
 # .env
 DATABASE_URL=postgres://user:password@localhost:5432/your_db
-# Or with TLS against managed Postgres:
+# Managed PostgreSQL with TLS:
 # DATABASE_URL=postgres://user:password@db.example.com:5432/your_db?sslmode=require
 ```
 
-Supported `sslmode` values: `disable`, `prefer` (default — try TLS, fall back to plaintext), `require` (TLS or fail), `verify-ca`, `verify-full`. For a private/self-signed CA, point `sslrootcert` (and optionally `sslcert` / `sslkey` for client certs) at PEM files: `?sslmode=verify-full&sslrootcert=/etc/ssl/ca.pem`. `application_name`, `connect_timeout` (seconds), and `statement_timeout` (milliseconds) are also honored when provided as URL parameters.
+CLI commands load `<root>/.env`; variables already present in the process
+environment take precedence. Supported `sslmode` values are `disable`,
+`prefer`, `require`, `verify-ca`, and `verify-full`. Certificate paths,
+`application_name`, `options`, `connect_timeout`, and `statement_timeout` can
+also be supplied in the URL.
 
-CLI commands load `<root>/.env` before reading connection settings. Variables already present in the process environment take precedence. Application runtime configuration remains owned by your application/framework.
+Automatic shadow databases require `CREATEDB`. Use `--shadow-admin-url` for a
+separate admin connection or `--shadow-url` for a pre-created disposable
+database.
 
-### 2. Create a migration
+### 3A. Built-in migration workflow
 
 ```bash
-npx @onreza/sqlx-js migrate add init
+sqlx-js migrate add init
+# edit migrations/0001_init.up.sql and .down.sql
+sqlx-js dev --strict-inference
 ```
 
-The command creates matching `.up.sql` and `.down.sql` stubs. Edit the `.up.sql` file (`migrations/0001_init.up.sql`):
+For example:
 
 ```sql
 CREATE TABLE users (
   id    BIGSERIAL PRIMARY KEY,
   name  TEXT NOT NULL,
-  email TEXT NOT NULL UNIQUE,
-  age   INT,
-  bio   TEXT
+  email TEXT NOT NULL UNIQUE
 );
 ```
 
-For queries with several values, named parameters keep the SQL and arguments aligned:
-
-```ts
-const rows = await sql(
-  `SELECT id, name
-   FROM users
-   WHERE email = $email OR recovery_email = $email
-   LIMIT $limit`,
-  { email: "user@example.com", limit: 10 },
-);
-```
-
-Named parameters use ASCII identifier names (`$user_id`), are numbered by first appearance before PostgreSQL sees the query, and repeated names reuse the same positional parameter. The generated object contract rejects missing, extra, and incorrectly typed properties. Named `$name` and positional `$1` parameters cannot be mixed in one query. Quoted strings, comments, dollar-quoted bodies, and `$` inside PostgreSQL identifiers are left unchanged. Positional parameters remain supported and are still the shortest form for simple queries.
-
-PostgreSQL describes an uncast `LIMIT $limit` or `OFFSET $offset` parameter as `int8`, so its TypeScript type is `bigint`. Use `LIMIT $limit::int` / `OFFSET $offset::int` when the application pagination API uses JavaScript `number` values.
-
-During local development, validate the migration and regenerate query artifacts against a disposable shadow database:
+Before merge and deployment:
 
 ```bash
-npx @onreza/sqlx-js migrate dev
+sqlx-js verify --strict-inference
+sqlx-js migrate run --dry-run
+sqlx-js migrate run
 ```
 
-`migrate dev` does not touch your application database. It creates a temporary shadow database using `DATABASE_URL` credentials, applies migrations from scratch, validates that the latest migration's `.down.sql` restores the previous schema (squash baselines may omit `.down.sql`), prepares SQL queries against the resulting schema, writes `.sqlx-js/`, `sqlx-js-env.d.ts`, and any configured enum catalog, then drops the shadow database.
+`migrate add/run/info/check/revert/squash/archive` own migration files and
+target history. Shadow development and verification intentionally live at the
+provider-aware top level.
 
-When you want to update your local application database, run:
+### 3B. Declarative pgschema workflow
 
 ```bash
-npx @onreza/sqlx-js migrate run
+sqlx-js pgschema install
+sqlx-js doctor
+# edit schema.sql
+sqlx-js dev --strict-inference
+sqlx-js verify --strict-inference
 ```
 
-If you need to change the latest migration after applying it locally, run `migrate revert`, edit the migration, then run `migrate run` again. Once a migration has been shared or merged, treat it as immutable and add a new migration instead.
+Review and apply target changes separately:
 
-### 3. Write your first query
+```bash
+sqlx-js pgschema plan -- --output-json plan.json
+sqlx-js pgschema apply -- --plan plan.json --auto-approve
+```
+
+The managed pgschema workflow supports Linux and macOS. On Windows, run
+sqlx-js under WSL/Linux/macOS or use built-in migrations.
+
+### 4. Write queries
 
 ```ts
-// app.ts
 import { sql } from "@onreza/sqlx-js";
 
 const users = await sql(
@@ -161,21 +168,36 @@ const users = await sql(
 );
 ```
 
-### 4. Prepare types
+For queries with several values, named parameters keep SQL and arguments
+aligned:
 
-```bash
-npx @onreza/sqlx-js prepare
+```ts
+const rows = await sql(
+  `SELECT id, name
+   FROM users
+   WHERE email = $email OR recovery_email = $email
+   LIMIT $limit::int`,
+  { email: "user@example.com", limit: 10 },
+);
 ```
 
-This generates `sqlx-js-env.d.ts` next to your code. Add it to your `tsconfig.json` `include` if it isn't picked up automatically. Use `--dts <path>` to override the destination relative to `--root`.
+Named parameters use ASCII identifier names, are numbered by first appearance,
+and reuse repeated names. Named and positional parameters cannot be mixed.
+Quoted strings, comments, dollar-quoted bodies, and `$` inside PostgreSQL
+identifiers are left unchanged.
 
-### 5. Dev loop with watch
+### 5. Query-only loop
+
+Use `prepare` directly when the schema source is already available:
 
 ```bash
-npx @onreza/sqlx-js prepare --watch
+sqlx-js prepare          # regenerate against DATABASE_URL
+sqlx-js prepare --watch  # warm incremental development loop
+sqlx-js prepare --check  # database-free committed-artifact check
 ```
 
-Save a `.ts` file, types regenerate in milliseconds, your editor picks up changes.
+The declaration is written to `sqlx-js-env.d.ts` by default. Add it to
+`tsconfig.json` when it is not already included.
 
 ## API
 
@@ -648,21 +670,37 @@ In addition to `import { sql } from "@onreza/sqlx-js"`, the scanner recognises `
 
 ## CLI
 
+The command hierarchy follows ownership rather than implementation details:
+
+| Command | Responsibility | Writes worktree | Changes target DB |
+| --- | --- | --- | --- |
+| `dev` | Build the configured schema in shadow and regenerate query artifacts | Yes | No |
+| `verify` | Build in shadow and compare committed query artifacts | No | No |
+| `ci` | Run `verify --strict-inference` plus offline artifact consistency | No | No |
+| `prepare` | Generate, watch, restore, or check query artifacts | Depends on mode | Only reads |
+| `migrate` | Built-in migration files and target history | `add/squash/archive` | `run/revert` |
+| `pgschema` | Managed pgschema tool and target plan/apply | Install cache only | `apply` |
+| `snapshot` | Runtime identifier snapshot and LLM manifest | `dump` | No |
+| `queries` | Database-free query inventory and SQL embedding | With `--embed` | No |
+| `doctor` | Runtime, config, provider, database, and artifact diagnostics | No | No |
+
+Common syntax:
+
+```text
+sqlx-js dev [--strict-inference] [--shadow-url <url>]
+sqlx-js verify [--strict-inference] [--shadow-url <url>]
+sqlx-js ci [--json]
+sqlx-js prepare [--watch | --check | --offline | --verify]
+sqlx-js migrate add|run|info|check|revert|squash|archive
+sqlx-js pgschema install|plan|apply
+sqlx-js snapshot dump|check
+sqlx-js doctor
+sqlx-js queries [--json] [--embed <path>]
 ```
-sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]
-sqlx-js doctor [--root <dir>] [--dts <path>] [--json]
-sqlx-js ci [--root <dir>] [--dts <path>] [--schema <path>] [--json] [--shadow-url <url>] [--shadow-admin-url <url>]
-sqlx-js db install | check [--root <dir>]
-sqlx-js db dev [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--strict-inference] [--no-prune]
-sqlx-js db verify [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--strict-inference]
-sqlx-js db plan | apply [--root <dir>] [-- <pgschema args>]
-sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
-sqlx-js queries [--json] [--embed <path>] [--root <dir>]
-sqlx-js migrate dev [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | verify [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
-sqlx-js schema dump [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
-sqlx-js schema check [--schema <path>] [--shadow-url <url>]
-sqlx-js --version | --help
-```
+
+Run `sqlx-js <command> --help` or
+`sqlx-js <command> <subcommand> --help` for exact flags, side effects, and
+examples. Subcommand help is intentionally narrower than the root overview.
 
 Regular `prepare` describes and plans queries across a small connection pool (default 8, override with `SQLX_JS_PREPARE_CONCURRENCY`) for faster cold runs on large projects. After `Describe` establishes the server-side parameter contract, `SELECT`, `INSERT`, `UPDATE`, `DELETE`, and `MERGE` are SQL-prepared on the same session and planned through `EXPLAIN EXECUTE` under `plan_cache_mode = force_generic_plan`. The resulting plan is independent of placeholder values. `ANALYZE` is never used, so DML is not executed. Statements outside PostgreSQL's generic SQL `PREPARE` surface, such as `SET` and `CALL`, remain valid but are reported and cached as `parse-only`. Watch mode keeps one session warm, rescans only affected source files, and reuses cached metadata for unchanged fingerprints. Config, tsconfig, and applied shadow-migration changes invalidate the incremental state and perform a full prepare.
 
@@ -682,14 +720,14 @@ Regular `prepare` describes and plans queries across a small connection pool (de
 | `--jsonl`             | Versioned streaming events for `prepare --watch`.                                     |
 | `--strict-inference`  | Fail prepare/dev/verify when nullability degrades or a generated query type contains unresolved `unknown`. Intentional `JsonParameter<unknown>` wrappers remain accepted. |
 | `--force`             | For `migrate archive restore`: allow overwriting existing migration files.           |
-| `--lock-timeout <ms>` | Advisory-lock acquisition timeout for `migrate run` / `revert` / `dev` / `verify` / `squash`. |
+| `--lock-timeout <ms>` | Advisory-lock acquisition timeout for built-in `dev` / `verify` and applicable `migrate` operations. |
 | `--shadow-url <url>`  | Use an existing disposable shadow DB instead of auto-creating one.                   |
 | `--shadow-admin-url <url>` | Admin/maintenance DB URL used to auto-create shadow DBs.                       |
 | `--replace`           | For `migrate squash`: archive replaced migration files after writing the baseline.   |
 | `--pg-dump <path>`    | For `migrate squash`: `pg_dump` executable path (default: `pg_dump`).                |
 | `--schema <path>`     | Root-relative schema snapshot path (default: `<root>/.sqlx-js/schema/schema.json`). |
 | `--manifest <path>`   | Root-relative LLM schema manifest path (default: `<root>/.sqlx-js/schema/schema.md`). |
-| `--no-manifest`       | Skip writing the LLM schema manifest during `schema dump`.                           |
+| `--no-manifest`       | Skip writing the LLM schema manifest during `snapshot dump`.                         |
 | `--schema-provider <name>` | For `init`: `builtin` (default) or `pgschema`.                                |
 
 Flags that take a value accept both `--flag value` and `--flag=value` forms.
@@ -706,42 +744,57 @@ For complex PostgreSQL schemas with functions, triggers, RLS, grants, partitions
 
 ```bash
 sqlx-js init --schema-provider pgschema
-sqlx-js db install
-sqlx-js db check
+sqlx-js pgschema install
+sqlx-js doctor
 # edit schema.sql
-sqlx-js db dev --strict-inference
-sqlx-js db verify --strict-inference
+sqlx-js dev --strict-inference
+sqlx-js verify --strict-inference
 # review and apply the same desired state to the target database
-sqlx-js db plan -- --output-json plan.json
-sqlx-js db apply -- --plan plan.json --auto-approve
+sqlx-js pgschema plan -- --output-json plan.json
+sqlx-js pgschema apply -- --plan plan.json --auto-approve
 ```
 
-`db dev` creates a disposable shadow database, applies the desired `schema.sql` there through pgschema, prepares project SQL against that schema, writes `.sqlx-js/`, `sqlx-js-env.d.ts`, and any configured enum catalog, then drops the shadow database. `db verify` repeats the same desired-state build but compares fresh artifacts without modifying the worktree. Neither command applies DDL to the target database. `DATABASE_URL` supplies the credentials and authority used to create the temporary database; pass `--shadow-admin-url` when a separate admin connection is required, or `--shadow-url` to use a pre-created disposable database. An explicit shadow database is cleared before use.
+With `schema.provider = "pgschema"`, `dev` creates a disposable shadow
+database, applies `schema.sql`, prepares project SQL, writes `.sqlx-js/`,
+`sqlx-js-env.d.ts`, and any configured enum catalog, then drops the shadow.
+`verify` repeats the same build but compares fresh artifacts without modifying
+the worktree.
 
-`sqlx-js db install` installs the pinned pgschema version used by this sqlx-js release. `sqlx-js db check`, `dev`, `verify`, `plan`, and `apply` use `schema.command` when configured; otherwise they prefer the managed binary under `node_modules/.cache/sqlx-js/pgschema/` and fall back to `pgschema` on `PATH`. These commands translate PostgreSQL connection settings into pgschema flags and environment variables. Arguments after `--` are forwarded only by `plan` and `apply`; `sqlx-js db apply -- --plan plan.json` applies a reviewed pgschema plan without requiring the local `schema.sql` file. The schema provider is configured in `sqlx-js.config.ts`; by default the schema file is `schema.sql` and the schema is `public`. The pinned pgschema 1.12.0 CLI accepts a single `--schema` value, so sqlx-js rejects pgschema configs with more than one schema instead of silently applying only one.
+`pgschema install` installs the pinned version used by this sqlx-js release.
+`dev`, `verify`, `pgschema plan`, and `pgschema apply` use `schema.command` when
+configured; otherwise they prefer the managed binary under
+`node_modules/.cache/sqlx-js/pgschema/` and fall back to `pgschema` on `PATH`.
+Arguments after `--` are forwarded only by `plan` and `apply`.
+`pgschema apply -- --plan plan.json` applies a reviewed plan without requiring
+the local `schema.sql`. The pinned pgschema 1.12.0 CLI accepts one `--schema`
+value, so multi-schema configurations fail explicitly.
 
-Use `migrate dev` while developing migrations and SQL:
+Use provider-aware `dev` while developing built-in migrations and SQL:
 
 ```bash
 sqlx-js migrate add add_users
 # edit migrations/000N_add_users.up.sql and .down.sql
-sqlx-js migrate dev
+sqlx-js dev
 ```
 
-`migrate dev` creates a disposable shadow database, applies all migrations from scratch, validates that the latest migration's `.down.sql` restores the previous schema (squash baselines may omit `.down.sql`), prepares project SQL against the shadow schema, writes `.sqlx-js/`, `sqlx-js-env.d.ts`, and any configured enum catalog, then drops the shadow database. This means you can keep editing a local WIP migration before it is merged. You do not need to drop your application database or create a new migration for every local edit.
+For the built-in provider, `dev` applies all migrations from scratch, validates
+that the latest `.down.sql` restores the previous schema, prepares project SQL,
+writes generated artifacts, and drops the shadow database.
 
 The built-in `migrate` workflow is kept for simple projects and embedded application startup. PostgreSQL-heavy schema lifecycle features belong in pgschema rather than in sqlx-js.
 
-Use `migrate verify` in PR/CI before merge:
+Use `verify` in PR/CI before merge:
 
 ```bash
-sqlx-js migrate verify --strict-inference
+sqlx-js verify --strict-inference
 sqlx-js prepare --check
 sqlx-js doctor --json
 tsc --noEmit
 ```
 
-`migrate verify` runs the same shadow-database migration/down/SQL validation as `migrate dev`, generates prepare output in a temporary directory, and fails when the committed `.sqlx-js/`, `sqlx-js-env.d.ts`, or configured enum catalog differs. It never modifies those artifacts.
+`verify` runs the same provider-specific shadow build as `dev`, generates
+prepare output in a temporary directory, and fails when committed artifacts
+differ. It never modifies those artifacts.
 
 Use `migrate run` in production/staging:
 
@@ -753,7 +806,13 @@ sqlx-js migrate info --json
 
 Production migration users do not need `CREATEDB`; they only need permissions to apply migrations to the target database. Shadow databases are for development and CI validation before deployment.
 
-By default, `migrate dev`, `migrate verify`, `migrate revert --dry-run`, and `migrate squash` derive a temporary database name from `DATABASE_URL`, connect to the `postgres` maintenance database with the same credentials, run `CREATE DATABASE ... OWNER <database-url-user>`, then `DROP DATABASE` after validation. If the application user cannot create databases, pass `--shadow-admin-url postgres://admin:.../postgres`; the generated shadow database is still owned by the application user from `DATABASE_URL`. In managed environments where databases must be pre-created, pass `--shadow-url` or set `SHADOW_DATABASE_URL`; that database is treated as disposable and its user schemas are cleared before development/verify/squash validation.
+By default, `dev`, `verify`, `migrate revert --dry-run`, and `migrate squash`
+derive a temporary database name from `DATABASE_URL`, connect to the
+`postgres` maintenance database, create the shadow database, and drop it after
+validation. If the application user cannot create databases, pass
+`--shadow-admin-url`. In managed environments, pass `--shadow-url` or set
+`SHADOW_DATABASE_URL`; that database is disposable and its user schemas are
+cleared before development, verification, or squash validation.
 
 ### Migration squash baselines
 
@@ -777,12 +836,16 @@ On an empty database, the baseline runs as ordinary schema SQL. On an already-mi
 
 ### Schema snapshot and manifest
 
-`schema dump` introspects PostgreSQL and writes two generated files:
+`snapshot dump` introspects PostgreSQL and writes two generated files:
 
 - `.sqlx-js/schema/schema.json` — machine-readable contract for runtime identifier whitelisting and CI drift checks.
 - `.sqlx-js/schema/schema.md` — compact LLM-facing manifest with tables, columns, constraints, indexes, types, and functions.
 
-`schema check` re-introspects the database and fails if the committed snapshot is stale. With `--shadow-url`, both `prepare` and `schema dump/check` first apply pending migrations to the shadow database, then use that database as the source of truth. Unlike `migrate dev` / `verify` / `squash`, these commands do not clear an explicit shadow database first. In watch mode, pending shadow migrations are checked before every re-prepare; when a migration is applied, the prepare session is reopened so schema metadata is not reused across DDL changes.
+`snapshot check` re-introspects the database and fails if the committed
+snapshot is stale. With `--shadow-url`, both `prepare` and `snapshot
+dump/check` first apply pending migrations to the shadow database, then use it
+as the source of truth. Unlike `dev`, `verify`, and `migrate squash`, snapshot
+commands do not clear an explicit shadow database first.
 
 ### Error output
 
@@ -1094,26 +1157,37 @@ The shortest production gate is provider-aware:
 sqlx-js ci
 ```
 
-For the built-in migration provider it runs shadow migration verification with strict inference, followed by the read-only offline artifact check. For pgschema it remains a target-state deployment gate: it checks the configured provider, fails when the desired schema produces an unapplied plan, performs live `prepare --verify --strict-inference`, and then verifies committed artifacts offline. Run `db verify --strict-inference` earlier in PR CI to validate the proposed `schema.sql` and application queries together without changing the target database. If a committed schema snapshot exists, both `ci` provider flows also run `schema check`. `--json` returns a versioned per-step report suitable for CI systems.
+For both providers, `ci` runs provider-aware `verify --strict-inference`
+against a disposable shadow database and then the database-free
+`prepare --check --strict-inference`. It validates the proposed schema source,
+not target deployment drift, and never writes generated artifacts or changes
+the target database. `--json` returns a versioned per-step report.
 
 Commit the generated `sqlx-js-env.d.ts`, `.sqlx-js/` cache directory, and configured enum catalog output to your repo. In CI:
 
 ```yaml
 - run: bun install
-- run: sqlx-js migrate verify --strict-inference # built-in migration workflow
-# or, when schema.provider is "pgschema":
-- run: sqlx-js db install
-- run: sqlx-js db verify --strict-inference # desired schema + application SQL, target untouched
-- run: sqlx-js db plan -- --output-json plan.json # deployment drift against target
-- run: sqlx-js prepare --check   # read-only offline cache/declaration consistency
-- run: sqlx-js doctor --json     # runtime/config/DB/cache/tsconfig preflight
-- run: sqlx-js schema check      # fails if the committed schema snapshot is stale
-- run: tsc --noEmit               # fails if types are stale
+- run: sqlx-js pgschema install # only when schema.provider is "pgschema"
+- run: sqlx-js ci
+- run: sqlx-js doctor --json
+- run: tsc --noEmit
 - run: bun test --timeout 120000
-- run: bun run build              # emits publishable JS + declarations under dist/
+- run: bun run build
 ```
 
-The `migrate verify` and `db verify` steps need `DATABASE_URL` credentials that can either create a temporary database or use `--shadow-admin-url` / `--shadow-url`. They do not write generated artifacts. For pgschema projects, `db verify` proves the query contract against the proposed desired schema before deployment, while `db plan` reports deployment drift against the target database. `prepare --check` is read-only and fails when committed caches or generated files are stale. Use `prepare --offline` when a developer intentionally needs to restore generated files from valid committed caches. Add `prepare --verify` when CI has a canonical database/shadow schema and must prove byte-for-byte artifact freshness. `schema check` intentionally uses a live database because it verifies the committed schema contract against PostgreSQL.
+Keep target-specific deployment checks explicit:
+
+```bash
+sqlx-js migrate run --dry-run --json               # built-in migrations
+sqlx-js pgschema plan -- --output-json plan.json   # pgschema
+sqlx-js snapshot check                             # when a snapshot is committed
+```
+
+`verify` needs credentials that can create a temporary database or an explicit
+`--shadow-admin-url` / `--shadow-url`. `prepare --check` remains the fast
+database-free consistency check. `prepare --verify` remains available for the
+narrower advanced case of comparing query artifacts against a specifically
+supplied live database.
 
 The managed pgschema binary is installed under `node_modules/.cache/sqlx-js/pgschema/`, not `.sqlx-js/`, so it is not part of the committed offline cache.
 
@@ -1152,7 +1226,11 @@ See [ROADMAP.md](./ROADMAP.md) for what's planned.
 
 ## Upgrading
 
-Breaking changes and migration instructions are maintained as versioned [upgrade guides](./docs/upgrades/README.md). For the next release, see [upgrading from 0.14.x to 0.15.0](./docs/upgrades/0.15.0.md). Earlier cache and generator migrations are archived in the [pre-0.15 guide](./docs/upgrades/pre-0.15.0.md).
+Breaking changes and migration instructions are maintained as versioned
+[upgrade guides](./docs/upgrades/README.md). For the next release, see
+[upgrading from 0.16.x to 0.17.0](./docs/upgrades/0.17.0.md). Earlier cache and
+generator migrations are archived in the
+[pre-0.15 guide](./docs/upgrades/pre-0.15.0.md).
 
 ## License
 

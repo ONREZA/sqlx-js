@@ -19,79 +19,154 @@ function packageVersion(): string {
 
 const VERSION = packageVersion();
 
-type HelpScope = "root" | "init" | "doctor" | "ci" | "db" | "prepare" | "queries" | "migrate" | "schema";
+type HelpScope =
+  | "root"
+  | "init"
+  | "dev"
+  | "verify"
+  | "doctor"
+  | "ci"
+  | "pgschema"
+  | "prepare"
+  | "queries"
+  | "migrate"
+  | "snapshot";
 
 const HELP: Record<HelpScope, string> = {
   root: `sqlx-js — compile-time-checked SQL for TypeScript + Postgres (v${VERSION})
 
-usage:
+common workflows:
   sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]
+  sqlx-js dev [--strict-inference] [--shadow-url <url>]
+  sqlx-js verify [--strict-inference] [--shadow-url <url>]
+  sqlx-js prepare [--watch | --check | --offline | --verify]
+  sqlx-js ci [--json]
+
+schema ownership:
+  sqlx-js migrate add|run|info|check|revert|squash|archive
+  sqlx-js pgschema install|plan|apply
+
+inspection and generated artifacts:
   sqlx-js doctor [--root <dir>] [--dts <path>] [--json]
-  sqlx-js ci [--root <dir>] [--dts <path>] [--schema <path>] [--json] [--shadow-url <url>] [--shadow-admin-url <url>]
-  sqlx-js db install | check [--root <dir>]
-  sqlx-js db dev [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--strict-inference] [--no-prune]
-  sqlx-js db verify [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--strict-inference]
-  sqlx-js db plan | apply [--root <dir>] [-- <pgschema args>]
-  sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
   sqlx-js queries [--json] [--embed <path>] [--root <dir>]
-  sqlx-js migrate dev [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | verify [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]
-  sqlx-js schema dump [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
-  sqlx-js schema check [--schema <path>] [--shadow-url <url>]
+  sqlx-js snapshot dump|check
   sqlx-js --version
   sqlx-js-diagnostics github|unix < prepare-diagnostics.json
 
-env:
-  DATABASE_URL=postgres://...  (supports sslmode, cert paths, application_name, options, connect_timeout, statement_timeout)
-  SHADOW_DATABASE_URL=postgres://...  (optional pre-created disposable shadow DB)
-  SHADOW_ADMIN_DATABASE_URL=postgres://...  (optional admin URL for auto-created shadow DBs)
-
-flags:
-  --root <dir>             scan root (default: cwd)
-  --dts <path>             declarations output (default: <root>/sqlx-js-env.d.ts)
-  --check                  read-only offline verification of cache and declarations
-  --offline                regenerate declarations from committed cache, no DB
-  --verify                 prepare against DB/shadow and compare committed generated artifacts
-  --watch                  re-prepare on file change (persistent PG connection)
-  --no-prune               keep orphaned cache entries (default: remove)
-  --migrations <dir>       migrations directory (default: <root>/migrations)
-  --dry-run                validate and print migrate run/revert plan without applying migrations
-  --json                   machine-readable output for prepare and migration inspection/dry-run commands
-  --jsonl                  streaming machine-readable output for prepare --watch
-  --embed <path>           emit a deterministic TypeScript map of referenced SQL files
-  --strict-inference       fail when query inference degrades or emits unknown types
-  --force                  allow archive restore to overwrite existing migration files
-  --lock-timeout <ms>      advisory-lock acquisition timeout for migrate run/revert/dev/verify/squash
-  --shadow-url <url>       use an existing disposable shadow DB instead of auto-creating one
-  --shadow-admin-url <url> admin/maintenance DB URL used to auto-create shadow DBs
-  --replace                archive replaced migrations after migrate squash writes the baseline
-  --pg-dump <path>         pg_dump executable for migrate squash (default: pg_dump)
-  --schema <path>          schema snapshot path (default: <root>/.sqlx-js/schema/schema.json)
-  --manifest <path>        LLM schema manifest path (default: <root>/.sqlx-js/schema/schema.md)
-  --no-manifest            skip writing the LLM schema manifest during schema dump
-  --schema-provider <name> init schema workflow: builtin (default) or pgschema
+Run \`sqlx-js <command> --help\` or
+\`sqlx-js <command> <subcommand> --help\` for exact behavior and flags.
 `,
   init: `usage: sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]`,
+  dev: `usage: sqlx-js dev [--root <dir>] [--dts <path>] [--migrations <dir>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] [--no-prune]
+
+Build the configured schema source in a disposable shadow database and
+regenerate query artifacts. Uses built-in migrations by default or schema.sql
+when schema.provider is "pgschema".
+
+--migrations and --lock-timeout apply only to the built-in provider.
+
+Writes worktree: yes
+Changes target database: no`,
+  verify: `usage: sqlx-js verify [--root <dir>] [--dts <path>] [--migrations <dir>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference]
+
+Build the configured schema source in a disposable shadow database and compare
+fresh query artifacts with the committed files.
+
+--migrations and --lock-timeout apply only to the built-in provider.
+
+Writes worktree: no
+Changes target database: no`,
   doctor: `usage: sqlx-js doctor [--root <dir>] [--dts <path>] [--json]`,
-  ci: `usage: sqlx-js ci [--root <dir>] [--dts <path>] [--schema <path>] [--json] [--shadow-url <url>] [--shadow-admin-url <url>] [--migrations <dir>]`,
-  db: `usage: sqlx-js db install | check [--root <dir>] | dev [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--strict-inference] [--no-prune] | verify [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--strict-inference] | plan | apply [--root <dir>] [-- <pgschema args>]`,
-  prepare: `usage: sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]`,
+  ci: `usage: sqlx-js ci [--root <dir>] [--dts <path>] [--json] [--shadow-url <url>] [--shadow-admin-url <url>] [--migrations <dir>]
+
+Run provider-aware \`verify\`, then the database-free artifact consistency
+check. This validates the proposed schema source without changing the target
+database. Run \`pgschema plan\` or \`migrate run --dry-run\` separately for
+target deployment drift.`,
+  pgschema: `usage: sqlx-js pgschema install | plan | apply
+
+Manage the pinned pgschema tool and target-database deployment plans.
+Use provider-aware \`sqlx-js dev\` and \`sqlx-js verify\` for shadow validation.`,
+  prepare: `usage: sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
+
+Query-artifact engine:
+  prepare             regenerate artifacts against DATABASE_URL
+  prepare --watch     regenerate after source changes
+  prepare --check     verify committed artifacts offline
+  prepare --offline   restore generated files from committed cache
+  prepare --verify    compare fresh artifacts against a supplied live database
+
+For schema-source validation prefer \`sqlx-js dev\` or \`sqlx-js verify\`.`,
   queries: `usage: sqlx-js queries [--json] [--embed <path>] [--root <dir>]`,
-  migrate: `usage: sqlx-js migrate dev [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | verify [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]`,
-  schema: `usage: sqlx-js schema dump [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>] | check [--schema <path>] [--shadow-url <url>]`,
+  migrate: `usage: sqlx-js migrate add|run|info|check|revert|squash|archive
+
+Manage built-in migration files and target history. Use provider-aware
+\`sqlx-js dev\` and \`sqlx-js verify\` for shadow validation.`,
+  snapshot: `usage: sqlx-js snapshot dump | check
+
+Generate or compare the schema snapshot used by sql.id() and the optional
+LLM-facing manifest.`,
 };
 
-function printHelp(scope: HelpScope, error = false): void {
-  (error ? console.error : console.log)(HELP[scope]);
+const SUBCOMMAND_HELP: Record<string, string> = {
+  "pgschema:install": `usage: sqlx-js pgschema install [--root <dir>]
+
+Download and checksum the pinned pgschema binary. Run \`sqlx-js doctor\` to
+verify the configured provider and toolchain.`,
+  "pgschema:plan": `usage: sqlx-js pgschema plan [--root <dir>] [-- <pgschema args>]
+
+Plan target-database changes from schema.sql without applying them.`,
+  "pgschema:apply": `usage: sqlx-js pgschema apply [--root <dir>] [-- <pgschema args>]
+
+Apply schema.sql or a reviewed --plan to the target database.`,
+  "migrate:add": `usage: sqlx-js migrate add <name> [--root <dir>] [--migrations <dir>]
+
+Create matching .up.sql and .down.sql migration stubs.`,
+  "migrate:run": `usage: sqlx-js migrate run [--dry-run] [--json] [--lock-timeout <ms>] [--root <dir>] [--migrations <dir>]
+
+Apply pending built-in migrations to the target database.`,
+  "migrate:info": `usage: sqlx-js migrate info [--json] [--root <dir>] [--migrations <dir>]
+
+Inspect target migration history without changing it.`,
+  "migrate:check": `usage: sqlx-js migrate check [--json] [--root <dir>] [--migrations <dir>]
+
+Validate migration filenames, versions, down files, and squash metadata
+without a database.`,
+  "migrate:revert": `usage: sqlx-js migrate revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>]
+
+Revert the latest target migration, or validate its down migration in a
+shadow transaction with --dry-run.`,
+  "migrate:squash": `usage: sqlx-js migrate squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>]
+
+Build migrations in a shadow database and write one schema-only baseline.`,
+  "migrate:archive": `usage: sqlx-js migrate archive list | restore <name> [--force]
+
+Inspect or restore migration files archived by migrate squash --replace.`,
+  "snapshot:dump": `usage: sqlx-js snapshot dump [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
+
+Write the schema snapshot and optional LLM manifest from a live database.`,
+  "snapshot:check": `usage: sqlx-js snapshot check [--schema <path>] [--shadow-url <url>]
+
+Compare the committed schema snapshot with a live database without writing.`,
+};
+
+function helpText(scope: HelpScope, args: string[] = []): string {
+  const subcommand = args[0]?.startsWith("-") ? undefined : args[0];
+  return SUBCOMMAND_HELP[`${scope}:${subcommand}`] ?? HELP[scope];
 }
 
-function exitHelp(scope: HelpScope): never {
-  printHelp(scope);
+function printHelp(scope: HelpScope, error = false, args: string[] = []): void {
+  (error ? console.error : console.log)(helpText(scope, args));
+}
+
+function exitHelp(scope: HelpScope, args: string[] = []): never {
+  printHelp(scope, false, args);
   process.exit(0);
 }
 
-function usageError(message: string, scope: HelpScope = "root"): never {
+function usageError(message: string, scope: HelpScope = "root", args: string[] = []): never {
   console.error(`sqlx-js: ${message}`);
-  printHelp(scope, true);
+  printHelp(scope, true, args);
   process.exit(2);
 }
 
@@ -100,8 +175,20 @@ const passthroughIndex = rawArgv.indexOf("--");
 const cliArgv = passthroughIndex >= 0 ? rawArgv.slice(0, passthroughIndex) : rawArgv;
 const passthroughArgs = passthroughIndex >= 0 ? rawArgv.slice(passthroughIndex + 1) : [];
 const cmd = cliArgv[0];
+const commandArgv = cliArgv.slice(1);
 
-const scopes = new Set<HelpScope>(["init", "doctor", "ci", "db", "prepare", "queries", "migrate", "schema"]);
+const scopes = new Set<HelpScope>([
+  "init",
+  "dev",
+  "verify",
+  "doctor",
+  "ci",
+  "pgschema",
+  "prepare",
+  "queries",
+  "migrate",
+  "snapshot",
+]);
 
 if (cmd === "--version" || cmd === "-v") {
   console.log(VERSION);
@@ -110,8 +197,10 @@ if (cmd === "--version" || cmd === "-v") {
 if (!cmd || cmd === "--help" || cmd === "-h") exitHelp("root");
 if (!scopes.has(cmd as HelpScope)) usageError(`unknown command ${JSON.stringify(cmd)}`);
 const scope = cmd as Exclude<HelpScope, "root">;
-if (cliArgv.includes("--help") || cliArgv.includes("-h")) exitHelp(scope);
-if (passthroughIndex >= 0 && cmd !== "db") usageError("arguments after -- are only supported by sqlx-js db", scope);
+if (cliArgv.includes("--help") || cliArgv.includes("-h")) exitHelp(scope, commandArgv);
+if (passthroughIndex >= 0 && cmd !== "pgschema") {
+  usageError("arguments after -- are only supported by sqlx-js pgschema", scope, commandArgv);
+}
 
 const ROOT_OPTIONS: ParseArgsOptionsConfig = {
   root: { type: "string" },
@@ -120,38 +209,28 @@ const ROOT_OPTIONS: ParseArgsOptionsConfig = {
 
 function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfig {
   if (command === "init") return { ...ROOT_OPTIONS, "schema-provider": { type: "string" } };
+  if (command === "dev" || command === "verify") {
+    return {
+      ...ROOT_OPTIONS,
+      dts: { type: "string" },
+      migrations: { type: "string" },
+      "shadow-admin-url": { type: "string" },
+      "shadow-url": { type: "string" },
+      "lock-timeout": { type: "string" },
+      "strict-inference": { type: "boolean" },
+      ...(command === "dev" ? { "no-prune": { type: "boolean" } } : {}),
+    };
+  }
   if (command === "doctor") return { ...ROOT_OPTIONS, dts: { type: "string" }, json: { type: "boolean" } };
   if (command === "ci") return {
     ...ROOT_OPTIONS,
     json: { type: "boolean" },
     dts: { type: "string" },
-    schema: { type: "string" },
     migrations: { type: "string" },
     "shadow-url": { type: "string" },
     "shadow-admin-url": { type: "string" },
   };
-  if (command === "db") {
-    if (subcommand === "dev") {
-      return {
-        ...ROOT_OPTIONS,
-        dts: { type: "string" },
-        "shadow-admin-url": { type: "string" },
-        "shadow-url": { type: "string" },
-        "no-prune": { type: "boolean" },
-        "strict-inference": { type: "boolean" },
-      };
-    }
-    if (subcommand === "verify") {
-      return {
-        ...ROOT_OPTIONS,
-        dts: { type: "string" },
-        "shadow-admin-url": { type: "string" },
-        "shadow-url": { type: "string" },
-        "strict-inference": { type: "boolean" },
-      };
-    }
-    return ROOT_OPTIONS;
-  }
+  if (command === "pgschema") return ROOT_OPTIONS;
   if (command === "prepare") {
     return {
       ...ROOT_OPTIONS,
@@ -169,7 +248,7 @@ function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfi
     };
   }
   if (command === "queries") return { ...ROOT_OPTIONS, json: { type: "boolean" }, embed: { type: "string" } };
-  if (command === "schema") {
+  if (command === "snapshot") {
     const common = {
       ...ROOT_OPTIONS,
       schema: { type: "string" },
@@ -185,27 +264,6 @@ function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfi
     return { ...common, "dry-run": { type: "boolean" }, json: { type: "boolean" }, "lock-timeout": { type: "string" } };
   }
   if (subcommand === "info" || subcommand === "check") return { ...common, json: { type: "boolean" } };
-  if (subcommand === "dev") {
-    return {
-      ...common,
-      dts: { type: "string" },
-      "shadow-admin-url": { type: "string" },
-      "shadow-url": { type: "string" },
-      "lock-timeout": { type: "string" },
-      "no-prune": { type: "boolean" },
-      "strict-inference": { type: "boolean" },
-    };
-  }
-  if (subcommand === "verify") {
-    return {
-      ...common,
-      dts: { type: "string" },
-      "shadow-admin-url": { type: "string" },
-      "shadow-url": { type: "string" },
-      "lock-timeout": { type: "string" },
-      "strict-inference": { type: "boolean" },
-    };
-  }
   if (subcommand === "revert") {
     return {
       ...common,
@@ -230,7 +288,6 @@ function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfi
   return common;
 }
 
-const commandArgv = cliArgv.slice(1);
 const subcommand = commandArgv[0]?.startsWith("-") ? undefined : commandArgv[0];
 let parsed: ReturnType<typeof parseArgs>;
 try {
@@ -262,30 +319,40 @@ function requirePositionals(min: number, max: number, label: string): void {
 }
 
 function validateInvocation(): void {
-  if (cmd === "init" || cmd === "doctor" || cmd === "ci" || cmd === "prepare" || cmd === "queries") {
+  if (
+    cmd === "init" ||
+    cmd === "dev" ||
+    cmd === "verify" ||
+    cmd === "doctor" ||
+    cmd === "ci" ||
+    cmd === "prepare" ||
+    cmd === "queries"
+  ) {
     requirePositionals(0, 0, cmd);
     return;
   }
-  if (cmd === "db") {
-    requirePositionals(1, 1, "db");
+  if (cmd === "pgschema") {
+    requirePositionals(1, 1, "pgschema");
     const sub = positionals[0];
-    if (sub !== "install" && sub !== "check" && sub !== "dev" && sub !== "verify" && sub !== "plan" && sub !== "apply") {
-      usageError(`unknown db command ${JSON.stringify(sub)}`, "db");
+    if (sub !== "install" && sub !== "plan" && sub !== "apply") {
+      usageError(`unknown pgschema command ${JSON.stringify(sub)}`, "pgschema", commandArgv);
     }
     if (passthroughArgs.length > 0 && sub !== "plan" && sub !== "apply") {
-      usageError(`db ${sub} does not accept arguments after --`, "db");
+      usageError(`pgschema ${sub} does not accept arguments after --`, "pgschema", commandArgv);
     }
     return;
   }
-  if (cmd === "schema") {
-    requirePositionals(1, 1, "schema");
+  if (cmd === "snapshot") {
+    requirePositionals(1, 1, "snapshot");
     const sub = positionals[0];
-    if (sub !== "dump" && sub !== "check") usageError(`unknown schema command ${JSON.stringify(sub)}`, "schema");
+    if (sub !== "dump" && sub !== "check") {
+      usageError(`unknown snapshot command ${JSON.stringify(sub)}`, "snapshot", commandArgv);
+    }
     return;
   }
   const sub = positionals[0];
   if (!sub) usageError("migrate command is required", "migrate");
-  if (["dev", "verify", "run", "info", "check", "revert"].includes(sub)) {
+  if (["run", "info", "check", "revert"].includes(sub)) {
     requirePositionals(1, 1, `migrate ${sub}`);
     return;
   }
@@ -332,8 +399,8 @@ const needsTypeScript =
   cmd === "ci" ||
   cmd === "prepare" ||
   cmd === "queries" ||
-  (cmd === "db" && (positionals[0] === "dev" || positionals[0] === "verify")) ||
-  (cmd === "migrate" && (positionals[0] === "dev" || positionals[0] === "verify"));
+  cmd === "dev" ||
+  cmd === "verify";
 if (needsTypeScript) {
   try {
     import.meta.resolve("typescript");
@@ -356,8 +423,10 @@ let envError: string | undefined;
 const needsEnvironment =
   cmd === "doctor" ||
   cmd === "ci" ||
-  cmd === "schema" ||
-  (cmd === "db" && ["dev", "verify", "plan", "apply"].includes(positionals[0]!)) ||
+  cmd === "snapshot" ||
+  cmd === "dev" ||
+  cmd === "verify" ||
+  (cmd === "pgschema" && (positionals[0] === "plan" || positionals[0] === "apply")) ||
   (cmd === "prepare" && !flag("--check") && !flag("--offline")) ||
   (cmd === "migrate" && !["add", "check", "archive"].includes(positionals[0]!));
 if (needsEnvironment) {
@@ -383,6 +452,15 @@ const schemaPath = schemaArg ? resolve(root, schemaArg) : join(root, ".sqlx-js/s
 const manifestArg = arg("--manifest");
 const manifestPath = manifestArg ? resolve(root, manifestArg) : join(root, ".sqlx-js/schema/schema.md");
 
+function parseLockTimeout(): number | undefined {
+  const raw = arg("--lock-timeout");
+  const timeout = raw ? Number(raw) : undefined;
+  if (timeout !== undefined && !Number.isFinite(timeout)) {
+    usageError("--lock-timeout must be a finite number of milliseconds", scope, commandArgv);
+  }
+  return timeout;
+}
+
 if (cmd === "init") {
   const { runInit } = await import("../src/commands/init");
   const provider = arg("--schema-provider", "builtin");
@@ -391,55 +469,29 @@ if (cmd === "init") {
     process.exit(2);
   }
   runInit({ root, schemaProvider: provider });
-} else if (cmd === "doctor") {
-  const { runDoctor } = await import("../src/commands/doctor");
-  await runDoctor({ root, databaseUrl, cacheDir, dtsPath, json: flag("--json"), envError });
-} else if (cmd === "ci") {
-  const { runCi } = await import("../src/commands/ci");
+} else if (cmd === "dev" || cmd === "verify") {
+  if (!databaseUrl && !shadowUrl) {
+    console.error(`DATABASE_URL is required for ${cmd} (or pass --shadow-url)`);
+    process.exit(2);
+  }
   let config: Awaited<ReturnType<typeof loadConfig>>;
   try {
     config = await loadConfig(root);
   } catch (error) {
-    failCiPreflight((error as Error).message);
-  }
-  runCi({
-    executable: process.execPath,
-    cliPath: fileURLToPath(import.meta.url),
-    root,
-    config,
-    schemaPath,
-    json: flag("--json"),
-    shadowUrl,
-    shadowAdminUrl,
-    migrationsDir: arg("--migrations"),
-    dtsPath: dtsArg ? dtsPath : undefined,
-  });
-} else if (cmd === "db") {
-  const {
-    PgschemaCommandError,
-    runPgschemaCommand,
-    runPgschemaDev,
-    runPgschemaInstall,
-    runPgschemaVerify,
-  } = await import("../src/commands/pgschema");
-  const sub = positionals[0];
-  const failPgschema = (error: unknown): never => {
     console.error((error as Error).message);
-    process.exit(error instanceof PgschemaCommandError ? error.exitCode : 2);
-  };
-  if (sub === "install") {
-    try {
-      await runPgschemaInstall({ root });
-    } catch (e) {
-      failPgschema(e);
+    process.exit(2);
+  }
+  const lockTimeoutMs = parseLockTimeout();
+  if (config.schema?.provider === "pgschema") {
+    if (arg("--migrations") !== undefined || arg("--lock-timeout") !== undefined) {
+      usageError("--migrations and --lock-timeout require schema.provider \"builtin\"", scope, commandArgv);
     }
-  } else if (sub === "dev" || sub === "verify") {
-    if (!databaseUrl && !shadowUrl) {
-      console.error("DATABASE_URL is required for db dev/verify (or pass --shadow-url)");
-      process.exit(2);
-    }
+    const {
+      PgschemaCommandError,
+      runPgschemaDev,
+      runPgschemaVerify,
+    } = await import("../src/commands/pgschema");
     try {
-      const config = await loadConfig(root);
       const opts = {
         root,
         databaseUrl,
@@ -450,10 +502,59 @@ if (cmd === "init") {
         shadowAdminUrl,
         strictInference: flag("--strict-inference"),
       };
-      const ok = sub === "dev"
+      const ok = cmd === "dev"
         ? await runPgschemaDev({ ...opts, prune: !flag("--no-prune") })
         : await runPgschemaVerify(opts);
       if (!ok) process.exit(1);
+    } catch (error) {
+      console.error((error as Error).message);
+      process.exit(error instanceof PgschemaCommandError ? error.exitCode : 2);
+    }
+  } else {
+    const { migrateDev, migrateVerify } = await import("../src/commands/migrate");
+    const opts = {
+      root,
+      databaseUrl,
+      migrationsDir,
+      cacheDir,
+      dtsPath,
+      shadowUrl,
+      shadowAdminUrl,
+      lockTimeoutMs,
+      strictInference: flag("--strict-inference"),
+    };
+    if (cmd === "dev") await migrateDev({ ...opts, prune: !flag("--no-prune") });
+    else await migrateVerify(opts);
+  }
+} else if (cmd === "doctor") {
+  const { runDoctor } = await import("../src/commands/doctor");
+  await runDoctor({ root, databaseUrl, cacheDir, dtsPath, json: flag("--json"), envError });
+} else if (cmd === "ci") {
+  const { runCi } = await import("../src/commands/ci");
+  runCi({
+    executable: process.execPath,
+    cliPath: fileURLToPath(import.meta.url),
+    root,
+    json: flag("--json"),
+    shadowUrl,
+    shadowAdminUrl,
+    migrationsDir: arg("--migrations"),
+    dtsPath: dtsArg ? dtsPath : undefined,
+  });
+} else if (cmd === "pgschema") {
+  const {
+    PgschemaCommandError,
+    runPgschemaCommand,
+    runPgschemaInstall,
+  } = await import("../src/commands/pgschema");
+  const sub = positionals[0];
+  const failPgschema = (error: unknown): never => {
+    console.error((error as Error).message);
+    process.exit(error instanceof PgschemaCommandError ? error.exitCode : 2);
+  };
+  if (sub === "install") {
+    try {
+      await runPgschemaInstall({ root });
     } catch (e) {
       failPgschema(e);
     }
@@ -515,7 +616,7 @@ if (cmd === "init") {
   }
   if ((prepareCheck || prepareOffline) && shadowUrlArg) {
     failPrepare(
-      "--shadow-url cannot be used with offline prepare modes; use live prepare or schema check --shadow-url",
+      "--shadow-url cannot be used with offline prepare modes; use live prepare or snapshot check --shadow-url",
       "config",
     );
   }
@@ -624,12 +725,12 @@ if (cmd === "init") {
     }
     process.exit(2);
   }
-} else if (cmd === "schema") {
+} else if (cmd === "snapshot") {
   const { runSchemaCheck, runSchemaDump } = await import("../src/commands/schema");
   const sub = positionals[0];
   const schemaDatabaseUrl = shadowUrl ?? databaseUrl;
   if (!schemaDatabaseUrl) {
-    console.error("DATABASE_URL is required for schema commands (or pass --shadow-url)");
+    console.error("DATABASE_URL is required for snapshot commands (or pass --shadow-url)");
     process.exit(2);
   }
   const opts = {
@@ -647,52 +748,21 @@ if (cmd === "init") {
     migrateArchiveList,
     migrateArchiveRestore,
     migrateCheck,
-    migrateDev,
     migrateRun,
     migrateInfo,
     migrateRevert,
     migrateAdd,
     migrateSquash,
-    migrateVerify,
   } = await import("../src/commands/migrate");
   const sub = positionals[0];
   const revertDryRun = sub === "revert" && flag("--dry-run");
-  const workflowShadowOnly = ((sub === "dev" || sub === "verify" || sub === "squash") && !!shadowUrl) || (revertDryRun && !!shadowUrl);
+  const workflowShadowOnly = (sub === "squash" && !!shadowUrl) || (revertDryRun && !!shadowUrl);
   if (!databaseUrl && sub !== "add" && sub !== "check" && sub !== "archive" && !workflowShadowOnly) {
     console.error("DATABASE_URL is required");
     process.exit(2);
   }
-  const tRaw = arg("--lock-timeout");
-  const lockTimeoutMs = tRaw ? Number(tRaw) : undefined;
-  if (lockTimeoutMs !== undefined && !Number.isFinite(lockTimeoutMs)) {
-    usageError("--lock-timeout must be a finite number of milliseconds", "migrate");
-  }
-  if (sub === "dev") {
-    await migrateDev({
-      root,
-      databaseUrl,
-      migrationsDir,
-      cacheDir,
-      dtsPath,
-      prune: !flag("--no-prune"),
-      shadowUrl,
-      shadowAdminUrl,
-      lockTimeoutMs,
-      strictInference: flag("--strict-inference"),
-    });
-  } else if (sub === "verify") {
-    await migrateVerify({
-      root,
-      databaseUrl,
-      migrationsDir,
-      cacheDir,
-      dtsPath,
-      shadowUrl,
-      shadowAdminUrl,
-      lockTimeoutMs,
-      strictInference: flag("--strict-inference"),
-    });
-  } else if (sub === "run") {
+  const lockTimeoutMs = parseLockTimeout();
+  if (sub === "run") {
     await migrateRun({ databaseUrl, migrationsDir, lockTimeoutMs, dryRun: flag("--dry-run"), json: flag("--json") });
   } else if (sub === "info") {
     await migrateInfo({ databaseUrl, migrationsDir, json: flag("--json") });

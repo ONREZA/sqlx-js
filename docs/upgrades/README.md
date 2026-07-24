@@ -5,6 +5,8 @@ main README can stay focused on the current API.
 
 ## Guides
 
+- [0.17.0](./0.17.0.md) — provider-aware `dev` / `verify`, explicit
+  `pgschema` / `snapshot` namespaces, and source-of-truth CI semantics.
 - [0.15.0](./0.15.0.md) — managed pool generations, end-to-end deadlines,
   bounded lifecycle, transaction deadlines, and `AbortSignal`.
 - [Pre-0.15 generated-artifact migrations](./pre-0.15.0.md) — archived cache,
