@@ -15,6 +15,7 @@ const allowedRuntimeFiles = new Set([
   "dist/src/sql-params.js",
   "dist/src/sql-lex.js",
   "dist/src/migration-core.js",
+  "dist/src/pg/driver.js",
   "dist/src/pg/oids.js",
   "dist/src/pg/wire.js",
 ]);
@@ -27,7 +28,7 @@ const forbidden = [
   "/node_modules/typescript/",
   "/node_modules/libpg-query/",
 ];
-const forbiddenPackages = ["typescript", "libpg-query"];
+const forbiddenPackages = ["typescript", "libpg-query", "postgres"];
 const visited = new Set();
 
 function resolveImport(from, specifier) {

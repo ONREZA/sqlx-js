@@ -39,6 +39,16 @@ export type ConnConfig = {
   sslRootCert?: string;
   sslCert?: string;
   sslKey?: string;
+  startupParameters?: Readonly<Record<string, string>>;
+  onNotice?: (notice: PgNotice) => void | Promise<void>;
+};
+
+export type PgNotice = {
+  message: string;
+  severity?: string;
+  code?: string;
+  detail?: string;
+  hint?: string;
 };
 
 export function parseDatabaseUrl(url: string): ConnConfig {
@@ -47,22 +57,27 @@ export function parseDatabaseUrl(url: string): ConnConfig {
     throw new Error(`unsupported scheme: ${u.protocol}`);
   }
   const params = u.searchParams;
+  const hostname = decodeURIComponent(u.hostname);
   const sslmodeRaw = params.get("sslmode") ?? undefined;
   if (sslmodeRaw !== undefined && !(SSL_MODES as readonly string[]).includes(sslmodeRaw)) {
     throw new Error(`unsupported sslmode: ${sslmodeRaw}`);
   }
   const cfg: ConnConfig = {
-    host: u.hostname || "localhost",
+    host: hostname.startsWith("[") && hostname.endsWith("]")
+      ? hostname.slice(1, -1)
+      : hostname || "localhost",
     port: u.port ? Number(u.port) : 5432,
     user: decodeURIComponent(u.username || "postgres"),
     password: decodeURIComponent(u.password || ""),
-    database: u.pathname.replace(/^\//, "") || decodeURIComponent(u.username || "postgres"),
+    database: decodeURIComponent(u.pathname.replace(/^\//, "")) || decodeURIComponent(u.username || "postgres"),
   };
   if (sslmodeRaw !== undefined) cfg.sslmode = sslmodeRaw as SslMode;
   const appName = params.get("application_name");
   if (appName) cfg.applicationName = appName;
   const startupOptions = params.get("options");
   if (startupOptions) cfg.startupOptions = startupOptions;
+  const role = params.get("role");
+  if (role) cfg.startupParameters = { role };
   const ct = params.get("connect_timeout");
   if (ct) {
     const n = Number(ct);
@@ -197,7 +212,7 @@ function parseMessage(tag: string, payload: Uint8Array): ServerMessage {
     case "t": {
       const n = readInt16(payload, 0);
       const oids: number[] = [];
-      for (let i = 0; i < n; i++) oids.push(readInt32(payload, 2 + i * 4));
+      for (let i = 0; i < n; i++) oids.push(readUInt32(payload, 2 + i * 4));
       return { type: "t", oids };
     }
     case "T": {
@@ -207,10 +222,10 @@ function parseMessage(tag: string, payload: Uint8Array): ServerMessage {
       for (let i = 0; i < n; i++) {
         const [name, next] = readCString(payload, off);
         off = next;
-        const tableOid = readInt32(payload, off); off += 4;
+        const tableOid = readUInt32(payload, off); off += 4;
         const columnAttr = readInt16(payload, off); off += 2;
-        const typeOid = readInt32(payload, off); off += 4;
-        const typeSize = readInt16(payload, off); off += 2;
+        const typeOid = readUInt32(payload, off); off += 4;
+        const typeSize = readSignedInt16(payload, off); off += 2;
         const typeModifier = readInt32(payload, off); off += 4;
         const format = readInt16(payload, off); off += 2;
         fields.push({ name, tableOid, columnAttr, typeOid, typeSize, typeModifier, format });
@@ -254,8 +269,15 @@ function parseMessage(tag: string, payload: Uint8Array): ServerMessage {
 function readInt16(b: Uint8Array, o: number): number {
   return (b[o]! << 8) | b[o + 1]!;
 }
+function readSignedInt16(b: Uint8Array, o: number): number {
+  const value = readInt16(b, o);
+  return value > 0x7fff ? value - 0x1_0000 : value;
+}
 function readInt32(b: Uint8Array, o: number): number {
   return ((b[o]! << 24) | (b[o + 1]! << 16) | (b[o + 2]! << 8) | b[o + 3]!) | 0;
+}
+function readUInt32(b: Uint8Array, o: number): number {
+  return readInt32(b, o) >>> 0;
 }
 function readCString(b: Uint8Array, off: number): [string, number] {
   let end = off;
@@ -314,22 +336,46 @@ function readCertFile(kind: string, path: string): Buffer {
   }
 }
 
-async function openPlainSocket(host: string, port: number, timeoutMs: number): Promise<Socket> {
+async function openPlainSocket(
+  host: string,
+  port: number,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<Socket> {
   return new Promise<Socket>((resolve, reject) => {
     const sock = netConnect({ host, port });
-    const t = setTimeout(() => {
+    let settled = false;
+    const finish = (result: { socket: Socket } | { error: Error }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      sock.removeListener("connect", onConnect);
+      sock.removeListener("error", onError);
+      if ("error" in result) reject(result.error);
+      else resolve(result.socket);
+    };
+    const timer = setTimeout(() => {
       sock.destroy();
-      reject(new Error(`sqlx-js: TCP connect timeout to ${host}:${port} after ${timeoutMs}ms`));
+      finish({ error: new Error(`sqlx-js: TCP connect timeout to ${host}:${port} after ${timeoutMs}ms`) });
     }, timeoutMs);
-    sock.once("connect", () => {
-      clearTimeout(t);
+    const onConnect = () => {
       sock.setNoDelay(true);
-      resolve(sock);
-    });
-    sock.once("error", (err) => {
-      clearTimeout(t);
-      reject(err);
-    });
+      finish({ socket: sock });
+    };
+    const onError = (error: Error) => finish({ error });
+    const onAbort = () => {
+      sock.destroy();
+      finish({
+        error: signal?.reason instanceof Error
+          ? signal.reason
+          : new Error("sqlx-js: PostgreSQL connection aborted"),
+      });
+    };
+    sock.once("connect", onConnect);
+    sock.once("error", onError);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
   });
 }
 
@@ -337,25 +383,50 @@ async function performSslHandshake(
   sock: Socket,
   cfg: ConnConfig,
   mode: SslMode,
+  signal: AbortSignal,
 ): Promise<{ sock: AnySocket; tls: boolean }> {
   const reply: number = await new Promise<number>((resolve, reject) => {
-    const onData = (chunk: Buffer) => {
+    let settled = false;
+    const finish = (result: { reply: number } | { error: Error }) => {
+      if (settled) return;
+      settled = true;
+      sock.removeListener("data", onData);
       sock.removeListener("error", onError);
+      sock.removeListener("close", onClose);
+      signal.removeEventListener("abort", onAbort);
+      if ("error" in result) reject(result.error);
+      else resolve(result.reply);
+    };
+    const onData = (chunk: Buffer) => {
       if (chunk.length === 0) {
-        reject(new Error("ssl: empty handshake reply"));
+        finish({ error: new Error("ssl: empty handshake reply") });
         return;
       }
       if (chunk.length > 1) {
         sock.unshift(chunk.subarray(1));
       }
-      resolve(chunk[0]!);
+      finish({ reply: chunk[0]! });
     };
-    const onError = (err: Error) => {
-      sock.removeListener("data", onData);
-      reject(err);
+    const onError = (error: Error) => finish({ error });
+    const onClose = () => {
+      finish({ error: new Error("sqlx-js: connection closed during SSL negotiation") });
+    };
+    const onAbort = () => {
+      sock.destroy();
+      finish({
+        error: signal.reason instanceof Error
+          ? signal.reason
+          : new Error("sqlx-js: PostgreSQL connection aborted"),
+      });
     };
     sock.once("data", onData);
     sock.once("error", onError);
+    sock.once("close", onClose);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
     sock.write(frame(null, writeInt32(80877103)));
   });
   if (reply === "S".charCodeAt(0)) {
@@ -369,11 +440,38 @@ async function performSslHandshake(
         ...(cfg.sslCert ? { cert: readCertFile("sslcert", cfg.sslCert) } : {}),
         ...(cfg.sslKey ? { key: readCertFile("sslkey", cfg.sslKey) } : {}),
       });
-      t.once("secureConnect", () => resolve(t));
-      t.once("error", (err) => {
+      let settled = false;
+      const finish = (result: { socket: TLSSocket } | { error: Error }) => {
+        if (settled) return;
+        settled = true;
+        t.removeListener("secureConnect", onSecureConnect);
+        t.removeListener("error", onError);
+        t.removeListener("close", onClose);
+        signal.removeEventListener("abort", onAbort);
+        if ("error" in result) reject(result.error);
+        else resolve(result.socket);
+      };
+      const onSecureConnect = () => finish({ socket: t });
+      const onError = (error: Error) => {
         sock.destroy();
-        reject(err);
-      });
+        finish({ error });
+      };
+      const onClose = () => {
+        finish({ error: new Error("sqlx-js: connection closed during TLS handshake") });
+      };
+      const onAbort = () => {
+        t.destroy();
+        finish({
+          error: signal.reason instanceof Error
+            ? signal.reason
+            : new Error("sqlx-js: PostgreSQL connection aborted"),
+        });
+      };
+      t.once("secureConnect", onSecureConnect);
+      t.once("error", onError);
+      t.once("close", onClose);
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) onAbort();
     });
     return { sock: tlsSock, tls: true };
   }
@@ -403,13 +501,30 @@ export class PgClient {
   private tlsEnabled = false;
   private serverVersionText: string | undefined;
   private planSequence = 0;
+  private backendPid: number | undefined;
+  private backendSecret: number | undefined;
+  private readyStatus: string | undefined;
+  private rejectConnect: ((error: Error) => void) | undefined;
+  private connectAbort: AbortController | undefined;
 
   constructor(private cfg: ConnConfig) {}
 
   get usingTls(): boolean { return this.tlsEnabled; }
+  get isClosed(): boolean { return this.closed; }
+  get transactionStatus(): string | undefined { return this.readyStatus; }
+
+  ref(): void {
+    this.sock?.ref();
+  }
+
+  unref(): void {
+    this.sock?.unref();
+  }
 
   async connect(): Promise<void> {
     const timeoutMs = this.cfg.connectTimeoutMs ?? 15000;
+    const connectAbort = new AbortController();
+    this.connectAbort = connectAbort;
     let aborted = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {
@@ -418,13 +533,28 @@ export class PgClient {
         const err = new Error(`sqlx-js: connect timeout to ${this.cfg.host}:${this.cfg.port} after ${timeoutMs}ms (includes TLS + authentication)`);
         this.closed = true;
         this.closeReason ??= err;
+        connectAbort.abort(err);
         this.destroySocket();
         reject(err);
       }, timeoutMs);
     });
+    let rejectInterrupted!: (error: Error) => void;
+    const interrupted = new Promise<never>((_, reject) => {
+      rejectInterrupted = reject;
+    });
+    this.rejectConnect = rejectInterrupted;
     try {
-      await Promise.race([this.connectInner(timeoutMs, () => aborted), deadline]);
+      await Promise.race([
+        this.connectInner(timeoutMs, () => aborted || this.closed, connectAbort.signal),
+        deadline,
+        interrupted,
+      ]);
+    } catch (error) {
+      this.destroy(error instanceof Error ? error : new Error(String(error)));
+      throw error;
     } finally {
+      if (this.rejectConnect === rejectInterrupted) this.rejectConnect = undefined;
+      if (this.connectAbort === connectAbort) this.connectAbort = undefined;
       if (timer) clearTimeout(timer);
     }
   }
@@ -436,14 +566,18 @@ export class PgClient {
   // Cooperative cancellation: a socket can finish connecting after the deadline
   // has already rejected. Re-check `aborted` at each await boundary so a late
   // connection is torn down instead of leaking.
-  private async connectInner(timeoutMs: number, aborted: () => boolean): Promise<void> {
+  private async connectInner(
+    timeoutMs: number,
+    aborted: () => boolean,
+    signal: AbortSignal,
+  ): Promise<void> {
     const mode: SslMode = this.cfg.sslmode ?? "prefer";
-    const plain = await openPlainSocket(this.cfg.host, this.cfg.port, timeoutMs);
+    const plain = await openPlainSocket(this.cfg.host, this.cfg.port, timeoutMs, signal);
     this.sock = plain;
     if (aborted()) return this.abortConnect();
     let socket: AnySocket = plain;
     if (mode !== "disable") {
-      const result = await performSslHandshake(plain, this.cfg, mode);
+      const result = await performSslHandshake(plain, this.cfg, mode, signal);
       socket = result.sock;
       this.tlsEnabled = result.tls;
     }
@@ -487,6 +621,21 @@ export class PgClient {
   }
 
   private deliver(msg: ServerMessage) {
+    if (msg.type === "Z") this.readyStatus = msg.status;
+    if (msg.type === "other" && msg.tag === "A") return;
+    if (msg.type === "N") {
+      try {
+        const pending = this.cfg.onNotice?.({
+          message: msg.fields.M ?? "PostgreSQL notice",
+          severity: msg.fields.S,
+          code: msg.fields.C,
+          detail: msg.fields.D,
+          hint: msg.fields.H,
+        });
+        if (pending) void pending.catch(() => {});
+      } catch {}
+      return;
+    }
     const w = this.waiters.shift();
     if (w) w.resolve(msg);
     else this.queue.push(msg);
@@ -502,12 +651,27 @@ export class PgClient {
   }
 
   private next(): Promise<ServerMessage> {
-    if (this.queue.length) return Promise.resolve(this.queue.shift()!);
+    if (this.queue.length) return this.supportedMessage(Promise.resolve(this.queue.shift()!));
     if (this.closed) {
       const reason = this.closeReason ?? new Error("connection closed");
       return Promise.reject(new ConnectionLostError(reason));
     }
-    return new Promise((resolve, reject) => this.waiters.push({ resolve, reject }));
+    return this.supportedMessage(
+      new Promise((resolve, reject) => this.waiters.push({ resolve, reject })),
+    );
+  }
+
+  private async supportedMessage(message: Promise<ServerMessage>): Promise<ServerMessage> {
+    const value = await message;
+    if (
+      value.type === "other"
+      && (value.tag === "G" || value.tag === "H" || value.tag === "W")
+    ) {
+      const error = new Error("sqlx-js: PostgreSQL COPY streaming protocol is not supported");
+      this.destroy(error);
+      throw error;
+    }
+    return value;
   }
 
   private write(buf: Uint8Array) {
@@ -528,6 +692,9 @@ export class PgClient {
     }
     if (this.cfg.statementTimeoutMs !== undefined) {
       pairs.push(cstr("statement_timeout"), cstr(String(this.cfg.statementTimeoutMs)));
+    }
+    for (const [name, value] of Object.entries(this.cfg.startupParameters ?? {})) {
+      pairs.push(cstr(name), cstr(value));
     }
     pairs.push(new Uint8Array([0]));
     const body = concat([writeInt32(196608), concat(pairs)]);
@@ -613,8 +780,48 @@ export class PgClient {
       const m = await this.next();
       if (m.type === "Z") return;
       if (m.type === "S" && m.name === "server_version") this.serverVersionText = m.value;
+      if (m.type === "K") {
+        this.backendPid = m.pid;
+        this.backendSecret = m.secret;
+      }
       if (m.type === "E") throw pgError(m.fields);
     }
+  }
+
+  async cancel(): Promise<void> {
+    if (this.backendPid === undefined || this.backendSecret === undefined || this.closed) return;
+    const timeoutMs = this.cfg.connectTimeoutMs ?? 15000;
+    const socket = await openPlainSocket(this.cfg.host, this.cfg.port, timeoutMs);
+    const request = frame(null, concat([
+      writeInt32(80877102),
+      writeInt32(this.backendPid),
+      writeInt32(this.backendSecret),
+    ]));
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        socket.destroy();
+        reject(new Error(`sqlx-js: cancel timeout to ${this.cfg.host}:${this.cfg.port} after ${timeoutMs}ms`));
+      }, timeoutMs);
+      socket.once("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      socket.once("close", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      socket.end(request);
+    });
+  }
+
+  destroy(reason = new Error("connection destroyed")): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.closeReason ??= reason;
+    this.connectAbort?.abort(this.closeReason);
+    this.rejectConnect?.(this.closeReason);
+    this.destroySocket();
+    this.flushWaiters();
   }
 
   async describe(sql: string): Promise<{ paramOids: number[]; fields: FieldDescription[] }> {
@@ -700,10 +907,14 @@ export class PgClient {
     params: (string | null)[],
   ): Promise<PgRowResult> {
     const stmtName = "";
-    const portal = "";
     const parseBody = concat([cstr(stmtName), cstr(sql), writeInt16(0)]);
     this.write(frame("P", parseBody));
+    return await this.execDescribedParamsText(params);
+  }
 
+  async execDescribedParamsText(params: (string | null)[]): Promise<PgRowResult> {
+    const stmtName = "";
+    const portal = "";
     const bindParts: Uint8Array[] = [
       cstr(portal),
       cstr(stmtName),

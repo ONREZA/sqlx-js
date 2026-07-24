@@ -47,6 +47,7 @@ test("empty array → empty literal", () => {
 
 test("encodes multidimensional arrays recursively", () => {
   expect(encodePgArrayLiteral([[1, 2], [3, null]])).toBe("{{1,2},{3,NULL}}");
+  expect(encodePgArrayLiteral([[1, 2], [3, null]], String)).toBe('{{"1","2"},{"3",NULL}}');
 });
 
 test("non-finite numbers are quoted", () => {

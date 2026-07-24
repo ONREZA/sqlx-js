@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -28,11 +29,11 @@ function pendingQuery<T>(promise: Promise<T>, cancel: () => void = () => {}) {
 }
 
 function fakePool(
-  unsafe: (query: string, params: unknown[], options: { prepare?: boolean }) => unknown,
+  unsafe: (query: string, params: unknown[]) => unknown,
   overrides: Record<string, unknown> = {},
 ): PostgresClient {
   return {
-    options: { prepare: true },
+    options: {},
     unsafe,
     array: (value: unknown[], oid?: number) => ({ kind: "array", value, oid }),
     json: (value: unknown) => ({ kind: "json", value }),
@@ -42,7 +43,7 @@ function fakePool(
   } as unknown as PostgresClient;
 }
 
-test("Prisma schema parameters remain compatible with the Postgres.js runtime", () => {
+test("Prisma schema parameters remain compatible with the internal runtime", () => {
   expect(normalizeRuntimeDatabaseUrl(
     "postgresql://app:secret@db.example.com/app?schema=public",
   )).toBe(
@@ -61,25 +62,98 @@ test("Prisma schema parameters remain compatible with the Postgres.js runtime", 
 });
 
 test("statementTimeoutMs configures only the PostgreSQL session parameter", async () => {
-  const connection = { application_name: "sqlx-js-test" };
   const raw = createClient("postgres://app:secret@127.0.0.1:1/app", {
-    connection,
+    applicationName: "sqlx-js-test",
     statementTimeoutMs: 1_234,
   });
-  expect(raw.options.connection).toEqual(expect.objectContaining({
-    application_name: "sqlx-js-test",
-    statement_timeout: 1_234,
+  const parsed = (raw as unknown as {
+    options: { applicationName?: string; statementTimeoutMs?: number };
+  }).options;
+  expect(parsed).toEqual(expect.objectContaining({
+    applicationName: "sqlx-js-test",
+    statementTimeoutMs: 1_234,
   }));
-  expect(connection).toEqual({ application_name: "sqlx-js-test" });
-  await raw.end({ timeout: 0 });
+  await raw.end();
 });
 
-test("managed client respects prepare false and preserves result metadata", async () => {
-  const calls: { query: string; params: unknown[]; options: { prepare?: boolean } }[] = [];
+test("raw client rejects timeout values outside the runtime timer range", () => {
+  const url = "postgres://app:secret@127.0.0.1:1/app";
+  expect(() => createClient(url, { connectTimeoutMs: 0 })).toThrow("connectTimeoutMs must be an integer");
+  expect(() => createClient(url, { idleTimeoutMs: -1 })).toThrow("idleTimeoutMs must be an integer");
+  expect(() => createClient(url, { maxLifetimeMs: 2_147_483_648 })).toThrow(
+    "maxLifetimeMs must be an integer",
+  );
+  expect(() => createClient(url, { statementTimeoutMs: 1.5 })).toThrow(
+    "statementTimeoutMs must be an integer",
+  );
+});
+
+test("raw client shutdown interrupts an in-flight startup", async () => {
+  let accept!: () => void;
+  const accepted = new Promise<void>((resolve) => {
+    accept = resolve;
+  });
+  const server = createServer(() => accept());
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("expected a TCP address");
+
+  const raw = createClient(`postgres://postgres:postgres@127.0.0.1:${address.port}/postgres`, {
+    connectTimeoutMs: 10_000,
+  });
+  const query = Promise.resolve(raw.unsafe("SELECT 1"));
+  await accepted;
+  await raw.end();
+  await expect(query).rejects.toThrow("PostgreSQL pool is closed");
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+});
+
+test("raw client shutdown interrupts a stalled password provider", async () => {
+  let resolveStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    resolveStarted = resolve;
+  });
+  const raw = createClient("postgres://postgres@127.0.0.1:1/postgres", {
+    password: () => {
+      resolveStarted();
+      return new Promise<string>(() => {});
+    },
+  });
+  const query = Promise.resolve(raw.unsafe("SELECT 1"));
+  await started;
+  await raw.end();
+  await expect(query).rejects.toThrow("PostgreSQL pool is closed");
+});
+
+test("raw query cancellation interrupts a stalled password provider", async () => {
+  let resolveStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    resolveStarted = resolve;
+  });
+  const raw = createClient("postgres://postgres@127.0.0.1:1/postgres", {
+    password: () => {
+      resolveStarted();
+      return new Promise<string>(() => {});
+    },
+  });
+  const query = raw.unsafe("SELECT 1").execute();
+  await started;
+  query.cancel();
+  await expect(Promise.resolve(query)).rejects.toThrow("query cancelled before dispatch");
+  await raw.end();
+});
+
+test("managed client preserves result metadata", async () => {
+  const calls: { query: string; params: unknown[] }[] = [];
   const fake = {
-    options: { prepare: true },
-    unsafe: async (query: string, params: unknown[], options: { prepare?: boolean }) => {
-      calls.push({ query, params, options });
+    options: {},
+    unsafe: async (query: string, params: unknown[]) => {
+      calls.push({ query, params });
       return Object.assign([], { count: 4, command: "UPDATE" });
     },
     array: (value: unknown[], oid?: number) => ({ kind: "array", value, oid }),
@@ -88,26 +162,26 @@ test("managed client respects prepare false and preserves result metadata", asyn
     end: async () => {},
   } as unknown as PostgresClient;
 
-  const db = managed(fake, { prepare: false });
+  const db = managed(fake);
   expect(await db.sql.execute("UPDATE users SET active = false")).toEqual({
     rowCount: 4,
     command: "UPDATE",
   });
-  expect(calls[0]!.options.prepare).toBe(false);
+  expect(calls).toEqual([{ query: "UPDATE users SET active = false", params: [] }]);
 });
 
-test("prepare false and query hooks are preserved inside transactions", async () => {
-  const calls: { query: string; prepare?: boolean }[] = [];
+test("query hooks are preserved inside transactions", async () => {
+  const calls: string[] = [];
   const tx = {
-    unsafe: async (query: string, _params: unknown[], options: { prepare?: boolean }) => {
-      calls.push({ query, prepare: options.prepare });
+    unsafe: async (query: string) => {
+      calls.push(query);
       return Object.assign([], { count: 1, command: "UPDATE" });
     },
     array: (value: unknown[], oid?: number) => ({ kind: "array", value, oid }),
     json: (value: unknown) => ({ kind: "json", value }),
   };
   const fake = {
-    options: { prepare: true },
+    options: {},
     unsafe: tx.unsafe,
     array: tx.array,
     json: tx.json,
@@ -116,19 +190,19 @@ test("prepare false and query hooks are preserved inside transactions", async ()
   } as unknown as PostgresClient;
   const events: string[] = [];
 
-  const db = managed(fake, { prepare: false, onQuery: ({ query }) => events.push(query) });
+  const db = managed(fake, { onQuery: ({ query }) => events.push(query) });
   await db.sql.transaction(async (transaction) => {
     await transaction.execute("UPDATE jobs SET active = false");
   });
 
-  expect(calls).toEqual([{ query: "UPDATE jobs SET active = false", prepare: false }]);
+  expect(calls).toEqual(["UPDATE jobs SET active = false"]);
   expect(events).toEqual(["UPDATE jobs SET active = false"]);
 });
 
-test("Postgres.js receives explicit JSON and array parameters", async () => {
+test("the internal runtime receives explicit JSON and array parameters", async () => {
   const calls: unknown[][] = [];
   const fake = {
-    options: { prepare: true },
+    options: {},
     unsafe: async (_query: string, params: unknown[]) => {
       calls.push(params);
       return Object.assign([], { count: 0, command: "SELECT" });
@@ -172,7 +246,7 @@ test("managed client applies fileRoot to sql.file.execute", async () => {
   writeFileSync(join(root, "update.sql"), "UPDATE jobs SET active = false");
   const calls: string[] = [];
   const fake = {
-    options: { prepare: true },
+    options: {},
     unsafe: async (query: string) => {
       calls.push(query);
       return Object.assign([], { count: 2, command: "UPDATE" });
@@ -190,7 +264,7 @@ test("managed client applies fileRoot to sql.file.execute", async () => {
 test("embedded SQL files execute without a filesystem asset", async () => {
   const calls: string[] = [];
   const fake = {
-    options: { prepare: true },
+    options: {},
     unsafe: async (query: string) => {
       calls.push(query);
       return Object.assign([], { count: 1, command: "SELECT" });
@@ -206,8 +280,8 @@ test("embedded SQL files execute without a filesystem asset", async () => {
 });
 
 test("createSqlClient returns independent scoped runtimes", async () => {
-  const first = createSqlClient("postgres://postgres:postgres@127.0.0.1:1/first", { connect_timeout: 1 });
-  const second = createSqlClient("postgres://postgres:postgres@127.0.0.1:1/second", { connect_timeout: 1 });
+  const first = createSqlClient("postgres://postgres:postgres@127.0.0.1:1/first", { connectTimeoutMs: 1_000 });
+  const second = createSqlClient("postgres://postgres:postgres@127.0.0.1:1/second", { connectTimeoutMs: 1_000 });
   try {
     expect(first.sql).not.toBe(second.sql);
     expect(first.unsafe).not.toBe(second.unsafe);
@@ -480,7 +554,7 @@ describe("managed generations", () => {
           userQueries++;
           return [];
         }, {
-          options: { parsers: {}, serializers: {}, fetch_types: true, types: {} },
+          options: { parsers: {}, serializers: {}, types: {} },
         });
       }
       return fakePool(async () => []);
@@ -525,7 +599,7 @@ describe("managed generations", () => {
       calls++;
       return [];
     }, {
-      options: { parsers: {}, serializers: {}, fetch_types: true, types: {} },
+      options: { parsers: {}, serializers: {}, types: {} },
     }));
     const controller = new AbortController();
     controller.abort("request closed");
@@ -552,7 +626,7 @@ describe("managed generations", () => {
       created++;
       if (created === 1) {
         return fakePool(() => ({ values: () => new Promise(() => {}) }), {
-          options: { parsers: {}, serializers: {}, fetch_types: true, types: {} },
+          options: { parsers: {}, serializers: {}, types: {} },
           end: async () => { ended++; },
         });
       }

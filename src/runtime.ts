@@ -170,18 +170,36 @@ export function encodePgArrayLiteral(
   arr: unknown[],
   serializeElement?: (value: unknown) => string,
 ): string {
+  return encodePgArrayLiteralInternal(arr, serializeElement, false);
+}
+
+export function encodePgArrayLiteralElements(
+  arr: unknown[],
+  serializeElement: (value: unknown) => string,
+): string {
+  return encodePgArrayLiteralInternal(arr, serializeElement, true);
+}
+
+function encodePgArrayLiteralInternal(
+  arr: unknown[],
+  serializeElement: ((value: unknown) => string) | undefined,
+  nestedArraysAreElements: boolean,
+): string {
   const parts: string[] = [];
   for (const v of arr) {
-    if (v === null || v === undefined) {
+    if (v === null) {
       parts.push("NULL");
+      continue;
+    }
+    if (v === undefined) {
+      throw new Error("sqlx-js: undefined is not a PostgreSQL value; pass null explicitly");
+    }
+    if (Array.isArray(v) && !nestedArraysAreElements) {
+      parts.push(encodePgArrayLiteralInternal(v, serializeElement, nestedArraysAreElements));
       continue;
     }
     if (serializeElement) {
       parts.push(quoteArrayElement(serializeElement(v)));
-      continue;
-    }
-    if (Array.isArray(v)) {
-      parts.push(encodePgArrayLiteral(v));
       continue;
     }
     if (parameterKind(v) === "json") {

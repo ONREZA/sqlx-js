@@ -61,7 +61,7 @@
     {
       "name": "createdAt",
       "typeOid": 1184,
-      "tsType": "Date",
+      "tsType": "import(\"@onreza/sqlx-js\").PgTemporal",
       "nullable": true,
       "override": "non-null"
     }

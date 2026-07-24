@@ -4,7 +4,10 @@ Compile-time-checked raw SQL for TypeScript + PostgreSQL. Inspired by Rust's [sq
 
 You write plain SQL strings. A `prepare` step validates them against your database via the PostgreSQL wire protocol and generates a TypeScript declaration file. Wrong column names and stale queries fail during `prepare`; mismatched parameter types and row usage become TypeScript errors.
 
-The runtime uses [Postgres.js](https://github.com/porsager/postgres) through a single adapter instead of a Bun-specific client. The published CLI requires **Node ≥ 24** (`#!/usr/bin/env node`) and can also run through **Bun ≥ 1.3**. PostgreSQL 16 or newer is required.
+The runtime and CLI use one integrated PostgreSQL wire implementation instead
+of a third-party or runtime-specific database client. The package is ESM-only
+and supports **Node ≥ 24**, **Bun ≥ 1.3**, and **Deno ≥ 2.9**. PostgreSQL 16 or
+newer is required.
 
 ```ts
 import { sql } from "@onreza/sqlx-js";
@@ -44,7 +47,7 @@ const rows = await sql(
 - **Generated function contract catalog** via `KnownFunctions`: `prepare` records application-owned PostgreSQL functions/procedures from `pg_proc` with approximate TypeScript signatures plus volatility, security, parallel-safety, owner, public-execute, and function-local `search_path` metadata. Unsafe declarations produce reviewable warnings; extension-owned internals are excluded by default.
 - **Provider-aware shadow validation** via `dev` / `verify`: build either migrations or `schema.sql`, validate SQL, and drop the disposable database afterwards.
 - **Safe identifier quoting** via `sql.id(...)`, backed by the committed schema snapshot whitelist.
-- **Single runtime adapter**: Postgres.js backs the runtime on Node/Bun-compatible environments — no Bun.SQL-specific adapter to choose.
+- **Integrated PostgreSQL runtime**: prepare, migrations, and application queries share one audited wire implementation and type-codec contract.
 - **Incremental watch mode**: debounced re-prepare with a warm `PgClient` + `SchemaCache`; source/SQL edits only rescan affected files and re-describe changed fingerprints, while config/tsconfig changes trigger a full rebuild.
 - **Cache pruning** removes orphaned entries automatically (toggleable with `--no-prune`).
 - **Environment doctor** checks runtime versions, config loading, `.env`, database connectivity/permissions, runtime-addressable `customTypes`, profile RLS bypass/default-deny risks, cache metadata, generated enum output presence, tsconfig inclusion, and pgschema availability.
@@ -62,7 +65,13 @@ bun add @onreza/sqlx-js
 bun add --dev "typescript@>=5.4 <7"
 ```
 
-Node.js 24 or newer and PostgreSQL 16 or newer are required. Bun users need Bun 1.3 or newer. TypeScript 5.4–6.x is an optional peer so production-only installs do not pull the compiler into the application image; source scanning commands (`prepare`, `queries`, `doctor`, `ci`, `dev`, and `verify`) require it in development dependencies. TypeScript 7 replaced the stable root compiler API used by the scanner with new `unstable/*` entrypoints and is not supported yet.
+Node.js 24, Bun 1.3, or Deno 2.9 and PostgreSQL 16 or newer are required. The
+package ships ESM only; CommonJS consumers are not supported. TypeScript
+5.4–6.x is an optional peer so production-only installs do not pull the
+compiler into the application image; source scanning commands (`prepare`,
+`queries`, `doctor`, `ci`, `dev`, and `verify`) require it in development
+dependencies. TypeScript 7 replaced the stable root compiler API used by the
+scanner with new `unstable/*` entrypoints and is not supported yet.
 
 The package installs `sqlx-js` and `sqlx-js-diagnostics` binaries. Examples
 below use the local `sqlx-js` binary; invoke it through a package script,
@@ -388,6 +397,14 @@ PostgreSQL column `NOT NULL` constrains the array value, not its elements. There
 
 Both helpers also work with `unsafe(...)`. `encodePgArrayLiteral(arr)` remains exported for code that explicitly needs a PostgreSQL array literal string.
 
+PostgreSQL `date`, `timestamp`, and `timestamptz` values use the exported
+`PgTemporal` type: `Date | "infinity" | "-infinity"`. The literal values
+preserve PostgreSQL's supported infinities and avoid constructing an invalid
+JavaScript `Date`. Other PostgreSQL temporal values outside JavaScript's finite
+`Date` range fail decoding explicitly instead of returning an `Invalid Date`.
+Finite timestamp precision follows JavaScript `Date` and is therefore
+milliseconds.
+
 ### Parameter nullability
 
 `prepare` infers param types as `T | null` when:
@@ -462,11 +479,22 @@ When `lockTimeoutMs` is set, acquisition uses `pg_try_advisory_lock` in a pollin
 
 ### Managed and raw clients
 
-`createSqlClient(...)` owns its Postgres.js pools. It applies operation deadlines, replaces poisoned pool generations, initializes runtime codecs, exposes lifecycle state, and performs bounded shutdown. It deliberately does not expose its raw pool because a retained raw reference would bypass generation replacement.
+`createSqlClient(...)` owns generations of the integrated connection pool. It
+applies operation deadlines, replaces poisoned generations, initializes
+runtime codecs, exposes lifecycle state, and performs bounded shutdown. It
+deliberately does not expose its raw pool because a retained raw reference
+would bypass generation replacement.
 
-`createClient(...)` is the explicit raw Postgres.js escape hatch. It preserves sqlx-js's built-in bigint and PostgreSQL array codecs, but it has no managed deadline, recovery, lifecycle, or name-based `typeCodecs` guarantees. The caller owns its queries and `end()` lifecycle.
+`createClient(...)` is the explicit raw wire-client escape hatch. It preserves
+sqlx-js's built-in bigint and PostgreSQL array codecs, reconnects subsequent
+operations after a broken connection, and exposes the integrated pool directly.
+It has no managed deadline, generation recovery, lifecycle observers, or
+name-based `typeCodecs` guarantees. The caller owns its queries and `end()`
+lifecycle.
 
-Upgrading from `0.14.x` requires application changes. See the detailed [0.15.0 upgrade guide](./docs/upgrades/0.15.0.md) for API migration, timeout semantics, rollout order, and verification.
+Upgrading from `0.19.x` requires application changes. See the detailed
+[0.20.0 upgrade guide](./docs/upgrades/0.20.0.md) for driver-option migration,
+runtime behavior, rollout, and verification.
 
 For dependency injection, read replicas, tests, or several independent pools in one process, create independent managed clients:
 
@@ -547,7 +575,7 @@ export const findJob = defineQuery
   .optional("jobs.find", "SELECT id, state FROM jobs WHERE id = $id");
 ```
 
-`prepare` opens a session for each configured profile, applies its role, and runs the normal `Parse`/`Describe`/generic-plan pipeline in that session. The cache key includes both the SQL fingerprint and profile, so the same SQL can resolve through different `search_path`, RLS, type, and privilege contexts. Generated `KnownProfiles` registries make `createSqlClient(..., { profile })` infer only that profile's query set and require the exact configured role. The runtime sends the role as a startup parameter on every Postgres.js pool connection, including replacement generations. The login in `DATABASE_URL` must be allowed to `SET ROLE` to every configured role.
+`prepare` opens a session for each configured profile, applies its role, and runs the normal `Parse`/`Describe`/generic-plan pipeline in that session. The cache key includes both the SQL fingerprint and profile, so the same SQL can resolve through different `search_path`, RLS, type, and privilege contexts. Generated `KnownProfiles` registries make `createSqlClient(..., { profile })` infer only that profile's query set and require the exact configured role. The runtime sends the role as a startup parameter on every pool connection, including replacement generations. The login in `DATABASE_URL` must be allowed to `SET ROLE` to every configured role.
 
 The live `prepare` connection must reach PostgreSQL directly or through a session-pooling proxy: role validation requires `SET ROLE`, `Describe`, and planning to stay on the same backend session. Transaction- or statement-pooling proxies cannot preserve that contract. A runtime proxy must likewise accept and preserve the configured startup role on each pooled connection.
 
@@ -593,7 +621,7 @@ await apiDb.sql.transaction({
 });
 ```
 
-The runtime validates the exact allowlist carried by the passed profile before opening the transaction, applies transaction characteristics first, then calls parameterized `set_config(name, value, true)` on the same connection before invoking the callback. Values expire at transaction end and are never installed at session scope. A profile with declared settings exposes SQL execution only through `transaction({ settings }, fn)`: the scanner rejects root query sites, root queries and `unsafe` fail before dispatch, and there is no typed `transaction(fn)` overload. Runtime checks preserve that fail-closed execution boundary for JavaScript or erased types, but JavaScript cannot verify an ad-hoc profile object against generated declarations; import the same `defineDatabaseProfiles(...)` value in config and runtime. These guarantees belong to managed `createSqlClient(...)`; raw `createClient(...)` intentionally exposes Postgres.js without transaction-context guardrails. Use a separate managed profile without `transactionSettings` for operations that intentionally need no request context. Generic client wrappers can accept `SqlTransactionOptions<Registry>` to preserve the active profile contract.
+The runtime validates the exact allowlist carried by the passed profile before opening the transaction, applies transaction characteristics first, then calls parameterized `set_config(name, value, true)` on the same connection before invoking the callback. Values expire at transaction end and are never installed at session scope. A profile with declared settings exposes SQL execution only through `transaction({ settings }, fn)`: the scanner rejects root query sites, root queries and `unsafe` fail before dispatch, and there is no typed `transaction(fn)` overload. Runtime checks preserve that fail-closed execution boundary for JavaScript or erased types, but JavaScript cannot verify an ad-hoc profile object against generated declarations; import the same `defineDatabaseProfiles(...)` value in config and runtime. These guarantees belong to managed `createSqlClient(...)`; raw `createClient(...)` intentionally exposes the wire client without transaction-context guardrails. Use a separate managed profile without `transactionSettings` for operations that intentionally need no request context. Generic client wrappers can accept `SqlTransactionOptions<Registry>` to preserve the active profile contract.
 
 RLS can make a physically existing row invisible, so use `.optional()` unless visibility itself is an application invariant. `prepare` still cannot prove value-dependent `USING` or `WITH CHECK` outcomes.
 
@@ -605,15 +633,30 @@ RLS can make a physically existing row invisible, so use `.optional()` unless vi
 
 The audit is read-only and intentionally does not interpret arbitrary policy expressions. Role membership follows PostgreSQL's effective `INHERIT`/`USAGE` semantics, so membership through `NOINHERIT` neither applies a group policy nor grants owner bypass. Keep runtime roles separate from schema owners and migration/admin roles; do not grant runtime roles `BYPASSRLS`.
 
-`createSqlClient(url, options)` accepts every Postgres.js option plus sqlx-js managed-runtime options. `operationTimeoutMs` is opt-in because the library cannot choose one correct wall-clock limit for both interactive queries and long-running jobs.
+`createSqlClient(url, options)` accepts the integrated pool options `max`,
+`password`, `connectTimeoutMs`, `idleTimeoutMs`, `maxLifetimeMs`,
+`statementTimeoutMs`, `applicationName`, `startupOptions`, `onNotice`, and
+numeric `types`, plus the managed runtime options below. `password` may be a
+string or an async provider resolved separately for every new connection.
+`onNotice` receives structured PostgreSQL notices and isolates observer
+failures from protocol state. `operationTimeoutMs` is opt-in because the
+library cannot choose one correct wall-clock limit for both interactive
+queries and long-running jobs.
 
-The `schema` query parameter used by Prisma PostgreSQL URLs is accepted directly: sqlx-js removes it before handing the URL to Postgres.js. Other query parameters remain untouched, including PostgreSQL session parameters intentionally supported by Postgres.js.
+The `schema` query parameter used by Prisma PostgreSQL URLs is accepted
+directly: sqlx-js removes it before parsing the connection URL. Supported URL
+parameters include `sslmode`, `sslrootcert`, `sslcert`, `sslkey`,
+`application_name`, `options`, `role`, `connect_timeout`, and
+`statement_timeout`.
 
 ```ts
 const db = createSqlClient(process.env.DATABASE_URL, {
   // Server-side per-connection statement timeout (ms). Also settable via
   // ?statement_timeout=5000 in DATABASE_URL.
   statementTimeoutMs: 5000,
+  // Retire unused connections and bound the age of backend sessions.
+  idleTimeoutMs: 60_000,
+  maxLifetimeMs: 30 * 60_000,
   // Entire managed path: codec bootstrap, pool/connect wait, execution, and
   // decode. A timeout after driver dispatch has outcome "unknown".
   operationTimeoutMs: 15_000,
@@ -635,9 +678,6 @@ const db = createSqlClient(process.env.DATABASE_URL, {
       serialize: (value) => toWkt(value),
     },
   },
-  // Honored for every unsafe call. Set false for PgBouncer transaction mode
-  // unless protocol-level prepared statements are configured there.
-  prepare: false,
   // Fires after every query/transaction statement, success or failure.
   onQuery: ({ queryId, queryName, query, params, durationMs, rowCount, error }) => {
     if (error) logger.error({ queryId, queryName, query, error });
@@ -665,7 +705,12 @@ Lifecycle events intentionally omit SQL text and parameters. `onQueryStart` fire
 
 `db.close({ graceMs, forceAfterMs })` is terminal for that scoped client: admission stops immediately, active operations receive the grace window, and remaining promises plus pools are forcibly terminated within the total `forceAfterMs` bound. Repeated calls share the same close promise.
 
-`query.cancel()` is best-effort. Once a user statement has been handed to Postgres.js, a timeout is always reported as `outcome: "unknown"`: the statement may have completed, so sqlx-js never retries it automatically. All active operations from a poisoned generation are rejected and late driver results are ignored. A hundred concurrent timeouts from one generation still create only one replacement pool.
+`query.cancel()` is best-effort. Once a user statement has been sent to
+PostgreSQL, a timeout is always reported as `outcome: "unknown"`: the statement
+may have completed, so sqlx-js never retries it automatically. All active
+operations from a poisoned generation are rejected and late driver results are
+ignored. A hundred concurrent timeouts from one generation still create only
+one replacement pool.
 
 Name-based and mapped query definitions accept execution options without mixing them into SQL parameters. Positional definitions use `runWith(...)` because a trailing object may itself be a valid PostgreSQL parameter:
 
@@ -675,7 +720,7 @@ await positionalQuery.runWith({ signal: request.signal }, db.sql, id);
 ```
 
 Execution options fail closed when the supplied executor is not a managed sqlx-js executor; they are never silently ignored by a structural test double or third-party adapter.
-Inside a transaction, a query-level timeout or abort expires the whole scoped transaction so Postgres.js can roll it back before the connection is reused.
+Inside a transaction, a query-level timeout or abort expires the whole scoped transaction so the driver can confirm rollback before the connection is reused.
 
 ### `clearSqlFileCache()`
 
@@ -724,7 +769,7 @@ await sql.transaction({
 });
 ```
 
-Base options are `{ isolation?: "read uncommitted" | "read committed" | "repeatable read" | "serializable"; readOnly?: boolean; deferrable?: boolean; timeoutMs?: number; signal?: AbortSignal }`. Profiled clients add the required `settings` object when their profile declares `transactionSettings`. Transaction characteristics are applied via `SET TRANSACTION` immediately after `BEGIN`, followed by transaction-local settings before the callback. The deadline starts before codec bootstrap and covers pool acquisition, `BEGIN`, context setup, the callback, `COMMIT`, and `ROLLBACK`. On expiration the scoped executor is disabled, active statements are cancelled, and Postgres.js is given `cancelGraceMs` to confirm rollback. A clean rollback produces `outcome: "rolled_back"`; an unconfirmed `BEGIN`, `COMMIT`, or `ROLLBACK` produces `unknown` and retires the entire pool generation. Arbitrary non-database work already running inside the callback cannot be forcibly stopped by JavaScript, so external side effects should observe their own signal or be idempotent.
+Base options are `{ isolation?: "read uncommitted" | "read committed" | "repeatable read" | "serializable"; readOnly?: boolean; deferrable?: boolean; timeoutMs?: number; signal?: AbortSignal }`. Profiled clients add the required `settings` object when their profile declares `transactionSettings`. Transaction characteristics are applied via `SET TRANSACTION` immediately after `BEGIN`, followed by transaction-local settings before the callback. The deadline starts before codec bootstrap and covers pool acquisition, `BEGIN`, context setup, the callback, `COMMIT`, and `ROLLBACK`. On expiration the scoped executor is disabled, active statements are cancelled, and the driver is given `cancelGraceMs` to confirm rollback. A clean rollback produces `outcome: "rolled_back"`; an unconfirmed `BEGIN`, `COMMIT`, or `ROLLBACK` produces `unknown` and retires the entire pool generation. Arbitrary non-database work already running inside the callback cannot be forcibly stopped by JavaScript, so external side effects should observe their own signal or be idempotent.
 
 The transaction-scoped executor is valid only while its callback is active. Capturing `tx` and using it after commit or rollback fails locally without dispatching SQL.
 
@@ -1163,7 +1208,15 @@ Domains resolve to their base type through `pg_type.typbasetype`. `CREATE DOMAIN
 
 Composite types (`CREATE TYPE foo AS (a int, b text)`) resolve to a struct literal — `{ a: number | null; b: string | null }` — with each attribute typed (enums, domains, and nested composites included) and nullable unless the attribute is `NOT NULL`. Array variants (`foo[]`) resolve too.
 
-PostgreSQL assigns database-local OIDs to enums, domains, composites, and extension types. The runtime resolves those OIDs once per pool before the first application query, then installs both scalar and array parsers/serializers in the shared Postgres.js registry. Enums use their string labels, domains delegate to their base type, composites become objects keyed by attribute name, and built-in `vector`/`halfvec`/`hstore` mappings match the TypeScript table above. Existing numeric Postgres.js `types` entries remain authoritative. Apply migrations before creating the application pool; recreate the client after adding or replacing database types so discovery sees the new catalog.
+PostgreSQL assigns database-local OIDs to enums, domains, composites, and
+extension types. The runtime resolves those OIDs once per pool generation
+before the first application query, then installs both scalar and array
+parsers/serializers in the integrated driver. Enums use their string labels,
+domains delegate to their base type, composites become objects keyed by
+attribute name, and built-in `vector`/`halfvec`/`hstore` mappings match the
+TypeScript table above. Existing numeric `types` entries remain authoritative.
+Apply migrations before creating the application pool; recreate the client
+after adding or replacing database types so discovery sees the new catalog.
 
 For an application-defined `customTypes` representation, provide the matching name-based runtime codec. Explicit mappings can override non-system base/extension, enum, range, and composite representations. Every configured `customTypes` entry is emitted into `SqlxJsGeneratedRegistry["runtimeTypes"]`; binding that registry to `createSqlClient<SqlxJsGeneratedRegistry>(...)` makes missing codecs and incompatible parser/serializer values TypeScript errors:
 
@@ -1192,7 +1245,8 @@ const db = createSqlClient<SqlxJsGeneratedRegistry>(process.env.DATABASE_URL, {
 });
 ```
 
-Raw clients do not perform name-to-OID discovery. Bind generated custom types to explicit numeric Postgres.js `types` when raw access is required:
+Raw clients do not perform name-to-OID discovery. Bind generated custom types
+to explicit numeric `types` when raw access is required:
 
 ```ts
 import { createClient } from "@onreza/sqlx-js";
@@ -1214,7 +1268,12 @@ The contract is scoped rather than ambient, so separate database packages can us
 
 Generated `customTypes` contracts use bare keys matching `pg_type.typname`. Bare codec keys apply to every matching type name; schema-qualified keys such as `postgis.geometry` are available for additional manually configured codecs but do not replace a generated bare-key requirement. A configured key that does not exist fails during bootstrap instead of silently leaving a mismatched runtime value. Codecs receive the scalar PostgreSQL text representation; their parser and serializer are composed automatically for composite attributes and arrays.
 
-Database-specific numeric Postgres.js codecs remain a fully typed alternative. Pass `types` keyed by the generated `customTypes` names; each value is checked as `postgres.PostgresType<T>` for that application type. The numeric OIDs remain application-owned and take runtime precedence. If both mechanisms are needed, satisfy the generated contract with `typeCodecs` and add unrelated numeric `types` alongside it.
+Database-specific numeric codecs remain a fully typed alternative. Pass
+`types` keyed by the generated `customTypes` names; each value is checked as
+the integrated driver's `PostgresType<T>` for that application type. The
+numeric OIDs remain application-owned and take runtime precedence. If both
+mechanisms are needed, satisfy the generated contract with `typeCodecs` and add
+unrelated numeric `types` alongside it.
 
 ## How nullability is inferred
 
@@ -1292,26 +1351,31 @@ Releases are automated via `release-please`: pushes to `main` accumulate into a 
 `sqlx-js` is a young library. Known gaps:
 
 - PostgreSQL only (no MySQL or SQLite).
-- The scanner only follows direct named imports and namespace imports from configured `scan.modules` (default: `@onreza/sqlx-js`); it does not discover re-export graphs, dynamic aliases, or tagged-template calls automatically.
+- The scanner only follows direct named imports and namespace imports from configured `scan.modules` (default: `@onreza/sqlx-js`); it does not discover re-export graphs or dynamic aliases. Tagged-template calls are deliberately unsupported because they cannot select the exact generated registry entry without a compiler transform.
 - Profile inference follows direct `const client = createSqlClient(..., { profile: profiles.name })` bindings and their transaction callbacks. Factories, returned clients, mutable aliases, and dependency-injection graphs require a direct profiled binding at the scanned query site; reusable definitions use `defineQuery.for(...)`.
 - Star projections fall back to conservative nullability when their relation shape is ambiguous. Single-relation CTE and derived-table stars are expanded from the live schema, including `MATERIALIZED` CTEs used with lateral joins; multi-relation unqualified stars and recursive stars may still need explicit columns.
 - Plain `sql(...)` keeps returning rows, so statements without `RETURNING` produce an empty typed array. Use `sql.execute(...)` when affected-row count and command metadata matter.
 - Self-references inside `WITH RECURSIVE` are not analysed transitively — at worst this produces extra `T | null`. Ordinary later CTEs can reference earlier CTEs in the same `WITH`. Use `AS "id!"` overrides if recursive output needs an explicit contract.
 - Column names whose **real** name (not an alias) ends with `!` or `?` are not supported — the runtime strips those suffixes assuming an override. Use `AS "alias"` if you have such a column.
-- Result columns must have unique names because Postgres.js returns object rows. Alias join projections such as `users.id AS user_id, posts.id AS post_id`; `prepare` rejects duplicate output names before generating declarations.
+- Result columns must have unique names because the runtime returns object rows. Alias join projections such as `users.id AS user_id, posts.id AS post_id`; `prepare` rejects duplicate output names before generating declarations.
 - Migrations run inside `BEGIN/COMMIT`. DDL that disallows transactions (`CREATE INDEX CONCURRENTLY`, `VACUUM`, `REINDEX CONCURRENTLY`, …) will fail; split such operations into separate migrations executed outside the runner.
-- The **internal** wire client (used by `migrate run`, `prepare`, and the runtime `migrate()` helper) reads `sslmode`, `sslrootcert`/`sslcert`/`sslkey`, `application_name`, `options`, `connect_timeout`, and `statement_timeout` from `DATABASE_URL`. The default runtime `sql()` path delegates connection handling to Postgres.js; configure TLS and pooling through the `DATABASE_URL` and `createSqlClient(...)` options (`statementTimeoutMs` maps to a per-connection server timeout, while `operationTimeoutMs` bounds the managed end-to-end path).
+- The shared wire client reads `sslmode`, `sslrootcert`/`sslcert`/`sslkey`, `application_name`, `options`, `role`, `connect_timeout`, and `statement_timeout` from `DATABASE_URL`. Pool sizing and connection retirement use `createSqlClient(...)` options; `statementTimeoutMs` maps to a per-connection server timeout, while `operationTimeoutMs` bounds the managed end-to-end path.
 - `connect_timeout` bounds the entire internal-client connect, including the TLS handshake and SCRAM authentication.
+- Cloudflare Workers are not currently supported because the shared wire client uses Node-compatible TCP/TLS modules. Adding Workers requires a dedicated socket adapter rather than a second protocol implementation.
 - JavaScript timers cannot preempt synchronous application code or a synchronous custom codec that blocks the event loop. Managed deadlines are checked again after bootstrap and driver completion, but their wall-clock delivery still requires the event loop to make progress.
 - Runtime `sql.file(path)` resolves against `fileRoot` while prepare resolves against `--root`. They are both root-relative, but applications started outside the project root must set `fileRoot` explicitly or provide the generated `sqlFiles` map.
 
+See the [Postgres.js compatibility matrix](./docs/postgres-js-feature-matrix.md)
+for the replacement boundary and explicit permanent non-goals. The
+[open issue and pull request audit](./docs/postgres-js-upstream-audit.md)
+records which upstream reliability and DX findings were adopted or rejected.
 See [ROADMAP.md](./ROADMAP.md) for what's planned.
 
 ## Upgrading
 
 Breaking changes and migration instructions are maintained as versioned
 [upgrade guides](./docs/upgrades/README.md). For the next release, see
-[upgrading from 0.17.x to 0.18.0](./docs/upgrades/0.18.0.md). Earlier cache and
+[upgrading from 0.19.x to 0.20.0](./docs/upgrades/0.20.0.md). Earlier cache and
 generator migrations are archived in the
 [pre-0.15 guide](./docs/upgrades/pre-0.15.0.md).
 

@@ -35,6 +35,8 @@ try {
       defineQuery,
       type JsonParameter,
       type JsonValue,
+      type PgNotice,
+      type PostgresType,
       type QueryParams,
       type QueryRegistry,
       type QueryWireParams,
@@ -62,6 +64,15 @@ try {
     declare const executor: SqlExecutor<Registry>;
     declare const input: Input;
     const result: Promise<{ payload: JsonValue }> = query.run(executor, input);
+    const codec = {
+      to: 20,
+      from: 20,
+      parse: BigInt,
+      serialize: String,
+    } satisfies PostgresType<bigint>;
+    const notice: PgNotice = { message: "smoke", code: "00000" };
+    void codec;
+    void notice;
     void result;
   `);
   writeFileSync(join(temp, "tsconfig.json"), JSON.stringify({
@@ -129,9 +140,37 @@ try {
     } finally {
       await db?.close();
     }
-    console.log("node packed runtime ok");
+    console.log("packed runtime ok");
   `);
-  process.stdout.write(run("node", ["app.mjs"], temp));
+  process.stdout.write(`node ${run("node", ["app.mjs"], temp)}`);
+  process.stdout.write(`bun ${run("bun", ["app.mjs"], temp)}`);
+  writeFileSync(join(temp, "idle-exit.mjs"), `
+    import { createClient } from "@onreza/sqlx-js";
+
+    const client = createClient(process.env.DATABASE_URL, { max: 1 });
+    await client.unsafe("SELECT 1");
+    console.log("idle pool exit ok");
+  `);
+  const idleExit = spawnSync("node", ["idle-exit.mjs"], {
+    cwd: temp,
+    encoding: "utf8",
+    env: process.env,
+    timeout: 5_000,
+  });
+  if (idleExit.error || idleExit.status !== 0) {
+    throw new Error(`idle Node process did not exit naturally: ${idleExit.error?.message ?? idleExit.stderr}`);
+  }
+  process.stdout.write(`node ${idleExit.stdout}`);
+  const bunIdleExit = spawnSync("bun", ["idle-exit.mjs"], {
+    cwd: temp,
+    encoding: "utf8",
+    env: process.env,
+    timeout: 5_000,
+  });
+  if (bunIdleExit.error || bunIdleExit.status !== 0) {
+    throw new Error(`idle Bun process did not exit naturally: ${bunIdleExit.error?.message ?? bunIdleExit.stderr}`);
+  }
+  process.stdout.write(`bun ${bunIdleExit.stdout}`);
   const packageJson = JSON.parse(readFileSync(join(temp, "node_modules/@onreza/sqlx-js/package.json"), "utf8"));
   if (packageJson.version === undefined) throw new Error("packed package metadata is missing version");
   if (packageJson.bin?.["sqlx-js"] !== "dist/bin/sqlx-js.js") throw new Error("packed package metadata is missing the sqlx-js bin");
@@ -139,7 +178,7 @@ try {
     throw new Error("packed package metadata is missing the sqlx-js-diagnostics bin");
   }
   const packageRoot = join(temp, "node_modules/@onreza/sqlx-js");
-  if (!existsSync(join(packageRoot, "docs/upgrades/0.15.0.md"))) {
+  if (!existsSync(join(packageRoot, "docs/upgrades/0.20.0.md"))) {
     throw new Error("packed package is missing the current upgrade guide");
   }
   const cliPath = join(packageRoot, packageJson.bin["sqlx-js"]);

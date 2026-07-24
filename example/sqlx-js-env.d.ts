@@ -4,15 +4,15 @@
 export interface SqlxJsGeneratedQueries {
   "DELETE FROM posts\n     WHERE user_id = $1 AND status = 'archived'\n     RETURNING id AS post_id, user_id, status": { params: [bigint]; row: { "post_id": bigint; "user_id": bigint; "status": "draft" | "published" | "archived" } };
   "INSERT INTO posts (user_id, title) VALUES ($1, $2) RETURNING id AS \"id!\"": { params: [bigint, string]; row: { "id": bigint } };
-  "INSERT INTO users (name, email, age) VALUES ($1, $2, $3) RETURNING id AS \"id!\", created_at AS \"created_at!\"": { params: [string, string, number | null]; row: { "id": bigint; "created_at": Date } };
+  "INSERT INTO users (name, email, age) VALUES ($1, $2, $3) RETURNING id AS \"id!\", created_at AS \"created_at!\"": { params: [string, string, number | null]; row: { "id": bigint; "created_at": import("@onreza/sqlx-js").PgTemporal } };
   "INSERT INTO users (name, email, role) VALUES ($1, $2, $3) RETURNING id AS \"id!\"": { params: [string, string, "admin" | "editor" | "viewer"]; row: { "id": bigint } };
   "INSERT INTO users (name, email, role) VALUES ($1, $2, $3) RETURNING id AS \"id!\", role AS \"role!\"": { params: [string, string, "admin" | "editor" | "viewer"]; row: { "id": bigint; "role": "admin" | "editor" | "viewer" } };
   "INSERT INTO users (name, email, settings) VALUES ($1, $2, $3) RETURNING id AS \"id!\"": { params: [string, string, import("@onreza/sqlx-js").JsonParameter<SqlxJsJson.UserSettings>]; row: { "id": bigint } };
   "INSERT INTO users (name, email)\n     VALUES ($1, $2)\n     ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name\n     RETURNING id AS user_id, name AS user_name, email AS user_email, role AS user_role": { params: [string, string]; row: { "user_id": bigint; "user_name": string; "user_email": string; "user_role": "admin" | "editor" | "viewer" } };
   "INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id AS \"id!\"": { params: [string, string]; row: { "id": bigint } };
   "SELECT\n       u.id AS user_id,\n       u.email AS user_email,\n       u.role AS user_role,\n       COUNT(p.id) AS post_count,\n       MAX(p.id) AS latest_post_id\n     FROM users u\n     LEFT JOIN posts p ON p.user_id = u.id\n     GROUP BY u.id, u.email, u.role\n     ORDER BY u.id DESC\n     LIMIT $1::int OFFSET $2::int": { params: [number, number]; row: { "user_id": bigint; "user_email": string; "user_role": "admin" | "editor" | "viewer"; "post_count": bigint; "latest_post_id": bigint | null } };
-  "SELECT\n     id AS \"id!\",\n     name AS \"name!\",\n     email AS \"email!\",\n     role AS \"role!\",\n     created_at AS \"createdAt!\"\n   FROM public.list_users(\n     COALESCE($role, NULL::public.user_role),\n     COALESCE($search, NULL::text),\n     COALESCE($afterId, NULL::bigint),\n     $limit\n   )": { params: { "role": "admin" | "editor" | "viewer" | null; "search": string | null; "afterId": bigint | null; "limit": number }; row: { "id": bigint; "name": string; "email": string; "role": "admin" | "editor" | "viewer"; "createdAt": Date } };
-  "SELECT 1 AS one, 'literal'::text AS msg, now() AS ts FROM users LIMIT 1": { params: []; row: { "one": number; "msg": string; "ts": Date } };
+  "SELECT\n     id AS \"id!\",\n     name AS \"name!\",\n     email AS \"email!\",\n     role AS \"role!\",\n     created_at AS \"createdAt!\"\n   FROM public.list_users(\n     COALESCE($role, NULL::public.user_role),\n     COALESCE($search, NULL::text),\n     COALESCE($afterId, NULL::bigint),\n     $limit\n   )": { params: { "role": "admin" | "editor" | "viewer" | null; "search": string | null; "afterId": bigint | null; "limit": number }; row: { "id": bigint; "name": string; "email": string; "role": "admin" | "editor" | "viewer"; "createdAt": import("@onreza/sqlx-js").PgTemporal } };
+  "SELECT 1 AS one, 'literal'::text AS msg, now() AS ts FROM users LIMIT 1": { params: []; row: { "one": number; "msg": string; "ts": import("@onreza/sqlx-js").PgTemporal } };
   "SELECT COUNT(*) AS \"n!\" FROM users": { params: []; row: { "n": bigint } };
   "SELECT COUNT(*) AS \"n!\" FROM users WHERE age >= $1": { params: [number]; row: { "n": bigint } };
   "SELECT COUNT(*) AS n FROM users": { params: []; row: { "n": bigint } };
@@ -49,7 +49,7 @@ export interface SqlxJsGeneratedFileQueries {
 }
 
 export interface SqlxJsGeneratedFunctions {
-  "public.list_users(filter_role user_role, search_text text, after_id bigint, result_limit integer)": { kind: "function"; params: ["admin" | "editor" | "viewer", string, bigint, number]; returns: { id: bigint | null; name: string | null; email: string | null; role: "admin" | "editor" | "viewer" | null; created_at: Date | null }; returnsSet: true; volatility: "stable"; securityDefiner: false; leakproof: false; parallelSafety: "unsafe"; owner: "postgres"; ownerSuperuser: true; publicExecute: true; searchPath: null; extensionOwned: false };
+  "public.list_users(filter_role user_role, search_text text, after_id bigint, result_limit integer)": { kind: "function"; params: ["admin" | "editor" | "viewer", string, bigint, number]; returns: { id: bigint | null; name: string | null; email: string | null; role: "admin" | "editor" | "viewer" | null; created_at: import("@onreza/sqlx-js").PgTemporal | null }; returnsSet: true; volatility: "stable"; securityDefiner: false; leakproof: false; parallelSafety: "unsafe"; owner: "postgres"; ownerSuperuser: true; publicExecute: true; searchPath: null; extensionOwned: false };
 }
 
 export interface SqlxJsGeneratedRuntimeTypes {

@@ -1,4 +1,3 @@
-import postgres from "postgres";
 import { resolve } from "node:path";
 import {
   ClientClosingError,
@@ -21,17 +20,22 @@ import {
   type RuntimeQueryResult,
   type RuntimeTransactionOptions,
 } from "./runtime";
-import { arrayElementOid, builtinArrayOids } from "./pg/oids";
+import {
+  createPostgresClient,
+  type PostgresClient as InternalPostgresClient,
+  type PostgresOptions as InternalPostgresOptions,
+  type PostgresQueryClient,
+  type PostgresType,
+} from "./pg/driver";
 import { PostgresTypeRegistry, type RuntimeTypeCodecs } from "./postgres-codecs";
 import { queryId } from "./query-id";
 import type { QueryExecutionMetadata } from "./query";
 import { validateTransactionSettings, type DatabaseProfile } from "./config";
 
-export type PostgresClient = postgres.Sql<{ bigint: bigint }>;
-export type PostgresOptions = postgres.Options<Record<string, postgres.PostgresType>>;
-export type CreateClientOptions = PostgresOptions & {
-  statementTimeoutMs?: number;
-};
+export type PostgresClient = InternalPostgresClient;
+export type PostgresOptions = InternalPostgresOptions;
+export type { PostgresType };
+export type CreateClientOptions = PostgresOptions;
 
 export type ClientState = "healthy" | "poisoned" | "recycling" | "failed" | "closing" | "closed";
 
@@ -94,7 +98,6 @@ export type CreateSqlClientOptions = CreateClientOptions & {
   sqlFiles?: Readonly<Record<string, string>>;
   typeCodecs?: RuntimeTypeCodecs;
 };
-type PostgresQueryClient = PostgresClient | postgres.TransactionSql<{ bigint: bigint }>;
 type PendingQuery = PromiseLike<RuntimeQueryResult> & {
   cancel?: () => unknown;
   execute?: () => PendingQuery;
@@ -178,7 +181,6 @@ class ManagedPostgresRuntime implements RuntimeClient {
   private readonly onLifecycleHookError?: CreateSqlClientOptions["onLifecycleHookError"];
   private readonly operationTimeoutMs?: number;
   private readonly cancelGraceMs: number;
-  private readonly prepare: boolean;
   private readonly profile?: DatabaseProfile;
   private readonly typeCodecs?: RuntimeTypeCodecs;
   private readonly createPool: () => PostgresClient;
@@ -205,7 +207,6 @@ class ManagedPostgresRuntime implements RuntimeClient {
     this.onLifecycleHookError = options.onLifecycleHookError;
     this.operationTimeoutMs = validateOptionalTimeout(options.operationTimeoutMs, "operationTimeoutMs");
     this.cancelGraceMs = validateTimeout(options.cancelGraceMs ?? 1_000, "cancelGraceMs", true);
-    this.prepare = options.prepare ?? true;
     if (options.profile) validateRuntimeProfile(options.profile);
     const transactionSettings = options.profile?.transactionSettings
       ? Object.freeze([...options.profile.transactionSettings])
@@ -512,7 +513,6 @@ class ManagedPostgresRuntime implements RuntimeClient {
     const pending = generation.pool.unsafe(
       request.query,
       params as never[],
-      { prepare: this.prepare },
     ) as unknown as PendingQuery;
     this.checkOperation(operation);
     operation.pending = pending;
@@ -625,7 +625,6 @@ class ManagedPostgresRuntime implements RuntimeClient {
       pending = client.unsafe(
         request.query,
         params as never[],
-        { prepare: this.prepare },
       ) as unknown as PendingQuery;
       this.checkTransactionState(state);
       if (deadlineAt !== undefined && performance.now() >= deadlineAt && !state.expired) {
@@ -807,7 +806,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
     if (pending.length > 0) {
       await waitAtMost(Promise.allSettled(pending), this.cancelGraceMs);
     }
-    await generation.pool.end({ timeout: 0 });
+    await generation.pool.end();
     this.generations.delete(generation);
   }
 
@@ -944,7 +943,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
     const remainingMs = Math.max(0, forceAfterMs - (performance.now() - startedAt));
     const closing = [...this.generations].map(async (generation) => {
       try {
-        await generation.pool.end({ timeout: remainingMs / 1_000 });
+        await generation.pool.end();
       } catch {}
     });
     await waitAtMost(Promise.allSettled(closing), remainingMs);
@@ -1065,107 +1064,9 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
 
 let defaultClient: ManagedPostgresRuntime | null = null;
 
-const STRING_ARRAY_ELEMENT_OIDS = new Set([
-  18,
-  19,
-  25,
-  27,
-  28,
-  29,
-  142,
-  600,
-  601,
-  602,
-  603,
-  604,
-  628,
-  650,
-  718,
-  774,
-  790,
-  829,
-  869,
-  1042,
-  1043,
-  1083,
-  1186,
-  1266,
-  1560,
-  1562,
-  1700,
-  2950,
-  2205,
-  2206,
-  3220,
-  3614,
-  3615,
-  3904,
-  3906,
-  3908,
-  3910,
-  3912,
-  3926,
-  4451,
-  4536,
-]);
-const JSON_ELEMENT_OIDS = new Set([114, 3802]);
-
-function parseSimpleArrayElement(oid: number): ((value: string) => unknown) | undefined {
-  switch (oid) {
-    case 16:
-      return (value) => value === "t";
-    case 20:
-      return (value) => BigInt(value);
-    case 21:
-    case 23:
-    case 26:
-    case 700:
-    case 701:
-      return (value) => Number(value);
-    default:
-      return STRING_ARRAY_ELEMENT_OIDS.has(oid) ? (value) => value : undefined;
-  }
-}
-
-function postgresTypes(): Record<string, postgres.PostgresType> {
-  const types: Record<string, postgres.PostgresType> = { bigint: postgres.BigInt };
-  for (const oid of builtinArrayOids()) {
-    const elementOid = arrayElementOid(oid);
-    if (elementOid === undefined) continue;
-    if (JSON_ELEMENT_OIDS.has(elementOid)) {
-      types[`array_${oid}`] = {
-        to: oid,
-        from: [oid],
-        serialize: (value) => Array.isArray(value) ? encodePgArrayLiteral(value) : String(value),
-        parse: (value) => parsePgArrayLiteral(value, JSON.parse),
-      };
-      continue;
-    }
-    const parseElement = parseSimpleArrayElement(elementOid);
-    if (!parseElement) continue;
-    types[`array_${oid}`] = {
-      to: oid,
-      from: [oid],
-      serialize: (value) => Array.isArray(value) ? encodePgArrayLiteral(value) : String(value),
-      parse: (value) => parsePgArrayLiteral(value, parseElement),
-    };
-  }
-  return types;
-}
-
 export function createClient(url = process.env.DATABASE_URL, options: CreateClientOptions = {}): PostgresClient {
   if (!url) throw new Error("sqlx-js: DATABASE_URL is not set");
-  const { statementTimeoutMs, ...pgOptions } = options;
-  if (statementTimeoutMs !== undefined) validateTimeout(statementTimeoutMs, "statementTimeoutMs", true);
-  const connection = statementTimeoutMs !== undefined
-    ? { ...(pgOptions.connection ?? {}), statement_timeout: statementTimeoutMs }
-    : pgOptions.connection;
-  const client = postgres(normalizeRuntimeDatabaseUrl(url), {
-    ...pgOptions,
-    ...(connection ? { connection } : {}),
-    types: { ...postgresTypes(), ...(pgOptions.types ?? {}) },
-  }) as PostgresClient;
-  return client;
+  return createPostgresClient(normalizeRuntimeDatabaseUrl(url), options);
 }
 
 function postgresClientOptions(options: CreateSqlClientOptions): CreateClientOptions {
@@ -1218,15 +1119,14 @@ function profileClientOptions(
   const profile = options.profile;
   if (profile === undefined) return clientOptions;
   validateRuntimeProfile(profile);
-  const configuredRole = clientOptions.connection?.role;
+  const configuredRole = clientOptions.role;
   if (configuredRole !== undefined && configuredRole !== profile.role) {
     throw new Error(
-      `sqlx-js: profile ${profile.name} requires role ${profile.role}, but connection.role is ${String(configuredRole)}`,
+      `sqlx-js: profile ${profile.name} requires role ${profile.role}, but role is ${String(configuredRole)}`,
     );
   }
-  const connectionOptions = clientOptions.connection?.options;
-  if (typeof connectionOptions === "string" && hasRoleStartupOption(connectionOptions)) {
-    throw new Error(`sqlx-js: profile ${profile.name} cannot be combined with a role in connection.options`);
+  if (typeof clientOptions.startupOptions === "string" && hasRoleStartupOption(clientOptions.startupOptions)) {
+    throw new Error(`sqlx-js: profile ${profile.name} cannot be combined with a role in startupOptions`);
   }
   if (/^postgres(?:ql)?:\/\//i.test(url)) {
     const parsed = new URL(url);
@@ -1241,7 +1141,7 @@ function profileClientOptions(
   }
   return {
     ...clientOptions,
-    connection: { ...(clientOptions.connection ?? {}), role: profile.role },
+    role: profile.role,
   };
 }
 

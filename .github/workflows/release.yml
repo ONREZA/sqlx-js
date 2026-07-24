@@ -74,6 +74,10 @@ jobs:
         with:
           node-version: "24"
 
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: "2.9.4"
+
       - name: Upgrade npm to 11.x (trusted publishing requires >= 11.5.1)
         run: npm install -g npm@11.18.0
 
@@ -110,8 +114,11 @@ jobs:
           node dist/bin/sqlx-js.js prepare --verify --strict-inference --root example
           node dist/bin/sqlx-js.js doctor --json --root example
 
-      - name: Verify packed runtime under Node
+      - name: Verify packed runtime under Node and Bun
         run: node scripts/node-package-smoke.mjs
+
+      - name: Verify runtime under Deno
+        run: bun run test:deno-package
 
       - name: Verify npm package contents
         run: npm pack --dry-run

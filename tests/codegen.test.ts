@@ -600,7 +600,7 @@ createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
 
 // @ts-expect-error customTypes require corresponding runtime codecs
 createSqlClient<SqlxJsGeneratedRegistry>();
-// @ts-expect-error raw clients bound to generated customTypes require numeric Postgres.js types
+// @ts-expect-error raw clients bound to generated customTypes require numeric driver types
 createClient<SqlxJsGeneratedRegistry>();
 `);
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({

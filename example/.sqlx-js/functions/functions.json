@@ -49,11 +49,11 @@
         },
         {
           "mode": "table",
-          "tsType": "Date",
+          "tsType": "import(\"@onreza/sqlx-js\").PgTemporal",
           "name": "created_at"
         }
       ],
-      "returns": "{ id: bigint | null; name: string | null; email: string | null; role: \"admin\" | \"editor\" | \"viewer\" | null; created_at: Date | null }",
+      "returns": "{ id: bigint | null; name: string | null; email: string | null; role: \"admin\" | \"editor\" | \"viewer\" | null; created_at: import(\"@onreza/sqlx-js\").PgTemporal | null }",
       "returnsSet": true,
       "volatility": "stable",
       "securityDefiner": false,

@@ -10,7 +10,7 @@ import { validateAll } from "../src/commands/prepare";
 import { SchemaCache, compositeLiteral } from "../src/pg/schema";
 import { mergeExtensionTypes } from "../src/pg/extensions";
 import { fingerprint } from "../src/cache";
-import { createSqlClient as createRuntimeSqlClient } from "../src/postgres-runtime";
+import { createSqlClient as createRuntimeSqlClient, type PostgresClient } from "../src/postgres-runtime";
 import { QueryTimeoutError } from "../src/runtime";
 
 const repoRoot = resolve(import.meta.dir, "..");
@@ -2246,10 +2246,10 @@ export default {
     expect(r.code, r.stderr).toBe(0);
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toMatch(
-      /"setConditionalAt": boolean; "clearConditionalAt": boolean; "conditionalAt": Date \| null; "conditionalCount": number \| null; "setName": boolean; "name": string; "id": bigint/,
+      /"setConditionalAt": boolean; "clearConditionalAt": boolean; "conditionalAt": import\("@onreza\/sqlx-js"\)\.PgTemporal \| null; "conditionalCount": number \| null; "setName": boolean; "name": string; "id": bigint/,
     );
     expect(dts).toMatch(
-      /SET \(conditional_at, conditional_count\).*"conditionalAt": Date \| null; "conditionalCount": number \| null; "id": bigint/,
+      /SET \(conditional_at, conditional_count\).*"conditionalAt": import\("@onreza\/sqlx-js"\)\.PgTemporal \| null; "conditionalCount": number \| null; "id": bigint/,
     );
     expect(dts).toMatch(
       /UNION ALL SELECT.*"name": string; "email": string; "note": string \| null; "otherName": string; "otherEmail": string; "otherNote": string \| null/,
@@ -2674,6 +2674,12 @@ export default {
         vector_values: [[5, 6], [7, 8]],
         domain_vector_values: [[13, 14], [15, 16]],
       });
+      await expect(runtime.unsafe(
+        "SELECT $1::tmp_runtime_item",
+        { label: "missing score", score: undefined },
+      )).rejects.toThrow(
+        "PostgreSQL composite tmp_runtime_item field score is undefined; pass null explicitly",
+      );
     } finally {
       await runtime.close();
     }
@@ -2713,6 +2719,24 @@ export default {
       });
     } finally {
       await custom.close();
+    }
+
+    const normalized = createSqlClient(dbUrl, {
+      typeCodecs: {
+        tmp_runtime_role: {
+          parse: String,
+          serialize: (value: string) => value.toLowerCase(),
+        },
+      },
+    });
+    try {
+      const rows = await normalized.unsafe(
+        "SELECT $1::tmp_runtime_role AS role",
+        "ADMIN",
+      );
+      expect(rows[0]).toEqual({ role: "admin" });
+    } finally {
+      await normalized.close();
     }
 
     const transactional = createSqlClient(dbUrl, { typeCodecs });
@@ -2785,7 +2809,7 @@ export default {
       expect(row.bs.map((value) => Array.from(value))).toEqual([[0xde, 0xad]]);
       expect(row.ds).toEqual([timestamp]);
     } finally {
-      await external.end({ timeout: 0 });
+      await external.end();
     }
   });
 
@@ -2929,10 +2953,14 @@ export default {
     }
   });
 
-  test("bytea[] uses the native Postgres.js bytea codec", async () => {
-    const { sql, close } = await import("../src/index");
+  test("bytea[] uses the internal PostgreSQL bytea codec", async () => {
+    const { sql, close, createClient } = await import("../src/index");
     const prev = process.env.DATABASE_URL;
     process.env.DATABASE_URL = dbUrl;
+    const escapeClient = createClient(dbUrl, {
+      max: 1,
+      startupOptions: "-c bytea_output=escape",
+    });
     try {
       const literalRows = await sql("SELECT ARRAY[decode('dead', 'hex'), decode('beef', 'hex')]::bytea[] AS xs");
       const literal = (literalRows[0] as { xs: Uint8Array[] }).xs;
@@ -2944,10 +2972,516 @@ export default {
       ]));
       const param = (paramRows[0] as { xs: Uint8Array[] }).xs;
       expect(param.map((x) => Array.from(x))).toEqual([[0xde, 0xad], [0xbe, 0xef]]);
+
+      const [escaped] = await escapeClient.unsafe<{ value: Uint8Array }>(
+        "SELECT decode('005c7fff', 'hex') AS value",
+      );
+      expect(Array.from(escaped.value)).toEqual([0x00, 0x5c, 0x7f, 0xff]);
+      const [escapedArray] = await escapeClient.unsafe<{ values: Uint8Array[] }>(
+        "SELECT ARRAY[decode('005c7fff', 'hex'), decode('deadbeef', 'hex')] AS values",
+      );
+      expect(escapedArray.values.map((value) => Array.from(value))).toEqual([
+        [0x00, 0x5c, 0x7f, 0xff],
+        [0xde, 0xad, 0xbe, 0xef],
+      ]);
     } finally {
+      await escapeClient.end();
       await close();
       if (prev === undefined) delete process.env.DATABASE_URL;
       else process.env.DATABASE_URL = prev;
+    }
+  });
+
+  test("internal pool serializes concurrent transaction queries", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      const rows = await client.begin(async (tx) => {
+        await tx.unsafe("CREATE TEMPORARY TABLE driver_values (value int NOT NULL)");
+        await Promise.all([
+          tx.unsafe("INSERT INTO driver_values (value) VALUES ($1)", [1]),
+          tx.unsafe("INSERT INTO driver_values (value) VALUES ($1)", [2]),
+        ]);
+        return await tx.unsafe<{ value: number }>("SELECT value FROM driver_values ORDER BY value");
+      });
+      expect(rows.map((row) => row.value)).toEqual([1, 2]);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("internal pool continues after a query error", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      const failed = client.unsafe("SELECT missing_driver_column").execute();
+      const pending = client.unsafe<{ value: number }>("SELECT 1::int AS value").execute();
+      await expect(Promise.resolve(failed)).rejects.toMatchObject({ code: "42703" });
+      expect((await pending)[0]!.value).toBe(1);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("unsupported COPY streams fail fast and reconnect later work", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      await expect(Promise.resolve(
+        client.unsafe("COPY (SELECT 1) TO STDOUT"),
+      )).rejects.toThrow("COPY streaming protocol is not supported");
+      expect((await client.unsafe<{ value: number }>("SELECT 1::int AS value"))[0]!.value).toBe(1);
+      await client.unsafe("CREATE TEMP TABLE driver_copy_input (value int)");
+      await expect(Promise.resolve(
+        client.unsafe("COPY driver_copy_input FROM STDIN"),
+      )).rejects.toThrow("COPY streaming protocol is not supported");
+      expect((await client.unsafe<{ value: number }>("SELECT 2::int AS value"))[0]!.value).toBe(2);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("internal pool cancels an active query and remains usable", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      await client.unsafe("SELECT 1");
+      const pending = client.unsafe("SELECT pg_sleep(10)").execute();
+      setTimeout(() => void pending.cancel(), 50);
+      await expect(Promise.resolve(pending)).rejects.toMatchObject({ code: "57014" });
+      const rows = await client.unsafe<{ value: number }>("SELECT 1::int AS value");
+      expect(rows[0]!.value).toBe(1);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("internal pool cancels queued work before a connection is released", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      const blocker = client.unsafe("SELECT pg_sleep(0.2)").execute();
+      const queued = client.unsafe("SELECT 2::int AS value").execute();
+      setTimeout(() => void queued.cancel(), 20);
+      const outcome = await Promise.race([
+        Promise.resolve(queued).then(
+          () => "resolved",
+          (error) => error instanceof Error ? error.message : String(error),
+        ),
+        new Promise<"still queued">((resolve) => setTimeout(() => resolve("still queued"), 100)),
+      ]);
+      expect(outcome).toBe("sqlx-js: query cancelled before dispatch");
+      await blocker;
+      expect((await client.unsafe<{ value: number }>("SELECT 1::int AS value"))[0]!.value).toBe(1);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("cancellation during parameter encoding never dispatches the statement", async () => {
+    const { createClient } = await import("../src/index");
+    let pending: ReturnType<PostgresClient["unsafe"]> | undefined;
+    const client = createClient(dbUrl, {
+      max: 1,
+      types: {
+        cancellingInt: {
+          to: 23,
+          from: [],
+          parse: Number,
+          serialize: (value) => {
+            void pending?.cancel();
+            return String(value);
+          },
+        },
+      },
+    });
+    await client.unsafe("DROP TABLE IF EXISTS driver_cancel_before_execute");
+    await client.unsafe("CREATE TABLE driver_cancel_before_execute (value int NOT NULL)");
+    try {
+      pending = client.unsafe(
+        "INSERT INTO driver_cancel_before_execute (value) VALUES ($1)",
+        [1],
+      );
+      await expect(Promise.resolve(pending)).rejects.toThrow("query cancelled before dispatch");
+      const [{ count }] = await client.unsafe<{ count: number }>(
+        "SELECT COUNT(*)::int AS count FROM driver_cancel_before_execute",
+      );
+      expect(count).toBe(0);
+    } finally {
+      await client.unsafe("DROP TABLE IF EXISTS driver_cancel_before_execute");
+      await client.end();
+    }
+  });
+
+  test("a settled query cannot cancel later work on the same backend", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      const completed = client.unsafe("SELECT 1");
+      await completed;
+      const later = client.unsafe<{ value: number }>(
+        "SELECT 2::int AS value FROM (SELECT pg_sleep(0.15)) AS wait",
+      ).execute();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      await completed.cancel();
+      expect((await later)[0]!.value).toBe(2);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("raw value rows preserve duplicate columns and multidimensional arrays", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      expect(await client.unsafe("SELECT 1::int AS value, 2::int AS value").values()).toEqual([[1, 2]]);
+      const [row] = await client.unsafe<{ matrix: number[][] }>(
+        "SELECT $1::int[][] AS matrix",
+        [client.array([[1, 2], [3, 4]])],
+      );
+      expect(row.matrix).toEqual([[1, 2], [3, 4]]);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("internal pool reconnects after a backend terminates its connection", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    const admin = createClient(dbUrl, { max: 1 });
+    try {
+      const [{ pid }] = await client.unsafe<{ pid: number }>("SELECT pg_backend_pid()::int AS pid");
+      const pending = client.unsafe("SELECT pg_sleep(10)").execute();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await admin.unsafe("SELECT pg_terminate_backend($1)", [pid]);
+      await expect(Promise.resolve(pending)).rejects.toBeInstanceOf(Error);
+      const rows = await client.unsafe<{ value: number }>("SELECT 1::int AS value");
+      expect(rows[0]!.value).toBe(1);
+    } finally {
+      await Promise.all([
+        client.end(),
+        admin.end(),
+      ]);
+    }
+  });
+
+  test("internal pool end settles after a backend terminates its connection", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    const admin = createClient(dbUrl, { max: 1 });
+    try {
+      const [{ pid }] = await client.unsafe<{ pid: number }>("SELECT pg_backend_pid()::int AS pid");
+      const pending = client.unsafe("SELECT pg_sleep(10)").execute();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await admin.unsafe("SELECT pg_terminate_backend($1)", [pid]);
+      await expect(Promise.resolve(pending)).rejects.toBeInstanceOf(Error);
+      const ended = await Promise.race([
+        client.end().then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 1_000)),
+      ]);
+      expect(ended).toBe(true);
+    } finally {
+      await Promise.all([
+        client.end(),
+        admin.end(),
+      ]);
+    }
+  });
+
+  test("transaction clients never reconnect outside their transaction", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    const admin = createClient(dbUrl, { max: 1 });
+    await admin.unsafe("DROP TABLE IF EXISTS driver_transaction_escape");
+    await admin.unsafe("CREATE TABLE driver_transaction_escape (value int NOT NULL)");
+    try {
+      await expect(client.begin(async (tx) => {
+        const [{ pid }] = await tx.unsafe<{ pid: number }>("SELECT pg_backend_pid()::int AS pid");
+        const pending = tx.unsafe("SELECT pg_sleep(10)").execute();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await admin.unsafe("SELECT pg_terminate_backend($1)", [pid]);
+        await expect(Promise.resolve(pending)).rejects.toBeInstanceOf(Error);
+        await tx.unsafe("INSERT INTO driver_transaction_escape (value) VALUES (1)");
+      })).rejects.toThrow("transaction connection is closed");
+      const [{ count }] = await admin.unsafe<{ count: number }>(
+        "SELECT COUNT(*)::int AS count FROM driver_transaction_escape",
+      );
+      expect(count).toBe(0);
+    } finally {
+      await admin.unsafe("DROP TABLE IF EXISTS driver_transaction_escape");
+      await Promise.all([
+        client.end(),
+        admin.end(),
+      ]);
+    }
+  });
+
+  test("raw transaction clients expire when their callback finishes", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    let transaction: Parameters<Parameters<PostgresClient["begin"]>[0]>[0] | undefined;
+    try {
+      await client.begin(async (tx) => {
+        transaction = tx;
+        await tx.unsafe("SELECT 1");
+      });
+      await expect(Promise.resolve(transaction!.unsafe("SELECT 1"))).rejects.toThrow(
+        "transaction client cannot be used after the transaction ends",
+      );
+      expect((await client.unsafe<{ value: number }>("SELECT 1::int AS value"))[0]!.value).toBe(1);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("internal codecs preserve bigint and SQL null array elements", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      const [row] = await client.unsafe<{
+        ordinal: bigint;
+        smallints: (number | null)[];
+        aggregated: (number | null)[];
+        future: "infinity";
+        past: "-infinity";
+        record: string;
+        waited: void;
+        xid: bigint;
+        xids: (bigint | null)[];
+      }>(
+        `SELECT
+           row_number() OVER (ORDER BY value) AS ordinal,
+           ARRAY[1::smallint, NULL]::smallint[] AS smallints,
+           (
+             SELECT array_agg(item ORDER BY position)
+             FROM (VALUES (1, 1::int), (2, NULL::int)) AS items(position, item)
+           ) AS aggregated,
+           'infinity'::timestamptz AS future,
+           '-infinity'::date AS past,
+           ROW(1::int, 'value'::text) AS record,
+           pg_sleep(0) AS waited,
+           '123'::xid8 AS xid,
+           ARRAY['123'::xid8, NULL]::xid8[] AS xids
+         FROM (VALUES (1::int)) AS values(value)`,
+      );
+      expect(row.ordinal).toBe(1n);
+      expect(row.smallints).toEqual([1, null]);
+      expect(row.aggregated).toEqual([1, null]);
+      expect(row.future).toBe("infinity");
+      expect(row.past).toBe("-infinity");
+      expect(row.record).toBe("(1,value)");
+      expect(row.waited).toBeUndefined();
+      expect(row.xid).toBe(123n);
+      expect(row.xids).toEqual([123n, null]);
+      const [{ bc }] = await client.unsafe<{ bc: Date }>(
+        "SELECT '4714-11-24 BC'::date AS bc",
+      );
+      expect(bc.toISOString()).toBe("-004713-11-24T00:00:00.000Z");
+      const [{ roundtrip }] = await client.unsafe<{ roundtrip: Date }>(
+        "SELECT $1::date AS roundtrip",
+        [bc],
+      );
+      expect(roundtrip.toISOString()).toBe("-004713-11-24T00:00:00.000Z");
+      const [{ futureDate }] = await client.unsafe<{ futureDate: Date }>(
+        "SELECT '10000-01-01'::date AS \"futureDate\"",
+      );
+      expect(futureDate.toISOString()).toBe("+010000-01-01T00:00:00.000Z");
+      const [{ futureRoundtrip }] = await client.unsafe<{ futureRoundtrip: Date }>(
+        "SELECT $1::date AS \"futureRoundtrip\"",
+        [futureDate],
+      );
+      expect(futureRoundtrip.toISOString()).toBe("+010000-01-01T00:00:00.000Z");
+      await expect(Promise.resolve(client.unsafe(
+        "SELECT '5874897-12-31'::date",
+      ))).rejects.toThrow("outside the JavaScript Date range");
+      expect((await client.unsafe<{ value: number }>("SELECT 1::int AS value"))[0]!.value).toBe(1);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("timestamptz decoding handles historical second-based offsets", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, {
+      max: 1,
+      startupOptions: "-c TimeZone=Europe/Paris",
+    });
+    try {
+      const [{ value }] = await client.unsafe<{ value: Date }>(
+        "SELECT '1800-01-01 00:00:00+00'::timestamptz AS value",
+      );
+      expect(value.toISOString()).toBe("1800-01-01T00:00:00.000Z");
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("internal protocol rejects deferred errors received after CommandComplete", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    await client.unsafe("DROP TABLE IF EXISTS driver_deferred_child");
+    await client.unsafe("DROP TABLE IF EXISTS driver_deferred_parent");
+    await client.unsafe("CREATE TABLE driver_deferred_parent (id int PRIMARY KEY)");
+    await client.unsafe(`
+      CREATE TABLE driver_deferred_child (
+        parent_id int REFERENCES driver_deferred_parent(id) DEFERRABLE INITIALLY DEFERRED
+      )
+    `);
+    try {
+      await expect(
+        Promise.resolve(client.unsafe("INSERT INTO driver_deferred_child (parent_id) VALUES (1)")),
+      ).rejects.toMatchObject({ code: "23503" });
+      const [{ count }] = await client.unsafe<{ count: number }>(
+        "SELECT COUNT(*)::int AS count FROM driver_deferred_child",
+      );
+      expect(count).toBe(0);
+    } finally {
+      await client.unsafe("DROP TABLE IF EXISTS driver_deferred_child");
+      await client.unsafe("DROP TABLE IF EXISTS driver_deferred_parent");
+      await client.end();
+    }
+  });
+
+  test("transaction parameter errors settle and leave the pool usable", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      await expect(client.begin(async (tx) => {
+        await Promise.all([
+          tx.unsafe("SELECT 1"),
+          tx.unsafe("SELECT $1::int", [undefined]),
+        ]);
+      })).rejects.toThrow("undefined is not a PostgreSQL value");
+      const [{ value }] = await client.unsafe<{ value: number }>("SELECT 1::int AS value");
+      expect(value).toBe(1);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("raw JSON wrappers reject non-serializable values before dispatch", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      await expect(Promise.resolve(client.unsafe(
+        "SELECT $1::jsonb",
+        [client.json(1n as never)],
+      ))).rejects.toThrow("JSON parameter is not JSON-serializable");
+      const [{ value }] = await client.unsafe<{ value: number }>("SELECT 1::int AS value");
+      expect(value).toBe(1);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("a caught database error cannot turn an automatic rollback into success", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      await expect(client.begin(async (tx) => {
+        try {
+          await tx.unsafe("SELECT missing_transaction_column");
+        } catch {}
+        return "not committed";
+      })).rejects.toThrow("instead of COMMIT");
+      const [{ value }] = await client.unsafe<{ value: number }>("SELECT 1::int AS value");
+      expect(value).toBe(1);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("raw transaction callbacks cannot finish after ending their transaction", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      await expect(client.begin(async (tx) => {
+        await tx.unsafe("COMMIT");
+        return "not transactional";
+      })).rejects.toThrow("transaction ended before its callback completed");
+      expect((await client.unsafe<{ value: number }>("SELECT 1::int AS value"))[0]!.value).toBe(1);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("internal pool retires idle connections", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1, idleTimeoutMs: 20 });
+    try {
+      const [{ pid: firstPid }] = await client.unsafe<{ pid: number }>(
+        "SELECT pg_backend_pid()::int AS pid",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const [{ pid: secondPid }] = await client.unsafe<{ pid: number }>(
+        "SELECT pg_backend_pid()::int AS pid",
+      );
+      expect(secondPid).not.toBe(firstPid);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("internal pool retires connections at their maximum lifetime", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1, maxLifetimeMs: 20 });
+    try {
+      const [{ pid: firstPid }] = await client.unsafe<{ pid: number }>(
+        "SELECT pg_backend_pid()::int AS pid",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const [{ pid: secondPid }] = await client.unsafe<{ pid: number }>(
+        "SELECT pg_backend_pid()::int AS pid",
+      );
+      expect(secondPid).not.toBe(firstPid);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("internal pool resolves a fresh dynamic password for each connection", async () => {
+    const { createClient } = await import("../src/index");
+    let calls = 0;
+    const client = createClient(dbUrl, {
+      max: 1,
+      idleTimeoutMs: 20,
+      password: async () => {
+        calls++;
+        return "postgres";
+      },
+    });
+    try {
+      await client.unsafe("SELECT 1");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await client.unsafe("SELECT 1");
+      expect(calls).toBe(2);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("internal pool surfaces structured PostgreSQL notices", async () => {
+    const { createClient } = await import("../src/index");
+    const notices: { message: string; severity?: string; code?: string }[] = [];
+    const client = createClient(dbUrl, {
+      max: 1,
+      onNotice: async (notice) => {
+        notices.push(notice);
+        throw new Error("notice observer failed");
+      },
+    });
+    try {
+      await client.unsafe("DO $$ BEGIN RAISE NOTICE 'driver notice'; END $$");
+      expect(notices).toEqual([
+        expect.objectContaining({
+          message: "driver notice",
+          severity: "NOTICE",
+          code: "00000",
+        }),
+      ]);
+      expect((await client.unsafe<{ value: number }>("SELECT 1::int AS value"))[0]!.value).toBe(1);
+    } finally {
+      await client.end();
     }
   });
 

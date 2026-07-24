@@ -38,7 +38,7 @@ test("composite literal codec distinguishes SQL null from empty strings", () => 
 test("runtime codec bootstrap is shared by concurrent first queries", async () => {
   let calls = 0;
   const client = {
-    options: { fetch_types: true, parsers: {}, serializers: {}, types: {} },
+    options: { parsers: {}, serializers: {}, types: {} },
     unsafe: () => ({
       values: async () => {
         calls++;
@@ -56,7 +56,7 @@ test("runtime codec bootstrap is shared by concurrent first queries", async () =
 
 test("runtime codec bootstrap rejects unknown configured type names", async () => {
   const client = {
-    options: { fetch_types: true, parsers: {}, serializers: {}, types: {} },
+    options: { parsers: {}, serializers: {}, types: {} },
     unsafe: () => ({ values: async () => [] }),
   };
   const registry = new PostgresTypeRegistry(client, {
@@ -69,7 +69,7 @@ test("runtime codec bootstrap rejects unknown configured type names", async () =
 
 test("runtime codec bootstrap rejects domain-specific codecs", async () => {
   const client = {
-    options: { fetch_types: true, parsers: {}, serializers: {}, types: {} },
+    options: { parsers: {}, serializers: {}, types: {} },
     unsafe: () => ({
       values: async () => [["public", "account_code", 50_000, 50_001, "d", 25, 0]],
     }),
@@ -85,7 +85,7 @@ test("runtime codec bootstrap rejects domain-specific codecs", async () => {
 test("runtime codec bootstrap retries after a transient catalog failure", async () => {
   let attempts = 0;
   const client = {
-    options: { fetch_types: true, parsers: {}, serializers: {}, types: {} },
+    options: { parsers: {}, serializers: {}, types: {} },
     unsafe: () => ({
       values: async () => {
         attempts++;
@@ -100,14 +100,13 @@ test("runtime codec bootstrap retries after a transient catalog failure", async 
   expect(attempts).toBe(2);
 });
 
-test("explicit numeric Postgres.js codecs remain authoritative", async () => {
+test("explicit numeric driver codecs remain authoritative", async () => {
   const scalarParser = (value: string) => `numeric:${value}`;
   const arrayParser = (value: string) => `numeric-array:${value}`;
   const scalarSerializer = (value: unknown) => `numeric:${String(value)}`;
   const arraySerializer = (value: unknown) => `numeric-array:${String(value)}`;
   const client = {
     options: {
-      fetch_types: true,
       parsers: { 50_000: scalarParser, 50_001: arrayParser },
       serializers: { 50_000: scalarSerializer, 50_001: arraySerializer },
       types: { explicit: { to: 50_000, from: [50_000, 50_001] } },
@@ -128,7 +127,7 @@ test("explicit numeric Postgres.js codecs remain authoritative", async () => {
 
 test("built-in extension codecs do not capture user types with the same name", async () => {
   const client = {
-    options: { fetch_types: true, parsers: {}, serializers: {}, types: {} },
+    options: { parsers: {}, serializers: {}, types: {} },
     unsafe: () => ({
       values: async () => [["app", "vector", 60_000, 60_001, "e", 0, 0]],
     }),
