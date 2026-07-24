@@ -6,7 +6,7 @@ Operational handbook for any agent (human or AI) working on this repository. Rea
 
 `sqlx-js` is a TypeScript library published as `@onreza/sqlx-js` that ports the developer experience of Rust's `sqlx` to TypeScript + PostgreSQL: you write raw SQL, a `prepare` step validates it against a live database and emits typed declarations. The library has both a CLI (`bin/sqlx-js.ts`) and a runtime (`src/index.ts`).
 
-The library is **PostgreSQL-only** and keeps SQL/result validation at prepare time by design — no runtime SQL parsing, no runtime result-schema validation, no ORM layer. The runtime is backed by Postgres.js through a single adapter instead of a Bun-specific client. The supported baseline is Node ≥ 24 or Bun ≥ 1.3.
+The library is **PostgreSQL-only** and keeps SQL/result validation at prepare time by design — no runtime SQL parsing, no runtime result-schema validation, no ORM layer. Prepare, migrations, and runtime queries share an integrated PostgreSQL wire implementation. The package is ESM-only; the supported baseline is Node ≥ 24, Bun ≥ 1.3, or Deno ≥ 2.9.
 
 ## Repository layout
 
@@ -21,7 +21,8 @@ The library is **PostgreSQL-only** and keeps SQL/result validation at prepare ti
 │   ├── query.ts              Reusable query definitions + public query helper types
 │   ├── query-id.ts           Shared prepare/runtime query fingerprint
 │   ├── migration-core.ts     Lightweight migration apply/lock path shared by runtime + CLI
-│   ├── postgres-runtime.ts   Postgres.js runtime adapter
+│   ├── postgres-runtime.ts   Managed PostgreSQL runtime
+│   ├── pg/driver.ts          Integrated raw client and connection pool
 │   ├── postgres-codecs.ts    Name-based runtime codecs + database-local OID bootstrap
 │   ├── artifacts.ts          Generated-artifact comparison for prepare --verify
 │   ├── cache.ts              .sqlx-js/<fingerprint>.json reader/writer
@@ -73,7 +74,7 @@ A `prepare` run executes the following pipeline:
 
 `prepare --watch` keeps the `PgClient` + `SchemaCache` warm and re-runs steps 1–8 on every debounced filesystem event.
 
-The runtime (`src/index.ts` + `src/runtime.ts` + `src/postgres-runtime.ts`) executes prepared Postgres.js `unsafe` calls through managed pool generations. End-to-end operation deadlines begin before codec bootstrap; a dispatched timeout poisons the current generation, rejects every active operation from it, and single-flight replaces the pool without replaying SQL. Before the first application query, `src/postgres-codecs.ts` discovers database-local enum/domain/composite/extension OIDs once per generation and installs scalar/array codecs shared by every connection. Profiled clients carry the exact generated profile registry and send its PostgreSQL role as a startup parameter on every pool connection and replacement generation. Profiles can also declare required `transactionSettings`; generated transaction options require their exact string keys, and the runtime validates then applies them through parameterized transaction-local `set_config(..., true)` after `BEGIN`/`SET TRANSACTION` and before the callback. Contextual profiles reject root/`unsafe` execution before dispatch, so their SQL runs only through the transaction boundary. Generated registries carry explicit `customTypes` into required name-based `typeCodecs` or typed numeric Postgres.js `types` for `createSqlClient<SqlxJsGeneratedRegistry>()`; raw `createClient<SqlxJsGeneratedRegistry>()` accepts only explicit numeric `types` and has no recovery guarantees. Domain-specific overrides are intentionally rejected because PostgreSQL exposes their base OID in result metadata; domains inherit their base codec instead. Strict query typing comes from an overload keyed on the active query registry — the global convenience API uses `KnownQueries`, while a scoped client binds one generated project or connection-profile contract. `defineQuery` keeps a SQL literal/cardinality contract reusable across the root and transaction `SqlExecutor` surfaces; `mapParams` can bind a narrower application input to the generated wire contract before execution. Optional enum modules are plain application constants generated at prepare time; exact include/exclude filters select exports, schema-qualified aliases resolve collisions, and the dynamic registry is emitted only when explicitly enabled. They add no runtime database introspection or validation. Runtime observers receive the same stable query ID used by prepare/cache. Transaction deadlines cover context setup through `COMMIT`/`ROLLBACK`; unconfirmed cleanup recycles the generation.
+The runtime (`src/index.ts` + `src/runtime.ts` + `src/postgres-runtime.ts` + `src/pg/driver.ts`) executes unnamed extended-protocol queries through an integrated lazy pool and managed pool generations. Every connection is strictly serial; automatic pipelining and named prepared-statement caches are permanent non-goals. End-to-end operation deadlines begin before codec bootstrap; a dispatched timeout poisons the current generation, rejects every active operation from it, and single-flight replaces the pool without replaying SQL. Before the first application query, `src/postgres-codecs.ts` discovers database-local enum/domain/composite/extension OIDs once per generation and installs scalar/array codecs shared by every connection. Profiled clients carry the exact generated profile registry and send its PostgreSQL role as a startup parameter on every pool connection and replacement generation. Profiles can also declare required `transactionSettings`; generated transaction options require their exact string keys, and the runtime validates then applies them through parameterized transaction-local `set_config(..., true)` after `BEGIN`/`SET TRANSACTION` and before the callback. Contextual profiles reject root/`unsafe` execution before dispatch, so their SQL runs only through the transaction boundary. Generated registries carry explicit `customTypes` into required name-based `typeCodecs` or typed numeric driver `types` for `createSqlClient<SqlxJsGeneratedRegistry>()`; raw `createClient<SqlxJsGeneratedRegistry>()` accepts only explicit numeric `types` and has no managed recovery guarantees. Domain-specific overrides are intentionally rejected because PostgreSQL exposes their base OID in result metadata; domains inherit their base codec instead. Strict query typing comes from an overload keyed on the active query registry — the global convenience API uses `KnownQueries`, while a scoped client binds one generated project or connection-profile contract. `defineQuery` keeps a SQL literal/cardinality contract reusable across the root and transaction `SqlExecutor` surfaces; `mapParams` can bind a narrower application input to the generated wire contract before execution. Optional enum modules are plain application constants generated at prepare time; exact include/exclude filters select exports, schema-qualified aliases resolve collisions, and the dynamic registry is emitted only when explicitly enabled. They add no runtime database introspection or validation. Runtime observers receive the same stable query ID used by prepare/cache. Transaction deadlines cover context setup through `COMMIT`/`ROLLBACK`; unconfirmed cleanup recycles the generation.
 
 RLS policy DDL remains owned by migrations, `schema.sql`, or pgschema. `doctor` only audits the effective profile roles and accessible RLS-enabled tables for superuser/`BYPASSRLS`, direct or inherited table-owner privileges without `FORCE ROW LEVEL SECURITY`, and granted commands without an inherited applicable permissive policy; it never claims to prove arbitrary `USING`/`WITH CHECK` expressions.
 
@@ -83,7 +84,7 @@ RLS policy DDL remains owned by migrations, `schema.sql`, or pgschema. `doctor` 
 
 - Node ≥ 24 for the published CLI and default runtime. Bun ≥ 1.3 is required
   for the test suite (`bun test --timeout 120000`) and can run the package through npm tooling.
-  The runtime uses Postgres.js; CI currently smoke-tests Node and Bun entrypoints.
+  CI smoke-tests the integrated runtime through Node, Bun, and Deno.
 - A reachable PostgreSQL 16+
 - `DATABASE_URL` exported in your shell
 
@@ -94,7 +95,8 @@ bun test --timeout 120000 # unit + integration tests
 bunx tsc -p example     # type-check the example fixture
 bun run test:corpus     # production-query inference gate
 bun run test:runtime-boundary # build + production import allowlist
-bun run test:node-package     # packed Node runtime/CLI smoke; requires DATABASE_URL
+bun run test:node-package     # packed Node/Bun runtime + Node CLI smoke; requires DATABASE_URL
+bun run test:deno-package     # built Deno runtime smoke; requires DATABASE_URL
 ```
 
 The integration suite (`tests/prepare.integration.test.ts`) spins up an
@@ -187,14 +189,14 @@ Skipping hooks for a single commit: `LEFTHOOK=0 git commit ...`. Don't make a ha
 
 - **No comments** unless they explain a non-obvious "why". Code should be self-explanatory.
 - **No emojis** in source files, commits, or docs.
-- **Runtime dependencies are intentional and small.** `libpg-query` powers analysis; Postgres.js is the default runtime adapter. Keep any new dependency out unless it is directly required.
+- **Runtime dependencies are intentional and small.** `libpg-query` powers analysis; the PostgreSQL runtime is integrated. Keep any new dependency out unless it is directly required.
 - **Backward compatibility**: cache artifacts are committed by users. Pre-1.0 changes must bump the cache/generator revision and fail with actionable regeneration guidance; after 1.0 they require a major version or graceful migration.
 - **TypeScript strict mode**. No `any` in public API. Internal helpers can use `any` only when walking the libpg-query AST, which is genuinely loose-typed.
 - **English everywhere** — source, docs, tests, commit messages.
 
 ## Things to be careful about
 
-- Postgres.js returns `int8` as a string by default. The adapter registers `postgres.BigInt` so types and runtime agree. Don't change it without re-checking every `bigint` site.
+- PostgreSQL `int8` decodes to native `bigint` so generated types and runtime values agree. Don't change it without re-checking every `bigint` site.
 - The codegen writes literal SQL strings as keys in `KnownQueries`. Whitespace in the source must match exactly when the query is rewritten — the runtime sees the user's literal, then `KnownQueries` is looked up by that literal. The fingerprint normalization is only for cache deduplication, not type lookup.
 - JSON and PostgreSQL arrays are explicit parameter representations. Generated parameter types require `sql.json(...)` and `sql.array(...)`; do not reintroduce runtime array guessing.
 - Named `$name` parameters are rewritten to PostgreSQL `$N` placeholders in first-use order. Repeated names reuse the same position; never rewrite placeholders with a regex because quoted strings, comments, and dollar-quoted bodies must remain unchanged.

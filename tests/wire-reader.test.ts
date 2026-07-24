@@ -209,6 +209,35 @@ describe("MessageReader: extended message types", () => {
     expect(m.oids).toEqual([23, 25, 16]);
   });
 
+  test("preserves unsigned OIDs and signed variable-width type sizes", () => {
+    const parameterPayload = concat([writeI16(1), writeI32(0xf0000001)]);
+    const parameter = new MessageReader().push(buildMessage("t", parameterPayload))[0]!;
+    expect(parameter).toEqual({ type: "t", oids: [0xf0000001] });
+
+    const rowPayload = concat([
+      writeI16(1),
+      cstr("value"),
+      writeI32(0xf0000001),
+      writeI16(7),
+      writeI32(0xe0000002),
+      writeI16(-1),
+      writeI32(-1),
+      writeI16(0),
+    ]);
+    const row = new MessageReader().push(buildMessage("T", rowPayload))[0]!;
+    expect(row.type).toBe("T");
+    if (row.type !== "T") throw new Error("unreachable");
+    expect(row.fields[0]).toEqual({
+      name: "value",
+      tableOid: 0xf0000001,
+      columnAttr: 7,
+      typeOid: 0xe0000002,
+      typeSize: -1,
+      typeModifier: -1,
+      format: 0,
+    });
+  });
+
   test("parses ParameterStatus key/value", () => {
     const payload = concat([cstr("server_version"), cstr("17.2")]);
     const out = new MessageReader().push(buildMessage("S", payload));

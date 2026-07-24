@@ -39,6 +39,10 @@ jobs:
         with:
           node-version: "24"
 
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: "2.9.4"
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
@@ -63,6 +67,15 @@ jobs:
       - name: Build package
         run: bun run build
 
+      - name: Verify PostgreSQL authentication and TLS
+        run: node scripts/postgres-auth-tls-smoke.mjs
+
+      - name: Run PostgreSQL runtime fault soak
+        env:
+          SQLX_JS_SOAK_DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_example
+          SQLX_JS_SOAK_DURATION_MS: "15000"
+        run: node scripts/postgres-runtime-soak.mjs
+
       - name: Verify built package entrypoints
         run: |
           node scripts/check-runtime-boundary.mjs
@@ -76,8 +89,11 @@ jobs:
           node dist/bin/sqlx-js.js prepare --verify --strict-inference --root example
           node dist/bin/sqlx-js.js doctor --json --root example
 
-      - name: Verify packed runtime under Node
+      - name: Verify packed runtime under Node and Bun
         run: node scripts/node-package-smoke.mjs
+
+      - name: Verify runtime under Deno
+        run: bun run test:deno-package
 
       - name: Verify npm package contents
         run: npm pack --dry-run
@@ -86,8 +102,8 @@ jobs:
         env:
           ADMIN_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
         run: >-
-          bun -e 'import postgres from "postgres";
-          const sql = postgres(process.env.ADMIN_DATABASE_URL, { max: 1 });
+          bun -e 'import { createClient } from "@onreza/sqlx-js";
+          const sql = createClient(process.env.ADMIN_DATABASE_URL, { max: 1 });
           await sql.unsafe("DROP DATABASE IF EXISTS sqlx_js_pgschema");
           await sql.unsafe("CREATE DATABASE sqlx_js_pgschema");
           await sql.end();'
@@ -106,7 +122,7 @@ jobs:
         run: |
           bun bin/sqlx-js.ts pgschema plan --root tests/fixtures/pgschema -- --output-json "$PLAN_PATH" --no-color
           bun bin/sqlx-js.ts pgschema apply --root tests/fixtures/pgschema -- --plan "$PLAN_PATH" --auto-approve
-          bun -e 'import postgres from "postgres"; const sql = postgres(process.env.DATABASE_URL); const rows = await sql.unsafe("SELECT name FROM pgschema_probe"); if (rows.length !== 0) throw new Error("expected empty probe table"); await sql.end();'
+          bun -e 'import { createClient } from "@onreza/sqlx-js"; const sql = createClient(process.env.DATABASE_URL); const rows = await sql.unsafe("SELECT name FROM pgschema_probe"); if (rows.length !== 0) throw new Error("expected empty probe table"); await sql.end();'
 
       - name: Verify pgschema plan is idempotent
         env:
@@ -120,12 +136,13 @@ jobs:
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_pgschema
         run: |
-          bun -e 'import postgres from "postgres"; const sql = postgres(process.env.DATABASE_URL); await sql.unsafe("DROP TABLE pgschema_probe"); await sql.unsafe("CREATE TABLE pgschema_target_guard (id bigint PRIMARY KEY)"); await sql.end();'
+          bun -e 'import { createClient } from "@onreza/sqlx-js"; const sql = createClient(process.env.DATABASE_URL); await sql.unsafe("DROP TABLE pgschema_probe"); await sql.unsafe("CREATE TABLE pgschema_target_guard (id bigint PRIMARY KEY)"); await sql.end();'
           bun bin/sqlx-js.ts verify --root tests/fixtures/pgschema --strict-inference
           bun bin/sqlx-js.ts dev --root tests/fixtures/pgschema --strict-inference
           bunx tsc -p tests/fixtures/pgschema
           git diff --exit-code -- tests/fixtures/pgschema
-          bun -e 'import postgres from "postgres"; const sql = postgres(process.env.DATABASE_URL); const rows = await sql.unsafe("SELECT to_regclass($1)::text AS desired, to_regclass($2)::text AS guard", ["public.pgschema_probe", "public.pgschema_target_guard"]); if (rows[0]?.desired !== null || rows[0]?.guard !== "pgschema_target_guard") throw new Error("dev/verify changed the target database"); await sql.end();'
+          # shellcheck disable=SC2016
+          bun -e 'import { createClient } from "@onreza/sqlx-js"; const sql = createClient(process.env.DATABASE_URL); const rows = await sql.unsafe("SELECT to_regclass($1)::text AS desired, to_regclass($2)::text AS guard", ["public.pgschema_probe", "public.pgschema_target_guard"]); if (rows[0]?.desired !== null || rows[0]?.guard !== "pgschema_target_guard") throw new Error("dev/verify changed the target database"); await sql.end();'
 
   postgres-compatibility:
     runs-on: ubuntu-latest

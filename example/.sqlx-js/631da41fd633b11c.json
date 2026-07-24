@@ -24,7 +24,7 @@
     {
       "name": "ts",
       "typeOid": 1184,
-      "tsType": "Date",
+      "tsType": "import(\"@onreza/sqlx-js\").PgTemporal",
       "nullable": false
     }
   ],

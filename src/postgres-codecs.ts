@@ -1,4 +1,8 @@
-import { encodePgArrayLiteral, parsePgArrayLiteral } from "./runtime";
+import {
+  encodePgArrayLiteral,
+  encodePgArrayLiteralElements,
+  parsePgArrayLiteral,
+} from "./runtime";
 
 export type RuntimeTypeCodec<T = unknown> = {
   parse(value: string): T;
@@ -11,13 +15,12 @@ type ParsedCodecOptions = {
   parsers?: Record<number, (value: string) => unknown>;
   serializers?: Record<number, (value: unknown) => unknown>;
   types?: Record<string, { to?: number; from?: number | number[] }>;
-  fetch_types?: boolean;
 };
 
 type ValuesQuery = PromiseLike<unknown[][]>;
 type CodecClient = {
   options: ParsedCodecOptions;
-  unsafe: (query: string, params?: unknown[], options?: { prepare?: boolean }) => { values: () => ValuesQuery };
+  unsafe: (query: string, params?: unknown[]) => { values: () => ValuesQuery };
 };
 
 type TypeRow = {
@@ -219,7 +222,6 @@ export class PostgresTypeRegistry {
     if (
       !this.client.options.parsers
       || !this.client.options.serializers
-      || typeof this.client.options.fetch_types !== "boolean"
     ) {
       this.complete = true;
       return undefined;
@@ -265,7 +267,7 @@ export class PostgresTypeRegistry {
         AND n.nspname NOT LIKE 'pg_temp_%'
         AND (t.typtype IN ('e', 'd', 'c') ${filter})
       ORDER BY n.nspname, t.typname
-    `, [], { prepare: false }).values();
+    `, []).values();
     const types: TypeRow[] = typeRows.map((row) => ({
       schema: String(row[0]),
       name: String(row[1]),
@@ -304,7 +306,7 @@ export class PostgresTypeRegistry {
         WHERE attrelid IN (${relationOids.join(", ")})
           AND attnum > 0
         ORDER BY attrelid, attnum
-      `, [], { prepare: false }).values();
+      `, []).values();
       for (const row of fieldRows) {
         const relationOid = numberValue(row[0]);
         const fields = fieldsByRelation.get(relationOid) ?? [];
@@ -323,6 +325,19 @@ export class PostgresTypeRegistry {
     const explicit = configuredOids(options);
     const parsers = new Map<number, (value: string) => unknown>();
     const serializers = new Map<number, (value: unknown) => unknown>();
+    const arrayShapedValue = (oid: number, seen = new Set<number>()): boolean => {
+      if (oid === 114 || oid === 3802 || arrayElements.has(oid)) return true;
+      if (seen.has(oid)) return false;
+      seen.add(oid);
+      const type = typesByOid.get(oid);
+      if (!type) return false;
+      const selected = this.codecFor(type);
+      if (selected?.user) return true;
+      if (type.kind === "b" && (type.name === "vector" || type.name === "halfvec")) return true;
+      return type.kind === "d" && type.baseOid > 0
+        ? arrayShapedValue(type.baseOid, seen)
+        : false;
+    };
 
     const parserFor = (oid: number): ((value: string) => unknown) => {
       const cached = parsers.get(oid);
@@ -373,7 +388,10 @@ export class PostgresTypeRegistry {
       if (arrayElement !== undefined) {
         implementation = (value) => {
           if (!Array.isArray(value)) throw new Error("sqlx-js: PostgreSQL array value must be an array");
-          return encodePgArrayLiteral(value, (item) => String(serializerFor(arrayElement)(item)));
+          const encode = arrayShapedValue(arrayElement)
+            ? encodePgArrayLiteralElements
+            : encodePgArrayLiteral;
+          return encode(value, (item) => String(serializerFor(arrayElement)(item)));
         };
       } else if (!type) implementation = existing ?? implementation;
       else if (selected) implementation = selected.codec.serialize as (value: unknown) => string;
@@ -388,7 +406,12 @@ export class PostgresTypeRegistry {
           return serializeCompositeLiteral(fields.map((field) => {
             if (!field.name) return null;
             const item = record[field.name];
-            return item === null || item === undefined ? null : String(serializerFor(field.typeOid)(item));
+            if (item === undefined) {
+              throw new Error(
+                `sqlx-js: PostgreSQL composite ${type.name} field ${field.name} is undefined; pass null explicitly`,
+              );
+            }
+            return item === null ? null : String(serializerFor(field.typeOid)(item));
           }));
         };
       }
@@ -407,7 +430,10 @@ export class PostgresTypeRegistry {
         installedParsers[type.arrayOid] = (value) => parsePgArrayLiteral(value, parseElement);
         installedSerializers[type.arrayOid] = (value) => {
           if (!Array.isArray(value)) throw new Error(`sqlx-js: PostgreSQL ${type.name}[] value must be an array`);
-          return encodePgArrayLiteral(value, (item) => String(serializeElement(item)));
+          const encode = arrayShapedValue(type.oid)
+            ? encodePgArrayLiteralElements
+            : encodePgArrayLiteral;
+          return encode(value, (item) => String(serializeElement(item)));
         };
       }
     }

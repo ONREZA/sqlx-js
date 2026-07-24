@@ -20,6 +20,7 @@ export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
 export type JsonObject = { readonly [key: string]: JsonValue };
 export type JsonArray = readonly JsonValue[];
+export type { PgTemporal } from "./pg/driver";
 export type JsonInput = string | number | boolean | JsonInputObject | JsonInputArray;
 export type JsonInputValue = JsonPrimitive | JsonInputObject | JsonInputArray;
 export type JsonInputObject = { readonly [key: string]: JsonInputValue | undefined };
@@ -33,7 +34,7 @@ export type {
   ScanConfig,
   SqlxJsConfig,
 } from "./config";
-export type { SslMode, ConnConfig } from "./pg/wire";
+export type { SslMode, ConnConfig, PgNotice } from "./pg/wire";
 export { PgError, ConnectionLostError } from "./pg/wire";
 export {
   ClientClosingError,
@@ -69,6 +70,7 @@ export type {
   DeadlineOptions,
   PostgresClient,
   PostgresOptions,
+  PostgresType,
   QueryStartEvent,
   QueryTimeoutEvent,
 } from "./postgres-runtime";
@@ -123,7 +125,7 @@ export type RuntimeTypeCodecsFor<Registry extends QueryRegistry> =
   };
 export type RuntimePostgresTypesFor<Registry extends QueryRegistry> = {
   readonly [Name in keyof RegistryRuntimeTypes<Registry> & string]:
-    import("postgres").PostgresType<RegistryRuntimeTypes<Registry>[Name]>;
+    import("./postgres-runtime").PostgresType<RegistryRuntimeTypes<Registry>[Name]>;
 };
 type GeneratedPostgresTypesFor<Registry extends QueryRegistry> =
   NonNullable<import("./postgres-runtime").CreateClientOptions["types"]> &

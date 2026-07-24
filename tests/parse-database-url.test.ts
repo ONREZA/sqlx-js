@@ -15,9 +15,15 @@ describe("parseDatabaseUrl", () => {
   });
 
   test("URL-decodes user and password", () => {
-    const cfg = parseDatabaseUrl("postgres://u%40org:p%40ss@h/db");
+    const cfg = parseDatabaseUrl("postgres://u%40org:p%40ss@h/my%20db");
     expect(cfg.user).toBe("u@org");
     expect(cfg.password).toBe("p@ss");
+    expect(cfg.database).toBe("my db");
+  });
+
+  test("normalizes IPv6 and percent-encoded host names", () => {
+    expect(parseDatabaseUrl("postgres://u:p@[::1]:5432/db").host).toBe("::1");
+    expect(parseDatabaseUrl("postgres://u:p@host%2Dname:5432/db").host).toBe("host-name");
   });
 
   test("accepts every valid sslmode", () => {
@@ -39,6 +45,11 @@ describe("parseDatabaseUrl", () => {
   test("propagates PostgreSQL startup options", () => {
     const cfg = parseDatabaseUrl("postgres://u@h/db?options=-c%20search_path%3Dprivate%2Cpublic");
     expect(cfg.startupOptions).toBe("-c search_path=private,public");
+  });
+
+  test("propagates the PostgreSQL startup role", () => {
+    const cfg = parseDatabaseUrl("postgres://u@h/db?role=app_reader");
+    expect(cfg.startupParameters).toEqual({ role: "app_reader" });
   });
 
   test("converts connect_timeout seconds → milliseconds", () => {

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { oidToTs, isBuiltinOid } from "../src/pg/oids";
+import { arrayElementOid, oidToTs, isBuiltinOid } from "../src/pg/oids";
 
 const JSON_VALUE = 'import("@onreza/sqlx-js").JsonValue';
 
@@ -8,10 +8,13 @@ test("scalar OIDs map to expected TS types", () => {
   expect(oidToTs(20).ts).toBe("bigint");
   expect(oidToTs(23).ts).toBe("number");
   expect(oidToTs(25).ts).toBe("string");
-  expect(oidToTs(1082).ts).toBe("Date");
-  expect(oidToTs(1184).ts).toBe("Date");
+  expect(oidToTs(1082).ts).toBe('import("@onreza/sqlx-js").PgTemporal');
+  expect(oidToTs(1184).ts).toBe('import("@onreza/sqlx-js").PgTemporal');
+  expect(oidToTs(2249).ts).toBe("string");
+  expect(oidToTs(2278).ts).toBe("void");
   expect(oidToTs(2950).ts).toBe("string");
   expect(oidToTs(3802).ts).toBe(JSON_VALUE);
+  expect(oidToTs(5069).ts).toBe("bigint");
 });
 
 test("array OIDs include nullable elements by default", () => {
@@ -99,4 +102,14 @@ test("internal OIDs (name, xid, tid, cid, pg_lsn, regclass, regtype) resolve to 
   expect(oidToTs(3220).ts).toBe("string");
   expect(oidToTs(1003).ts).toBe("(string | null)[]");
   expect(oidToTs(3221).ts).toBe("(string | null)[]");
+});
+
+test("stable catalog and text-search OIDs map to their actual element types", () => {
+  expect(arrayElementOid(3644)).toBe(3642);
+  expect(arrayElementOid(3645)).toBe(3615);
+  expect(oidToTs(3644).ts).toBe("(string | null)[]");
+  expect(oidToTs(3645).ts).toBe("(string | null)[]");
+  expect(oidToTs(271).ts).toBe("(bigint | null)[]");
+  expect(oidToTs(4073).ts).toBe("(string | null)[]");
+  expect(oidToTs(5039).ts).toBe("(string | null)[]");
 });
