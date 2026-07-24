@@ -10,13 +10,12 @@ import {
 import { arrayElementOid, builtinArrayOids } from "./oids";
 import {
   ConnectionLostError,
-  decodeText,
+  decodeTextRange,
   parseDatabaseUrl,
   PgClient,
   type PgNotice,
   type ConnConfig,
   type FieldDescription,
-  type PgRowResult,
 } from "./wire";
 
 export type PostgresType<T = unknown> = {
@@ -471,8 +470,11 @@ class ConnectionSlot {
         throw error;
       }
       try {
+        const values: unknown[][] = [];
+        const materializeRow = (payload: Uint8Array, fields: readonly FieldDescription[]) =>
+          decodeDataRow<Row>(payload, fields, this.options.parsers, values);
         const raw = params.length === 0
-          ? await client.execParamsText(query, [])
+          ? await client.execParamsText(query, [], materializeRow)
           : await client.execParamsTextWithSerializer(query, (parameterOids) => {
             const encoded = params.map((value, index) =>
               encodeParameter(value, this.options, parameterOids[index])
@@ -483,9 +485,9 @@ class ConnectionSlot {
               throw error;
             }
             return encoded;
-          });
+          }, materializeRow);
         setCancel(() => {});
-        return decodeResult<Row>(raw, this.options.parsers);
+        return resultWithMetadata(raw.rows, values, raw.tag);
       } catch (error) {
         if (error instanceof ConnectionLostError || client.isClosed) {
           this.client = undefined;
@@ -599,7 +601,7 @@ function installNumericTypes(
 
 function builtinParsers(): Record<number, (value: string) => unknown> {
   const parsers: Record<number, (value: string) => unknown> = {
-    16: (value) => value === "t",
+    16: parseBoolean,
     17: parseBytea,
     20: BigInt,
     21: Number,
@@ -759,38 +761,76 @@ function isPostgresParameter(value: unknown): value is PostgresParameter {
   return !!value && typeof value === "object" && (value as Partial<PostgresParameter>)[PARAMETER] === true;
 }
 
-function decodeResult<Row extends Record<string, unknown>>(
-  raw: PgRowResult,
+function decodeDataRow<Row extends Record<string, unknown>>(
+  payload: Uint8Array,
+  fields: readonly FieldDescription[],
   parsers: Record<number, (value: string) => unknown>,
-): PostgresResult<Row> {
-  const values = new Array<unknown[]>(raw.rows.length);
-  const rows = new Array<Row>(raw.rows.length);
-  for (let rowIndex = 0; rowIndex < raw.rows.length; rowIndex++) {
-    const columns = raw.rows[rowIndex]!;
-    const decoded = new Array<unknown>(columns.length);
-    const row = {} as Row;
-    for (let columnIndex = 0; columnIndex < columns.length; columnIndex++) {
-      const field = raw.fields[columnIndex]!;
-      const value = decodeColumn(columns[columnIndex]!, field, parsers);
-      decoded[columnIndex] = value;
-      if (field.name === "__proto__") {
-        Object.defineProperty(row, field.name, {
-          value,
-          enumerable: true,
-          configurable: true,
-          writable: true,
-        });
+  values: unknown[][],
+): Row {
+  const columnCount = (payload[0]! << 8) | payload[1]!;
+  const decoded = new Array<unknown>(columnCount);
+  const row = {} as Row;
+  let offset = 2;
+  for (let index = 0; index < columnCount; index++) {
+    const length = (
+      (payload[offset]! << 24)
+      | (payload[offset + 1]! << 16)
+      | (payload[offset + 2]! << 8)
+      | payload[offset + 3]!
+    ) | 0;
+    offset += 4;
+    const field = fields[index]!;
+    let value: unknown = null;
+    if (length !== -1) {
+      const parser = parsers[field.typeOid];
+      if (parser === parseBoolean) {
+        value = payload[offset] === 0x74;
+      } else if (
+        parser === Number
+        && (field.typeOid === 21 || field.typeOid === 23 || field.typeOid === 26)
+      ) {
+        value = parseInteger(payload, offset, offset + length);
       } else {
-        row[field.name as keyof Row] = value as Row[keyof Row];
+        const text = decodeTextRange(payload, offset, offset + length);
+        value = parser ? parser(text) : text;
       }
+      offset += length;
     }
-    values[rowIndex] = decoded;
-    rows[rowIndex] = row;
+    decoded[index] = value;
+    if (field.name === "__proto__") {
+      Object.defineProperty(row, field.name, {
+        value,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    } else {
+      row[field.name as keyof Row] = value as Row[keyof Row];
+    }
   }
-  const tag = raw.tag.trim();
-  const parts = tag ? tag.split(/\s+/) : [];
-  const last = parts.at(-1);
-  const count = last !== undefined && /^\d+$/.test(last) ? Number(last) : null;
+  values.push(decoded);
+  return row;
+}
+
+function resultWithMetadata<Row extends Record<string, unknown>>(
+  rows: Row[],
+  values: unknown[][],
+  tag: string,
+): PostgresResult<Row> {
+  const commandEnd = tag.indexOf(" ");
+  const command = tag
+    ? commandEnd === -1 ? tag : tag.slice(0, commandEnd)
+    : null;
+  const countStart = tag.lastIndexOf(" ") + 1;
+  let numericCount = countStart < tag.length;
+  for (let index = countStart; index < tag.length; index++) {
+    const code = tag.charCodeAt(index);
+    if (code < 0x30 || code > 0x39) {
+      numericCount = false;
+      break;
+    }
+  }
+  const count = numericCount ? Number(tag.slice(countStart)) : null;
   Object.defineProperties(rows, {
     [RESULT_VALUES]: {
       value: values,
@@ -801,21 +841,27 @@ function decodeResult<Row extends Record<string, unknown>>(
     },
     command: {
       configurable: true,
-      value: parts[0] ?? null,
+      value: command,
     },
   });
   return rows as PostgresResult<Row>;
 }
 
-function decodeColumn(
-  value: Uint8Array | null,
-  field: FieldDescription | undefined,
-  parsers: Record<number, (value: string) => unknown>,
-): unknown {
-  const text = decodeText(value);
-  if (text === null) return null;
-  const parser = field ? parsers[field.typeOid] : undefined;
-  return parser ? parser(text) : text;
+function parseBoolean(value: string): boolean {
+  return value === "t";
+}
+
+function parseInteger(value: Uint8Array, start: number, end: number): number {
+  let result = 0;
+  let sign = 1;
+  if (value[start] === 0x2d) {
+    sign = -1;
+    start++;
+  }
+  while (start < end) {
+    result = result * 10 + value[start++]! - 0x30;
+  }
+  return result * sign;
 }
 
 function parseBytea(value: string): Uint8Array {

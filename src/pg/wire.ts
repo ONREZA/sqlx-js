@@ -112,7 +112,7 @@ export type ServerMessage =
   | { type: "E"; fields: Record<string, string> }
   | { type: "N"; fields: Record<string, string> }
   | { type: "C"; tag: string }
-  | { type: "D"; columns: (Uint8Array | null)[] }
+  | { type: "D"; payload: Uint8Array }
   | { type: "other"; tag: string; payload: Uint8Array };
 
 export type FieldDescription = {
@@ -125,11 +125,18 @@ export type FieldDescription = {
   format: number;
 };
 
-export type PgRowResult = {
-  rows: (Uint8Array | null)[][];
+export type PgRawRow = (Uint8Array | null)[];
+
+export type PgRowResult<Row = PgRawRow> = {
+  rows: Row[];
   fields: FieldDescription[];
   tag: string;
 };
+
+export type PgRowMaterializer<Row> = (
+  payload: Uint8Array,
+  fields: readonly FieldDescription[],
+) => Row;
 
 export type PlanValidation = "planned" | "parse-only";
 
@@ -138,10 +145,13 @@ export class MessageReader {
   private size = 0;
   private offset = 0;
 
-  push(chunk: Uint8Array): ServerMessage[] {
+  push(
+    chunk: Uint8Array,
+    consumeDataRow?: (payload: Uint8Array) => void,
+  ): ServerMessage[] {
     this.chunks.push(chunk);
     this.size += chunk.length;
-    return this.drain();
+    return this.drain(consumeDataRow);
   }
 
   private buffered(): Uint8Array {
@@ -156,7 +166,7 @@ export class MessageReader {
     return out;
   }
 
-  private drain(): ServerMessage[] {
+  private drain(consumeDataRow?: (payload: Uint8Array) => void): ServerMessage[] {
     const out: ServerMessage[] = [];
     while (true) {
       const available = this.size - this.offset;
@@ -167,7 +177,8 @@ export class MessageReader {
       if (available < total) break;
       const tag = String.fromCharCode(view[this.offset]!);
       const payload = view.subarray(this.offset + 5, this.offset + total);
-      out.push(parseMessage(tag, payload));
+      if (tag === "D" && consumeDataRow) consumeDataRow(payload);
+      else out.push(parseMessage(tag, payload));
       this.offset += total;
     }
     if (this.offset > 0) {
@@ -250,21 +261,28 @@ function parseMessage(tag: string, payload: Uint8Array): ServerMessage {
       const [tagStr] = readCString(payload, 0);
       return { type: "C", tag: tagStr };
     }
-    case "D": {
-      const n = readInt16(payload, 0);
-      let off = 2;
-      const cols: (Uint8Array | null)[] = [];
-      for (let i = 0; i < n; i++) {
-        const len = readInt32(payload, off);
-        off += 4;
-        if (len === -1) cols.push(null);
-        else { cols.push(payload.subarray(off, off + len)); off += len; }
-      }
-      return { type: "D", columns: cols };
-    }
+    case "D":
+      return { type: "D", payload };
     default:
       return { type: "other", tag, payload };
   }
+}
+
+export function parseDataRow(payload: Uint8Array): PgRawRow {
+  const count = readInt16(payload, 0);
+  const columns = new Array<Uint8Array | null>(count);
+  let offset = 2;
+  for (let index = 0; index < count; index++) {
+    const length = readInt32(payload, offset);
+    offset += 4;
+    if (length === -1) {
+      columns[index] = null;
+    } else {
+      columns[index] = payload.subarray(offset, offset + length);
+      offset += length;
+    }
+  }
+  return columns;
 }
 
 function readInt16(b: Uint8Array, o: number): number {
@@ -491,12 +509,29 @@ async function performSslHandshake(
 // to consume the entire stream of messages up to the next ReadyForQuery before
 // the next call begins. Issue calls strictly sequentially per instance.
 type Waiter = { resolve: (msg: ServerMessage) => void; reject: (err: Error) => void };
+type ActiveRows = {
+  fields: FieldDescription[];
+  consume(payload: Uint8Array): void;
+  pending: Uint8Array[];
+  failed: boolean;
+  error?: unknown;
+};
 
 export class PgClient {
   private sock!: AnySocket;
   private reader = new MessageReader();
   private queue: ServerMessage[] = [];
   private waiters: Waiter[] = [];
+  private activeRows: ActiveRows | undefined;
+  private readonly consumeDataRow = (payload: Uint8Array) => {
+    const activeRows = this.activeRows;
+    if (!activeRows) return;
+    if (activeRows.fields.length === 0) {
+      activeRows.pending.push(payload);
+      return;
+    }
+    this.materializeDataRow(activeRows, payload);
+  };
   private closed = false;
   private closeReason: Error | null = null;
   private tlsEnabled = false;
@@ -604,7 +639,16 @@ export class PgClient {
 
   private attachHandlers(): void {
     const onData = (chunk: Buffer) => {
-      for (const m of this.reader.push(chunk)) this.deliver(m);
+      const activeRows = this.activeRows;
+      for (const m of this.reader.push(
+        chunk,
+        activeRows ? this.consumeDataRow : undefined,
+      )) {
+        this.deliver(m);
+      }
+      if (activeRows && this.activeRows === activeRows) {
+        this.flushDataRows(activeRows);
+      }
     };
     const onClose = () => {
       this.closed = true;
@@ -637,9 +681,33 @@ export class PgClient {
       } catch {}
       return;
     }
+    const activeRows = this.activeRows;
+    if (activeRows && msg.type === "T") activeRows.fields = msg.fields;
+    if (activeRows && msg.type === "D") {
+      this.consumeDataRow(msg.payload);
+      return;
+    }
     const w = this.waiters.shift();
     if (w) w.resolve(msg);
     else this.queue.push(msg);
+  }
+
+  private materializeDataRow(activeRows: ActiveRows, payload: Uint8Array): void {
+    if (activeRows.failed) return;
+    try {
+      activeRows.consume(payload);
+    } catch (error) {
+      activeRows.failed = true;
+      activeRows.error = error;
+    }
+  }
+
+  private flushDataRows(activeRows: ActiveRows): void {
+    if (activeRows.fields.length === 0) return;
+    for (const payload of activeRows.pending) {
+      this.materializeDataRow(activeRows, payload);
+    }
+    activeRows.pending.length = 0;
   }
 
   private flushWaiters() {
@@ -915,18 +983,29 @@ export class PgClient {
   async execParamsText(
     sql: string,
     params: (string | null)[],
-  ): Promise<PgRowResult> {
+  ): Promise<PgRowResult>;
+  async execParamsText<Row>(
+    sql: string,
+    params: (string | null)[],
+    materializeRow: PgRowMaterializer<Row>,
+  ): Promise<PgRowResult<Row>>;
+  async execParamsText<Row = PgRawRow>(
+    sql: string,
+    params: (string | null)[],
+    materializeRow?: PgRowMaterializer<Row>,
+  ): Promise<PgRowResult<Row>> {
     const stmtName = "";
     const parseBody = concat([cstr(stmtName), cstr(sql), writeInt16(0)]);
     return await this.execBoundParamsText(params, [
       frame("P", parseBody),
-    ]);
+    ], undefined, materializeRow);
   }
 
-  async execParamsTextWithSerializer(
+  async execParamsTextWithSerializer<Row = PgRawRow>(
     sql: string,
     serialize: (parameterOids: readonly number[]) => (string | null)[],
-  ): Promise<PgRowResult> {
+    materializeRow?: PgRowMaterializer<Row>,
+  ): Promise<PgRowResult<Row>> {
     const stmtName = "";
     const parseBody = concat([cstr(stmtName), cstr(sql), writeInt16(0)]);
     const describeBody = concat([new Uint8Array([0x53]), cstr(stmtName)]);
@@ -968,18 +1047,22 @@ export class PgClient {
       }
       throw error;
     }
-    return await this.execBoundParamsText(params, [], fields);
+    return await this.execBoundParamsText(params, [], fields, materializeRow);
   }
 
-  async execDescribedParamsText(params: (string | null)[]): Promise<PgRowResult> {
-    return await this.execBoundParamsText(params);
+  async execDescribedParamsText<Row = PgRawRow>(
+    params: (string | null)[],
+    materializeRow?: PgRowMaterializer<Row>,
+  ): Promise<PgRowResult<Row>> {
+    return await this.execBoundParamsText(params, [], undefined, materializeRow);
   }
 
-  private async execBoundParamsText(
+  private async execBoundParamsText<Row = PgRawRow>(
     params: (string | null)[],
     prefix: Uint8Array[] = [],
     initialFields: FieldDescription[] | undefined = undefined,
-  ): Promise<PgRowResult> {
+    materializeRow?: PgRowMaterializer<Row>,
+  ): Promise<PgRowResult<Row>> {
     const stmtName = "";
     const portal = "";
     const bindParts: Uint8Array[] = [
@@ -1008,25 +1091,47 @@ export class PgClient {
       frame("E", executeBody),
       frame("S", new Uint8Array(0)),
     );
-    this.write(concat(messages));
+    const rows: Row[] = [];
+    const activeRows: ActiveRows = {
+      fields: initialFields ?? [],
+      consume: (payload) => {
+        rows.push(
+          materializeRow
+            ? materializeRow(payload, activeRows.fields)
+            : parseDataRow(payload) as Row,
+        );
+      },
+      pending: [],
+      failed: false,
+    };
+    this.activeRows = activeRows;
 
-    const rows: (Uint8Array | null)[][] = [];
-    let fields = initialFields ?? [];
     let tag = "";
     let err: PgError | null = null;
     let ready = false;
-    while (!ready) {
-      for (const m of await this.nextBatch()) {
-        if (m.type === "1" || m.type === "2" || m.type === "n") continue;
-        if (m.type === "T") { fields = m.fields; continue; }
-        if (m.type === "D") { rows.push(m.columns); continue; }
-        if (m.type === "C") { tag = m.tag; continue; }
-        if (m.type === "Z") { ready = true; break; }
-        if (m.type === "E") { if (!err) err = pgError(m.fields); }
+    try {
+      this.write(concat(messages));
+      while (!ready) {
+        for (const m of await this.nextBatch()) {
+          if (m.type === "1" || m.type === "2" || m.type === "n") continue;
+          if (m.type === "T") continue;
+          if (m.type === "C") { tag = m.tag; continue; }
+          if (m.type === "Z") { ready = true; break; }
+          if (m.type === "E") { if (!err) err = pgError(m.fields); }
+        }
+      }
+    } finally {
+      if (this.activeRows === activeRows) {
+        this.activeRows = undefined;
       }
     }
     if (err) throw err;
-    return { rows, fields, tag };
+    if (activeRows.failed) throw activeRows.error;
+    return {
+      rows,
+      fields: activeRows.fields,
+      tag,
+    };
   }
 
   async simpleQueryAll(sql: string): Promise<{ rows: (Uint8Array | null)[][]; fields: FieldDescription[]; tags: string[] }> {
@@ -1038,7 +1143,7 @@ export class PgClient {
     while (true) {
       const m = await this.next();
       if (m.type === "T") lastFields = m.fields;
-      else if (m.type === "D") allRows.push(m.columns);
+      else if (m.type === "D") allRows.push(parseDataRow(m.payload));
       else if (m.type === "C") tags.push(m.tag);
       else if (m.type === "Z") break;
       else if (m.type === "E") { if (!err) err = pgError(m.fields); }
@@ -1056,7 +1161,7 @@ export class PgClient {
     while (true) {
       const m = await this.next();
       if (m.type === "T") fields = m.fields;
-      else if (m.type === "D") rows.push(m.columns);
+      else if (m.type === "D") rows.push(parseDataRow(m.payload));
       else if (m.type === "C") tag = m.tag;
       else if (m.type === "Z") break;
       else if (m.type === "E") { if (!err) err = pgError(m.fields); }
@@ -1146,4 +1251,14 @@ function pgError(fields: Record<string, string>): PgError {
 
 export function decodeText(b: Uint8Array | null): string | null {
   return b === null ? null : textDecoder.decode(b);
+}
+
+export function decodeTextRange(
+  value: Uint8Array,
+  start: number,
+  end: number,
+): string {
+  return Buffer.isBuffer(value)
+    ? value.toString("utf8", start, end)
+    : textDecoder.decode(value.subarray(start, end));
 }

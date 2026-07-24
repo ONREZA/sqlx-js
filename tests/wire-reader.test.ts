@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { assertSupportedPostgresVersion, MessageReader, postgresMajorVersion } from "../src/pg/wire";
+import {
+  assertSupportedPostgresVersion,
+  MessageReader,
+  parseDataRow,
+  postgresMajorVersion,
+} from "../src/pg/wire";
 
 const enc = new TextEncoder();
 
@@ -184,10 +189,11 @@ describe("MessageReader: extended message types", () => {
     const m = out[0]!;
     expect(m.type).toBe("D");
     if (m.type !== "D") throw new Error("unreachable");
-    expect(m.columns).toHaveLength(3);
-    expect(m.columns[0]).toEqual(new Uint8Array([0x61]));
-    expect(m.columns[1]).toBeNull();
-    expect(m.columns[2]).toEqual(new Uint8Array([0x62, 0x63]));
+    const columns = parseDataRow(m.payload);
+    expect(columns).toHaveLength(3);
+    expect(columns[0]).toEqual(new Uint8Array([0x61]));
+    expect(columns[1]).toBeNull();
+    expect(columns[2]).toEqual(new Uint8Array([0x62, 0x63]));
   });
 
   test("parses BackendKeyData (pid + secret)", () => {
@@ -272,7 +278,22 @@ describe("MessageReader: extended message types", () => {
       off = next;
     }
     expect(collected.map((c) => c.type)).toEqual(["D", "D", "Z"]);
-    expect(collected[0].columns[0]).toEqual(big(0));
-    expect(collected[1].columns[0]).toEqual(big(100));
+    expect(parseDataRow(collected[0].payload)[0]).toEqual(big(0));
+    expect(parseDataRow(collected[1].payload)[0]).toEqual(big(100));
+  });
+
+  test("streams DataRow payloads while retaining control messages", () => {
+    const payload = concat([
+      writeI16(2),
+      writeI32(1), new Uint8Array([0x61]),
+      writeI32(1), new Uint8Array([0x62]),
+    ]);
+    const rows: (Uint8Array | null)[][] = [];
+    const messages = new MessageReader().push(
+      concat([buildMessage("D", payload), readyForQuery()]),
+      (row) => rows.push(parseDataRow(row)),
+    );
+    expect(rows).toEqual([[new Uint8Array([0x61]), new Uint8Array([0x62])]]);
+    expect(messages.map((message) => message.type)).toEqual(["Z"]);
   });
 });
