@@ -340,8 +340,7 @@ void replicaOnly;
       moduleResolution: "Bundler",
       target: "ESNext",
       types: ["bun-types"],
-      baseUrl: resolve(import.meta.dir, ".."),
-      paths: { "@onreza/sqlx-js": ["src/index.ts"] },
+      paths: { "@onreza/sqlx-js": [resolve(import.meta.dir, "../src/index.ts")] },
     },
     files: ["consumer.ts", "primary.d.ts", "replica.d.ts"],
   }));
@@ -397,8 +396,7 @@ createSqlClient(undefined, { profile: { name: "api", role: "wrong" } });
       moduleResolution: "Bundler",
       target: "ESNext",
       types: ["bun-types"],
-      baseUrl: resolve(import.meta.dir, ".."),
-      paths: { "@onreza/sqlx-js": ["src/index.ts"] },
+      paths: { "@onreza/sqlx-js": [resolve(import.meta.dir, "../src/index.ts")] },
     },
     files: ["consumer.ts", "generated.d.ts"],
   }));
@@ -505,8 +503,7 @@ createClient<SqlxJsGeneratedRegistry>();
       moduleResolution: "Bundler",
       target: "ESNext",
       types: ["bun-types"],
-      baseUrl: resolve(import.meta.dir, ".."),
-      paths: { "@onreza/sqlx-js": ["src/index.ts"] },
+      paths: { "@onreza/sqlx-js": [resolve(import.meta.dir, "../src/index.ts")] },
     },
     files: ["consumer.ts", "generated.d.ts"],
   }));
@@ -908,8 +905,7 @@ void invalidNestedNonNullArray;
       moduleResolution: "Bundler",
       target: "ESNext",
       types: ["bun-types"],
-      baseUrl: resolve(import.meta.dir, ".."),
-      paths: { "@onreza/sqlx-js": ["src/index.ts"] },
+      paths: { "@onreza/sqlx-js": [resolve(import.meta.dir, "../src/index.ts")] },
     },
     files: ["consumer.ts", "generated.d.ts"],
   }));

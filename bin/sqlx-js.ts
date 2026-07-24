@@ -419,19 +419,30 @@ const needsTypeScript =
   cmd === "dev" ||
   cmd === "verify";
 if (needsTypeScript) {
+  let typescriptError: string | undefined;
   try {
-    import.meta.resolve("typescript");
+    const typescript = (await import("typescript")).default;
+    if (typeof typescript.createSourceFile !== "function") {
+      typescriptError =
+        "sqlx-js: TypeScript 7 does not expose the compiler API used for source scanning. " +
+        "Install TypeScript 5.4–6.x with `npm install --save-dev \"typescript@>=5.4 <7\"` " +
+        "or `bun add --dev \"typescript@>=5.4 <7\"`.";
+    }
   } catch {
-    const message = "sqlx-js: TypeScript is required for source scanning. Install it with `npm install --save-dev typescript` or `bun add --dev typescript`.";
+    typescriptError =
+      "sqlx-js: TypeScript is required for source scanning. Install it with " +
+      "`npm install --save-dev \"typescript@>=5.4 <7\"` or `bun add --dev \"typescript@>=5.4 <7\"`.";
+  }
+  if (typescriptError) {
     if (cmd === "doctor" && flag("--json")) {
       console.log(JSON.stringify({
         formatVersion: 1,
         ok: false,
-        checks: [{ name: "typescript", status: "error", message }],
+        checks: [{ name: "typescript", status: "error", message: typescriptError }],
       }, null, 2));
     } else {
-      if (cmd === "ci") failCiPreflight(message);
-      console.error(message);
+      if (cmd === "ci") failCiPreflight(typescriptError);
+      console.error(typescriptError);
     }
     process.exit(2);
   }
