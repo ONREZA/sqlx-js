@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/ONREZA/sqlx-js/compare/v0.18.0...v0.19.0) (2026-07-24)
+
+
+### Features
+
+* **rls:** add transaction context support ([24285e2](https://github.com/ONREZA/sqlx-js/commit/24285e28d4c3d57d84585c36b19d4bba2a16fd4b))
+
 ## [0.18.0](https://github.com/ONREZA/sqlx-js/compare/v0.17.0...v0.18.0) (2026-07-24)
 
 

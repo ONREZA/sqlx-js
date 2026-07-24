@@ -1,6 +1,6 @@
 {
   "name": "@onreza/sqlx-js",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "Compile-time-checked raw SQL for TypeScript + PostgreSQL. Inspired by sqlx.",
   "license": "MIT",
   "type": "module",
