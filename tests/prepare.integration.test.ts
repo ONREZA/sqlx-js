@@ -389,6 +389,276 @@ export default {
     }
   });
 
+  test("profile transaction settings enforce PostgreSQL RLS without pool leakage", async () => {
+    if (configuredDbUrl) return;
+    const root = isolatedRoot("rls-profile-context");
+    const suffix = String(process.pid);
+    const apiRole = `sqlx_js_rls_api_${suffix}`;
+    const noinheritRole = `sqlx_js_rls_noinherit_${suffix}`;
+    const ownerRole = `sqlx_js_rls_owner_${suffix}`;
+    const policyRole = `sqlx_js_rls_policy_${suffix}`;
+    const schema = `sqlx_js_rls_${suffix}`;
+    const tenantA = "00000000-0000-0000-0000-000000000001";
+    const tenantB = "00000000-0000-0000-0000-000000000002";
+    const documentA = "10000000-0000-0000-0000-000000000001";
+    const documentB = "10000000-0000-0000-0000-000000000002";
+    const client = new PgClient(parseDatabaseUrl(dbUrl));
+    await client.connect();
+    try {
+      const currentUserResult = await client.simpleQuery("SELECT current_user");
+      const currentUser = new TextDecoder().decode(currentUserResult.rows[0]![0]!);
+      await client.simpleQuery(`
+        CREATE ROLE ${quoteIdent(apiRole)};
+        CREATE ROLE ${quoteIdent(noinheritRole)} NOINHERIT;
+        CREATE ROLE ${quoteIdent(ownerRole)};
+        CREATE ROLE ${quoteIdent(policyRole)};
+        GRANT ${quoteIdent(apiRole)} TO ${quoteIdent(currentUser)};
+        GRANT ${quoteIdent(noinheritRole)} TO ${quoteIdent(currentUser)};
+        GRANT ${quoteIdent(ownerRole)} TO ${quoteIdent(apiRole)};
+        GRANT ${quoteIdent(policyRole)} TO ${quoteIdent(apiRole)};
+        GRANT ${quoteIdent(policyRole)} TO ${quoteIdent(noinheritRole)};
+        CREATE SCHEMA ${quoteIdent(schema)};
+        CREATE TABLE ${quoteIdent(schema)}.documents (
+          id uuid PRIMARY KEY,
+          tenant_id uuid NOT NULL,
+          title text NOT NULL
+        );
+        INSERT INTO ${quoteIdent(schema)}.documents (id, tenant_id, title) VALUES
+          ('${documentA}', '${tenantA}', 'Tenant A'),
+          ('${documentB}', '${tenantB}', 'Tenant B');
+        ALTER TABLE ${quoteIdent(schema)}.documents ENABLE ROW LEVEL SECURITY;
+        CREATE POLICY tenant_isolation ON ${quoteIdent(schema)}.documents
+          AS PERMISSIVE
+          FOR ALL
+          TO ${quoteIdent(policyRole)}
+          USING (
+            tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid
+          )
+          WITH CHECK (
+            tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid
+          );
+        GRANT USAGE ON SCHEMA ${quoteIdent(schema)}
+          TO ${quoteIdent(apiRole)}, ${quoteIdent(noinheritRole)};
+        GRANT SELECT, INSERT, UPDATE, DELETE
+          ON ${quoteIdent(schema)}.documents
+          TO ${quoteIdent(apiRole)};
+      `);
+      writeRootFile(root, "sqlx-js.config.ts", `export const databaseProfiles = {
+  api: {
+    name: "api",
+    role: ${JSON.stringify(apiRole)},
+    transactionSettings: ["app.tenant_id"],
+  },
+  noinherit: {
+    name: "noinherit",
+    role: ${JSON.stringify(noinheritRole)},
+  },
+} as const;
+
+export default {
+  profiles: databaseProfiles,
+};
+`);
+      const selectQuery = `SELECT id, tenant_id, title FROM ${schema}.documents ORDER BY id`;
+      const findQuery = `SELECT id, tenant_id, title FROM ${schema}.documents WHERE id = $1`;
+      const insertQuery = `INSERT INTO ${schema}.documents (id, tenant_id, title) VALUES ($1, $2, $3)`;
+      writeRootFile(root, "a.ts",
+        "import { createSqlClient } from \"@onreza/sqlx-js\";\n" +
+        "import { databaseProfiles } from \"./sqlx-js.config\";\n" +
+        "const api = createSqlClient(undefined, { profile: databaseProfiles.api });\n" +
+        `await api.sql.transaction({ settings: { "app.tenant_id": ${JSON.stringify(tenantA)} } }, async (tx) => {\n` +
+        `  await tx(${JSON.stringify(selectQuery)});\n` +
+        `  await tx.optional(${JSON.stringify(findQuery)}, ${JSON.stringify(documentA)});\n` +
+        `  await tx.execute(${JSON.stringify(insertQuery)}, ${JSON.stringify(documentA)}, ${JSON.stringify(tenantA)}, "Tenant A");\n` +
+        "});\n",
+      );
+      writeRootFile(root, "tsconfig.json", JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          module: "Preserve",
+          moduleResolution: "Bundler",
+          target: "ESNext",
+          types: ["bun-types"],
+          paths: { "@onreza/sqlx-js": [join(repoRoot, "src/index.ts")] },
+        },
+        files: ["a.ts", "sqlx-js-env.d.ts"],
+      }));
+
+      const prepared = prepareRoot(root);
+      expect(prepared.code, prepared.stderr).toBe(0);
+      const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
+      expect(dts).toContain('readonly transactionSettings: readonly ["app.tenant_id"]');
+
+      const inspectRls = () => {
+        const result = spawnSync(
+          "bun",
+          [join(repoRoot, "bin/sqlx-js.ts"), "doctor", "--root", root, "--json"],
+          { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
+        );
+        expect(result.status, result.stderr).toBe(0);
+        const report = JSON.parse(result.stdout) as {
+          checks: Array<{ name: string; status: string; details?: Record<string, unknown> }>;
+        };
+        return report.checks.find((check) => check.name === "rls");
+      };
+      expect(inspectRls()).toMatchObject({
+        status: "ok",
+        details: {
+          profiles: {
+            api: {
+              role: apiRole,
+              superuser: false,
+              bypassRls: false,
+              tables: [{
+                schema,
+                table: "documents",
+                forced: false,
+                ownerBypass: false,
+                privileges: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+                missingPermissivePolicies: [],
+                policies: [{
+                  name: "tenant_isolation",
+                  command: "ALL",
+                  permissive: true,
+                  roles: [policyRole],
+                }],
+              }],
+            },
+          },
+          issues: [],
+        },
+      });
+
+      const profile = {
+        name: "api",
+        role: apiRole,
+        transactionSettings: ["app.tenant_id"],
+      } as const;
+      const api = createRuntimeSqlClient(dbUrl, { profile });
+      try {
+        await api.ready();
+        await api.ping();
+        const rowsA = await api.sql.transaction({
+          settings: { "app.tenant_id": tenantA },
+        }, async (tx) => {
+          const rows = await tx(selectQuery);
+          const hidden = await tx.optional(findQuery, documentB);
+          expect(hidden).toBeNull();
+          return rows;
+        });
+        expect(rowsA).toEqual([{ id: documentA, tenant_id: tenantA, title: "Tenant A" }]);
+
+        await expect(api.unsafe(selectQuery)).rejects.toThrow(/requires transaction settings/);
+
+        const rowsB = await api.sql.transaction({
+          readOnly: true,
+          settings: { "app.tenant_id": tenantB },
+        }, async (tx) => await tx(selectQuery));
+        expect(rowsB).toEqual([{ id: documentB, tenant_id: tenantB, title: "Tenant B" }]);
+
+        await expect(api.sql.transaction({
+          settings: { "app.tenant_id": tenantA },
+        }, async (tx) => {
+          await tx.execute(
+            insertQuery,
+            "10000000-0000-0000-0000-000000000003",
+            tenantB,
+            "Wrong tenant",
+          );
+        })).rejects.toMatchObject({ code: "42501" });
+
+        const rowsAfterRollback = await api.sql.transaction({
+          settings: { "app.tenant_id": tenantA },
+        }, async (tx) => await tx(selectQuery));
+        expect(rowsAfterRollback).toEqual([{ id: documentA, tenant_id: tenantA, title: "Tenant A" }]);
+      } finally {
+        await api.close();
+      }
+
+      await client.simpleQuery(`
+        GRANT SELECT ON ${quoteIdent(schema)}.documents TO ${quoteIdent(noinheritRole)};
+      `);
+      expect(inspectRls()).toMatchObject({
+        status: "warning",
+        details: {
+          issues: [{
+            kind: "missing-permissive-policy",
+            profile: "noinherit",
+            role: noinheritRole,
+            schema,
+            table: "documents",
+            commands: ["SELECT"],
+          }],
+        },
+      });
+      await client.simpleQuery(`
+        REVOKE SELECT ON ${quoteIdent(schema)}.documents FROM ${quoteIdent(noinheritRole)};
+      `);
+
+      await client.simpleQuery(`
+        GRANT CREATE ON SCHEMA ${quoteIdent(schema)} TO ${quoteIdent(ownerRole)};
+        ALTER TABLE ${quoteIdent(schema)}.documents OWNER TO ${quoteIdent(ownerRole)};
+      `);
+      expect(inspectRls()).toMatchObject({
+        status: "warning",
+        details: {
+          issues: [{
+            kind: "table-owner-bypasses-rls",
+            profile: "api",
+            role: apiRole,
+            schema,
+            table: "documents",
+          }],
+        },
+      });
+
+      await client.simpleQuery(`
+        ALTER TABLE ${quoteIdent(schema)}.documents OWNER TO ${quoteIdent(currentUser)};
+        DROP POLICY tenant_isolation ON ${quoteIdent(schema)}.documents;
+        GRANT SELECT, INSERT, UPDATE, DELETE
+          ON ${quoteIdent(schema)}.documents
+          TO ${quoteIdent(apiRole)};
+      `);
+      expect(inspectRls()).toMatchObject({
+        status: "warning",
+        details: {
+          issues: [{
+            kind: "missing-permissive-policy",
+            profile: "api",
+            role: apiRole,
+            schema,
+            table: "documents",
+            commands: ["SELECT", "INSERT", "UPDATE", "DELETE"],
+          }],
+        },
+      });
+
+      await client.simpleQuery(`ALTER ROLE ${quoteIdent(apiRole)} BYPASSRLS`);
+      expect(inspectRls()).toMatchObject({
+        status: "warning",
+        details: {
+          issues: [{
+            kind: "role-bypasses-rls",
+            profile: "api",
+            role: apiRole,
+            reason: "bypassrls",
+          }],
+        },
+      });
+    } finally {
+      await client.simpleQuery(`
+        DROP SCHEMA IF EXISTS ${quoteIdent(schema)} CASCADE;
+        DROP ROLE IF EXISTS ${quoteIdent(apiRole)};
+        DROP ROLE IF EXISTS ${quoteIdent(noinheritRole)};
+        DROP ROLE IF EXISTS ${quoteIdent(ownerRole)};
+        DROP ROLE IF EXISTS ${quoteIdent(policyRole)};
+      `).catch(() => {});
+      await client.end();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("prepare publishes no partial artifacts when any query fails", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +

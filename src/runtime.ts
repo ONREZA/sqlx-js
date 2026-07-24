@@ -61,6 +61,7 @@ export type RuntimeClient = {
   fileRoot?: string;
   reloadSqlFiles?: boolean;
   sqlFiles?: Readonly<Record<string, string>>;
+  transactionSettings?: readonly string[];
 };
 
 type AnyFn = (...args: unknown[]) => Promise<unknown[]>;
@@ -832,7 +833,7 @@ function makeBoundCallable(client: RuntimeClient): SqlCallable {
   return fn as SqlCallable;
 }
 
-export type TransactionOptions = {
+type TransactionOptionBase = {
   isolation?: "read uncommitted" | "read committed" | "repeatable read" | "serializable";
   readOnly?: boolean;
   deferrable?: boolean;
@@ -840,14 +841,40 @@ export type TransactionOptions = {
   signal?: AbortSignal;
 };
 
+export type TransactionOptions<Setting extends string = never> = TransactionOptionBase & (
+  [Setting] extends [never]
+    ? { settings?: never }
+    : { settings: Readonly<Record<Setting, string>> }
+);
+
+type RuntimeSqlTransactionOptions = TransactionOptionBase & {
+  settings?: Readonly<Record<string, string>>;
+};
+
 export type SqlRoot = SqlCallable & {
   transaction: <R>(
-    fnOrOpts: TransactionOptions | ((tx: SqlCallable) => Promise<R>),
+    fnOrOpts: RuntimeSqlTransactionOptions | ((tx: SqlCallable) => Promise<R>),
     fn?: (tx: SqlCallable) => Promise<R>,
   ) => Promise<R>;
 };
 
-function buildSetTransaction(opts: TransactionOptions): string {
+const TRANSACTION_ISOLATIONS = new Set([
+  "read uncommitted",
+  "read committed",
+  "repeatable read",
+  "serializable",
+]);
+
+function buildSetTransaction(opts: TransactionOptionBase): string {
+  if (opts.isolation !== undefined && !TRANSACTION_ISOLATIONS.has(opts.isolation)) {
+    throw new Error(`sqlx-js.transaction: unsupported isolation level ${JSON.stringify(opts.isolation)}`);
+  }
+  if (opts.readOnly !== undefined && typeof opts.readOnly !== "boolean") {
+    throw new Error("sqlx-js.transaction: readOnly must be a boolean");
+  }
+  if (opts.deferrable !== undefined && typeof opts.deferrable !== "boolean") {
+    throw new Error("sqlx-js.transaction: deferrable must be a boolean");
+  }
   const parts: string[] = [];
   if (opts.isolation) parts.push(`ISOLATION LEVEL ${opts.isolation.toUpperCase()}`);
   if (opts.readOnly !== undefined) parts.push(opts.readOnly ? "READ ONLY" : "READ WRITE");
@@ -863,75 +890,134 @@ function validateTransactionTimeout(timeoutMs: number | undefined): void {
   }
 }
 
+function transactionSettingsJson(
+  settings: Readonly<Record<string, string>> | undefined,
+  expected: readonly string[] | undefined,
+): string | undefined {
+  if (!expected || expected.length === 0) {
+    if (settings !== undefined) {
+      throw new Error(
+        "sqlx-js.transaction: settings require a profiled client with declared transactionSettings",
+      );
+    }
+    return undefined;
+  }
+  if (settings === undefined) {
+    throw new Error(`sqlx-js.transaction: profile requires transaction settings: ${expected.join(", ")}`);
+  }
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    throw new Error("sqlx-js.transaction: settings must be an object of string values");
+  }
+  const keys = Object.keys(settings);
+  const missing = expected.filter((name) => !Object.hasOwn(settings, name));
+  const unexpected = keys.filter((name) => !expected.includes(name));
+  const values = expected.map((name) => [name, settings[name]] as const);
+  const invalid = values
+    .filter(([, value]) => typeof value !== "string")
+    .map(([name]) => name);
+  if (missing.length > 0 || unexpected.length > 0 || invalid.length > 0) {
+    const reasons = [
+      ...(missing.length > 0 ? [`missing ${missing.join(", ")}`] : []),
+      ...(unexpected.length > 0 ? [`unexpected ${unexpected.join(", ")}`] : []),
+      ...(invalid.length > 0 ? [`non-string ${invalid.join(", ")}`] : []),
+    ];
+    throw new Error(`sqlx-js.transaction: transaction settings must match the profile; ${reasons.join("; ")}`);
+  }
+  return JSON.stringify(Object.fromEntries(values));
+}
+
+const SET_TRANSACTION_SETTINGS = `
+SELECT pg_catalog.set_config(setting.name, setting.value, true)
+FROM pg_catalog.jsonb_each_text($1::pg_catalog.text::pg_catalog.jsonb) AS setting(name, value)
+`.trim();
+
 export type RuntimeApi = {
   sql: SqlRoot;
   unsafe: (query: string, ...params: unknown[]) => Promise<Record<string, unknown>[]>;
 };
 
 export function createSqlRuntime(getClient: () => RuntimeClient): RuntimeApi {
+  const directClient = (): RuntimeClient => {
+    const client = getClient();
+    if (client.transactionSettings) {
+      throw new Error(
+        "sqlx-js: client requires transaction settings; "
+        + "execute SQL through sql.transaction({ settings }, callback)",
+      );
+    }
+    return client;
+  };
   const root: SqlRoot = (async (query: string, ...params: unknown[]) => {
-    return runQuery(getClient(), query, params);
+    return runQuery(directClient(), query, params);
   }) as SqlRoot;
 
   const rootFile: AnyFn = (async (path: string, ...params: unknown[]) => {
-    const client = getClient();
+    const client = directClient();
     return runQuery(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
   }) as AnyFn;
   (rootFile as FileCallable).one = (async (path: string, ...params: unknown[]) => {
-    const client = getClient();
+    const client = directClient();
     return runOne(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
   }) as AnyOneFn;
   (rootFile as FileCallable).optional = (async (path: string, ...params: unknown[]) => {
-    const client = getClient();
+    const client = directClient();
     return runOptional(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
   }) as AnyOptionalFn;
   (rootFile as FileCallable).execute = (async (path: string, ...params: unknown[]) => {
-    const client = getClient();
+    const client = directClient();
     return runExecute(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
   }) as AnyExecuteFn;
   root.file = rootFile as FileCallable;
 
   root.one = (async (query: string, ...params: unknown[]) => {
-    return runOne(getClient(), query, params);
+    return runOne(directClient(), query, params);
   }) as AnyOneFn;
   root.optional = (async (query: string, ...params: unknown[]) => {
-    return runOptional(getClient(), query, params);
+    return runOptional(directClient(), query, params);
   }) as AnyOptionalFn;
   root.execute = (async (query: string, ...params: unknown[]) => {
-    return runExecute(getClient(), query, params);
+    return runExecute(directClient(), query, params);
   }) as AnyExecuteFn;
   root.id = id;
   root.json = json;
   root.array = array;
   root[QUERY_EXECUTOR] = (mode, query, params, metadata, options) => {
-    return executeDefinedQuery(getClient(), mode, query, params, metadata, options);
+    return executeDefinedQuery(directClient(), mode, query, params, metadata, options);
   };
 
   root.transaction = (async <R>(
-    fnOrOpts: TransactionOptions | ((tx: SqlCallable) => Promise<R>),
+    fnOrOpts: RuntimeSqlTransactionOptions | ((tx: SqlCallable) => Promise<R>),
     maybeFn?: (tx: SqlCallable) => Promise<R>,
   ): Promise<R> => {
-    const c = getClient();
-    let opts: TransactionOptions = {};
+    let opts: RuntimeSqlTransactionOptions = {};
     let cb: (tx: SqlCallable) => Promise<R>;
     if (typeof fnOrOpts === "function") {
+      if (maybeFn !== undefined) {
+        throw new Error("sqlx-js.transaction: pass either a callback or options followed by a callback");
+      }
       cb = fnOrOpts;
     } else {
+      if (!fnOrOpts || typeof fnOrOpts !== "object" || Array.isArray(fnOrOpts)) {
+        throw new Error("sqlx-js.transaction: options must be an object");
+      }
       opts = fnOrOpts;
-      if (!maybeFn) throw new Error("sqlx-js.transaction: callback is required");
+      if (typeof maybeFn !== "function") throw new Error("sqlx-js.transaction: callback is required");
       cb = maybeFn;
     }
     const setTx = buildSetTransaction(opts);
     validateTransactionTimeout(opts.timeoutMs);
+    const c = getClient();
+    const settingsJson = transactionSettingsJson(opts.settings, c.transactionSettings);
     return await c.transaction(async (txClient) => {
       if (setTx) await txClient.query(setTx, []);
+      if (settingsJson) await txClient.query(SET_TRANSACTION_SETTINGS, [settingsJson]);
       const tx = makeBoundCallable(txClient);
       return await cb(tx);
     }, { timeoutMs: opts.timeoutMs, signal: opts.signal });
   }) as SqlRoot["transaction"];
 
   const unsafe = (async (query: string, ...params: unknown[]): Promise<Record<string, unknown>[]> => {
-    return (await runQuery(getClient(), query, params)) as Record<string, unknown>[];
+    return (await runQuery(directClient(), query, params)) as Record<string, unknown>[];
   }) as (query: string, ...params: unknown[]) => Promise<Record<string, unknown>[]>;
 
   return { sql: root, unsafe };

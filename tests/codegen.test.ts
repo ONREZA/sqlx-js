@@ -426,6 +426,96 @@ createSqlClient(undefined, { profile: { name: "api", role: "wrong" } });
   expect(checked.status, checked.stdout + checked.stderr).toBe(0);
 });
 
+test("profile transaction settings are required and typed", () => {
+  const root = join(tmp, "profile-transaction-settings");
+  mkdirSync(root, { recursive: true });
+  emitDts(join(root, "generated.d.ts"), [
+    {
+      profile: "api",
+      query: "SELECT api",
+      paramOids: [],
+      paramTsTypes: [],
+      hasResultSet: true,
+      columns: [{ name: "api", typeOid: 23, tsType: "number", nullable: false }],
+    },
+    {
+      profile: "worker",
+      query: "SELECT api",
+      paramOids: [],
+      paramTsTypes: [],
+      hasResultSet: true,
+      columns: [{ name: "api", typeOid: 23, tsType: "number", nullable: false }],
+    },
+  ], [], {}, {
+    api: {
+      name: "api",
+      role: "app_api",
+      transactionSettings: ["app.tenant_id", "app.user_id"],
+    },
+    worker: {
+      name: "worker",
+      role: "app_worker",
+    },
+  });
+  writeFileSync(join(root, "consumer.ts"), `
+import { createSqlClient, type SqlClient } from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedProfiles } from "./generated";
+
+const api = createSqlClient(undefined, {
+  profile: {
+    name: "api",
+    role: "app_api",
+    transactionSettings: ["app.tenant_id", "app.user_id"],
+  },
+});
+void api.sql.transaction({
+  settings: {
+    "app.tenant_id": "tenant-1",
+    "app.user_id": "user-1",
+  },
+}, async (tx) => {
+  await tx("SELECT api");
+});
+// @ts-expect-error contextual profiles execute SQL only through a transaction
+void api.sql("SELECT api");
+// @ts-expect-error profile transaction settings are required
+void api.sql.transaction(async () => {});
+void api.sql.transaction({
+  // @ts-expect-error every declared transaction setting is required
+  settings: { "app.tenant_id": "tenant-1" },
+}, async () => {});
+
+const worker = createSqlClient(undefined, {
+  profile: { name: "worker", role: "app_worker" },
+});
+void worker.sql("SELECT api");
+
+declare const maybeContextual: SqlClient<
+  SqlxJsGeneratedProfiles["api"] | SqlxJsGeneratedProfiles["worker"]
+>;
+// @ts-expect-error a registry union containing a contextual profile remains transaction-only
+void maybeContextual.sql("SELECT api");
+`);
+  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
+    compilerOptions: {
+      strict: true,
+      noEmit: true,
+      module: "Preserve",
+      moduleResolution: "Bundler",
+      target: "ESNext",
+      types: ["bun-types"],
+      paths: { "@onreza/sqlx-js": [resolve(import.meta.dir, "../src/index.ts")] },
+    },
+    files: ["consumer.ts", "generated.d.ts"],
+  }));
+
+  const checked = spawnSync("bunx", ["tsc", "-p", join(root, "tsconfig.json")], {
+    cwd: resolve(import.meta.dir, ".."),
+    encoding: "utf8",
+  });
+  expect(checked.status, checked.stdout + checked.stderr).toBe(0);
+});
+
 test("generated custom types require matching scoped runtime codecs", () => {
   const root = join(tmp, "runtime-codecs");
   mkdirSync(root, { recursive: true });
@@ -637,6 +727,7 @@ import {
   type PgArrayParameter,
   type SqlClient,
   type SqlExecutor,
+  type SqlTransactionOptions,
 } from "@onreza/sqlx-js";
 import type { SqlxJsGeneratedRegistry } from "./generated";
 
@@ -761,7 +852,7 @@ export function runExtendedRegistry<Registry extends SqlxJsGeneratedRegistry>(
 }
 
 export function runGenericClient<Registry extends CompatibleRegistry>(
-  client: SqlClient<Registry>,
+  client: SqlClient<Registry> & { sql: SqlExecutor<Registry> },
   params: QueryParams<typeof findUserOne, Registry>,
 ) {
   return findUserOne.run(client.sql, params);
@@ -770,8 +861,9 @@ export function runGenericClient<Registry extends CompatibleRegistry>(
 export function runGenericTransaction<Registry extends CompatibleRegistry>(
   client: SqlClient<Registry>,
   params: QueryParams<typeof findUserOne, Registry>,
+  options: SqlTransactionOptions<Registry>,
 ) {
-  return client.sql.transaction((tx) => findUserOne.run(tx, params));
+  return client.sql.transaction(options, (tx) => findUserOne.run(tx, params));
 }
 
 type PositionalEntry = SqlxJsGeneratedRegistry["queries"][typeof positional.query];

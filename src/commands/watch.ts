@@ -108,7 +108,7 @@ export async function prepareWatchedOnce(
   let nextSites: Map<string, QueryCallSite[]>;
   let changedFps = new Set<string>();
   if (full) {
-    const sites = active.scanProject(opts.root, currentConfig.scan, Object.keys(currentConfig.profiles ?? {}));
+    const sites = active.scanProject(opts.root, currentConfig.scan, currentConfig.profiles ?? {});
     nextSites = groupSites(sites);
     changedFps = new Set(sites.flatMap(siteFingerprints));
   } else {
@@ -147,6 +147,9 @@ export async function prepareWatchedOnce(
           opts.root,
           currentConfig.scan?.modules,
           Object.keys(currentConfig.profiles ?? {}),
+          Object.values(currentConfig.profiles ?? {})
+            .filter((profile) => profile.transactionSettings !== undefined)
+            .map((profile) => profile.name),
         );
         if (scanned.length > 0) nextSites.set(source, scanned);
         else nextSites.delete(source);

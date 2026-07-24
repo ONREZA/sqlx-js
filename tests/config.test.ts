@@ -47,20 +47,32 @@ test("loadConfig imports an erasable TypeScript config", async () => {
 
 test("database profiles share exact names and roles between config and runtime", async () => {
   const profiles = defineDatabaseProfiles({
-    api: { role: "app_api" },
+    api: {
+      role: "app_api",
+      transactionSettings: ["app.tenant_id", "app.user_id"],
+    },
     worker: { role: "app_worker" },
   });
   expect(profiles).toEqual({
-    api: { name: "api", role: "app_api" },
+    api: {
+      name: "api",
+      role: "app_api",
+      transactionSettings: ["app.tenant_id", "app.user_id"],
+    },
     worker: { name: "worker", role: "app_worker" },
   });
   expect(Object.isFrozen(profiles)).toBe(true);
   expect(Object.values(profiles).every(Object.isFrozen)).toBe(true);
+  expect(Object.isFrozen(profiles.api.transactionSettings)).toBe(true);
 
   const dir = root();
   writeFileSync(join(dir, "sqlx-js.config.mjs"), `export default {
     profiles: {
-      api: { name: "api", role: "app_api" },
+      api: {
+        name: "api",
+        role: "app_api",
+        transactionSettings: ["app.tenant_id", "app.user_id"],
+      },
       worker: { name: "worker", role: "app_worker" },
     },
   };\n`);
@@ -79,6 +91,20 @@ test("loadConfig rejects malformed database profile contracts", async () => {
     profiles: { api: { name: "api", role: " " } },
   };\n`);
   await expect(loadConfig(emptyRole)).rejects.toThrow(/profiles\.api\.role must be a non-empty PostgreSQL role/);
+
+  const invalidSettings = root();
+  writeFileSync(join(invalidSettings, "sqlx-js.config.mjs"), `export default {
+    profiles: {
+      api: {
+        name: "api",
+        role: "app_api",
+        transactionSettings: ["tenant_id", "app.tenant_id", "app.tenant_id"],
+      },
+    },
+  };\n`);
+  await expect(loadConfig(invalidSettings)).rejects.toThrow(
+    /profiles\.api\.transactionSettings must contain unique PostgreSQL custom setting names/,
+  );
 });
 
 test("loadConfig rejects malformed JavaScript config with an actionable path", async () => {
@@ -133,6 +159,17 @@ test("prepare config hash includes column and function catalog contracts", () =>
   expect(prepareConfigHash({
     profiles: { api: { name: "api", role: "app_api" } },
   })).not.toBe(base);
+  expect(prepareConfigHash({
+    profiles: {
+      api: {
+        name: "api",
+        role: "app_api",
+        transactionSettings: ["app.tenant_id"],
+      },
+    },
+  })).not.toBe(prepareConfigHash({
+    profiles: { api: { name: "api", role: "app_api" } },
+  }));
 });
 
 test("enum catalog config requires a project output and explicit schemas", async () => {

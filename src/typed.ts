@@ -55,14 +55,26 @@ export type TypedSql<TQueries extends object, TFileQueries extends object> = Typ
   fileQueries: TFileQueries;
 }>;
 
+type TransactionRootForRegistry<
+  Registry extends { queries: object; fileQueries: object },
+  TTransactionOptions,
+> = TTransactionOptions extends { settings: unknown }
+  ? Pick<TypedSqlForRegistry<Registry>, "id" | "json" | "array">
+  : TypedSqlForRegistry<Registry>;
+
 export type TypedForRegistry<
   Registry extends { queries: object; fileQueries: object },
   TTransactionOptions,
-> = TypedSqlForRegistry<Registry> & {
+> = TransactionRootForRegistry<Registry, TTransactionOptions> & {
   transaction: {
-    <R>(fn: (tx: TypedSqlForRegistry<Registry>) => Promise<R>): Promise<R>;
     <R>(opts: TTransactionOptions, fn: (tx: TypedSqlForRegistry<Registry>) => Promise<R>): Promise<R>;
-  };
+  } & (
+    TTransactionOptions extends { settings: unknown }
+      ? object
+      : {
+        <R>(fn: (tx: TypedSqlForRegistry<Registry>) => Promise<R>): Promise<R>;
+      }
+  );
 };
 
 export type Typed<

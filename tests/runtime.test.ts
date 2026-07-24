@@ -304,7 +304,81 @@ test("transaction timeout is forwarded after transaction characteristics", async
   expect(transactionOptions).toEqual({ timeoutMs: 120_000 });
 });
 
-test("invalid transaction timeout fails before opening a transaction", async () => {
+test("transaction applies declared settings before the callback", async () => {
+  const queries: Array<{ query: string; params: unknown[] }> = [];
+  const txClient: RuntimeClient = {
+    query: async (query, params) => {
+      queries.push({ query, params });
+      return [];
+    },
+    transaction: async () => { throw new Error("nested transaction"); },
+    close: async () => {},
+  };
+  const client: RuntimeClient = {
+    ...txClient,
+    transactionSettings: ["app.tenant_id", "app.user_id"],
+    transaction: async (fn) => fn(txClient),
+  };
+  const runtime = createSqlRuntime(() => client);
+
+  await runtime.sql.transaction({
+    isolation: "serializable",
+    settings: {
+      "app.tenant_id": "tenant-1",
+      "app.user_id": "user-1",
+    },
+  }, async (tx) => {
+    await tx("SELECT visible_rows");
+  });
+
+  expect(queries).toEqual([
+    {
+      query: "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+      params: [],
+    },
+    {
+      query: expect.stringContaining("set_config"),
+      params: [JSON.stringify({
+        "app.tenant_id": "tenant-1",
+        "app.user_id": "user-1",
+      })],
+    },
+    {
+      query: "SELECT visible_rows",
+      params: [],
+    },
+  ]);
+});
+
+test("transaction requires exactly the profile settings before opening", async () => {
+  let transactions = 0;
+  const client: RuntimeClient = {
+    transactionSettings: ["app.tenant_id", "app.user_id"],
+    query: async () => [],
+    transaction: async (fn) => {
+      transactions++;
+      return fn(client);
+    },
+    close: async () => {},
+  };
+  const runtime = createSqlRuntime(() => client);
+
+  await expect(runtime.sql.transaction(async () => {}))
+    .rejects.toThrow(/requires transaction settings: app\.tenant_id, app\.user_id/);
+  await expect(runtime.sql.transaction({
+    settings: {
+      "app.tenant_id": "tenant-1",
+      "app.extra": "unexpected",
+    },
+  }, async () => {})).rejects.toThrow(
+    /transaction settings must match the profile; missing app\.user_id; unexpected app\.extra/,
+  );
+  await expect(runtime.sql("SELECT outside_transaction"))
+    .rejects.toThrow(/requires transaction settings/);
+  expect(transactions).toBe(0);
+});
+
+test("invalid transaction options fail before opening a transaction", async () => {
   let transactions = 0;
   const client: RuntimeClient = {
     query: async () => [],
@@ -318,6 +392,15 @@ test("invalid transaction timeout fails before opening a transaction", async () 
 
   await expect(runtime.sql.transaction({ timeoutMs: 0 }, async () => {}))
     .rejects.toThrow(/integer from 1 to 2147483647/);
+  await expect(runtime.sql.transaction({
+    isolation: "serializable; SELECT pg_sleep(1)" as never,
+  }, async () => {})).rejects.toThrow(/unsupported isolation level/);
+  await expect(runtime.sql.transaction({
+    readOnly: "yes" as never,
+  }, async () => {})).rejects.toThrow(/readOnly must be a boolean/);
+  await expect(runtime.sql.transaction({
+    deferrable: 1 as never,
+  }, async () => {})).rejects.toThrow(/deferrable must be a boolean/);
   expect(transactions).toBe(0);
 });
 

@@ -90,9 +90,24 @@ export interface DefaultQueryRegistry {
   functions: KnownFunctions;
 }
 
+type ProfileTransactionSetting<Profile> =
+  Profile extends {
+    readonly transactionSettings: readonly (infer Setting extends string)[];
+  } ? Setting : never;
+type DeclaredRegistryTransactionSetting<Registry extends QueryRegistry> =
+  Registry extends { readonly profile: infer Profile }
+    ? ProfileTransactionSetting<Profile>
+    : never;
+type RegistryTransactionSetting<Registry extends QueryRegistry> =
+  string extends DeclaredRegistryTransactionSetting<Registry>
+    ? never
+    : DeclaredRegistryTransactionSetting<Registry>;
+export type SqlTransactionOptions<Registry extends QueryRegistry = DefaultQueryRegistry> =
+  import("./runtime").TransactionOptions<RegistryTransactionSetting<Registry>>;
+
 export type SqlClient<Registry extends QueryRegistry = DefaultQueryRegistry> = {
-  sql: TypedForRegistry<Registry, import("./runtime").TransactionOptions>;
-  unsafe: Unsafe;
+  sql: TypedForRegistry<Registry, SqlTransactionOptions<Registry>>;
+  unsafe: [RegistryTransactionSetting<Registry>] extends [never] ? Unsafe : never;
   ready: (options?: import("./postgres-runtime").DeadlineOptions) => Promise<void>;
   ping: (options?: import("./postgres-runtime").DeadlineOptions) => Promise<void>;
   snapshot: () => import("./postgres-runtime").ClientSnapshot;

@@ -25,7 +25,7 @@ import { arrayElementOid, builtinArrayOids } from "./pg/oids";
 import { PostgresTypeRegistry, type RuntimeTypeCodecs } from "./postgres-codecs";
 import { queryId } from "./query-id";
 import type { QueryExecutionMetadata } from "./query";
-import type { DatabaseProfile } from "./config";
+import { validateTransactionSettings, type DatabaseProfile } from "./config";
 
 export type PostgresClient = postgres.Sql<{ bigint: bigint }>;
 export type PostgresOptions = postgres.Options<Record<string, postgres.PostgresType>>;
@@ -171,6 +171,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
   readonly sqlFiles?: Readonly<Record<string, string>>;
   readonly onQuery?: OnQueryHook;
   readonly onQueryHookError?: OnQueryHookError;
+  readonly transactionSettings?: readonly string[];
   private readonly onQueryStart?: CreateSqlClientOptions["onQueryStart"];
   private readonly onQueryTimeout?: CreateSqlClientOptions["onQueryTimeout"];
   private readonly onClientStateChange?: CreateSqlClientOptions["onClientStateChange"];
@@ -205,9 +206,18 @@ class ManagedPostgresRuntime implements RuntimeClient {
     this.operationTimeoutMs = validateOptionalTimeout(options.operationTimeoutMs, "operationTimeoutMs");
     this.cancelGraceMs = validateTimeout(options.cancelGraceMs ?? 1_000, "cancelGraceMs", true);
     this.prepare = options.prepare ?? true;
-    this.profile = options.profile
-      ? Object.freeze({ name: options.profile.name, role: options.profile.role })
+    if (options.profile) validateRuntimeProfile(options.profile);
+    const transactionSettings = options.profile?.transactionSettings
+      ? Object.freeze([...options.profile.transactionSettings])
       : undefined;
+    this.profile = options.profile
+      ? Object.freeze({
+        name: options.profile.name,
+        role: options.profile.role,
+        ...(transactionSettings ? { transactionSettings } : {}),
+      })
+      : undefined;
+    this.transactionSettings = transactionSettings;
     this.fileRoot = resolvedFileRoot(options.fileRoot);
     this.reloadSqlFiles = options.reloadSqlFiles ?? false;
     this.sqlFiles = options.sqlFiles;
@@ -226,6 +236,11 @@ class ManagedPostgresRuntime implements RuntimeClient {
   }
 
   async execute(request: RuntimeQueryRequest): Promise<RuntimeQueryResult> {
+    this.assertTransactionContext();
+    return await this.executeRequest(request);
+  }
+
+  private async executeRequest(request: RuntimeQueryRequest): Promise<RuntimeQueryResult> {
     const generation = this.acceptGeneration();
     const timeoutMs = validateOptionalTimeout(
       request.options?.timeoutMs ?? this.operationTimeoutMs,
@@ -354,6 +369,14 @@ class ManagedPostgresRuntime implements RuntimeClient {
     }
   }
 
+  private assertTransactionContext(): void {
+    if (!this.profile || !this.transactionSettings) return;
+    throw new Error(
+      `sqlx-js: profile ${this.profile.name} requires transaction settings; `
+      + "execute SQL through sql.transaction({ settings }, callback)",
+    );
+  }
+
   async ready(options: DeadlineOptions = {}): Promise<void> {
     const generation = this.acceptGeneration();
     const timeoutMs = validateOptionalTimeout(options.timeoutMs ?? this.operationTimeoutMs, "timeoutMs");
@@ -369,7 +392,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
 
   async ping(options: DeadlineOptions = {}): Promise<void> {
     const timeoutMs = validateOptionalTimeout(options.timeoutMs ?? this.operationTimeoutMs, "timeoutMs");
-    await this.execute({
+    await this.executeRequest({
       query: "SELECT 1",
       params: [],
       observedQuery: "SELECT 1",
@@ -1169,13 +1192,7 @@ function hasRoleStartupOption(value: string): boolean {
   return /(?:^|\s)-c\s*(?:"|')?role(?:\s*=|\s+)/i.test(value);
 }
 
-function profileClientOptions(
-  url: string,
-  options: CreateSqlClientOptions,
-): CreateClientOptions {
-  const clientOptions = postgresClientOptions(options);
-  const profile = options.profile;
-  if (profile === undefined) return clientOptions;
+function validateRuntimeProfile(profile: DatabaseProfile): void {
   if (!profile || typeof profile !== "object") {
     throw new Error("sqlx-js: profile must be a database profile");
   }
@@ -1185,6 +1202,22 @@ function profileClientOptions(
   if (typeof profile.role !== "string" || !profile.role.trim()) {
     throw new Error(`sqlx-js: profile ${profile.name} must declare a non-empty PostgreSQL role`);
   }
+  if (profile.transactionSettings !== undefined) {
+    validateTransactionSettings(
+      profile.transactionSettings,
+      `profile ${profile.name} transactionSettings`,
+    );
+  }
+}
+
+function profileClientOptions(
+  url: string,
+  options: CreateSqlClientOptions,
+): CreateClientOptions {
+  const clientOptions = postgresClientOptions(options);
+  const profile = options.profile;
+  if (profile === undefined) return clientOptions;
+  validateRuntimeProfile(profile);
   const configuredRole = clientOptions.connection?.role;
   if (configuredRole !== undefined && configuredRole !== profile.role) {
     throw new Error(

@@ -31,7 +31,7 @@ const rows = await sql(
 - **External SQL files** via `sql.file("queries/foo.sql", ...)` — prepared and typed through `KnownFileQueries`. Watch mode re-prepares on `.sql` edits too.
 - **One-row helpers**: `sql.one(...)`, `sql.optional(...)`, `sql.file.one(...)`, `sql.file.optional(...)`, and the same chain on the `tx` callback — friendly with `noUncheckedIndexedAccess: true`. The scanner walks all of them.
 - **Reusable query definitions** via `defineQuery`: declare one typed SQL contract and execute it through either a root client or transaction-scoped executor. Optional `mapParams` adapters bind application-owned inputs to the generated PostgreSQL wire contract. `QueryParams`, `QueryWireParams`, `QueryRow`, and `QueryResult` expose both layers without indexing a registry by SQL text.
-- **Role-aware connection profiles** bind every scanned query to a named client profile and PostgreSQL role. `prepare` describes and plans each query after `SET ROLE`; generated clients expose only the queries validated for their exact profile.
+- **Role-aware connection profiles and RLS context** bind every scanned query to a named PostgreSQL role. Profiles can require typed transaction-local settings such as tenant/user IDs; the runtime applies them without leaking session state across pooled requests.
 - **Sound PostgreSQL array contracts** keep array-value nullability separate from element nullability. SQL constructors, subqueries, aggregates, CTEs, set operations, `NOT NULL` element domains, and explicit column assertions narrow `(T | null)[]` to `T[]` only when proven. Array params remain unambiguous through `sql.array(...)`.
 - **Typed transactions** via `sql.transaction(async tx => …)` — the `tx` callback parameter is recognized by the scanner, so queries inside the block keep full type checking.
 - **Sourcemap-accurate error reporting**: every prepare failure points to `file:line:column` of the originating `sql(...)` call site, with PG error code, position, and hint.
@@ -47,7 +47,7 @@ const rows = await sql(
 - **Single runtime adapter**: Postgres.js backs the runtime on Node/Bun-compatible environments — no Bun.SQL-specific adapter to choose.
 - **Incremental watch mode**: debounced re-prepare with a warm `PgClient` + `SchemaCache`; source/SQL edits only rescan affected files and re-describe changed fingerprints, while config/tsconfig changes trigger a full rebuild.
 - **Cache pruning** removes orphaned entries automatically (toggleable with `--no-prune`).
-- **Environment doctor** checks runtime versions, config loading, `.env`, database connectivity/permissions, runtime-addressable `customTypes`, cache metadata, generated enum output presence, tsconfig inclusion, and pgschema availability.
+- **Environment doctor** checks runtime versions, config loading, `.env`, database connectivity/permissions, runtime-addressable `customTypes`, profile RLS bypass/default-deny risks, cache metadata, generated enum output presence, tsconfig inclusion, and pgschema availability.
 - **Strict inference gate** promotes degraded nullability analysis and generated `unknown` query types to CI errors.
 - **GitHub/editor diagnostics adapter** converts versioned prepare JSON into workflow annotations or Unix problem-matcher output.
 - **Versioned query inventory** via `queries --json`, including stable query IDs, connection profiles, definition names, cardinality, call sites, SQL files, and cache state. The same command can emit a deterministic embedded-SQL module for bundled applications.
@@ -506,7 +506,10 @@ Use connection profiles when one application process owns several static pools w
 import { defineConfig, defineDatabaseProfiles } from "@onreza/sqlx-js";
 
 export const databaseProfiles = defineDatabaseProfiles({
-  api: { role: "app_api" },
+  api: {
+    role: "app_api",
+    transactionSettings: ["app.tenant_id", "app.user_id"],
+  },
   worker: { role: "app_worker" },
 });
 
@@ -527,11 +530,16 @@ export const workerDb = createSqlClient(process.env.DATABASE_URL, {
   profile: databaseProfiles.worker,
 });
 
-const users = await apiDb.sql("SELECT id, name FROM users");
+const users = await apiDb.sql.transaction({
+  settings: {
+    "app.tenant_id": tenantId,
+    "app.user_id": userId,
+  },
+}, async (tx) => await tx("SELECT id, name FROM users"));
 await workerDb.sql.execute("UPDATE jobs SET claimed_at = now() WHERE id = $1", 1n);
 ```
 
-Once `profiles` is configured, every scanned query must have an explicit profile. Direct client queries and transaction callbacks inherit it from the client binding. Reusable definitions declare their complete allowlist because the scanner deliberately does not guess dependency-injection dataflow:
+Once `profiles` is configured, every scanned query must have an explicit profile. Direct client queries inherit profiles without `transactionSettings`; transaction callbacks inherit every profile. Profiles with required settings reject direct query sites during scanning. Reusable definitions declare their complete allowlist because the scanner deliberately does not guess dependency-injection dataflow:
 
 ```ts
 export const findJob = defineQuery
@@ -546,6 +554,56 @@ The live `prepare` connection must reach PostgreSQL directly or through a sessio
 Profile names and role names are static generated-contract inputs. Keep them identical across prepare/CI and deployed runtime environments. Shadow-database workflows use cluster roles rather than database-local objects, so every configured role must already exist on the shadow cluster; keep table/schema grants in migrations.
 
 This is a strong preflight for privileges PostgreSQL checks while parsing and generically planning ordinary `SELECT`/DML, including relation, column, and directly referenced function access. It is not proof that every possible execution will succeed: sequence access, trigger or dynamic-SQL effects, value-dependent RLS `WITH CHECK`, and statements reported as `parse-only` can still fail at runtime. Privilege changes also require a new live `prepare` or `prepare --verify`; offline `prepare --check` only verifies committed artifacts.
+
+### PostgreSQL RLS transaction context
+
+Keep RLS policy DDL in migrations or `schema.sql`; sqlx-js owns only the role, connection, and transaction context. A typical fail-closed policy reads a custom setting:
+
+```sql
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON projects
+  AS PERMISSIVE
+  FOR ALL
+  TO app_api
+  USING (
+    tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid
+  )
+  WITH CHECK (
+    tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid
+  );
+```
+
+`NULLIF(..., '')` matters because PostgreSQL can expose a transaction-local custom setting as an empty string after it resets. Missing or reset context therefore evaluates to `NULL` and denies rows instead of failing the UUID cast.
+
+Declare every request-owned setting in the profile's `transactionSettings`. Names must be unique lower-case custom PostgreSQL setting names with at least one dot, such as `app.tenant_id`. Generated profile types require the complete string-valued `settings` object on every transaction:
+
+```ts
+await apiDb.sql.transaction({
+  settings: {
+    "app.tenant_id": tenantId,
+    "app.user_id": userId,
+  },
+  timeoutMs: 5_000,
+}, async (tx) => {
+  return await tx.optional(
+    "SELECT id, name FROM projects WHERE id = $1",
+    projectId,
+  );
+});
+```
+
+The runtime validates the exact allowlist carried by the passed profile before opening the transaction, applies transaction characteristics first, then calls parameterized `set_config(name, value, true)` on the same connection before invoking the callback. Values expire at transaction end and are never installed at session scope. A profile with declared settings exposes SQL execution only through `transaction({ settings }, fn)`: the scanner rejects root query sites, root queries and `unsafe` fail before dispatch, and there is no typed `transaction(fn)` overload. Runtime checks preserve that fail-closed execution boundary for JavaScript or erased types, but JavaScript cannot verify an ad-hoc profile object against generated declarations; import the same `defineDatabaseProfiles(...)` value in config and runtime. These guarantees belong to managed `createSqlClient(...)`; raw `createClient(...)` intentionally exposes Postgres.js without transaction-context guardrails. Use a separate managed profile without `transactionSettings` for operations that intentionally need no request context. Generic client wrappers can accept `SqlTransactionOptions<Registry>` to preserve the active profile contract.
+
+RLS can make a physically existing row invisible, so use `.optional()` unless visibility itself is an application invariant. `prepare` still cannot prove value-dependent `USING` or `WITH CHECK` outcomes.
+
+`sqlx-js doctor` audits RLS-enabled, non-system tables accessible to each configured profile. It reports applicable policies and warns when:
+
+- the effective role is superuser or has `BYPASSRLS`;
+- the profile role has direct or inherited owner privileges on an RLS table without `FORCE ROW LEVEL SECURITY`;
+- a granted `SELECT`/`INSERT`/`UPDATE`/`DELETE` command has no applicable permissive policy and therefore defaults to deny.
+
+The audit is read-only and intentionally does not interpret arbitrary policy expressions. Role membership follows PostgreSQL's effective `INHERIT`/`USAGE` semantics, so membership through `NOINHERIT` neither applies a group policy nor grants owner bypass. Keep runtime roles separate from schema owners and migration/admin roles; do not grant runtime roles `BYPASSRLS`.
 
 `createSqlClient(url, options)` accepts every Postgres.js option plus sqlx-js managed-runtime options. `operationTimeoutMs` is opt-in because the library cannot choose one correct wall-clock limit for both interactive queries and long-running jobs.
 
@@ -666,7 +724,7 @@ await sql.transaction({
 });
 ```
 
-Options: `{ isolation?: "read uncommitted" | "read committed" | "repeatable read" | "serializable"; readOnly?: boolean; deferrable?: boolean; timeoutMs?: number; signal?: AbortSignal }`. Transaction characteristics are applied via `SET TRANSACTION` immediately after `BEGIN`. The deadline starts before codec bootstrap and covers pool acquisition, `BEGIN`, the callback, `COMMIT`, and `ROLLBACK`. On expiration the scoped executor is disabled, active statements are cancelled, and Postgres.js is given `cancelGraceMs` to confirm rollback. A clean rollback produces `outcome: "rolled_back"`; an unconfirmed `BEGIN`, `COMMIT`, or `ROLLBACK` produces `unknown` and retires the entire pool generation. Arbitrary non-database work already running inside the callback cannot be forcibly stopped by JavaScript, so external side effects should observe their own signal or be idempotent.
+Base options are `{ isolation?: "read uncommitted" | "read committed" | "repeatable read" | "serializable"; readOnly?: boolean; deferrable?: boolean; timeoutMs?: number; signal?: AbortSignal }`. Profiled clients add the required `settings` object when their profile declares `transactionSettings`. Transaction characteristics are applied via `SET TRANSACTION` immediately after `BEGIN`, followed by transaction-local settings before the callback. The deadline starts before codec bootstrap and covers pool acquisition, `BEGIN`, context setup, the callback, `COMMIT`, and `ROLLBACK`. On expiration the scoped executor is disabled, active statements are cancelled, and Postgres.js is given `cancelGraceMs` to confirm rollback. A clean rollback produces `outcome: "rolled_back"`; an unconfirmed `BEGIN`, `COMMIT`, or `ROLLBACK` produces `unknown` and retires the entire pool generation. Arbitrary non-database work already running inside the callback cannot be forcibly stopped by JavaScript, so external side effects should observe their own signal or be idempotent.
 
 The transaction-scoped executor is valid only while its callback is active. Capturing `tx` and using it after commit or rollback fails locally without dispatching SQL.
 
@@ -688,7 +746,7 @@ The command hierarchy follows ownership rather than implementation details:
 | `pgschema` | Managed pgschema tool and target plan/apply | Install cache only | `apply` |
 | `snapshot` | Runtime identifier snapshot and LLM manifest | `dump` | No |
 | `queries` | Database-free query inventory and SQL embedding | With `--embed` | No |
-| `doctor` | Runtime, config, provider, database, and artifact diagnostics | No | No |
+| `doctor` | Runtime, config, provider, database, RLS, and artifact diagnostics | No | No |
 
 Common syntax:
 
@@ -738,7 +796,7 @@ Regular `prepare` describes and plans queries across a small connection pool (de
 
 Flags that take a value accept both `--flag value` and `--flag=value` forms.
 
-Prepare and doctor JSON use `formatVersion: 1`. Prepare diagnostics include a stable phase plus root-relative file, 1-based line/column, query ID/name, connection profile, PostgreSQL code/position/hint when available, and the query text. Degraded inference and generated `unknown` types appear as warnings by default; `--strict-inference` promotes them to errors. This is intended for CI annotations and editor integrations; stdout contains one JSON document and human progress is suppressed. `prepare --watch --jsonl` emits one `start`, `diagnostic`, `prepared`, `error`, `watching`, or `stopping` event per line so an editor can consume diagnostics without waiting for the watch process to exit. Fatal `error` events include the same structured `diagnostic` object as CLI preflight failures, preserving the prepare phase and source location when available.
+Prepare and doctor JSON use `formatVersion: 1`. Prepare diagnostics include a stable phase plus root-relative file, 1-based line/column, query ID/name, connection profile, PostgreSQL code/position/hint when available, and the query text. Doctor's `rls` check contains per-profile role flags, accessible RLS tables, grants, applicable policies, owner-bypass state, missing permissive-policy commands, and structured issues. Degraded inference and generated `unknown` query types appear as warnings by default; `--strict-inference` promotes them to errors. This is intended for CI annotations and editor integrations; stdout contains one JSON document and human progress is suppressed. `prepare --watch --jsonl` emits one `start`, `diagnostic`, `prepared`, `error`, `watching`, or `stopping` event per line so an editor can consume diagnostics without waiting for the watch process to exit. Fatal `error` events include the same structured `diagnostic` object as CLI preflight failures, preserving the prepare phase and source location when available.
 
 `queries --json` is database-free and read-only. It emits `formatVersion: 1` inventory entries with `queryId`, connection profiles, optional definition names, cardinalities, root-relative call sites, SQL file paths, `current`/`stale`/`missing` cache status, and `planned`/`parse-only` validation when cached, plus orphaned cache IDs. Config, scan, cache, and embed failures use versioned structured diagnostics with source location when available. Adding `--embed` writes the external-SQL module only after a successful scan.
 

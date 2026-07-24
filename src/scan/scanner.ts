@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
-import type { ScanConfig } from "../config";
+import type { DatabaseProfiles, ScanConfig } from "../config";
 import { rewriteNamedParameters } from "../sql-params";
 
 export type QueryCallSite = {
@@ -84,7 +84,7 @@ export function findSourceFiles(root: string, scan: ScanConfig = {}): string[] {
 }
 
 type ScopeState = {
-  sqlAliases: Map<string, string | undefined>;
+  sqlAliases: Map<string, { profile?: string; transactionScoped?: boolean }>;
   namespaces: Set<string>;
   clientFactories: Set<string>;
   queryFactories: Set<string>;
@@ -97,11 +97,21 @@ type CalleeKind = "inline" | "file" | "transaction" | null;
 function classifyCallee(
   callee: ts.LeftHandSideExpression,
   scope: ScopeState,
-): { kind: Exclude<CalleeKind, null>; cardinality?: Cardinality; profiles?: string[] } | null {
+): {
+  kind: Exclude<CalleeKind, null>;
+  cardinality?: Cardinality;
+  profiles?: string[];
+  transactionScoped?: boolean;
+} | null {
   if (ts.isIdentifier(callee)) {
-    if (!scope.sqlAliases.has(callee.text)) return null;
-    const profile = scope.sqlAliases.get(callee.text);
-    return { kind: "inline", cardinality: "many", ...(profile ? { profiles: [profile] } : {}) };
+    const binding = scope.sqlAliases.get(callee.text);
+    if (!binding) return null;
+    return {
+      kind: "inline",
+      cardinality: "many",
+      ...(binding.profile ? { profiles: [binding.profile] } : {}),
+      ...(binding.transactionScoped ? { transactionScoped: true } : {}),
+    };
   }
 
   if (!ts.isPropertyAccessExpression(callee)) return null;
@@ -121,13 +131,14 @@ function classifyCallee(
       }
       return null;
     }
-    if (!scope.sqlAliases.has(id)) return null;
-    const profile = scope.sqlAliases.get(id);
-    const assigned = profile ? { profiles: [profile] } : {};
+    const binding = scope.sqlAliases.get(id);
+    if (!binding) return null;
+    const assigned = binding.profile ? { profiles: [binding.profile] } : {};
+    const transactionScoped = binding.transactionScoped ? { transactionScoped: true } : {};
     if (methodName === "transaction") return { kind: "transaction", ...assigned };
-    if (methodName === "file") return { kind: "file", cardinality: "many", ...assigned };
+    if (methodName === "file") return { kind: "file", cardinality: "many", ...assigned, ...transactionScoped };
     if (methodName === "one" || methodName === "optional" || methodName === "execute") {
-      return { kind: "inline", cardinality: methodName, ...assigned };
+      return { kind: "inline", cardinality: methodName, ...assigned, ...transactionScoped };
     }
     return null;
   }
@@ -155,11 +166,17 @@ function classifyCallee(
     // sqlAlias.file.X(...) — file.one / file.optional
     if (ts.isIdentifier(mid.expression)) {
       const root = mid.expression.text;
-      if (!scope.sqlAliases.has(root)) return null;
+      const binding = scope.sqlAliases.get(root);
+      if (!binding) return null;
       if (mid.name.text !== "file") return null;
-      const profile = scope.sqlAliases.get(root);
+      const transactionScoped = binding.transactionScoped ? { transactionScoped: true } : {};
       if (methodName === "one" || methodName === "optional" || methodName === "execute") {
-        return { kind: "file", cardinality: methodName, ...(profile ? { profiles: [profile] } : {}) };
+        return {
+          kind: "file",
+          cardinality: methodName,
+          ...(binding.profile ? { profiles: [binding.profile] } : {}),
+          ...transactionScoped,
+        };
       }
       return null;
     }
@@ -238,6 +255,7 @@ export function scanFile(
   root: string,
   modules: readonly string[] = DEFAULT_SQLX_MODULES,
   profileNames: readonly string[] = [],
+  transactionOnlyProfileNames: readonly string[] = [],
 ): QueryCallSite[] {
   const text = readFileSync(absPath, "utf8");
   const source = ts.createSourceFile(absPath, text, ts.ScriptTarget.ESNext, false, scriptKind(absPath));
@@ -284,6 +302,7 @@ export function scanFile(
 
   const out: QueryCallSite[] = [];
   const configuredProfiles = new Set(profileNames);
+  const transactionOnlyProfiles = new Set(transactionOnlyProfileNames);
   const here = (node: ts.Node) => {
     const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
     return { line: line + 1, column: character + 1 };
@@ -609,19 +628,41 @@ export function scanFile(
             const shadowed = param ? scopeWithoutBindingShadows(scope, [param.name]) : scope;
             const innerSql = new Map(shadowed.sqlAliases);
             if (param && ts.isIdentifier(param.name)) {
-              innerSql.set(param.name.text, classified.profiles?.[0]);
+              const profile = classified.profiles?.[0];
+              innerSql.set(param.name.text, {
+                ...(profile ? { profile } : {}),
+                transactionScoped: true,
+              });
             }
-            visit(fn.body, { ...shadowed, sqlAliases: innerSql });
+            visit(fn.body, {
+              ...shadowed,
+              sqlAliases: innerSql,
+            });
             return;
           }
-        } else if (classified.kind === "file") {
-          const first = node.arguments[0];
-          if (first) {
-            recordFile(first, node.arguments, node.expression, classified.cardinality ?? "many", classified.profiles);
+        } else {
+          const contextualProfile = classified.profiles?.find((profile) =>
+            transactionOnlyProfiles.has(profile)
+          );
+          if (contextualProfile && !classified.transactionScoped) {
+            const pos = here(node.expression);
+            throw new ScanError(
+              fileRel,
+              pos.line,
+              pos.column,
+              `profile ${JSON.stringify(contextualProfile)} requires transaction settings; `
+              + "execute its queries inside sql.transaction({ settings }, callback)",
+            );
           }
-        } else if (classified.kind === "inline") {
-          const first = node.arguments[0];
-          if (first) recordInline(first, node.arguments, classified.cardinality ?? "many", classified.profiles);
+          if (classified.kind === "file") {
+            const first = node.arguments[0];
+            if (first) {
+              recordFile(first, node.arguments, node.expression, classified.cardinality ?? "many", classified.profiles);
+            }
+          } else if (classified.kind === "inline") {
+            const first = node.arguments[0];
+            if (first) recordInline(first, node.arguments, classified.cardinality ?? "many", classified.profiles);
+          }
         }
       }
     }
@@ -675,7 +716,7 @@ export function scanFile(
     ts.forEachChild(node, (child) => visit(child, scope));
   };
   visit(source, {
-    sqlAliases: new Map([...importedAliases].map((name) => [name, undefined])),
+    sqlAliases: new Map([...importedAliases].map((name) => [name, {}])),
     namespaces: importedNamespaces,
     clientFactories: importedClientFactories,
     queryFactories: importedQueryFactories,
@@ -707,12 +748,25 @@ function scriptKind(path: string): ts.ScriptKind {
 export function scanProject(
   root: string,
   scan: ScanConfig = {},
-  profileNames: readonly string[] = [],
+  profiles: readonly string[] | DatabaseProfiles = [],
 ): QueryCallSite[] {
+  const profileMap = Array.isArray(profiles) ? undefined : profiles as DatabaseProfiles;
+  const profileNames = profileMap ? Object.keys(profileMap) : profiles as readonly string[];
+  const transactionOnlyProfileNames = profileMap
+    ? Object.values(profileMap)
+      .filter((profile) => profile.transactionSettings !== undefined)
+      .map((profile) => profile.name)
+    : [];
   const files = findSourceFiles(root, scan);
   const out: QueryCallSite[] = [];
   for (const f of files) {
-    for (const site of scanFile(f, root, scan.modules ?? DEFAULT_SQLX_MODULES, profileNames)) out.push(site);
+    for (const site of scanFile(
+      f,
+      root,
+      scan.modules ?? DEFAULT_SQLX_MODULES,
+      profileNames,
+      transactionOnlyProfileNames,
+    )) out.push(site);
   }
   return out;
 }

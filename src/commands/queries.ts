@@ -66,7 +66,7 @@ export async function buildQueryInventory(root: string, cacheDir: string): Promi
   }
   let sites: ReturnType<typeof scanProject>;
   try {
-    sites = scanProject(root, config.scan, Object.keys(config.profiles ?? {}));
+    sites = scanProject(root, config.scan, config.profiles ?? {});
   } catch (error) {
     throw queriesError("scan", error);
   }

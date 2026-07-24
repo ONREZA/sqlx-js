@@ -142,8 +142,11 @@ function emitProfileRegistries(
     lines.push(`    fileQueries: SqlxJsGeneratedProfileFileQueries[${JSON.stringify(name)}];`);
     lines.push("    functions: SqlxJsGeneratedFunctions;");
     lines.push("    runtimeTypes: SqlxJsGeneratedRuntimeTypes;");
+    const transactionSettings = profile.transactionSettings
+      ? ` readonly transactionSettings: readonly [${profile.transactionSettings.map((setting) => JSON.stringify(setting)).join(", ")}];`
+      : "";
     lines.push(
-      `    profile: { readonly name: ${JSON.stringify(name)}; readonly role: ${JSON.stringify(profile.role)} };`,
+      `    profile: { readonly name: ${JSON.stringify(name)}; readonly role: ${JSON.stringify(profile.role)};${transactionSettings} };`,
     );
     lines.push("  };");
   }

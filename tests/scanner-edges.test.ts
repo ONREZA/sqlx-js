@@ -107,6 +107,38 @@ test("createSqlClient profile is attached to direct and transactional queries", 
   expect(sites.map((site) => site.profiles)).toEqual([["api"], ["api"]]);
 });
 
+test("contextual profiles require transaction-scoped query sites", () => {
+  const profiles = {
+    api: {
+      name: "api",
+      role: "app_api",
+      transactionSettings: ["app.tenant_id"],
+    },
+  } as const;
+  setup({
+    "a.ts":
+      "import { createSqlClient } from \"@onreza/sqlx-js\";\n" +
+      "const db = createSqlClient(undefined, { profile: profiles.api });\n" +
+      "await db.sql(\"SELECT direct\");\n",
+  });
+  expect(() => scanProject(tmp, {}, profiles)).toThrow(
+    /profile "api" requires transaction settings.*inside sql\.transaction/,
+  );
+
+  setup({
+    "a.ts":
+      "import { createSqlClient } from \"@onreza/sqlx-js\";\n" +
+      "const db = createSqlClient(undefined, { profile: profiles.api });\n" +
+      "await db.sql.transaction({ settings: { \"app.tenant_id\": \"tenant-1\" } }, async (tx) => {\n" +
+      "  await tx(\"SELECT scoped\");\n" +
+      "});\n",
+  });
+  expect(scanProject(tmp, {}, profiles)[0]).toMatchObject({
+    query: "SELECT scoped",
+    profiles: ["api"],
+  });
+});
+
 test("createSqlClient profile survives transparent TypeScript expressions", () => {
   setup({
     "a.ts":

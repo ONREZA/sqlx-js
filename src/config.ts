@@ -22,10 +22,15 @@ export type EnumCatalogConfig = {
 export type DatabaseProfile<
   Name extends string = string,
   Role extends string = string,
+  TransactionSettings extends readonly string[] | undefined = readonly string[] | undefined,
 > = {
   readonly name: Name;
   readonly role: Role;
-};
+} & (
+  TransactionSettings extends readonly string[]
+    ? { readonly transactionSettings: TransactionSettings }
+    : { readonly transactionSettings?: never }
+);
 
 export type DatabaseProfiles = Readonly<Record<string, DatabaseProfile>>;
 
@@ -52,11 +57,24 @@ export function defineConfig<T extends SqlxJsConfig>(config: T): T {
   return config;
 }
 
+type DatabaseProfileDefinition = {
+  readonly role: string;
+  readonly transactionSettings?: readonly string[];
+};
+
+type DefinedDatabaseProfiles<Profiles extends Readonly<Record<string, DatabaseProfileDefinition>>> = {
+  readonly [Name in keyof Profiles]: DatabaseProfile<
+    Name & string,
+    Profiles[Name]["role"],
+    Profiles[Name] extends { readonly transactionSettings: infer Settings extends readonly string[] }
+      ? Settings
+      : undefined
+  >;
+};
+
 export function defineDatabaseProfiles<
-  const Profiles extends Readonly<Record<string, { readonly role: string }>>,
->(profiles: Profiles): {
-  readonly [Name in keyof Profiles]: DatabaseProfile<Name & string, Profiles[Name]["role"]>;
-} {
+  const Profiles extends Readonly<Record<string, DatabaseProfileDefinition>>,
+>(profiles: Profiles): DefinedDatabaseProfiles<Profiles> {
   const entries = Object.entries(profiles);
   if (entries.length === 0) {
     throw new Error("sqlx-js: database profiles must contain at least one profile");
@@ -68,11 +86,22 @@ export function defineDatabaseProfiles<
     if (!profile || typeof profile !== "object" || typeof profile.role !== "string" || profile.role.trim() === "") {
       throw new Error(`sqlx-js: database profile ${JSON.stringify(name)} must declare a non-empty PostgreSQL role`);
     }
-    return [name, Object.freeze({ name, role: profile.role })] as const;
+    if (profile.transactionSettings !== undefined) {
+      validateTransactionSettings(
+        profile.transactionSettings,
+        `database profile ${JSON.stringify(name)} transactionSettings`,
+      );
+    }
+    const transactionSettings = profile.transactionSettings
+      ? Object.freeze([...profile.transactionSettings])
+      : undefined;
+    return [name, Object.freeze({
+      name,
+      role: profile.role,
+      ...(transactionSettings ? { transactionSettings } : {}),
+    })] as const;
   });
-  return Object.freeze(Object.fromEntries(defined)) as {
-    readonly [Name in keyof Profiles]: DatabaseProfile<Name & string, Profiles[Name]["role"]>;
-  };
+  return Object.freeze(Object.fromEntries(defined)) as DefinedDatabaseProfiles<Profiles>;
 }
 
 export function loadRootEnv(root: string): string | undefined {
@@ -171,6 +200,25 @@ function validateProfiles(value: unknown, path: string): void {
     if (typeof profile.role !== "string" || profile.role.trim() === "") {
       throw new Error(`sqlx-js: ${path} profiles.${name}.role must be a non-empty PostgreSQL role`);
     }
+    if (profile.transactionSettings !== undefined) {
+      validateTransactionSettings(
+        profile.transactionSettings,
+        `${path} profiles.${name}.transactionSettings`,
+      );
+    }
+  }
+}
+
+const CUSTOM_SETTING_NAME = /^[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)+$/;
+
+export function validateTransactionSettings(value: unknown, name: string): asserts value is readonly string[] {
+  if (
+    !Array.isArray(value)
+    || value.length === 0
+    || value.some((setting) => typeof setting !== "string" || !CUSTOM_SETTING_NAME.test(setting))
+    || new Set(value).size !== value.length
+  ) {
+    throw new Error(`sqlx-js: ${name} must contain unique PostgreSQL custom setting names`);
   }
 }
 

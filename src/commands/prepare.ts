@@ -698,7 +698,7 @@ export async function prepareOnce(
     sites = input.sites;
   } else {
     try {
-      sites = scanProject(opts.root, session.userCfg.scan, Object.keys(session.userCfg.profiles ?? {}));
+      sites = scanProject(opts.root, session.userCfg.scan, session.userCfg.profiles ?? {});
     } catch (error) {
       throw fatal("scan", error);
     }
@@ -1139,7 +1139,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
     }
     let sites: QueryCallSite[];
     try {
-      sites = scanProject(opts.root, userCfg.scan, Object.keys(userCfg.profiles ?? {}));
+      sites = scanProject(opts.root, userCfg.scan, userCfg.profiles ?? {});
     } catch (error) {
       throw fatal("scan", error);
     }
