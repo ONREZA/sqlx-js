@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, wri
 import { dirname, join, resolve } from "node:path";
 import type { SqlxJsConfig } from "../config";
 import { parseDatabaseUrl, type ConnConfig } from "../pg/wire";
+import { withWorkflowShadowDatabase } from "./shadow";
 
 export type PgschemaSubcommand = "check" | "plan" | "apply";
 
@@ -57,11 +58,30 @@ export type PgschemaInstallOptions = {
   log?: (msg: string) => void;
 };
 
+export type PgschemaWorkflowOptions = {
+  root: string;
+  databaseUrl: string;
+  config: SqlxJsConfig;
+  cacheDir: string;
+  dtsPath: string;
+  shadowUrl?: string;
+  shadowAdminUrl?: string;
+  prune?: boolean;
+  strictInference?: boolean;
+};
+
 export type PgschemaProbe = {
   ok: boolean;
   command?: string;
   message: string;
 };
+
+export class PgschemaCommandError extends Error {
+  constructor(public readonly exitCode: number, command: string) {
+    super(`sqlx-js db: ${command} exited with ${exitCode}`);
+    this.name = "PgschemaCommandError";
+  }
+}
 
 export function resolvePgschemaAsset(
   platform: NodeJS.Platform = process.platform,
@@ -158,7 +178,7 @@ function run(command: string, args: string[], env: NodeJS.ProcessEnv): void {
     throw child.error;
   }
   if (child.signal) throw new Error(`sqlx-js db: ${command} terminated by signal ${child.signal}`);
-  if (child.status && child.status !== 0) process.exit(child.status);
+  if (child.status !== null && child.status !== 0) throw new PgschemaCommandError(child.status, command);
 }
 
 function pgschemaEnv(db: ConnConfig): NodeJS.ProcessEnv {
@@ -245,6 +265,71 @@ export function runPgschemaCommand(opts: PgschemaCommandOptions): void {
   args.push(...opts.passthrough ?? []);
 
   run(command, args, pgschemaEnv(db));
+}
+
+function validatePgschemaWorkflow(opts: PgschemaWorkflowOptions): void {
+  const config = pgschemaConfig(opts.config);
+  const file = schemaFile(opts.root, config);
+  if (!existsSync(file)) throw new Error(`sqlx-js db: schema file not found: ${file}`);
+  pgschemaSchemas(config);
+}
+
+function applyDesiredSchema(opts: PgschemaWorkflowOptions, databaseUrl: string): void {
+  runPgschemaCommand({
+    root: opts.root,
+    databaseUrl,
+    config: opts.config,
+    subcommand: "apply",
+    passthrough: ["--auto-approve", "--no-color"],
+  });
+}
+
+export async function runPgschemaDev(opts: PgschemaWorkflowOptions): Promise<boolean> {
+  validatePgschemaWorkflow(opts);
+  let ok = true;
+  await withWorkflowShadowDatabase(opts, async (shadowDatabaseUrl) => {
+    applyDesiredSchema(opts, shadowDatabaseUrl);
+    const { writePrepareArtifacts } = await import("./prepare");
+    ok = await writePrepareArtifacts({
+      root: opts.root,
+      databaseUrl: shadowDatabaseUrl,
+      cacheDir: opts.cacheDir,
+      dtsPath: opts.dtsPath,
+      check: false,
+      prune: opts.prune,
+      strictInference: opts.strictInference,
+    });
+  });
+  return ok;
+}
+
+export async function runPgschemaVerify(opts: PgschemaWorkflowOptions): Promise<boolean> {
+  validatePgschemaWorkflow(opts);
+  let ok = true;
+  await withWorkflowShadowDatabase(opts, async (shadowDatabaseUrl) => {
+    applyDesiredSchema(opts, shadowDatabaseUrl);
+    const { verifyPrepareArtifacts } = await import("./prepare");
+    const verification = await verifyPrepareArtifacts(
+      {
+        root: opts.root,
+        databaseUrl: shadowDatabaseUrl,
+        cacheDir: opts.cacheDir,
+        dtsPath: opts.dtsPath,
+        check: false,
+        verify: true,
+        prune: true,
+        strictInference: opts.strictInference,
+      },
+      console.log,
+      console.error,
+      {
+        command: "sqlx-js db verify",
+        regenerateCommand: "sqlx-js db dev",
+      },
+    );
+    ok = verification.ok;
+  });
+  return ok;
 }
 
 function pgschemaSchemas(config: NonNullable<SqlxJsConfig["schema"]>): string[] {

@@ -114,6 +114,17 @@ jobs:
           bun bin/sqlx-js.ts db plan --root tests/fixtures/pgschema -- --output-json "$PLAN_PATH" --no-color
           node -e 'const plan = require(process.env.PLAN_PATH); if (plan.groups?.length) throw new Error("pgschema plan is not idempotent")'
 
+      - name: Verify pgschema desired-state shadow workflow
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_pgschema
+        run: |
+          bun -e 'import postgres from "postgres"; const sql = postgres(process.env.DATABASE_URL); await sql.unsafe("DROP TABLE pgschema_probe"); await sql.unsafe("CREATE TABLE pgschema_target_guard (id bigint PRIMARY KEY)"); await sql.end();'
+          bun bin/sqlx-js.ts db verify --root tests/fixtures/pgschema --strict-inference
+          bun bin/sqlx-js.ts db dev --root tests/fixtures/pgschema --strict-inference
+          bunx tsc -p tests/fixtures/pgschema
+          git diff --exit-code -- tests/fixtures/pgschema
+          bun -e 'import postgres from "postgres"; const sql = postgres(process.env.DATABASE_URL); const rows = await sql.unsafe("SELECT to_regclass($1)::text AS desired, to_regclass($2)::text AS guard", ["public.pgschema_probe", "public.pgschema_target_guard"]); if (rows[0]?.desired !== null || rows[0]?.guard !== "pgschema_target_guard") throw new Error("db dev/verify changed the target database"); await sql.end();'
+
   postgres-compatibility:
     runs-on: ubuntu-latest
     strategy:

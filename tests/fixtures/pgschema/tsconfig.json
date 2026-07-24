@@ -1,0 +1,10 @@
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@onreza/sqlx-js": ["../../../src/index.ts"]
+    }
+  },
+  "include": ["query.ts", "sqlx-js-env.d.ts"]
+}

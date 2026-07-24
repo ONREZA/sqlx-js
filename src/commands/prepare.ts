@@ -1351,10 +1351,42 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
   }
 }
 
+export async function writePrepareArtifacts(
+  opts: PrepareOptions,
+  log: (msg: string) => void = console.log,
+  err: (msg: string) => void = console.error,
+): Promise<boolean> {
+  const session = await openSession(opts);
+  try {
+    const result = await prepareOnce(opts, session, log, err);
+    if (result.failures > 0) {
+      err(`\n${result.failures} query/queries failed to prepare`);
+      return false;
+    }
+    const enumOutput = enumCatalogOutputPath(opts.root, session.userCfg, opts.enumOutputPath);
+    log(
+      `\nprepared ${result.entries} unique query/queries, ${result.functions} function(s), ${result.enums} enum(s) `
+      + `→ ${opts.dtsPath}${enumOutput ? `, ${enumOutput}` : ""}`,
+    );
+    return true;
+  } finally {
+    await closePrepareSession(session);
+  }
+}
+
+export type VerifyPrepareMessages = {
+  command: string;
+  regenerateCommand: string;
+};
+
 export async function verifyPrepareArtifacts(
   opts: PrepareOptions,
   log: (msg: string) => void = console.log,
   err: (msg: string) => void = console.error,
+  messages: VerifyPrepareMessages = {
+    command: "sqlx-js prepare --verify",
+    regenerateCommand: "sqlx-js prepare",
+  },
 ): Promise<{ ok: boolean; result: PrepareResult; changed: string[] }> {
   const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-verify-"));
   const cacheDir = join(tmp, "cache");
@@ -1402,9 +1434,9 @@ export async function verifyPrepareArtifacts(
       throw fatal("verify", error);
     }
     if (!comparison.ok) {
-      err("sqlx-js prepare --verify: generated artifacts are stale:");
+      err(`${messages.command}: generated artifacts are stale:`);
       for (const file of comparison.changed) err(`  ${file}`);
-      err("Run `sqlx-js prepare` and commit the regenerated artifacts.");
+      err(`Run \`${messages.regenerateCommand}\` and commit the regenerated artifacts.`);
       return { ok: false, result, changed: comparison.changed };
     }
     log(

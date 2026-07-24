@@ -50,6 +50,16 @@ test("CLI command help is successful and command-specific", () => {
   expect(r.stdout).toContain("--strict-inference");
 });
 
+test("CLI db help lists desired-state shadow workflows", () => {
+  const r = spawnSync("bun", [binPath, "db", "--help"], { encoding: "utf8" });
+  expect(r.status).toBe(0);
+  expect(r.stderr).toBe("");
+  expect(r.stdout).toContain("| dev [--dts <path>]");
+  expect(r.stdout).toContain("verify [--dts <path>]");
+  expect(r.stdout).toContain("--shadow-admin-url");
+  expect(r.stdout).toContain("--strict-inference");
+});
+
 test("diagnostics CLI renders versioned prepare JSON for editors and GitHub", () => {
   const input = JSON.stringify({
     formatVersion: 1,
@@ -127,6 +137,8 @@ test("CLI init scaffolds pgschema workflow", () => {
     expect(r.stdout).toContain("created schema.sql");
     expect(r.stdout).toContain("sqlx-js db install");
     expect(r.stdout).toContain("sqlx-js db check");
+    expect(r.stdout).toContain("sqlx-js db dev --strict-inference");
+    expect(r.stdout).toContain("sqlx-js db verify --strict-inference");
     expect(existsSync(join(root, "sqlx-js.config.ts"))).toBe(true);
     expect(existsSync(join(root, "schema.sql"))).toBe(true);
     expect(readFileSync(join(root, "sqlx-js.config.ts"), "utf8")).toContain('provider: "pgschema"');

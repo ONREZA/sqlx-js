@@ -29,6 +29,8 @@ usage:
   sqlx-js doctor [--root <dir>] [--dts <path>] [--json]
   sqlx-js ci [--root <dir>] [--dts <path>] [--schema <path>] [--json] [--shadow-url <url>] [--shadow-admin-url <url>]
   sqlx-js db install | check [--root <dir>]
+  sqlx-js db dev [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--strict-inference] [--no-prune]
+  sqlx-js db verify [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--strict-inference]
   sqlx-js db plan | apply [--root <dir>] [-- <pgschema args>]
   sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
   sqlx-js queries [--json] [--embed <path>] [--root <dir>]
@@ -71,7 +73,7 @@ flags:
   init: `usage: sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]`,
   doctor: `usage: sqlx-js doctor [--root <dir>] [--dts <path>] [--json]`,
   ci: `usage: sqlx-js ci [--root <dir>] [--dts <path>] [--schema <path>] [--json] [--shadow-url <url>] [--shadow-admin-url <url>] [--migrations <dir>]`,
-  db: `usage: sqlx-js db install | check [--root <dir>] | plan | apply [--root <dir>] [-- <pgschema args>]`,
+  db: `usage: sqlx-js db install | check [--root <dir>] | dev [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--strict-inference] [--no-prune] | verify [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--strict-inference] | plan | apply [--root <dir>] [-- <pgschema args>]`,
   prepare: `usage: sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]`,
   queries: `usage: sqlx-js queries [--json] [--embed <path>] [--root <dir>]`,
   migrate: `usage: sqlx-js migrate dev [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | verify [--dts <path>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] | run [--dry-run] [--json] [--lock-timeout <ms>] | info [--json] | check [--json] | revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] | add <name> | squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] | archive list | archive restore <name> [--force]`,
@@ -128,7 +130,28 @@ function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfi
     "shadow-url": { type: "string" },
     "shadow-admin-url": { type: "string" },
   };
-  if (command === "db") return ROOT_OPTIONS;
+  if (command === "db") {
+    if (subcommand === "dev") {
+      return {
+        ...ROOT_OPTIONS,
+        dts: { type: "string" },
+        "shadow-admin-url": { type: "string" },
+        "shadow-url": { type: "string" },
+        "no-prune": { type: "boolean" },
+        "strict-inference": { type: "boolean" },
+      };
+    }
+    if (subcommand === "verify") {
+      return {
+        ...ROOT_OPTIONS,
+        dts: { type: "string" },
+        "shadow-admin-url": { type: "string" },
+        "shadow-url": { type: "string" },
+        "strict-inference": { type: "boolean" },
+      };
+    }
+    return ROOT_OPTIONS;
+  }
   if (command === "prepare") {
     return {
       ...ROOT_OPTIONS,
@@ -246,7 +269,7 @@ function validateInvocation(): void {
   if (cmd === "db") {
     requirePositionals(1, 1, "db");
     const sub = positionals[0];
-    if (sub !== "install" && sub !== "check" && sub !== "plan" && sub !== "apply") {
+    if (sub !== "install" && sub !== "check" && sub !== "dev" && sub !== "verify" && sub !== "plan" && sub !== "apply") {
       usageError(`unknown db command ${JSON.stringify(sub)}`, "db");
     }
     if (passthroughArgs.length > 0 && sub !== "plan" && sub !== "apply") {
@@ -309,6 +332,7 @@ const needsTypeScript =
   cmd === "ci" ||
   cmd === "prepare" ||
   cmd === "queries" ||
+  (cmd === "db" && (positionals[0] === "dev" || positionals[0] === "verify")) ||
   (cmd === "migrate" && (positionals[0] === "dev" || positionals[0] === "verify"));
 if (needsTypeScript) {
   try {
@@ -333,7 +357,7 @@ const needsEnvironment =
   cmd === "doctor" ||
   cmd === "ci" ||
   cmd === "schema" ||
-  (cmd === "db" && (positionals[0] === "plan" || positionals[0] === "apply")) ||
+  (cmd === "db" && ["dev", "verify", "plan", "apply"].includes(positionals[0]!)) ||
   (cmd === "prepare" && !flag("--check") && !flag("--offline")) ||
   (cmd === "migrate" && !["add", "check", "archive"].includes(positionals[0]!));
 if (needsEnvironment) {
@@ -391,14 +415,47 @@ if (cmd === "init") {
     dtsPath: dtsArg ? dtsPath : undefined,
   });
 } else if (cmd === "db") {
-  const { runPgschemaCommand, runPgschemaInstall } = await import("../src/commands/pgschema");
+  const {
+    PgschemaCommandError,
+    runPgschemaCommand,
+    runPgschemaDev,
+    runPgschemaInstall,
+    runPgschemaVerify,
+  } = await import("../src/commands/pgschema");
   const sub = positionals[0];
+  const failPgschema = (error: unknown): never => {
+    console.error((error as Error).message);
+    process.exit(error instanceof PgschemaCommandError ? error.exitCode : 2);
+  };
   if (sub === "install") {
     try {
       await runPgschemaInstall({ root });
     } catch (e) {
-      console.error((e as Error).message);
+      failPgschema(e);
+    }
+  } else if (sub === "dev" || sub === "verify") {
+    if (!databaseUrl && !shadowUrl) {
+      console.error("DATABASE_URL is required for db dev/verify (or pass --shadow-url)");
       process.exit(2);
+    }
+    try {
+      const config = await loadConfig(root);
+      const opts = {
+        root,
+        databaseUrl,
+        config,
+        cacheDir,
+        dtsPath,
+        shadowUrl,
+        shadowAdminUrl,
+        strictInference: flag("--strict-inference"),
+      };
+      const ok = sub === "dev"
+        ? await runPgschemaDev({ ...opts, prune: !flag("--no-prune") })
+        : await runPgschemaVerify(opts);
+      if (!ok) process.exit(1);
+    } catch (e) {
+      failPgschema(e);
     }
   } else {
     try {
@@ -410,8 +467,7 @@ if (cmd === "init") {
         passthrough: passthroughArgs,
       });
     } catch (e) {
-      console.error((e as Error).message);
-      process.exit(2);
+      failPgschema(e);
     }
   }
 } else if (cmd === "prepare") {
