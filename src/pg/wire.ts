@@ -435,7 +435,7 @@ async function performSslHandshake(
         socket: sock,
         servername: cfg.host,
         rejectUnauthorized: mode === "verify-full" || mode === "verify-ca",
-        checkServerIdentity: mode === "verify-full" ? undefined : () => undefined,
+        ...(mode === "verify-ca" ? { checkServerIdentity: () => undefined } : {}),
         ...(cfg.sslRootCert ? { ca: readCertFile("sslrootcert", cfg.sslRootCert) } : {}),
         ...(cfg.sslCert ? { cert: readCertFile("sslcert", cfg.sslCert) } : {}),
         ...(cfg.sslKey ? { key: readCertFile("sslkey", cfg.sslKey) } : {}),

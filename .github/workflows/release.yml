@@ -105,6 +105,15 @@ jobs:
       - name: Build package
         run: bun run build
 
+      - name: Verify PostgreSQL authentication and TLS
+        run: node scripts/postgres-auth-tls-smoke.mjs
+
+      - name: Run PostgreSQL runtime fault soak
+        env:
+          SQLX_JS_SOAK_DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_example
+          SQLX_JS_SOAK_DURATION_MS: "15000"
+        run: node scripts/postgres-runtime-soak.mjs
+
       - name: Verify built package entrypoints
         run: |
           node scripts/check-runtime-boundary.mjs

@@ -59,6 +59,8 @@
     "test:runtime-boundary": "bun run build && node scripts/check-runtime-boundary.mjs",
     "test:node-package": "node scripts/node-package-smoke.mjs",
     "test:deno-package": "bun run build && deno run --allow-env=DATABASE_URL,SQLX_JS_FILE_ROOT --allow-net scripts/deno-package-smoke.mjs",
+    "test:postgres-auth-tls": "bun run build && node scripts/postgres-auth-tls-smoke.mjs",
+    "test:runtime-soak": "bun run build && node scripts/postgres-runtime-soak.mjs",
     "test:corpus": "bun scripts/check-production-corpus.ts",
     "sqlx:prepare": "bun bin/sqlx-js.ts prepare",
     "sqlx:migrate": "bun bin/sqlx-js.ts migrate",
