@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.17.0](https://github.com/ONREZA/sqlx-js/compare/v0.16.0...v0.17.0) (2026-07-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **deps:** source-scanning commands require TypeScript 5.4-6.x.
+* **cli:** prepare no longer accepts --shadow-url or --migrations, and snapshot commands no longer apply migrations or read SHADOW_DATABASE_URL implicitly.
+* **cli:** remove db, schema, migrate dev, and migrate verify in favor of pgschema, snapshot, dev, and verify.
+
+### Features
+
+* **cli:** simplify schema workflows ([89b0f66](https://github.com/ONREZA/sqlx-js/commit/89b0f66527c92aa7dc00d1cc733a67e9ed556d0c))
+* **pgschema:** verify desired state in shadow ([062e22f](https://github.com/ONREZA/sqlx-js/commit/062e22f60b41910ab70e32845041edadd48314d0))
+
+
+### Bug Fixes
+
+* **cli:** align workflow boundaries ([fbd57d1](https://github.com/ONREZA/sqlx-js/commit/fbd57d1f7beeb972de880aada730eccdfc1cd3cb))
+
+
+### Chores
+
+* **deps:** update dependencies ([de8413a](https://github.com/ONREZA/sqlx-js/commit/de8413a8b16e2311ca712cc5c1f6521e5c0e90c4))
+
 ## [0.16.0](https://github.com/ONREZA/sqlx-js/compare/v0.15.0...v0.16.0) (2026-07-23)
 
 
