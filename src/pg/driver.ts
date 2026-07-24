@@ -458,9 +458,12 @@ class ConnectionSlot {
       if (params.some((value) => value === undefined)) {
         throw new Error("sqlx-js: undefined is not a PostgreSQL value; pass null explicitly");
       }
-      const startupAbort = new AbortController();
-      setCancel(() => startupAbort.abort(queryCancelledBeforeDispatch()));
-      const client = await this.readyClient(allowReconnect, startupAbort.signal);
+      let client = this.client;
+      if (!client || client.isClosed) {
+        const startupAbort = new AbortController();
+        setCancel(() => startupAbort.abort(queryCancelledBeforeDispatch()));
+        client = await this.readyClient(allowReconnect, startupAbort.signal);
+      }
       setCancel(() => client.cancel());
       if (isCancelled()) {
         const error = queryCancelledBeforeDispatch();
@@ -468,24 +471,19 @@ class ConnectionSlot {
         throw error;
       }
       try {
-        const described = params.length === 0 ? undefined : await client.describe(query);
-        if (isCancelled()) {
-          const error = queryCancelledBeforeDispatch();
-          client.destroy(error);
-          throw error;
-        }
-        const parameterOids = described?.paramOids ?? [];
-        const encoded = params.map((value, index) =>
-          encodeParameter(value, this.options, parameterOids[index])
-        );
-        if (isCancelled()) {
-          const error = queryCancelledBeforeDispatch();
-          client.destroy(error);
-          throw error;
-        }
-        const raw = described
-          ? await client.execDescribedParamsText(encoded)
-          : await client.execParamsText(query, encoded);
+        const raw = params.length === 0
+          ? await client.execParamsText(query, [])
+          : await client.execParamsTextWithSerializer(query, (parameterOids) => {
+            const encoded = params.map((value, index) =>
+              encodeParameter(value, this.options, parameterOids[index])
+            );
+            if (isCancelled()) {
+              const error = queryCancelledBeforeDispatch();
+              client.destroy(error);
+              throw error;
+            }
+            return encoded;
+          });
         setCancel(() => {});
         return decodeResult<Row>(raw, this.options.parsers);
       } catch (error) {
@@ -532,9 +530,9 @@ class ConnectionSlot {
   }
 
   private async readyClient(allowReconnect: boolean, operationSignal: AbortSignal): Promise<PgClient> {
+    if (this.client && !this.client.isClosed) return this.client;
     const signal = AbortSignal.any([this.abort.signal, operationSignal]);
     if (signal.aborted) throw abortReason(signal);
-    if (this.client && !this.client.isClosed) return this.client;
     if (!allowReconnect) {
       throw new ConnectionLostError(new Error("transaction connection is closed"));
     }
@@ -765,12 +763,30 @@ function decodeResult<Row extends Record<string, unknown>>(
   raw: PgRowResult,
   parsers: Record<number, (value: string) => unknown>,
 ): PostgresResult<Row> {
-  const values = raw.rows.map((columns) => columns.map((value, index) =>
-    decodeColumn(value, raw.fields[index], parsers)
-  ));
-  const rows = values.map((columns) => Object.fromEntries(
-    raw.fields.map((field, index) => [field.name, columns[index]]),
-  )) as Row[];
+  const values = new Array<unknown[]>(raw.rows.length);
+  const rows = new Array<Row>(raw.rows.length);
+  for (let rowIndex = 0; rowIndex < raw.rows.length; rowIndex++) {
+    const columns = raw.rows[rowIndex]!;
+    const decoded = new Array<unknown>(columns.length);
+    const row = {} as Row;
+    for (let columnIndex = 0; columnIndex < columns.length; columnIndex++) {
+      const field = raw.fields[columnIndex]!;
+      const value = decodeColumn(columns[columnIndex]!, field, parsers);
+      decoded[columnIndex] = value;
+      if (field.name === "__proto__") {
+        Object.defineProperty(row, field.name, {
+          value,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+      } else {
+        row[field.name as keyof Row] = value as Row[keyof Row];
+      }
+    }
+    values[rowIndex] = decoded;
+    rows[rowIndex] = row;
+  }
   const tag = raw.tag.trim();
   const parts = tag ? tag.split(/\s+/) : [];
   const last = parts.at(-1);

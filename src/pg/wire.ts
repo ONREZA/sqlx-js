@@ -4,6 +4,7 @@ import { Socket, connect as netConnect } from "node:net";
 import { TLSSocket, connect as tlsConnect } from "node:tls";
 
 const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
 
 export const MIN_POSTGRES_MAJOR_VERSION = 16;
 
@@ -166,7 +167,7 @@ export class MessageReader {
       if (available < total) break;
       const tag = String.fromCharCode(view[this.offset]!);
       const payload = view.subarray(this.offset + 5, this.offset + total);
-      out.push(parseMessage(tag, copyOf(payload)));
+      out.push(parseMessage(tag, payload));
       this.offset += total;
     }
     if (this.offset > 0) {
@@ -282,7 +283,7 @@ function readUInt32(b: Uint8Array, o: number): number {
 function readCString(b: Uint8Array, off: number): [string, number] {
   let end = off;
   while (end < b.length && b[end] !== 0) end++;
-  const s = new TextDecoder("utf-8").decode(b.subarray(off, end));
+  const s = textDecoder.decode(b.subarray(off, end));
   return [s, end + 1];
 }
 
@@ -651,18 +652,25 @@ export class PgClient {
   }
 
   private next(): Promise<ServerMessage> {
-    if (this.queue.length) return this.supportedMessage(Promise.resolve(this.queue.shift()!));
+    if (this.queue.length) return Promise.resolve(this.supportedMessage(this.queue.shift()!));
     if (this.closed) {
       const reason = this.closeReason ?? new Error("connection closed");
       return Promise.reject(new ConnectionLostError(reason));
     }
-    return this.supportedMessage(
-      new Promise((resolve, reject) => this.waiters.push({ resolve, reject })),
-    );
+    return new Promise<ServerMessage>((resolve, reject) => this.waiters.push({ resolve, reject }))
+      .then((message) => this.supportedMessage(message));
   }
 
-  private async supportedMessage(message: Promise<ServerMessage>): Promise<ServerMessage> {
-    const value = await message;
+  private async nextBatch(): Promise<ServerMessage[]> {
+    const first = await this.next();
+    if (this.queue.length === 0) return [first];
+    return [
+      first,
+      ...this.queue.splice(0).map((message) => this.supportedMessage(message)),
+    ];
+  }
+
+  private supportedMessage(value: ServerMessage): ServerMessage {
     if (
       value.type === "other"
       && (value.tag === "G" || value.tag === "H" || value.tag === "W")
@@ -753,7 +761,7 @@ export class PgClient {
 
     const m1 = await this.next();
     if (m1.type !== "R" || m1.code !== 11) throw new Error(`SCRAM: expected R/11, got ${stringifyMessage(m1)}`);
-    const serverFirst = new TextDecoder().decode(m1.payload);
+    const serverFirst = textDecoder.decode(m1.payload);
     const sf = parseScramKv(serverFirst);
     const combinedNonce = scramField(sf, "r");
     if (!combinedNonce.startsWith(clientNonce)) throw new Error("SCRAM: server nonce mismatch");
@@ -769,7 +777,7 @@ export class PgClient {
 
     const m2 = await this.next();
     if (m2.type !== "R" || m2.code !== 12) throw new Error(`SCRAM: expected R/12, got ${stringifyMessage(m2)}`);
-    const serverFinal = new TextDecoder().decode(m2.payload);
+    const serverFinal = textDecoder.decode(m2.payload);
     const sfKv = parseScramKv(serverFinal);
     if (sfKv.e) throw new Error(`SCRAM server error: ${sfKv.e}`);
     if (sfKv.v !== serverSignatureB64) throw new Error("SCRAM: server signature mismatch");
@@ -831,13 +839,15 @@ export class PgClient {
       cstr(sql),
       writeInt16(0),
     ]);
-    this.write(frame("P", parseBody));
     const describeBody = concat([
       new Uint8Array([0x53]),
       cstr(stmtName),
     ]);
-    this.write(frame("D", describeBody));
-    this.write(frame("S", new Uint8Array(0)));
+    this.write(concat([
+      frame("P", parseBody),
+      frame("D", describeBody),
+      frame("S", new Uint8Array(0)),
+    ]));
 
     let paramOids: number[] = [];
     let fields: FieldDescription[] = [];
@@ -908,11 +918,68 @@ export class PgClient {
   ): Promise<PgRowResult> {
     const stmtName = "";
     const parseBody = concat([cstr(stmtName), cstr(sql), writeInt16(0)]);
-    this.write(frame("P", parseBody));
-    return await this.execDescribedParamsText(params);
+    return await this.execBoundParamsText(params, [
+      frame("P", parseBody),
+    ]);
+  }
+
+  async execParamsTextWithSerializer(
+    sql: string,
+    serialize: (parameterOids: readonly number[]) => (string | null)[],
+  ): Promise<PgRowResult> {
+    const stmtName = "";
+    const parseBody = concat([cstr(stmtName), cstr(sql), writeInt16(0)]);
+    const describeBody = concat([new Uint8Array([0x53]), cstr(stmtName)]);
+    this.write(concat([
+      frame("P", parseBody),
+      frame("D", describeBody),
+      frame("H", new Uint8Array(0)),
+    ]));
+
+    let parameterOids: number[] = [];
+    let fields: FieldDescription[] = [];
+    while (true) {
+      const message = await this.next();
+      if (message.type === "1") continue;
+      if (message.type === "t") {
+        parameterOids = message.oids;
+        continue;
+      }
+      if (message.type === "T") {
+        fields = message.fields;
+        break;
+      }
+      if (message.type === "n") break;
+      if (message.type === "E") {
+        const error = pgError(message.fields);
+        this.write(frame("S", new Uint8Array(0)));
+        await this.awaitReady();
+        throw error;
+      }
+    }
+
+    let params: (string | null)[];
+    try {
+      params = serialize(parameterOids);
+    } catch (error) {
+      if (!this.closed) {
+        this.write(frame("S", new Uint8Array(0)));
+        await this.awaitReady();
+      }
+      throw error;
+    }
+    return await this.execBoundParamsText(params, [], fields);
   }
 
   async execDescribedParamsText(params: (string | null)[]): Promise<PgRowResult> {
+    return await this.execBoundParamsText(params);
+  }
+
+  private async execBoundParamsText(
+    params: (string | null)[],
+    prefix: Uint8Array[] = [],
+    initialFields: FieldDescription[] | undefined = undefined,
+  ): Promise<PgRowResult> {
     const stmtName = "";
     const portal = "";
     const bindParts: Uint8Array[] = [
@@ -931,29 +998,32 @@ export class PgClient {
       }
     }
     bindParts.push(writeInt16(0));
-    this.write(frame("B", concat(bindParts)));
-
-    const describeBody = concat([new Uint8Array([0x50]), cstr(portal)]);
-    this.write(frame("D", describeBody));
-
+    const messages = [...prefix, frame("B", concat(bindParts))];
+    if (initialFields === undefined) {
+      const describeBody = concat([new Uint8Array([0x50]), cstr(portal)]);
+      messages.push(frame("D", describeBody));
+    }
     const executeBody = concat([cstr(portal), writeInt32(0)]);
-    this.write(frame("E", executeBody));
-
-    this.write(frame("S", new Uint8Array(0)));
+    messages.push(
+      frame("E", executeBody),
+      frame("S", new Uint8Array(0)),
+    );
+    this.write(concat(messages));
 
     const rows: (Uint8Array | null)[][] = [];
-    let fields: FieldDescription[] = [];
+    let fields = initialFields ?? [];
     let tag = "";
     let err: PgError | null = null;
-    while (true) {
-      const m = await this.next();
-      if (m.type === "1" || m.type === "2") continue;
-      if (m.type === "T") { fields = m.fields; continue; }
-      if (m.type === "n") continue;
-      if (m.type === "D") { rows.push(m.columns); continue; }
-      if (m.type === "C") { tag = m.tag; continue; }
-      if (m.type === "Z") break;
-      if (m.type === "E") { if (!err) err = pgError(m.fields); continue; }
+    let ready = false;
+    while (!ready) {
+      for (const m of await this.nextBatch()) {
+        if (m.type === "1" || m.type === "2" || m.type === "n") continue;
+        if (m.type === "T") { fields = m.fields; continue; }
+        if (m.type === "D") { rows.push(m.columns); continue; }
+        if (m.type === "C") { tag = m.tag; continue; }
+        if (m.type === "Z") { ready = true; break; }
+        if (m.type === "E") { if (!err) err = pgError(m.fields); }
+      }
     }
     if (err) throw err;
     return { rows, fields, tag };
@@ -1075,5 +1145,5 @@ function pgError(fields: Record<string, string>): PgError {
 }
 
 export function decodeText(b: Uint8Array | null): string | null {
-  return b === null ? null : new TextDecoder().decode(b);
+  return b === null ? null : textDecoder.decode(b);
 }

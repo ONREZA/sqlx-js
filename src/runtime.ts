@@ -484,17 +484,30 @@ export const _internal = {
   toPgError,
 };
 
-const runtimeQueryIds = new Map<string, string>();
-const MAX_RUNTIME_QUERY_IDS = 1024;
+const runtimeQueries = new Map<string, {
+  id: string;
+  rewritten: ReturnType<typeof rewriteNamedParameters>;
+}>();
+const MAX_RUNTIME_QUERIES = 1024;
 
-function observedMetadata(query: string, metadata?: QueryExecutionMetadata): QueryExecutionMetadata {
-  if (metadata) return metadata;
-  let id = runtimeQueryIds.get(query);
-  if (!id) {
-    id = queryId(query);
-    if (runtimeQueryIds.size >= MAX_RUNTIME_QUERY_IDS) runtimeQueryIds.clear();
-    runtimeQueryIds.set(query, id);
+function runtimeQuery(query: string): {
+  id: string;
+  rewritten: ReturnType<typeof rewriteNamedParameters>;
+} {
+  let cached = runtimeQueries.get(query);
+  if (!cached) {
+    cached = {
+      id: queryId(query),
+      rewritten: rewriteNamedParameters(query),
+    };
+    if (runtimeQueries.size >= MAX_RUNTIME_QUERIES) runtimeQueries.clear();
+    runtimeQueries.set(query, cached);
   }
+  return cached;
+}
+
+function observedMetadata(id: string, metadata?: QueryExecutionMetadata): QueryExecutionMetadata {
+  if (metadata) return metadata;
   return { queryId: id };
 }
 
@@ -507,10 +520,11 @@ async function runRawQuery(
 ): Promise<RuntimeQueryResult> {
   const observedQuery = query;
   const observedParams = params;
-  const bound = bindNamedParameters(rewriteNamedParameters(query), params);
+  const cached = runtimeQuery(query);
+  const bound = bindNamedParameters(cached.rewritten, params);
   query = bound.query;
   params = bound.params;
-  const observed = observedMetadata(observedQuery, metadata);
+  const observed = observedMetadata(cached.id, metadata);
   if (client.execute) {
     return await client.execute({
       query,
