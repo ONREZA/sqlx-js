@@ -119,5 +119,14 @@ criterion. The integrated driver is ready to replace it only when:
 3. idle eviction and maximum connection lifetime pass live backend-retirement
    tests;
 4. the complete sqlx-js unit and PostgreSQL integration suites pass;
-5. any intentionally unsupported Postgres.js surface is represented above as
+5. local TCP blackhole and PostgreSQL restart chaos tests prove bounded
+   recovery without replay, leaked backends, or leaked file descriptors;
+6. any intentionally unsupported Postgres.js surface is represented above as
    either `Нет` or `Нет и не будет`.
+
+`bun run benchmark:postgres` compares the integrated runtime with the pinned
+Postgres.js 3.4.9 development reference. It disables named prepared statements
+for both clients, uses `max_pipeline: 1` as the strict serial control, and keeps
+the Postgres.js default for the separate pipelined scenario. It alternates
+execution order and reports multi-round throughput plus p50/p95/p99 latency.
+Benchmark results are observational and never act as a correctness gate.
