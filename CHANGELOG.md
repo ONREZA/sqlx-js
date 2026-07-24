@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/ONREZA/sqlx-js/compare/v0.19.0...v0.20.0) (2026-07-24)
+
+
+### Features
+
+* **runtime:** integrate PostgreSQL driver ([df86fa2](https://github.com/ONREZA/sqlx-js/commit/df86fa2d5f9e41a397e56ab27d8cad7b0f0ec90c))
+
 ## [0.19.0](https://github.com/ONREZA/sqlx-js/compare/v0.18.0...v0.19.0) (2026-07-24)
 
 
