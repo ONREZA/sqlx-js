@@ -16,6 +16,17 @@ const providedDatabaseUrl = process.env.SQLX_JS_BENCHMARK_DATABASE_URL;
 const scenarioFilter = process.env.SQLX_JS_BENCHMARK_SCENARIO;
 const driverFilter = process.env.SQLX_JS_BENCHMARK_DRIVER;
 const results = [];
+const mixedText = "sqlx-js-mixed-";
+const mixedBigint = 9_007_199_254_740_993n;
+const mixedRowsQuery = `
+SELECT
+  repeat('${mixedText}', 16)::text AS text_value,
+  '{"kind":"benchmark","nested":{"enabled":true,"labels":["sqlx","postgres","runtime"]}}'::jsonb AS json_value,
+  decode(repeat('ab', 128), 'hex') AS bytes_value,
+  ARRAY[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]::int4[] AS array_value,
+  ${mixedBigint}::int8 AS bigint_value
+FROM generate_series(1, 100)
+`;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -75,6 +86,18 @@ function median(values) {
   return percentile(sorted, 0.5);
 }
 
+function mixedRowsSummary(rows) {
+  const first = rows[0];
+  return {
+    rows: rows.length,
+    textLength: first.text_value.length,
+    jsonKind: first.json_value.kind,
+    bytesLength: first.bytes_value.length,
+    arrayLength: first.array_value.length,
+    bigint: String(first.bigint_value),
+  };
+}
+
 async function runWindow(operation, concurrency, windowMs, collect) {
   const startedAt = performance.now();
   const deadline = startedAt + windowMs;
@@ -117,6 +140,7 @@ async function internalAdapter(databaseUrl, max, name) {
     rows100: async () => (await client.unsafe(
       "SELECT generate_series(1, 100)::int4 AS value",
     )).length,
+    mixedRows: async () => mixedRowsSummary(await client.unsafe(mixedRowsQuery)),
     transaction: async (value) => await client.sql.transaction(async (tx) => {
       const first = await tx("SELECT $1::int4 AS value", value);
       const second = await tx("SELECT $1::int4 AS value", value + 1);
@@ -138,6 +162,7 @@ async function rawAdapter(databaseUrl, max, name) {
     rows100: async () => (await client.unsafe(
       "SELECT generate_series(1, 100)::int4 AS value",
     )).length,
+    mixedRows: async () => mixedRowsSummary(await client.unsafe(mixedRowsQuery)),
     transaction: async (value) => await client.begin(async (tx) => {
       const first = await tx.unsafe("SELECT $1::int4 AS value", [value]);
       const second = await tx.unsafe("SELECT $1::int4 AS value", [value + 1]);
@@ -160,6 +185,7 @@ async function postgresJsAdapter(databaseUrl, max, name, maxPipeline) {
     rows100: async () => (await sql.unsafe(
       "SELECT generate_series(1, 100)::int4 AS value",
     )).length,
+    mixedRows: async () => mixedRowsSummary(await sql.unsafe(mixedRowsQuery)),
     transaction: async (value) => await sql.begin(async (tx) => {
       const first = await tx.unsafe("SELECT $1::int4 AS value", [value]);
       const second = await tx.unsafe("SELECT $1::int4 AS value", [value + 1]);
@@ -201,6 +227,21 @@ const scenarios = [
     max: 8,
     concurrency: 16,
     verify: (value) => assert.equal(value, 100),
+    verificationInput: 0,
+  },
+  {
+    name: "mixed-rows-100",
+    operation: "mixedRows",
+    max: 8,
+    concurrency: 16,
+    verify: (value) => assert.deepEqual(value, {
+      rows: 100,
+      textLength: mixedText.length * 16,
+      jsonKind: "benchmark",
+      bytesLength: 128,
+      arrayLength: 16,
+      bigint: String(mixedBigint),
+    }),
     verificationInput: 0,
   },
   {
