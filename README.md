@@ -39,13 +39,13 @@ const rows = await sql(
 - **Migration squash baselines** via `migrate squash`: generate a schema-only baseline from a shadow database, then hash-adopt it on already-migrated databases.
 - **Runtime `migrate()`** with PostgreSQL advisory lock, safe for multi-replica startup.
 - **Optional pgschema workflow** via `init --schema-provider pgschema`, provider-aware `dev` / `verify`, and explicit `pgschema install|plan|apply` deployment commands.
-- **Versioned offline cache** committed to your repo. `prepare --check` validates fingerprints, generator revision, type/function contracts, enum schema selection, and generated files without a database; `prepare --verify` compares fresh live/shadow artifacts without writing.
+- **Versioned offline cache** committed to your repo. `prepare --check` validates fingerprints, generator revision, type/function contracts, enum schema selection, and generated files without a database; `prepare --verify` compares fresh artifacts against `DATABASE_URL` without writing.
 - **Schema snapshot + LLM manifest** via `snapshot dump` / `snapshot check`: tables, columns, constraints, indexes, types, and function/procedure metadata are introspected from PostgreSQL.
 - **Generated function catalog** via `KnownFunctions`: `prepare` records application-owned PostgreSQL functions/procedures from `pg_proc` with approximate parameter and return TypeScript types while excluding extension-owned internals by default.
 - **Provider-aware shadow validation** via `dev` / `verify`: build either migrations or `schema.sql`, validate SQL, and drop the disposable database afterwards.
 - **Safe identifier quoting** via `sql.id(...)`, backed by the committed schema snapshot whitelist.
 - **Single runtime adapter**: Postgres.js backs the runtime on Node/Bun-compatible environments — no Bun.SQL-specific adapter to choose.
-- **Incremental watch mode**: debounced re-prepare with a warm `PgClient` + `SchemaCache`; source/SQL edits only rescan affected files and re-describe changed fingerprints, while config/tsconfig/schema changes trigger a full rebuild.
+- **Incremental watch mode**: debounced re-prepare with a warm `PgClient` + `SchemaCache`; source/SQL edits only rescan affected files and re-describe changed fingerprints, while config/tsconfig changes trigger a full rebuild.
 - **Cache pruning** removes orphaned entries automatically (toggleable with `--no-prune`).
 - **Environment doctor** checks runtime versions, config loading, `.env`, database connectivity/permissions, runtime-addressable `customTypes`, cache metadata, generated enum output presence, tsconfig inclusion, and pgschema availability.
 - **Strict inference gate** promotes degraded nullability analysis and generated `unknown` query types to CI errors.
@@ -64,7 +64,9 @@ bun add --dev typescript
 
 Node.js 24 or newer and PostgreSQL 16 or newer are required. Bun users need Bun 1.3 or newer. TypeScript is an optional peer so production-only installs do not pull the compiler and its platform package into the application image; source scanning commands (`prepare`, `queries`, `doctor`, `ci`, `dev`, and `verify`) require it in development dependencies.
 
-The package installs `sqlx-js` and `sqlx-js-diagnostics` binaries. The CLI examples below use `npx @onreza/sqlx-js`; `bunx @onreza/sqlx-js ...` works the same if your project uses Bun.
+The package installs `sqlx-js` and `sqlx-js-diagnostics` binaries. Examples
+below use the local `sqlx-js` binary; invoke it through a package script,
+`npx @onreza/sqlx-js ...`, or `bunx @onreza/sqlx-js ...`.
 
 ## Setup
 
@@ -141,7 +143,6 @@ provider-aware top level.
 
 ```bash
 sqlx-js pgschema install
-sqlx-js doctor
 # edit schema.sql
 sqlx-js dev --strict-inference
 sqlx-js verify --strict-inference
@@ -156,6 +157,11 @@ sqlx-js pgschema apply -- --plan plan.json --auto-approve
 
 The managed pgschema workflow supports Linux and macOS. On Windows, run
 sqlx-js under WSL/Linux/macOS or use built-in migrations.
+
+`doctor` is a full-project diagnostic rather than an install-only probe. It
+checks generated artifacts and the target database as well as the configured
+provider, so before the first `dev` or target deployment it may correctly
+report incomplete state.
 
 ### 4. Write queries
 
@@ -700,20 +706,20 @@ sqlx-js queries [--json] [--embed <path>]
 
 Run `sqlx-js <command> --help` or
 `sqlx-js <command> <subcommand> --help` for exact flags, side effects, and
-examples. Subcommand help is intentionally narrower than the root overview.
+behavior. Subcommand help is intentionally narrower than the root overview.
 
-Regular `prepare` describes and plans queries across a small connection pool (default 8, override with `SQLX_JS_PREPARE_CONCURRENCY`) for faster cold runs on large projects. After `Describe` establishes the server-side parameter contract, `SELECT`, `INSERT`, `UPDATE`, `DELETE`, and `MERGE` are SQL-prepared on the same session and planned through `EXPLAIN EXECUTE` under `plan_cache_mode = force_generic_plan`. The resulting plan is independent of placeholder values. `ANALYZE` is never used, so DML is not executed. Statements outside PostgreSQL's generic SQL `PREPARE` surface, such as `SET` and `CALL`, remain valid but are reported and cached as `parse-only`. Watch mode keeps one session warm, rescans only affected source files, and reuses cached metadata for unchanged fingerprints. Config, tsconfig, and applied shadow-migration changes invalidate the incremental state and perform a full prepare.
+Regular `prepare` describes and plans queries across a small connection pool (default 8, override with `SQLX_JS_PREPARE_CONCURRENCY`) for faster cold runs on large projects. After `Describe` establishes the server-side parameter contract, `SELECT`, `INSERT`, `UPDATE`, `DELETE`, and `MERGE` are SQL-prepared on the same session and planned through `EXPLAIN EXECUTE` under `plan_cache_mode = force_generic_plan`. The resulting plan is independent of placeholder values. `ANALYZE` is never used, so DML is not executed. Statements outside PostgreSQL's generic SQL `PREPARE` surface, such as `SET` and `CALL`, remain valid but are reported and cached as `parse-only`. Watch mode keeps one session warm, rescans only affected source files, and reuses cached metadata for unchanged fingerprints. Config and tsconfig changes invalidate the incremental state and perform a full prepare.
 
 | Flag                  | Meaning                                                                              |
 |-----------------------|--------------------------------------------------------------------------------------|
 | `--check`             | Read-only offline verification of query/function/enum caches and generated files.     |
 | `--offline`           | Regenerate declarations and an enabled enum module from committed cache without a database. |
-| `--verify`            | Prepare against the live/shadow schema and compare generated artifacts without writing. |
+| `--verify`            | Prepare against `DATABASE_URL` and compare generated artifacts without writing.          |
 | `--watch`             | Persistent connection, re-prepare on file change.                                    |
 | `--root <dir>`        | Source/cache/migrations root (default: cwd).                                         |
 | `--dts <path>`        | Root-relative declarations output (default: `<root>/sqlx-js-env.d.ts`).             |
 | `--no-prune`          | Keep orphaned cache entries; they do not invalidate a later `--check`.                |
-| `--migrations <dir>`  | Root-relative migrations directory (default: `<root>/migrations`).                   |
+| `--migrations <dir>`  | Root-relative built-in migrations directory for `migrate`, `dev`, and `verify` (default: `<root>/migrations`). |
 | `--dry-run`           | For `migrate run` / `migrate revert`: validate without applying to the target DB.   |
 | `--json`              | Machine-readable prepare diagnostics, doctor output, migration inspection and dry-runs. |
 | `--embed <path>`      | For `queries`: write a deterministic TypeScript map of referenced external SQL files. |
@@ -745,7 +751,6 @@ For complex PostgreSQL schemas with functions, triggers, RLS, grants, partitions
 ```bash
 sqlx-js init --schema-provider pgschema
 sqlx-js pgschema install
-sqlx-js doctor
 # edit schema.sql
 sqlx-js dev --strict-inference
 sqlx-js verify --strict-inference
@@ -842,10 +847,11 @@ On an empty database, the baseline runs as ordinary schema SQL. On an already-mi
 - `.sqlx-js/schema/schema.md` — compact LLM-facing manifest with tables, columns, constraints, indexes, types, and functions.
 
 `snapshot check` re-introspects the database and fails if the committed
-snapshot is stale. With `--shadow-url`, both `prepare` and `snapshot
-dump/check` first apply pending migrations to the shadow database, then use it
-as the source of truth. Unlike `dev`, `verify`, and `migrate squash`, snapshot
-commands do not clear an explicit shadow database first.
+snapshot is stale. Snapshot commands only read `DATABASE_URL`, or the explicit
+`--shadow-url` when supplied; they never build, clear, or modify that database.
+To snapshot a proposed schema, first build a pre-created disposable database
+with `dev --shadow-url`, then run `snapshot dump --shadow-url` against the same
+URL.
 
 ### Error output
 
@@ -1024,7 +1030,7 @@ export type DbEnumValue<Name extends DbEnumName> = /* exact value union */;
 
 Use `DbEnums["public.user_role"].admin` when code chooses a database enum dynamically; prefer the direct `UserRole.admin` export for ordinary imports.
 
-The catalog snapshot is committed at `.sqlx-js/enums/enums.json`. `prepare --offline` regenerates the configured module from that snapshot, `prepare --check` verifies both files without writing, and `prepare --verify` compares them against the live/shadow database without touching the worktree. Changing only `output`, `include`, `exclude`, `aliases`, or `registry` can therefore be completed with `prepare --offline`; changing `schemas` requires a live prepare.
+The catalog snapshot is committed at `.sqlx-js/enums/enums.json`. `prepare --offline` regenerates the configured module from that snapshot, `prepare --check` verifies both files without writing, and `prepare --verify` compares them against `DATABASE_URL` without touching the worktree. Changing only `output`, `include`, `exclude`, `aliases`, or `registry` can therefore be completed with `prepare --offline`; changing `schemas` requires a live prepare.
 
 The enum module and declaration output must be different files. If `--dts` overrides the declaration destination, prepare and doctor reject a colliding `enumCatalog.output` before writing either artifact.
 

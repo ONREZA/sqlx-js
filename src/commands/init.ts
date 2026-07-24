@@ -194,13 +194,14 @@ export function runInit(opts: InitOptions): void {
   log("  1. Set DATABASE_URL (see .env.example).");
   if (schemaProvider === "pgschema") {
     log("  2. Install managed pgschema:  sqlx-js pgschema install");
-    log("  3. Check the project setup:  sqlx-js doctor");
-    log("  4. Edit schema.sql, then develop:  sqlx-js dev --strict-inference");
-    log("  5. Verify desired schema and SQL:  sqlx-js verify --strict-inference");
-    log("  6. Review target changes:  sqlx-js pgschema plan");
+    log("  3. Edit schema.sql, then develop:  sqlx-js dev --strict-inference");
+    log("  4. Verify desired schema and SQL:  sqlx-js verify --strict-inference");
+    log("  5. Review target changes:  sqlx-js pgschema plan");
   } else {
     log("  2. Add a migration:  sqlx-js migrate add init");
-    log("  3. Check the project setup:  sqlx-js doctor");
-    log("  4. Develop locally:  sqlx-js dev --strict-inference");
+    log("  3. Edit the migration, then develop:  sqlx-js dev --strict-inference");
+    log("  4. Verify migrations and SQL:  sqlx-js verify --strict-inference");
+    log("  5. Review target changes:  sqlx-js migrate run --dry-run");
   }
+  log("  Diagnose the full project and target setup with:  sqlx-js doctor");
 }

@@ -28,13 +28,13 @@ The library is **PostgreSQL-only** and **compile-time-only by design** — no ru
 │   ├── codegen.ts            Emits sqlx-js-env.d.ts from CacheEntry[]
 │   ├── enum-catalog.ts       PostgreSQL enum cache + as-const module generation
 │   ├── config.ts             Loads and validates sqlx-js.config.*
-│   ├── schema-snapshot.ts    Schema dump/check snapshot + manifest rendering
+│   ├── schema-snapshot.ts    Snapshot introspection + JSON/manifest rendering
 │   ├── typed.ts              Public typed overload helpers
 │   ├── commands/
 │   │   ├── doctor.ts         Runtime/config/DB/cache/generated-output/tsconfig diagnostics
 │   │   ├── prepare.ts        runPrepare + openSession + prepareOnce + validateAll pool
 │   │   ├── migrate.ts        CLI migrateRun + shared applyPending
-│   │   ├── schema.ts         snapshot dump/check + shadow migration helper
+│   │   ├── schema.ts         snapshot dump/check commands
 │   │   ├── init.ts           sqlx-js init scaffolding
 │   │   ├── queries.ts        Read-only query inventory + embedded SQL emitter
 │   │   └── watch.ts          fs.watch loop with debounced re-prepare
@@ -191,7 +191,7 @@ Skipping hooks for a single commit: `LEFTHOOK=0 git commit ...`. Don't make a ha
 - JSON and PostgreSQL arrays are explicit parameter representations. Generated parameter types require `sql.json(...)` and `sql.array(...)`; do not reintroduce runtime array guessing.
 - Named `$name` parameters are rewritten to PostgreSQL `$N` placeholders in first-use order. Repeated names reuse the same position; never rewrite placeholders with a regex because quoted strings, comments, and dollar-quoted bodies must remain unchanged.
 - `bun install` runs `prepare` lifecycle scripts. Don't name a script `prepare` in `package.json`; it'll loop. We use `sqlx:prepare`.
-- Watch mode depends on recursive `fs.watch` support from the active runtime. It incrementally rescans affected files and reuses unchanged cache fingerprints; config/tsconfig/schema resets must keep forcing a full prepare. Don't use chokidar; it adds dependencies for no real gain here.
+- Watch mode depends on recursive `fs.watch` support from the active runtime. It incrementally rescans affected files and reuses unchanged cache fingerprints; config/tsconfig changes must keep forcing a full prepare. Don't use chokidar; it adds dependencies for no real gain here.
 - `sql.file(path)` is root-relative. Prepare resolves against `--root`; runtime resolves against `fileRoot` (default: `process.cwd()`). Runtime file contents are immutable-cached by default; `reloadSqlFiles: true` restores development mtime checks. Keep roots aligned in embedded/package layouts.
 
 ## Where to start if you're new

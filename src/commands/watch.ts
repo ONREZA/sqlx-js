@@ -36,12 +36,7 @@ export function shouldWatchFile(filename: string, ignoredFiles: readonly string[
   return EXT_RE.test(file);
 }
 
-export type WatchPrepareHookResult = {
-  resetSession?: boolean;
-};
-
 export type WatchOptions = PrepareOptions & {
-  beforePrepare?: () => Promise<WatchPrepareHookResult | void>;
   jsonl?: boolean;
 };
 
@@ -100,10 +95,9 @@ export async function prepareWatchedOnce(
   changedFiles: readonly string[] = [],
 ): Promise<PrepareResult> {
   const active = { ...DEFAULT_DEPS, ...deps };
-  const hookResult = await opts.beforePrepare?.();
   const currentConfig = await active.loadConfig(opts.root);
   const configChanged = state.session !== null && configHash(state.session.userCfg) !== configHash(currentConfig);
-  const resetSession = hookResult?.resetSession === true || configChanged;
+  const resetSession = configChanged;
   if (resetSession) {
     await closeSession(state.session);
     state.session = null;

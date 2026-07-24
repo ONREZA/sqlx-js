@@ -36,17 +36,39 @@ test("CLI help lists the init command", () => {
 });
 
 test("CLI command help is successful and command-specific", () => {
+  const parent = mkdtempSync(join(tmpdir(), "sqlx-js-help-"));
+  const root = join(parent, "must-not-exist");
   const cases = [
-    { args: ["dev", "--help"], expected: ["usage: sqlx-js dev", "Changes target database: no"] },
-    { args: ["pgschema", "plan", "--help"], expected: ["usage: sqlx-js pgschema plan", "without applying"] },
-    { args: ["migrate", "run", "--help"], expected: ["usage: sqlx-js migrate run", "target database"] },
-    { args: ["snapshot", "dump", "--help"], expected: ["usage: sqlx-js snapshot dump", "LLM manifest"] },
+    { args: ["init"], expected: ["usage: sqlx-js init", "without replacing"] },
+    { args: ["dev"], expected: ["usage: sqlx-js dev", "Writes worktree: yes"] },
+    { args: ["verify"], expected: ["usage: sqlx-js verify", "Writes worktree: no"] },
+    { args: ["doctor"], expected: ["usage: sqlx-js doctor", "shadow permissions"] },
+    { args: ["ci"], expected: ["usage: sqlx-js ci", "provider-aware"] },
+    { args: ["prepare"], expected: ["usage: sqlx-js prepare", "Query-artifact engine"] },
+    { args: ["queries"], expected: ["usage: sqlx-js queries", "without a database"] },
+    { args: ["pgschema", "install"], expected: ["usage: sqlx-js pgschema install", "checksum"] },
+    { args: ["pgschema", "plan"], expected: ["usage: sqlx-js pgschema plan", "without applying"] },
+    { args: ["pgschema", "apply"], expected: ["usage: sqlx-js pgschema apply", "reviewed --plan"] },
+    { args: ["migrate", "add"], expected: ["usage: sqlx-js migrate add", ".up.sql and .down.sql"] },
+    { args: ["migrate", "run"], expected: ["usage: sqlx-js migrate run", "target database"] },
+    { args: ["migrate", "info"], expected: ["usage: sqlx-js migrate info", "migration history"] },
+    { args: ["migrate", "check"], expected: ["usage: sqlx-js migrate check", "filenames"] },
+    { args: ["migrate", "revert"], expected: ["usage: sqlx-js migrate revert", "Revert the latest"] },
+    { args: ["migrate", "squash"], expected: ["usage: sqlx-js migrate squash", "schema-only baseline"] },
+    { args: ["migrate", "archive"], expected: ["usage: sqlx-js migrate archive", "Inspect or restore"] },
+    { args: ["snapshot", "dump"], expected: ["usage: sqlx-js snapshot dump", "read-only"] },
+    { args: ["snapshot", "check"], expected: ["usage: sqlx-js snapshot check", "read-only"] },
   ];
-  for (const { args, expected } of cases) {
-    const r = spawnSync("bun", [binPath, ...args], { encoding: "utf8" });
-    expect(r.status).toBe(0);
-    expect(r.stderr).toBe("");
-    for (const text of expected) expect(r.stdout).toContain(text);
+  try {
+    for (const { args, expected } of cases) {
+      const r = spawnSync("bun", [binPath, ...args, "--help", "--root", root], { encoding: "utf8" });
+      expect(r.status).toBe(0);
+      expect(r.stderr).toBe("");
+      for (const text of expected) expect(r.stdout).toContain(text);
+    }
+    expect(existsSync(root)).toBe(false);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
   }
 });
 

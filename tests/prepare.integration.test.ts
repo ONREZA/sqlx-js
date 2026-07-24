@@ -1132,17 +1132,6 @@ export default {
     }
   });
 
-  test("prepare --shadow-url applies migrations before preparing", () => {
-    writeFile("a.ts",
-      "import { sql } from \"@onreza/sqlx-js\";\n" +
-      "await sql(\"SELECT id, name FROM tmp_users WHERE id = $1\", 1);\n",
-    );
-    const r = prepare(["--shadow-url", dbUrl]);
-    expect(r.code).toBe(0);
-    expect(r.stdout).toContain("shadow:");
-    expect(r.stdout).toContain("prepared 1 unique query");
-  });
-
   test("prepare prunes orphaned cache entries by default", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +

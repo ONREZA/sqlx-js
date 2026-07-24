@@ -323,7 +323,6 @@ export type PrepareOptions = {
 export type PrepareDiagnosticPhase =
   | "config"
   | "connect"
-  | "shadow"
   | "scan"
   | "describe"
   | "plan"

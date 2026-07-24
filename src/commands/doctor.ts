@@ -168,8 +168,9 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
   if (!opts.databaseUrl) {
     checks.push({ name: "database", status: "error", message: "DATABASE_URL is required for the database check" });
   } else {
-    const client = new PgClient(parseDatabaseUrl(opts.databaseUrl));
+    let client: PgClient | undefined;
     try {
+      client = new PgClient(parseDatabaseUrl(opts.databaseUrl));
       await client.connect();
       await client.describe("SELECT 1");
       const result = await client.simpleQueryAll(`
@@ -183,7 +184,6 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
       const shadowDatabaseUrl = process.env.SHADOW_DATABASE_URL;
       const shadowAdminDatabaseUrl = process.env.SHADOW_ADMIN_DATABASE_URL;
       const hasShadowFallback = Boolean(shadowDatabaseUrl || shadowAdminDatabaseUrl);
-      const needsShadowCreate = config.schema?.provider !== "pgschema";
       checks.push({
         name: "database",
         status: "ok",
@@ -196,12 +196,10 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
       });
       checks.push({
         name: "permissions",
-        status: hasSchemaUsage && (!needsShadowCreate || canCreateDatabase || hasShadowFallback) ? "ok" : "warning",
+        status: hasSchemaUsage && (canCreateDatabase || hasShadowFallback) ? "ok" : "warning",
         message: !hasSchemaUsage
           ? "current user lacks USAGE on the current schema"
-          : !needsShadowCreate
-            ? "current user can use the current schema; pgschema does not require shadow-database creation"
-            : canCreateDatabase
+          : canCreateDatabase
             ? "current user can use the current schema and create shadow databases"
             : hasShadowFallback
               ? "current user cannot create databases; a shadow database fallback is configured"
@@ -265,7 +263,7 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
     } catch (e) {
       checks.push({ name: "database", status: "error", message: (e as Error).message });
     } finally {
-      await client.end().catch(() => {});
+      await client?.end().catch(() => {});
     }
   }
 

@@ -26,26 +26,22 @@ function session(name: string, closed: string[]): PrepareSession {
   };
 }
 
-function opts(beforePrepare?: WatchOptions["beforePrepare"]): WatchOptions {
+function opts(): WatchOptions {
   return {
     root: ".",
     databaseUrl: "postgres://example",
     cacheDir: ".sqlx-js",
     dtsPath: "sqlx-js-env.d.ts",
     check: false,
-    beforePrepare,
   };
 }
 
-test("prepareWatchedOnce runs beforePrepare before every prepare and reuses session by default", async () => {
+test("prepareWatchedOnce reuses its session when config is unchanged", async () => {
   const closed: string[] = [];
   const opened: string[] = [];
-  let hooks = 0;
   let prepares = 0;
   const state: WatchState = { session: null };
-  const currentOpts = opts(async () => {
-    hooks++;
-  });
+  const currentOpts = opts();
 
   const deps = {
     loadConfig: async () => ({}),
@@ -64,20 +60,20 @@ test("prepareWatchedOnce runs beforePrepare before every prepare and reuses sess
   await prepareWatchedOnce(currentOpts, state, () => {}, () => {}, deps);
   await prepareWatchedOnce(currentOpts, state, () => {}, () => {}, deps);
 
-  expect(hooks).toBe(2);
   expect(prepares).toBe(2);
   expect(opened).toEqual(["s1"]);
   expect(closed).toEqual([]);
 });
 
-test("prepareWatchedOnce resets the session when beforePrepare reports schema changes", async () => {
+test("prepareWatchedOnce resets the session when config changes", async () => {
   const closed: string[] = [];
   const opened: string[] = [];
   const state: WatchState = { session: session("old", closed) };
-  const currentOpts = opts(async () => ({ resetSession: true }));
+  state.session!.userCfg = { scan: { include: ["old.ts"] } };
+  const currentOpts = opts();
 
   const deps = {
-    loadConfig: async () => ({}),
+    loadConfig: async () => ({ scan: { include: ["new.ts"] } }),
     scanProject: () => [],
     findSourceFiles: () => [],
     openSession: async () => {

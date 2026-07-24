@@ -56,7 +56,10 @@ inspection and generated artifacts:
 Run \`sqlx-js <command> --help\` or
 \`sqlx-js <command> <subcommand> --help\` for exact behavior and flags.
 `,
-  init: `usage: sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]`,
+  init: `usage: sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]
+
+Scaffold config, generated declaration placeholders, package scripts, and the
+selected schema source without replacing existing files.`,
   dev: `usage: sqlx-js dev [--root <dir>] [--dts <path>] [--migrations <dir>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] [--no-prune]
 
 Build the configured schema source in a disposable shadow database and
@@ -76,18 +79,23 @@ fresh query artifacts with the committed files.
 
 Writes worktree: no
 Changes target database: no`,
-  doctor: `usage: sqlx-js doctor [--root <dir>] [--dts <path>] [--json]`,
-  ci: `usage: sqlx-js ci [--root <dir>] [--dts <path>] [--json] [--shadow-url <url>] [--shadow-admin-url <url>] [--migrations <dir>]
+  doctor: `usage: sqlx-js doctor [--root <dir>] [--dts <path>] [--json]
+
+Inspect runtime, config, environment, generated artifacts, PostgreSQL
+connectivity and shadow permissions, runtime types, and pgschema availability.`,
+  ci: `usage: sqlx-js ci [--root <dir>] [--dts <path>] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--migrations <dir>]
 
 Run provider-aware \`verify\`, then the database-free artifact consistency
 check. This validates the proposed schema source without changing the target
 database. Run \`pgschema plan\` or \`migrate run --dry-run\` separately for
-target deployment drift.`,
+target deployment drift.
+
+--migrations applies only to the built-in provider.`,
   pgschema: `usage: sqlx-js pgschema install | plan | apply
 
 Manage the pinned pgschema tool and target-database deployment plans.
 Use provider-aware \`sqlx-js dev\` and \`sqlx-js verify\` for shadow validation.`,
-  prepare: `usage: sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune] [--shadow-url <url>]
+  prepare: `usage: sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune]
 
 Query-artifact engine:
   prepare             regenerate artifacts against DATABASE_URL
@@ -97,22 +105,25 @@ Query-artifact engine:
   prepare --verify    compare fresh artifacts against a supplied live database
 
 For schema-source validation prefer \`sqlx-js dev\` or \`sqlx-js verify\`.`,
-  queries: `usage: sqlx-js queries [--json] [--embed <path>] [--root <dir>]`,
+  queries: `usage: sqlx-js queries [--json] [--embed <path>] [--root <dir>]
+
+Scan source without a database and report query call sites, cache status,
+validation mode, profiles, definitions, and referenced SQL files.`,
   migrate: `usage: sqlx-js migrate add|run|info|check|revert|squash|archive
 
 Manage built-in migration files and target history. Use provider-aware
 \`sqlx-js dev\` and \`sqlx-js verify\` for shadow validation.`,
   snapshot: `usage: sqlx-js snapshot dump | check
 
-Generate or compare the schema snapshot used by sql.id() and the optional
-LLM-facing manifest.`,
+Read DATABASE_URL or an explicit --shadow-url to generate or compare the
+schema snapshot used by sql.id() and the optional LLM-facing manifest.`,
 };
 
 const SUBCOMMAND_HELP: Record<string, string> = {
   "pgschema:install": `usage: sqlx-js pgschema install [--root <dir>]
 
-Download and checksum the pinned pgschema binary. Run \`sqlx-js doctor\` to
-verify the configured provider and toolchain.`,
+Download and checksum the pinned pgschema binary. \`sqlx-js doctor\` reports
+its availability as part of full-project diagnostics.`,
   "pgschema:plan": `usage: sqlx-js pgschema plan [--root <dir>] [-- <pgschema args>]
 
 Plan target-database changes from schema.sql without applying them.`,
@@ -132,22 +143,25 @@ Inspect target migration history without changing it.`,
 
 Validate migration filenames, versions, down files, and squash metadata
 without a database.`,
-  "migrate:revert": `usage: sqlx-js migrate revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>]
+  "migrate:revert": `usage: sqlx-js migrate revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--root <dir>] [--migrations <dir>]
 
 Revert the latest target migration, or validate its down migration in a
 shadow transaction with --dry-run.`,
-  "migrate:squash": `usage: sqlx-js migrate squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>]
+  "migrate:squash": `usage: sqlx-js migrate squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] [--root <dir>] [--migrations <dir>]
 
 Build migrations in a shadow database and write one schema-only baseline.`,
-  "migrate:archive": `usage: sqlx-js migrate archive list | restore <name> [--force]
+  "migrate:archive": `usage: sqlx-js migrate archive list [--root <dir>] [--migrations <dir>]
+       sqlx-js migrate archive restore <name> [--force] [--root <dir>] [--migrations <dir>]
 
 Inspect or restore migration files archived by migrate squash --replace.`,
-  "snapshot:dump": `usage: sqlx-js snapshot dump [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>]
+  "snapshot:dump": `usage: sqlx-js snapshot dump [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>] [--root <dir>]
 
-Write the schema snapshot and optional LLM manifest from a live database.`,
-  "snapshot:check": `usage: sqlx-js snapshot check [--schema <path>] [--shadow-url <url>]
+Write the schema snapshot and optional LLM manifest from DATABASE_URL or the
+explicit --shadow-url. The selected database is read-only.`,
+  "snapshot:check": `usage: sqlx-js snapshot check [--schema <path>] [--shadow-url <url>] [--root <dir>]
 
-Compare the committed schema snapshot with a live database without writing.`,
+Compare the committed schema snapshot with DATABASE_URL or the explicit
+--shadow-url. The selected database is read-only.`,
 };
 
 function helpText(scope: HelpScope, args: string[] = []): string {
@@ -242,8 +256,6 @@ function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfi
       json: { type: "boolean" },
       jsonl: { type: "boolean" },
       "no-prune": { type: "boolean" },
-      "shadow-url": { type: "string" },
-      migrations: { type: "string" },
       "strict-inference": { type: "boolean" },
     };
   }
@@ -253,7 +265,6 @@ function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfi
       ...ROOT_OPTIONS,
       schema: { type: "string" },
       "shadow-url": { type: "string" },
-      migrations: { type: "string" },
     } satisfies ParseArgsOptionsConfig;
     return subcommand === "dump"
       ? { ...common, manifest: { type: "string" }, "no-manifest": { type: "boolean" } }
@@ -298,7 +309,7 @@ try {
     allowPositionals: true,
   });
 } catch (error) {
-  usageError((error as Error).message, scope);
+  usageError((error as Error).message, scope, commandArgv);
 }
 const values = parsed.values;
 const positionals = parsed.positionals;
@@ -314,7 +325,11 @@ function flag(name: string): boolean {
 
 function requirePositionals(min: number, max: number, label: string): void {
   if (positionals.length < min || positionals.length > max) {
-    usageError(`${label}: expected ${min === max ? min : `${min} to ${max}`} positional argument(s)`, scope);
+    usageError(
+      `${label}: expected ${min === max ? min : `${min} to ${max}`} positional argument(s)`,
+      scope,
+      commandArgv,
+    );
   }
 }
 
@@ -364,12 +379,14 @@ function validateInvocation(): void {
     const action = positionals[1];
     if (action === "list") {
       requirePositionals(2, 2, "migrate archive list");
-      if (flag("--force")) usageError("--force is only supported by migrate archive restore", "migrate");
+      if (flag("--force")) {
+        usageError("--force is only supported by migrate archive restore", "migrate", commandArgv);
+      }
     } else if (action === "restore") requirePositionals(3, 3, "migrate archive restore");
-    else usageError(`unknown migrate archive command ${JSON.stringify(action)}`, "migrate");
+    else usageError(`unknown migrate archive command ${JSON.stringify(action)}`, "migrate", commandArgv);
     return;
   }
-  usageError(`unknown migrate command ${JSON.stringify(sub)}`, "migrate");
+  usageError(`unknown migrate command ${JSON.stringify(sub)}`, "migrate", commandArgv);
 }
 
 validateInvocation();
@@ -441,8 +458,14 @@ if (needsEnvironment) {
 }
 const databaseUrl = process.env.DATABASE_URL ?? "";
 const shadowUrlArg = arg("--shadow-url");
-const shadowUrl = shadowUrlArg ?? process.env.SHADOW_DATABASE_URL;
-const shadowAdminUrl = arg("--shadow-admin-url") ?? process.env.SHADOW_ADMIN_DATABASE_URL;
+const shadowAdminUrlArg = arg("--shadow-admin-url");
+if (shadowUrlArg !== undefined && shadowAdminUrlArg !== undefined) {
+  usageError("--shadow-url and --shadow-admin-url are mutually exclusive", scope, commandArgv);
+}
+const shadowUrl = shadowUrlArg ?? (shadowAdminUrlArg === undefined ? process.env.SHADOW_DATABASE_URL : undefined);
+const shadowAdminUrl = shadowUrl === undefined
+  ? shadowAdminUrlArg ?? process.env.SHADOW_ADMIN_DATABASE_URL
+  : undefined;
 const cacheDir = join(root, ".sqlx-js");
 const dtsArg = arg("--dts");
 const dtsPath = dtsArg ? resolve(root, dtsArg) : join(root, "sqlx-js-env.d.ts");
@@ -461,6 +484,11 @@ function parseLockTimeout(): number | undefined {
   return timeout;
 }
 
+function failCommand(error: unknown, exitCode = 1): never {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(exitCode);
+}
+
 if (cmd === "init") {
   const { runInit } = await import("../src/commands/init");
   const provider = arg("--schema-provider", "builtin");
@@ -468,7 +496,11 @@ if (cmd === "init") {
     console.error("--schema-provider must be builtin or pgschema");
     process.exit(2);
   }
-  runInit({ root, schemaProvider: provider });
+  try {
+    runInit({ root, schemaProvider: provider });
+  } catch (error) {
+    failCommand(error);
+  }
 } else if (cmd === "dev" || cmd === "verify") {
   if (!databaseUrl && !shadowUrl) {
     console.error(`DATABASE_URL is required for ${cmd} (or pass --shadow-url)`);
@@ -523,12 +555,20 @@ if (cmd === "init") {
       lockTimeoutMs,
       strictInference: flag("--strict-inference"),
     };
-    if (cmd === "dev") await migrateDev({ ...opts, prune: !flag("--no-prune") });
-    else await migrateVerify(opts);
+    try {
+      if (cmd === "dev") await migrateDev({ ...opts, prune: !flag("--no-prune") });
+      else await migrateVerify(opts);
+    } catch (error) {
+      failCommand(error);
+    }
   }
 } else if (cmd === "doctor") {
   const { runDoctor } = await import("../src/commands/doctor");
-  await runDoctor({ root, databaseUrl, cacheDir, dtsPath, json: flag("--json"), envError });
+  try {
+    await runDoctor({ root, databaseUrl, cacheDir, dtsPath, json: flag("--json"), envError });
+  } catch (error) {
+    failCommand(error);
+  }
 } else if (cmd === "ci") {
   const { runCi } = await import("../src/commands/ci");
   runCi({
@@ -549,8 +589,7 @@ if (cmd === "init") {
   } = await import("../src/commands/pgschema");
   const sub = positionals[0];
   const failPgschema = (error: unknown): never => {
-    console.error((error as Error).message);
-    process.exit(error instanceof PgschemaCommandError ? error.exitCode : 2);
+    failCommand(error, error instanceof PgschemaCommandError ? error.exitCode : 2);
   };
   if (sub === "install") {
     try {
@@ -614,12 +653,6 @@ if (cmd === "init") {
   if ([prepareCheck, prepareOffline, prepareVerify, prepareWatch].filter(Boolean).length > 1) {
     failPrepare("--check, --offline, --verify, and --watch are mutually exclusive", "config");
   }
-  if ((prepareCheck || prepareOffline) && shadowUrlArg) {
-    failPrepare(
-      "--shadow-url cannot be used with offline prepare modes; use live prepare or snapshot check --shadow-url",
-      "config",
-    );
-  }
   if (prepareWatch && prepareJson) {
     failPrepare("--watch and --json are mutually exclusive", "config");
   }
@@ -632,14 +665,12 @@ if (cmd === "init") {
   if ((prepareCheck || prepareOffline || prepareVerify) && flag("--no-prune")) {
     failPrepare("--no-prune is only supported by live prepare and prepare --watch", "config");
   }
-  const prepareShadowUrl = prepareCheck || prepareOffline ? undefined : shadowUrl;
-  const prepareDatabaseUrl = prepareShadowUrl ?? databaseUrl;
-  if (!prepareCheck && !prepareOffline && !prepareDatabaseUrl) {
+  if (!prepareCheck && !prepareOffline && !databaseUrl) {
     failPrepare("DATABASE_URL is required for prepare (use --check or --offline without a database)", "connect");
   }
   const opts = {
     root,
-    databaseUrl: prepareDatabaseUrl,
+    databaseUrl,
     cacheDir,
     dtsPath,
     check: prepareCheck,
@@ -649,35 +680,13 @@ if (cmd === "init") {
     prune: !flag("--no-prune"),
     strictInference: flag("--strict-inference"),
   };
-  const applyShadowMigrations = prepareShadowUrl
-    ? (await import("../src/commands/schema")).applyShadowMigrations
-    : undefined;
   if (prepareWatch) {
     const { runWatch } = await import("../src/commands/watch");
     await runWatch({
       ...opts,
       jsonl: prepareJsonl,
-      ...(prepareShadowUrl
-        ? {
-            beforePrepare: async () => {
-              const result = await applyShadowMigrations!(prepareShadowUrl, migrationsDir);
-              return { resetSession: result.applied > 0 };
-            },
-          }
-        : {}),
     });
   } else {
-    if (prepareShadowUrl) {
-      try {
-        await applyShadowMigrations!(
-          prepareShadowUrl,
-          migrationsDir,
-          prepareJson ? () => {} : console.log,
-        );
-      } catch (e) {
-        failPrepare((e as Error).message, "shadow", 1);
-      }
-    }
     try {
       await runPrepare(opts);
     } catch (e) {
@@ -728,21 +737,23 @@ if (cmd === "init") {
 } else if (cmd === "snapshot") {
   const { runSchemaCheck, runSchemaDump } = await import("../src/commands/schema");
   const sub = positionals[0];
-  const schemaDatabaseUrl = shadowUrl ?? databaseUrl;
+  const schemaDatabaseUrl = shadowUrlArg ?? databaseUrl;
   if (!schemaDatabaseUrl) {
     console.error("DATABASE_URL is required for snapshot commands (or pass --shadow-url)");
     process.exit(2);
   }
   const opts = {
-    databaseUrl,
+    databaseUrl: schemaDatabaseUrl,
     snapshotPath: schemaPath,
     manifestPath,
     writeManifest: !flag("--no-manifest"),
-    shadowUrl,
-    migrationsDir,
   };
-  if (sub === "dump") await runSchemaDump(opts);
-  else if (sub === "check") await runSchemaCheck(opts);
+  try {
+    if (sub === "dump") await runSchemaDump(opts);
+    else if (sub === "check") await runSchemaCheck(opts);
+  } catch (error) {
+    failCommand(error);
+  }
 } else if (cmd === "migrate") {
   const {
     migrateArchiveList,
@@ -762,45 +773,49 @@ if (cmd === "init") {
     process.exit(2);
   }
   const lockTimeoutMs = parseLockTimeout();
-  if (sub === "run") {
-    await migrateRun({ databaseUrl, migrationsDir, lockTimeoutMs, dryRun: flag("--dry-run"), json: flag("--json") });
-  } else if (sub === "info") {
-    await migrateInfo({ databaseUrl, migrationsDir, json: flag("--json") });
-  } else if (sub === "check") {
-    migrateCheck({ migrationsDir, json: flag("--json") });
-  } else if (sub === "revert") {
-    await migrateRevert({
-      databaseUrl,
-      migrationsDir,
-      lockTimeoutMs,
-      dryRun: flag("--dry-run"),
-      shadowUrl,
-      shadowAdminUrl,
-      json: flag("--json"),
-    });
-  } else if (sub === "add") {
-    const name = positionals[1]!;
-    migrateAdd({ databaseUrl, migrationsDir, name });
-  } else if (sub === "squash") {
-    const name = positionals[1]!;
-    await migrateSquash({
-      databaseUrl,
-      migrationsDir,
-      name,
-      shadowUrl,
-      shadowAdminUrl,
-      replace: flag("--replace"),
-      pgDumpPath: arg("--pg-dump"),
-      lockTimeoutMs,
-    });
-  } else if (sub === "archive") {
-    const action = positionals[1];
-    if (action === "list") {
-      migrateArchiveList({ migrationsDir });
-    } else if (action === "restore") {
-      const name = positionals[2]!;
-      migrateArchiveRestore({ migrationsDir, name, force: flag("--force") });
+  try {
+    if (sub === "run") {
+      await migrateRun({ databaseUrl, migrationsDir, lockTimeoutMs, dryRun: flag("--dry-run"), json: flag("--json") });
+    } else if (sub === "info") {
+      await migrateInfo({ databaseUrl, migrationsDir, json: flag("--json") });
+    } else if (sub === "check") {
+      migrateCheck({ migrationsDir, json: flag("--json") });
+    } else if (sub === "revert") {
+      await migrateRevert({
+        databaseUrl,
+        migrationsDir,
+        lockTimeoutMs,
+        dryRun: flag("--dry-run"),
+        shadowUrl,
+        shadowAdminUrl,
+        json: flag("--json"),
+      });
+    } else if (sub === "add") {
+      const name = positionals[1]!;
+      migrateAdd({ databaseUrl, migrationsDir, name });
+    } else if (sub === "squash") {
+      const name = positionals[1]!;
+      await migrateSquash({
+        databaseUrl,
+        migrationsDir,
+        name,
+        shadowUrl,
+        shadowAdminUrl,
+        replace: flag("--replace"),
+        pgDumpPath: arg("--pg-dump"),
+        lockTimeoutMs,
+      });
+    } else if (sub === "archive") {
+      const action = positionals[1];
+      if (action === "list") {
+        migrateArchiveList({ migrationsDir });
+      } else if (action === "restore") {
+        const name = positionals[2]!;
+        migrateArchiveRestore({ migrationsDir, name, force: flag("--force") });
+      }
     }
+  } catch (error) {
+    failCommand(error);
   }
 } else {
   usageError(`unknown command ${JSON.stringify(cmd)}`);
