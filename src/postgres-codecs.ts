@@ -38,6 +38,12 @@ type CompositeField = {
   typeOid: number;
 };
 
+type DescriptorType = {
+  key: string;
+  schema: string;
+  name: string;
+};
+
 const BUILTIN_CODECS: RuntimeTypeCodecs = {
   vector: { parse: parseVector, serialize: serializeVector },
   halfvec: { parse: parseVector, serialize: serializeVector },
@@ -209,10 +215,12 @@ export class PostgresTypeRegistry {
   private pending: Promise<void> | undefined;
   private complete = false;
   private readonly client: CodecClient;
+  private readonly descriptorOids = new Map<string, number>();
 
   constructor(
     client: unknown,
     private readonly codecs: RuntimeTypeCodecs = {},
+    private readonly descriptorTypes: readonly DescriptorType[] = [],
   ) {
     this.client = client as CodecClient;
   }
@@ -223,6 +231,9 @@ export class PostgresTypeRegistry {
       !this.client.options.parsers
       || !this.client.options.serializers
     ) {
+      if (this.descriptorTypes.length > 0) {
+        throw new Error("sqlx-js: queryDescriptors require the integrated PostgreSQL driver");
+      }
       this.complete = true;
       return undefined;
     }
@@ -241,6 +252,17 @@ export class PostgresTypeRegistry {
     return this.pending;
   }
 
+  descriptorOid(key: string): number {
+    const oid = this.descriptorOids.get(key);
+    if (oid === undefined) {
+      throw new Error(
+        `sqlx-js: queryDescriptors reference unresolved PostgreSQL type ${key}. `
+        + "Run `sqlx-js prepare` against the deployed schema",
+      );
+    }
+    return oid;
+  }
+
   private codecFor(type: TypeRow): { codec: RuntimeTypeCodec; user: boolean } | undefined {
     const qualified = this.codecs[`${type.schema}.${type.name}`];
     if (qualified) return { codec: qualified, user: true };
@@ -251,6 +273,32 @@ export class PostgresTypeRegistry {
   }
 
   private async install(): Promise<void> {
+    if (this.descriptorTypes.length > 0) {
+      const requested = this.descriptorTypes
+        .map((type) => `(n.nspname = ${sqlLiteral(type.schema)} AND t.typname = ${sqlLiteral(type.name)})`)
+        .join(" OR ");
+      const rows = await this.client.unsafe(`
+        SELECT n.nspname, t.typname, t.oid::int8
+        FROM pg_catalog.pg_type t
+        JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+        WHERE ${requested}
+        ORDER BY n.nspname, t.typname
+      `, []).values();
+      const resolved = new Map(rows.map((row) => [
+        JSON.stringify([String(row[0]), String(row[1])]),
+        numberValue(row[2]),
+      ]));
+      for (const type of this.descriptorTypes) {
+        const oid = resolved.get(type.key);
+        if (oid === undefined) {
+          throw new Error(
+            `sqlx-js: queryDescriptors type ${type.schema}.${type.name} does not exist. `
+            + "Run `sqlx-js prepare` against the deployed schema",
+          );
+        }
+        this.descriptorOids.set(type.key, oid);
+      }
+    }
     const requestedNames = new Set([...Object.keys(BUILTIN_CODECS), ...Object.keys(this.codecs)]
       .map((name) => name.split(".").at(-1)!)
       .filter(Boolean));

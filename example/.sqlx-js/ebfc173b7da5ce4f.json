@@ -9,6 +9,13 @@
     0,
     23
   ],
+  "paramTypeIdentities": [
+    {
+      "schema": "public",
+      "name": "user_role"
+    },
+    23
+  ],
   "paramTsTypes": [
     "\"admin\" | \"editor\" | \"viewer\"",
     "number"

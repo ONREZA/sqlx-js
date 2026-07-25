@@ -113,6 +113,39 @@ When a workspace package exports database source to other TypeScript programs, b
 
 The scanner recognizes clients assigned directly from an imported `createSqlClient(...)` (including aliased and namespace imports), so `client.sql(...)`, its cardinality helpers, file queries, and transactions participate in `prepare` exactly like the global `sql` surface.
 
+## Prepared runtime descriptors
+
+`prepare` derives `.sqlx-js/runtime-descriptors.json` for parameterized known
+queries from the canonical per-query cache. Parameterless queries already use
+one write and need no descriptor. Import the JSON explicitly and pass it to
+each managed client that should use the one-write parameter path:
+
+```ts
+import { createSqlClient } from "@onreza/sqlx-js";
+import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
+
+const db = createSqlClient(process.env.DATABASE_URL, { queryDescriptors });
+```
+
+There is no runtime filesystem lookup. The JSON is a generated, committed
+artifact and works with the supported Node, Bun, and Deno baselines. For a
+profiled client, pass the same JSON together with the exact generated profile;
+the runtime selects that profile's query map and verifies its PostgreSQL role.
+
+For a matching query, built-in type OIDs are used directly. Database-local
+types are stored as schema-qualified names and resolved once per pool
+generation before application SQL is dispatched. The driver then sends
+`Parse`, `Bind`, `Describe Portal`, `Execute`, and `Sync` in one write while
+retaining PostgreSQL's live `RowDescription`.
+
+Omitting `queryDescriptors`, or executing a query absent from the selected
+map, preserves the adaptive describe path. A supplied artifact with an
+incompatible revision, malformed matching contract, wrong profile role, or
+missing database-local type fails closed. PostgreSQL validates the SQL and
+declared parameter types during `Parse`; if they no longer fit the live schema,
+the following `Execute` is not processed. The descriptor path does not add
+named statements, automatic replay, runtime result validation, or pipelining.
+
 ## `clearSqlFileCache()`
 
 Drops the in-memory cache used by `sql.file(...)`. Files are immutable after their first read by default, avoiding a synchronous `stat` call for every query. Call this after a development-time file change or set `reloadSqlFiles: true` on the client to restore mtime-based reloading.

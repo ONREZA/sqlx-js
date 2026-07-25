@@ -65,6 +65,11 @@ import {
 } from "../enum-catalog";
 import { containsUnknownType } from "../type-inspection";
 import { originalPosition, rewriteNamedParameters } from "../sql-params";
+import {
+  renderRuntimeDescriptors,
+  runtimeDescriptorPath,
+  writeRuntimeDescriptors,
+} from "../runtime-descriptor-artifact";
 
 const JSON_OIDS = new Set([114, 3802]);
 const JSON_ARRAY_OIDS = new Set([199, 3807]);
@@ -995,6 +1000,14 @@ export async function prepareOnce(
       validation: r.validation,
       ...siteUsage(r.sites),
       paramOids: r.paramOids.map(portableCacheOid),
+      paramTypeIdentities: r.paramOids.map((oid) => {
+        if (isBuiltinOid(oid)) return oid;
+        const identity = schema.typeIdentity(oid);
+        if (!identity) {
+          throw new Error(`sqlx-js: PostgreSQL type OID ${oid} has no stable schema-qualified identity`);
+        }
+        return identity;
+      }),
       paramTsTypes,
       paramNullable,
       ...(r.paramNames.length > 0 ? { paramNames: r.paramNames } : {}),
@@ -1088,7 +1101,9 @@ export async function prepareOnce(
       diagnostics.push({ severity: "warning", phase: "cache", message });
       log(message);
     }
-    writeCacheManifest(opts.cacheDir, prepareConfigHash(userCfg));
+    const configHash = prepareConfigHash(userCfg);
+    writeRuntimeDescriptors(opts.cacheDir, entries, configHash, userCfg.profiles);
+    writeCacheManifest(opts.cacheDir, configHash);
     emitDts(opts.dtsPath, entries, functions, userCfg.customTypes, userCfg.profiles);
     if (enumModule) writeEnumCatalogModule(enumModule.path, enumModule.content);
   } catch (error) {
@@ -1283,6 +1298,21 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
             });
             inferenceFailures++;
           }
+          const expectedDescriptors = renderRuntimeDescriptors(
+            entries,
+            prepareConfigHash(userCfg),
+            userCfg.profiles,
+          );
+          const descriptorPath = runtimeDescriptorPath(opts.cacheDir);
+          if (!existsSync(descriptorPath) || readFileSync(descriptorPath, "utf8") !== expectedDescriptors) {
+            diagnostics.push({
+              severity: "error",
+              phase: "cache",
+              message: "generated runtime descriptor is stale or missing",
+              file: relative(opts.root, descriptorPath).replace(/\\/g, "/"),
+            });
+            inferenceFailures++;
+          }
           if (enumOutput) {
             const generatedEnums = renderEnumCatalog(enums, userCfg.enumCatalog);
             if (!existsSync(enumOutput) || readFileSync(enumOutput, "utf8") !== generatedEnums) {
@@ -1330,6 +1360,12 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
       }
       if (opts.offline) {
         emitDts(opts.dtsPath, entries, functions, userCfg.customTypes, userCfg.profiles);
+        writeRuntimeDescriptors(
+          opts.cacheDir,
+          entries,
+          prepareConfigHash(userCfg),
+          userCfg.profiles,
+        );
         if (enumOutput) writeEnumCatalogModule(enumOutput, renderEnumCatalog(enums, userCfg.enumCatalog));
       }
     } catch (error) {

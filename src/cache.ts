@@ -1,12 +1,16 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import {
+  CACHE_FORMAT_VERSION,
+  GENERATOR_REVISION,
+  RUNTIME_DESCRIPTOR_FILE,
+} from "./artifact-versions";
 import { isBuiltinOid } from "./pg/oids";
 import { queryId } from "./query-id";
 import { rewriteNamedParameters } from "./sql-params";
 
-export const CACHE_FORMAT_VERSION = 3;
-export const GENERATOR_REVISION = 18;
+export { CACHE_FORMAT_VERSION, GENERATOR_REVISION };
 export const CACHE_MANIFEST_FILE = "cache-manifest.json";
 
 export class CacheManifestStaleError extends Error {
@@ -36,6 +40,7 @@ export type CacheEntry = {
   validation?: "planned" | "parse-only";
   inlineQueries?: string[];
   paramOids: number[];
+  paramTypeIdentities: (number | { schema: string; name: string })[];
   paramTsTypes: string[];
   paramNullable?: boolean[];
   paramNames?: string[];
@@ -91,6 +96,41 @@ function assertEntryShape(fp: string, raw: unknown): CacheEntry {
   }
   const cols = (raw as { columns: unknown[] }).columns;
   const entry = raw as Record<string, unknown>;
+  if (
+    !Array.isArray(entry.paramOids)
+    || !Array.isArray(entry.paramTypeIdentities)
+    || !Array.isArray(entry.paramTsTypes)
+  ) {
+    throw new Error(
+      `sqlx-js: cache entry ${fp}.json has invalid parameter type identities. Run \`sqlx-js prepare\`.`,
+    );
+  }
+  const paramOids = entry.paramOids;
+  const paramTypeIdentities = entry.paramTypeIdentities;
+  const paramTsTypes = entry.paramTsTypes;
+  if (
+    paramOids.some((oid) => !Number.isSafeInteger(oid) || oid < 0)
+    || paramOids.length !== paramTsTypes.length
+    || paramTypeIdentities.length !== paramTsTypes.length
+    || paramTypeIdentities.some((identity, index) => {
+      if (typeof identity === "number") {
+        return !isBuiltinOid(identity) || paramOids[index] !== identity;
+      }
+      return (
+        paramOids[index] !== 0
+        || !identity
+        || typeof identity !== "object"
+        || typeof (identity as { schema?: unknown }).schema !== "string"
+        || !(identity as { schema: string }).schema
+        || typeof (identity as { name?: unknown }).name !== "string"
+        || !(identity as { name: string }).name
+      );
+    })
+  ) {
+    throw new Error(
+      `sqlx-js: cache entry ${fp}.json has invalid parameter type identities. Run \`sqlx-js prepare\`.`,
+    );
+  }
   if (entry.validation !== undefined && entry.validation !== "planned" && entry.validation !== "parse-only") {
     throw new Error(`sqlx-js: cache entry ${fp}.json has invalid validation metadata. Run \`sqlx-js prepare\`.`);
   }
@@ -182,7 +222,11 @@ export class Cache {
   list(): { fp: string; entry: CacheEntry }[] {
     if (!existsSync(this.dir)) return [];
     return readdirSync(this.dir)
-      .filter((f) => f !== CACHE_MANIFEST_FILE && f.endsWith(".json") && !f.includes(".tmp-"))
+      .filter((f) =>
+        f !== CACHE_MANIFEST_FILE
+        && f !== RUNTIME_DESCRIPTOR_FILE
+        && f.endsWith(".json")
+        && !f.includes(".tmp-"))
       .map((f) => {
         const fp = f.replace(/\.json$/, "");
         return { fp, entry: assertEntryShape(fp, parseEntryJson(join(this.dir, f))) };

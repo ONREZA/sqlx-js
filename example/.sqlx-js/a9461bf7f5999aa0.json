@@ -10,6 +10,11 @@
     25,
     3802
   ],
+  "paramTypeIdentities": [
+    25,
+    25,
+    3802
+  ],
   "paramTsTypes": [
     "string",
     "string",

@@ -85,7 +85,6 @@ known query:
 - the rewritten positional SQL and stable query ID;
 - parameter codec identities expressed by PostgreSQL type identity rather than
   database-local numeric OID;
-- result column layout, cardinality, and output-name mapping;
 - the connection profile that owns the query contract.
 
 At pool generation bootstrap, the runtime resolves descriptor type identities
@@ -105,10 +104,11 @@ The runtime cannot recover application-specific prepare artifacts from
 TypeScript declarations after type erasure. The descriptor therefore needs an
 explicit delivery contract:
 
-1. Generate a portable TypeScript module and pass its exported descriptor map
-   once to `createSqlClient(...)`. This is the recommended direction because it
-   works with Node, Bun, Deno, bundlers, serverless packaging, and monorepos
-   without runtime filesystem discovery.
+1. Generate `.sqlx-js/runtime-descriptors.json` from the canonical per-query
+   cache and pass its imported value once to `createSqlClient(...)`. This is the
+   selected direction because Node, Bun, Deno, bundlers, serverless packaging,
+   and monorepos can carry it without runtime filesystem discovery. JSON also
+   stays outside TypeScript lint and source transforms.
 2. Load `.sqlx-js/` implicitly from the current working directory. This keeps
    the call site shorter but makes packaged applications, multiple registries,
    `fileRoot`, and startup failures ambiguous. Do not choose this by default.
@@ -116,7 +116,7 @@ explicit delivery contract:
    provide the smallest call site but adds a second transformation toolchain
    and is outside the current library boundary.
 
-The generated module should use stable PostgreSQL type identities for
+The generated JSON uses stable PostgreSQL type identities for
 database-local types and may retain built-in OIDs. The runtime resolves those
 identities once per pool generation, encodes all parameters before dispatch,
 and includes the resolved parameter OIDs in `Parse`. PostgreSQL can then fail
@@ -251,6 +251,19 @@ portable descriptor generation and per-generation type resolution. It does
 not validate database-local type identities, artifact delivery, schema drift,
 profile binding, or stale-contract diagnostics; those remain required before
 the path can serve application queries.
+
+The production implementation now closes those gates with a derived JSON
+artifact, schema-qualified database-local type resolution, exact profile/role
+binding, and cache/check/offline/verify integration. Missing descriptors keep
+the adaptive path; a supplied incompatible descriptor fails before application
+SQL dispatch. PostgreSQL still supplies the live portal `RowDescription`.
+
+A three-round, alternating-order public-path smoke test on the same local
+hardware measured managed `simple-concurrent` at a median 17,437 ops/s
+adaptive versus 26,424 ops/s with `queryDescriptors` (+51.5%). Median p50
+fell from 0.421 ms to 0.271 ms. These short windows validate that artifact
+lookup and managed dispatch retain the MVP's material gain; they are not a
+machine-independent throughput claim.
 
 [Benchmark methodology](./benchmarks.md) · [Runtime contract](./runtime.md) ·
 [Documentation index](./README.md)

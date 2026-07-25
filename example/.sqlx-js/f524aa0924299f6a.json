@@ -9,6 +9,10 @@
     25,
     23
   ],
+  "paramTypeIdentities": [
+    25,
+    23
+  ],
   "paramTsTypes": [
     "string",
     "number"

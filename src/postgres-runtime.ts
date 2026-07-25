@@ -21,13 +21,20 @@ import {
   type RuntimeTransactionOptions,
 } from "./runtime";
 import {
+  EXECUTE_KNOWN_PARAMS,
   createPostgresClient,
+  type KnownParamsQueryClient,
   type PostgresClient as InternalPostgresClient,
   type PostgresOptions as InternalPostgresOptions,
   type PostgresQueryClient,
   type PostgresType,
 } from "./pg/driver";
 import { PostgresTypeRegistry, type RuntimeTypeCodecs } from "./postgres-codecs";
+import {
+  prepareRuntimeDescriptors,
+  type PreparedRuntimeDescriptors,
+  type RuntimeQueryDescriptors,
+} from "./runtime-descriptors";
 import { queryId } from "./query-id";
 import type { QueryExecutionMetadata } from "./query";
 import { validateTransactionSettings, type DatabaseProfile } from "./config";
@@ -97,6 +104,7 @@ export type CreateSqlClientOptions = CreateClientOptions & {
   reloadSqlFiles?: boolean;
   sqlFiles?: Readonly<Record<string, string>>;
   typeCodecs?: RuntimeTypeCodecs;
+  queryDescriptors?: RuntimeQueryDescriptors;
 };
 type PendingQuery = PromiseLike<RuntimeQueryResult> & {
   cancel?: () => unknown;
@@ -180,6 +188,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
   private readonly cancelGraceMs: number;
   private readonly profile?: DatabaseProfile;
   private readonly typeCodecs?: RuntimeTypeCodecs;
+  private readonly descriptors?: PreparedRuntimeDescriptors;
   private readonly createPool: () => PostgresClient;
   private current: PoolGeneration;
   private generations = new Set<PoolGeneration>();
@@ -220,6 +229,9 @@ class ManagedPostgresRuntime implements RuntimeClient {
     this.reloadSqlFiles = options.reloadSqlFiles ?? false;
     this.sqlFiles = options.sqlFiles;
     this.typeCodecs = options.typeCodecs;
+    this.descriptors = options.queryDescriptors
+      ? prepareRuntimeDescriptors(options.queryDescriptors, this.profile)
+      : undefined;
     this.current = this.createGeneration();
   }
 
@@ -431,7 +443,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
     const generation: PoolGeneration = {
       id: this.nextGeneration++,
       pool,
-      registry: new PostgresTypeRegistry(pool, this.typeCodecs),
+      registry: new PostgresTypeRegistry(pool, this.typeCodecs, this.descriptors?.types),
       state: "healthy",
       active: new Map(),
       driverPending: new Set(),
@@ -509,10 +521,9 @@ class ManagedPostgresRuntime implements RuntimeClient {
     operation.phase = "execution";
     const params = this.encodeParams(generation.pool, request.params);
     this.checkOperation(operation);
-    const pending = generation.pool.unsafe(
-      request.query,
-      params as never[],
-    ) as unknown as PendingQuery;
+    const pending = this.descriptors
+      ? this.pendingQuery(generation, generation.pool, request, params)
+      : generation.pool.unsafe(request.query, params as never[]) as unknown as PendingQuery;
     this.checkOperation(operation);
     operation.pending = pending;
     operation.sent = true;
@@ -618,10 +629,9 @@ class ManagedPostgresRuntime implements RuntimeClient {
         expire?.();
       }
       if (state.expired) throw state.expired;
-      pending = client.unsafe(
-        request.query,
-        params as never[],
-      ) as unknown as PendingQuery;
+      pending = this.descriptors
+        ? this.pendingQuery(generation, client, request, params)
+        : client.unsafe(request.query, params as never[]) as unknown as PendingQuery;
       this.checkTransactionState(state);
       if (deadlineAt !== undefined && performance.now() >= deadlineAt && !state.expired) {
         expire?.();
@@ -854,6 +864,31 @@ class ManagedPostgresRuntime implements RuntimeClient {
 
   private encodeParams(client: PostgresClient, params: unknown[]): unknown[] {
     return params.length === 0 ? params : params.map((param) => this.encodeParam(client, param));
+  }
+
+  private pendingQuery(
+    generation: PoolGeneration,
+    client: PostgresQueryClient,
+    request: RuntimeQueryRequest,
+    params: unknown[],
+  ): PendingQuery {
+    const descriptor = this.descriptors!.queries.get(request.metadata.queryId);
+    if (!descriptor) {
+      return client.unsafe(request.query, params as never[]) as unknown as PendingQuery;
+    }
+    if (descriptor.params.length !== params.length) {
+      throw new Error(
+        `sqlx-js: runtime descriptor ${request.metadata.queryId} expects `
+        + `${descriptor.params.length} parameter(s), received ${params.length}`,
+      );
+    }
+    const executeKnown = (client as PostgresQueryClient & Partial<KnownParamsQueryClient>)[EXECUTE_KNOWN_PARAMS];
+    if (!executeKnown) {
+      throw new Error("sqlx-js: queryDescriptors require the integrated PostgreSQL driver");
+    }
+    const parameterOids = descriptor.params.map((type) =>
+      typeof type === "number" ? type : generation.registry.descriptorOid(type));
+    return executeKnown.call(client, descriptor.sql, parameterOids, params) as unknown as PendingQuery;
   }
 
   private encodeParam(client: PostgresClient, param: unknown): unknown {
@@ -1093,6 +1128,7 @@ function postgresClientOptions(options: CreateSqlClientOptions): CreateClientOpt
     reloadSqlFiles: _reloadSqlFiles,
     sqlFiles: _sqlFiles,
     typeCodecs: _typeCodecs,
+    queryDescriptors: _queryDescriptors,
     ...clientOptions
   } = options;
   return clientOptions;

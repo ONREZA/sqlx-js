@@ -8,6 +8,9 @@
   "paramOids": [
     3802
   ],
+  "paramTypeIdentities": [
+    3802
+  ],
   "paramTsTypes": [
     "import(\"@onreza/sqlx-js\").JsonParameter<SqlxJsJson.UserSettings>"
   ],

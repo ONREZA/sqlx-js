@@ -15,7 +15,10 @@ import {
   type PostgresClient,
 } from "../src/index";
 import { _internal, normalizeRuntimeDatabaseUrl } from "../src/postgres-runtime";
+import { EXECUTE_KNOWN_PARAMS } from "../src/pg/driver";
 import { defineQuery } from "../src/query";
+import { CACHE_FORMAT_VERSION, GENERATOR_REVISION } from "../src/cache";
+import { queryId } from "../src/query-id";
 
 function managed(client: PostgresClient, options: CreateSqlClientOptions = {}) {
   return _internal.createManagedClient(() => client, options);
@@ -201,6 +204,50 @@ test("managed client preserves result metadata", async () => {
     command: "UPDATE",
   });
   expect(calls).toEqual([{ query: "UPDATE users SET active = false", params: [] }]);
+});
+
+test("managed client dispatches matching runtime descriptors and keeps adaptive fallback", async () => {
+  const adaptive: string[] = [];
+  const known: Array<{ query: string; parameterOids: readonly number[]; params: unknown[] }> = [];
+  const query = "SELECT $1::int4 AS value";
+  const fake = fakePool(
+    async (sql) => {
+      adaptive.push(sql);
+      return Object.assign([{ value: "adaptive" }], { count: 1, command: "SELECT" });
+    },
+    {
+      [EXECUTE_KNOWN_PARAMS]: (
+        sql: string,
+        parameterOids: readonly number[],
+        params: unknown[],
+      ) => {
+        known.push({ query: sql, parameterOids, params });
+        return pendingQuery(Promise.resolve(
+          Object.assign([{ value: 42 }], { count: 1, command: "SELECT" }),
+        ));
+      },
+    },
+  );
+  const db = managed(fake, {
+    queryDescriptors: {
+      formatVersion: 1,
+      cacheFormat: CACHE_FORMAT_VERSION,
+      generatorRevision: GENERATOR_REVISION,
+      configHash: "test",
+      types: {},
+      queries: {
+        [queryId(query)]: { sql: query, params: [23] },
+      },
+      profiles: {},
+    },
+  });
+
+  expect(await db.unsafe(query, 42)).toEqual([{ value: 42 }]);
+  expect(await db.unsafe("SELECT $1::text AS value", "fallback")).toEqual([
+    { value: "adaptive" },
+  ]);
+  expect(known).toEqual([{ query, parameterOids: [23], params: [42] }]);
+  expect(adaptive).toEqual(["SELECT $1::text AS value"]);
 });
 
 test("query hooks are preserved inside transactions", async () => {

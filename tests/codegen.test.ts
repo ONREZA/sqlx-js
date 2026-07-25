@@ -14,13 +14,18 @@ afterAll(() => {
 });
 
 function write(
-  entries: CacheEntry[],
+  entries: Array<Omit<CacheEntry, "paramTypeIdentities"> & {
+    paramTypeIdentities?: CacheEntry["paramTypeIdentities"];
+  }>,
   functions: FunctionEntry[] = [],
   runtimeTypes: Record<string, string> = {},
   profiles: DatabaseProfiles = {},
 ): string {
   const out = join(tmp, "sqlx-js-env.d.ts");
-  emitDts(out, entries, functions, runtimeTypes, profiles);
+  emitDts(out, entries.map((entry) => ({
+    ...entry,
+    paramTypeIdentities: entry.paramTypeIdentities ?? [],
+  })), functions, runtimeTypes, profiles);
   return readFileSync(out, "utf8");
 }
 

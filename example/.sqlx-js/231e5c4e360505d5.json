@@ -6,6 +6,7 @@
     "SELECT id, age FROM users WHERE age IN (18, 21, 25)"
   ],
   "paramOids": [],
+  "paramTypeIdentities": [],
   "paramTsTypes": [],
   "paramNullable": [],
   "columns": [

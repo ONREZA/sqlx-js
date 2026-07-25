@@ -6,6 +6,7 @@
     "SELECT COUNT(*) AS \"n!\" FROM users"
   ],
   "paramOids": [],
+  "paramTypeIdentities": [],
   "paramTsTypes": [],
   "paramNullable": [],
   "columns": [

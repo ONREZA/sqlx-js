@@ -9,6 +9,10 @@
     3802,
     20
   ],
+  "paramTypeIdentities": [
+    3802,
+    20
+  ],
   "paramTsTypes": [
     "import(\"@onreza/sqlx-js\").JsonParameter<SqlxJsJson.UserSettings>",
     "bigint"

@@ -9,6 +9,10 @@
     20,
     25
   ],
+  "paramTypeIdentities": [
+    20,
+    25
+  ],
   "paramTsTypes": [
     "bigint",
     "string"

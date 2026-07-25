@@ -98,6 +98,7 @@ test("queries inventory distinguishes current and orphaned cache entries", async
       query,
       validation: "planned",
       paramOids: [],
+      paramTypeIdentities: [],
       paramTsTypes: [],
       columns: [{ name: "value", typeOid: 23, tsType: "number", nullable: false }],
       hasResultSet: true,
@@ -105,6 +106,7 @@ test("queries inventory distinguishes current and orphaned cache entries", async
     cache.write("0000000000000000", {
       query: "SELECT 2",
       paramOids: [],
+      paramTypeIdentities: [],
       paramTsTypes: [],
       columns: [],
       hasResultSet: false,
@@ -121,6 +123,7 @@ test("queries inventory distinguishes current and orphaned cache entries", async
     cache.write(queryId(query), {
       query,
       paramOids: [],
+      paramTypeIdentities: [],
       paramTsTypes: [],
       columns: [{ name: "value", typeOid: 23, tsType: "number", nullable: false }],
       hasResultSet: true,
@@ -159,6 +162,7 @@ test("queries inventory aggregates profile-specific cache contracts", async () =
         query,
         validation: "planned",
         paramOids: [],
+        paramTypeIdentities: [],
         paramTsTypes: [],
         columns: [{ name: "value", typeOid: 23, tsType: "number", nullable: false }],
         hasResultSet: true,

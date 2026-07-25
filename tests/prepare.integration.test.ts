@@ -12,6 +12,7 @@ import { mergeExtensionTypes } from "../src/pg/extensions";
 import { fingerprint } from "../src/cache";
 import { createSqlClient as createRuntimeSqlClient, type PostgresClient } from "../src/postgres-runtime";
 import { QueryTimeoutError } from "../src/runtime";
+import type { RuntimeQueryDescriptors } from "../src/runtime-descriptors";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-integration-"));
@@ -244,6 +245,63 @@ if (!haveIntegrationDatabase) {
     }
   });
 
+  test("generated runtime descriptors execute built-in and database-local parameter types", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        DROP TYPE IF EXISTS tmp_runtime_descriptor_status;
+        CREATE TYPE tmp_runtime_descriptor_status AS ENUM ('ready', 'done')
+      `);
+      writeFile("a.ts",
+        "import { sql } from \"@onreza/sqlx-js\";\n"
+        + "await sql(\"SELECT $value::int4 AS value\", { value: 42 });\n"
+        + "await sql(\"SELECT $1::tmp_runtime_descriptor_status AS value\", \"ready\");\n",
+      );
+      const prepared = prepare();
+      expect(prepared.code, prepared.stderr).toBe(0);
+      const descriptorPath = join(tmp, ".sqlx-js", "runtime-descriptors.json");
+      const descriptors = JSON.parse(readFileSync(descriptorPath, "utf8")) as RuntimeQueryDescriptors;
+      expect(descriptors.queries[fingerprint("SELECT $value::int4 AS value")]).toEqual({
+        sql: "SELECT $1::int4 AS value",
+        params: [23],
+      });
+      expect(Object.values(descriptors.types)).toContainEqual({
+        schema: "public",
+        name: "tmp_runtime_descriptor_status",
+      });
+
+      const runtime = createRuntimeSqlClient(dbUrl, { queryDescriptors: descriptors });
+      try {
+        expect(await runtime.unsafe("SELECT $value::int4 AS value", { value: 42 })).toEqual([
+          { value: 42 },
+        ]);
+        expect(await runtime.unsafe(
+          "SELECT $1::tmp_runtime_descriptor_status AS value",
+          "ready",
+        )).toEqual([{ value: "ready" }]);
+      } finally {
+        await runtime.close();
+      }
+      expect(prepare(["--check"]).code).toBe(0);
+      expect(prepare(["--offline"]).code).toBe(0);
+      expect(prepare(["--verify"]).code).toBe(0);
+      await setup.simpleQuery("DROP TYPE tmp_runtime_descriptor_status");
+      const staleRuntime = createRuntimeSqlClient(dbUrl, { queryDescriptors: descriptors });
+      try {
+        await expect(staleRuntime.unsafe(
+          "SELECT $1::tmp_runtime_descriptor_status AS value",
+          "ready",
+        )).rejects.toThrow(/queryDescriptors type public\.tmp_runtime_descriptor_status does not exist/);
+      } finally {
+        await staleRuntime.close();
+      }
+    } finally {
+      await setup.simpleQuery("DROP TYPE IF EXISTS tmp_runtime_descriptor_status").catch(() => {});
+      await setup.end();
+    }
+  });
+
   test("prepare describes named parameters and emits an object contract", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
@@ -342,8 +400,8 @@ export default {
         "import { databaseProfiles } from \"./sqlx-js.config\";\n" +
         "const api = createSqlClient(undefined, { profile: databaseProfiles.api });\n" +
         "const worker = createSqlClient(undefined, { profile: databaseProfiles.worker });\n" +
-        "await api.sql.one(\"SELECT value FROM profile_target\");\n" +
-        "await worker.sql.one(\"SELECT value FROM profile_target\");\n",
+        "await api.sql.one(\"SELECT value FROM profile_target WHERE $1::boolean\", true);\n" +
+        "await worker.sql.one(\"SELECT value FROM profile_target WHERE $1::boolean\", true);\n",
       );
 
       const prepared = prepareRoot(root);
@@ -353,16 +411,19 @@ export default {
       expect(prepareRoot(root, ["--verify"]).code).toBe(0);
       const entries = queryCacheFiles(root)
         .map((file) => JSON.parse(readFileSync(join(root, ".sqlx-js", file), "utf8")))
-        .filter((entry) => entry.query === "SELECT value FROM profile_target");
+        .filter((entry) => entry.query === "SELECT value FROM profile_target WHERE $1::boolean");
       expect(entries).toHaveLength(2);
       expect(entries.map((entry) => entry.profile).sort()).toEqual(["api", "worker"]);
+      const queryDescriptors = JSON.parse(
+        readFileSync(join(root, ".sqlx-js/runtime-descriptors.json"), "utf8"),
+      ) as RuntimeQueryDescriptors;
 
       const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
       expect(dts).toMatch(
-        /"api": \{\n\s+"SELECT value FROM profile_target": \{ params: \[\]; row: \{ "value": number \} \};/,
+        /"api": \{\n\s+"SELECT value FROM profile_target WHERE \$1::boolean": \{ params: \[boolean\]; row: \{ "value": number \} \};/,
       );
       expect(dts).toMatch(
-        /"worker": \{\n\s+"SELECT value FROM profile_target": \{ params: \[\]; row: \{ "value": string \} \};/,
+        /"worker": \{\n\s+"SELECT value FROM profile_target WHERE \$1::boolean": \{ params: \[boolean\]; row: \{ "value": string \} \};/,
       );
 
       const doctorResult = spawnSync(
@@ -381,9 +442,21 @@ export default {
       const api = createRuntimeSqlClient(dbUrl, {
         profile: { name: "api", role: apiRole },
         operationTimeoutMs: 200,
+        queryDescriptors,
       });
-      const worker = createRuntimeSqlClient(dbUrl, { profile: { name: "worker", role: workerRole } });
+      const worker = createRuntimeSqlClient(dbUrl, {
+        profile: { name: "worker", role: workerRole },
+        queryDescriptors,
+      });
       try {
+        expect(await api.unsafe(
+          "SELECT value FROM profile_target WHERE $1::boolean",
+          true,
+        )).toEqual([{ value: 42 }]);
+        expect(await worker.unsafe(
+          "SELECT value FROM profile_target WHERE $1::boolean",
+          true,
+        )).toEqual([{ value: "worker" }]);
         expect(await api.unsafe("SELECT current_user AS role, value FROM profile_target"))
           .toEqual([expect.objectContaining({ role: apiRole, value: 42 })]);
         expect(await worker.unsafe("SELECT current_user AS role, value FROM profile_target"))

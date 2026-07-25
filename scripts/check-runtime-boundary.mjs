@@ -12,6 +12,8 @@ const allowedRuntimeFiles = new Set([
   "dist/src/query.js",
   "dist/src/query-id.js",
   "dist/src/runtime.js",
+  "dist/src/runtime-descriptors.js",
+  "dist/src/artifact-versions.js",
   "dist/src/sql-params.js",
   "dist/src/sql-lex.js",
   "dist/src/migration-core.js",
