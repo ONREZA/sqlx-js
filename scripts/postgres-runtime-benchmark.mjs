@@ -1,11 +1,26 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { connect as netConnect, createServer } from "node:net";
+import { resolve } from "node:path";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import postgres from "postgres";
-import { createClient, createSqlClient } from "../dist/src/index.js";
 
 const execFileAsync = promisify(execFile);
+const runtimeEntry = process.env.SQLX_JS_BENCHMARK_RUNTIME_ENTRY;
+const runtimeEntryUrl = runtimeEntry
+  ? pathToFileURL(resolve(runtimeEntry))
+  : new URL("../dist/src/index.js", import.meta.url);
+const {
+  createClient,
+  createSqlClient,
+} = await import(runtimeEntryUrl.href);
+const descriptorMvp = process.env.SQLX_JS_BENCHMARK_DESCRIPTOR_MVP === "1";
+const simulatedRttMs = Number(process.env.SQLX_JS_BENCHMARK_RTT_MS ?? 0);
+const wire = descriptorMvp
+  ? await import(new URL("./pg/wire.js", runtimeEntryUrl).href)
+  : undefined;
 const suffix = `${process.pid}-${Date.now()}`;
 const container = `sqlx-js-benchmark-${suffix}`;
 const postgresImage = process.env.SQLX_JS_PG_IMAGE ?? "pgvector/pgvector:pg18";
@@ -16,6 +31,8 @@ const providedDatabaseUrl = process.env.SQLX_JS_BENCHMARK_DATABASE_URL;
 const scenarioFilter = process.env.SQLX_JS_BENCHMARK_SCENARIO;
 const driverFilter = process.env.SQLX_JS_BENCHMARK_DRIVER;
 const results = [];
+const descriptorQuery = "SELECT $1::int4 AS value";
+const descriptorParameterOids = Object.freeze([23]);
 const mixedText = "sqlx-js-mixed-";
 const mixedBigint = 9_007_199_254_740_993n;
 const mixedRowsQuery = `
@@ -74,6 +91,57 @@ function mappedPort(output) {
   const separator = value.lastIndexOf(":");
   if (separator === -1) throw new Error(`unexpected Docker port mapping: ${value}`);
   return value.slice(separator + 1);
+}
+
+function relayWithDelay(source, target, delayMs) {
+  source.on("data", (chunk) => {
+    source.pause();
+    setTimeout(() => {
+      if (!target.destroyed) target.write(chunk);
+      source.resume();
+    }, delayMs);
+  });
+  source.on("end", () => target.end());
+  source.on("error", (error) => target.destroy(error));
+}
+
+async function startDelayProxy(databaseUrl, roundTripMs) {
+  const targetUrl = new URL(databaseUrl);
+  const targetHost = decodeURIComponent(targetUrl.hostname).replace(/^\[|\]$/g, "");
+  const targetPort = Number(targetUrl.port || 5432);
+  const oneWayDelayMs = roundTripMs / 2;
+  const sockets = new Set();
+  const server = createServer((downstream) => {
+    const upstream = netConnect({ host: targetHost, port: targetPort });
+    sockets.add(downstream);
+    sockets.add(upstream);
+    const forget = () => {
+      sockets.delete(downstream);
+      sockets.delete(upstream);
+    };
+    downstream.once("close", forget);
+    upstream.once("close", forget);
+    relayWithDelay(downstream, upstream, oneWayDelayMs);
+    relayWithDelay(upstream, downstream, oneWayDelayMs);
+  });
+  await new Promise((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("benchmark delay proxy did not expose a TCP port");
+  }
+  const proxyUrl = new URL(databaseUrl);
+  proxyUrl.hostname = "127.0.0.1";
+  proxyUrl.port = String(address.port);
+  return {
+    databaseUrl: proxyUrl.toString(),
+    close: async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolveClose) => server.close(resolveClose));
+    },
+  };
 }
 
 function percentile(sorted, value) {
@@ -195,6 +263,89 @@ async function postgresJsAdapter(databaseUrl, max, name, maxPipeline) {
   };
 }
 
+async function descriptorAdapter(create, databaseUrl, max, name) {
+  const prototype = wire.PgClient.prototype;
+  const adaptive = prototype.execParamsTextWithSerializer;
+  prototype.execParamsTextWithSerializer = function (
+    query,
+    serialize,
+    materializeRow,
+  ) {
+    if (query !== descriptorQuery) {
+      return adaptive.call(this, query, serialize, materializeRow);
+    }
+    return this.execKnownParamsText(
+      query,
+      descriptorParameterOids,
+      serialize(descriptorParameterOids),
+      materializeRow,
+    );
+  };
+  try {
+    const adapter = await create(databaseUrl, max, name);
+    return {
+      ...adapter,
+      close: async () => {
+        try {
+          await adapter.close();
+        } finally {
+          prototype.execParamsTextWithSerializer = adaptive;
+        }
+      },
+    };
+  } catch (error) {
+    prototype.execParamsTextWithSerializer = adaptive;
+    throw error;
+  }
+}
+
+function frontendMessageTags(chunk) {
+  const bytes = chunk instanceof Uint8Array ? chunk : Buffer.from(chunk);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const tags = [];
+  let offset = 0;
+  while (offset < bytes.length) {
+    tags.push(String.fromCharCode(bytes[offset]));
+    const length = view.getInt32(offset + 1);
+    offset += length + 1;
+  }
+  return tags;
+}
+
+async function captureDescriptorProtocol(databaseUrl) {
+  const client = new wire.PgClient(wire.parseDatabaseUrl(databaseUrl));
+  await client.connect();
+  const socket = client.sock;
+  const originalWrite = socket.write;
+  let writes = [];
+  socket.write = function (chunk, encoding, callback) {
+    writes.push(frontendMessageTags(chunk));
+    return originalWrite.call(this, chunk, encoding, callback);
+  };
+  try {
+    const adaptive = await client.execParamsTextWithSerializer(
+      descriptorQuery,
+      () => ["7"],
+    );
+    assert.equal(new TextDecoder().decode(adaptive.rows[0][0]), "7");
+    const adaptiveWrites = writes;
+    writes = [];
+    const prepared = await client.execKnownParamsText(
+      descriptorQuery,
+      descriptorParameterOids,
+      ["7"],
+    );
+    assert.equal(new TextDecoder().decode(prepared.rows[0][0]), "7");
+    const descriptorWrites = writes;
+    assert.deepEqual(adaptiveWrites, [["P", "D", "H"], ["B", "E", "S"]]);
+    assert.deepEqual(descriptorWrites, [["P", "B", "D", "E", "S"]]);
+    return { adaptiveWrites, descriptorWrites };
+  } finally {
+    socket.write = originalWrite;
+    await client.end();
+  }
+}
+
 const scenarios = [
   {
     name: "simple-sequential",
@@ -253,10 +404,23 @@ const scenarios = [
     verificationInput: 7,
   },
 ];
-const drivers = [
-  { name: "sqlx-js-managed", create: internalAdapter },
-  { name: "sqlx-js-raw", create: rawAdapter },
-];
+const drivers = descriptorMvp
+  ? [
+    { name: "sqlx-js-managed", create: internalAdapter },
+    {
+      name: "sqlx-js-managed-descriptor",
+      create: (...args) => descriptorAdapter(internalAdapter, ...args),
+    },
+    { name: "sqlx-js-raw", create: rawAdapter },
+    {
+      name: "sqlx-js-raw-descriptor",
+      create: (...args) => descriptorAdapter(rawAdapter, ...args),
+    },
+  ]
+  : [
+    { name: "sqlx-js-managed", create: internalAdapter },
+    { name: "sqlx-js-raw", create: rawAdapter },
+  ];
 const postgresJsSerial = {
   name: "postgres.js-serial",
   create: (databaseUrl, max, name) => postgresJsAdapter(databaseUrl, max, name, 1),
@@ -269,7 +433,9 @@ const postgresJsPipelined = {
 function scenarioDrivers(scenario) {
   return [
     ...drivers,
-    scenario.postgresPipeline ? postgresJsPipelined : postgresJsSerial,
+    ...(descriptorMvp
+      ? []
+      : [scenario.postgresPipeline ? postgresJsPipelined : postgresJsSerial]),
   ].filter((driver) => !driverFilter || driver.name === driverFilter);
 }
 
@@ -337,6 +503,8 @@ function summarize() {
 }
 
 let databaseUrl = providedDatabaseUrl;
+let delayProxy;
+let descriptorProtocol;
 try {
   if (!databaseUrl) {
     await docker([
@@ -359,6 +527,13 @@ try {
     const port = mappedPort((await docker(["port", container, "5432/tcp"])).stdout);
     databaseUrl = `postgresql://postgres:postgres@127.0.0.1:${port}/sqlx_js_benchmark`;
   }
+  if (simulatedRttMs > 0) {
+    delayProxy = await startDelayProxy(databaseUrl, simulatedRttMs);
+    databaseUrl = delayProxy.databaseUrl;
+  }
+  if (descriptorMvp) {
+    descriptorProtocol = await captureDescriptorProtocol(databaseUrl);
+  }
   await runBenchmark(databaseUrl);
   process.stdout.write(`${JSON.stringify({
     postgresImage: providedDatabaseUrl ? null : postgresImage,
@@ -366,6 +541,10 @@ try {
     durationMs,
     rounds,
     preparedStatements: false,
+    runtimeEntry: runtimeEntry ?? null,
+    descriptorMvp,
+    descriptorProtocol: descriptorProtocol ?? null,
+    simulatedRttMs,
     postgresJsSerialMaxPipeline: 1,
     postgresJsDefaultMaxPipeline: 100,
     results,
@@ -381,6 +560,7 @@ try {
   }
   throw error;
 } finally {
+  await delayProxy?.close();
   if (!providedDatabaseUrl) {
     await execFileAsync("docker", ["rm", "--force", container]).catch(() => {});
   }

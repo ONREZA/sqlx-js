@@ -69,6 +69,7 @@
     "test:runtime-soak": "bun run build && node scripts/postgres-runtime-soak.mjs",
     "test:runtime-chaos": "bun run build && node scripts/postgres-runtime-chaos.mjs",
     "benchmark:postgres": "bun run build && node scripts/postgres-runtime-benchmark.mjs",
+    "benchmark:postgres:profile": "bun run build && node scripts/profile-postgres-runtime.mjs",
     "test:corpus": "bun scripts/check-production-corpus.ts",
     "sqlx:prepare": "bun bin/sqlx-js.ts prepare",
     "sqlx:migrate": "bun bin/sqlx-js.ts migrate",

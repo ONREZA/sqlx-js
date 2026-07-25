@@ -4,3 +4,4 @@ node_modules/
 .env.local
 tests/.tmp-*/
 dist/
+.profiles/

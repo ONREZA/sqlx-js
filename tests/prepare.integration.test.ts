@@ -226,6 +226,24 @@ if (!haveIntegrationDatabase) {
     expect(queryCacheFiles().length).toBeGreaterThan(0);
   });
 
+  test("known parameter OIDs execute through the extended protocol", async () => {
+    const client = new PgClient(parseDatabaseUrl(dbUrl));
+    await client.connect();
+    try {
+      const result = await client.execKnownParamsText(
+        "SELECT $1::int4 AS value",
+        [23],
+        ["42"],
+      );
+      const value = result.rows[0]?.[0];
+      if (!value) throw new Error("expected one non-null value");
+      expect(new TextDecoder().decode(value)).toBe("42");
+      expect(result.fields[0]?.typeOid).toBe(23);
+    } finally {
+      await client.end();
+    }
+  });
+
   test("prepare describes named parameters and emits an object contract", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
