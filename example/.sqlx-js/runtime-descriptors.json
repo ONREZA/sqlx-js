@@ -1,0 +1,250 @@
+{
+  "formatVersion": 1,
+  "cacheFormat": 4,
+  "generatorRevision": 19,
+  "configHash": "424b4eaf1971125d",
+  "types": {
+    "[\"public\",\"user_role\"]": {
+      "schema": "public",
+      "name": "user_role"
+    }
+  },
+  "queries": {
+    "05a07f6b6ff0eee8": {
+      "sql": "UPDATE users SET name = $1 WHERE id = $2",
+      "params": [
+        25,
+        20
+      ]
+    },
+    "0df48a32e499d61b": {
+      "sql": "SELECT COUNT(*) AS \"n!\" FROM users WHERE age >= $1",
+      "params": [
+        23
+      ]
+    },
+    "0f6e334f2678de51": {
+      "sql": "SELECT id AS \"id!\", name AS \"name!\", email AS \"email!\", age, bio FROM users WHERE id = $1",
+      "params": [
+        20
+      ]
+    },
+    "114f40de129c54c2": {
+      "sql": "SELECT id, bio FROM users WHERE bio IS NOT NULL OR id = $1",
+      "params": [
+        20
+      ]
+    },
+    "1740751552b0209d": {
+      "sql": "INSERT INTO users (name, email, role) VALUES ($1, $2, $3) RETURNING id AS \"id!\", role AS \"role!\"",
+      "params": [
+        25,
+        25,
+        "[\"public\",\"user_role\"]"
+      ]
+    },
+    "224008784b00d703": {
+      "sql": "INSERT INTO users (name, email)\n     VALUES ($1, $2)\n     ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name\n     RETURNING id AS user_id, name AS user_name, email AS user_email, role AS user_role",
+      "params": [
+        25,
+        25
+      ]
+    },
+    "3ffd4d9a1a495773": {
+      "sql": "SELECT id, bio FROM users WHERE bio IS NOT NULL AND id = $1",
+      "params": [
+        20
+      ]
+    },
+    "412f6794fa8a43cf": {
+      "sql": "SELECT id, name, role FROM users WHERE id = $1",
+      "params": [
+        20
+      ]
+    },
+    "5302baf1602f9d8d": {
+      "sql": "SELECT id FROM users WHERE role = $1",
+      "params": [
+        "[\"public\",\"user_role\"]"
+      ]
+    },
+    "53696f0500a73fef": {
+      "sql": "INSERT INTO users (name, email, age) VALUES ($1, $2, $3) RETURNING id AS \"id!\", created_at AS \"created_at!\"",
+      "params": [
+        25,
+        25,
+        23
+      ]
+    },
+    "55ca2c6baf721afd": {
+      "sql": "SELECT id, title, meta, attachments FROM posts WHERE id = $1",
+      "params": [
+        20
+      ]
+    },
+    "5bc57170c1bd0b31": {
+      "sql": "SELECT id, name, settings FROM users WHERE id = $1",
+      "params": [
+        20
+      ]
+    },
+    "60403e36b79b0f9d": {
+      "sql": "SELECT COUNT(*) AS \"n!\" FROM posts WHERE user_id = $1\n",
+      "params": [
+        20
+      ]
+    },
+    "657d210ada7a44ef": {
+      "sql": "SELECT id, bio, age FROM users WHERE bio IS NOT NULL AND age > $1",
+      "params": [
+        23
+      ]
+    },
+    "67ad370ac20ebb65": {
+      "sql": "SELECT\n       u.id AS user_id,\n       u.email AS user_email,\n       u.role AS user_role,\n       COUNT(p.id) AS post_count,\n       MAX(p.id) AS latest_post_id\n     FROM users u\n     LEFT JOIN posts p ON p.user_id = u.id\n     GROUP BY u.id, u.email, u.role\n     ORDER BY u.id DESC\n     LIMIT $1::int OFFSET $2::int",
+      "params": [
+        23,
+        23
+      ]
+    },
+    "6edac688daca58de": {
+      "sql": "SELECT id, CASE WHEN age >= 18 THEN 'adult' ELSE 'minor' END AS bucket FROM users WHERE id = $1",
+      "params": [
+        20
+      ]
+    },
+    "741770cdca2788bd": {
+      "sql": "SELECT p.id, p.title, p.status, p.tags, p.history, u.role AS author_role FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = $1",
+      "params": [
+        20
+      ]
+    },
+    "7c5dad29d846458f": {
+      "sql": "SELECT u.id AS uid, p.id AS pid FROM users u FULL OUTER JOIN posts p ON p.user_id = u.id WHERE u.id = $1 OR p.id = $1",
+      "params": [
+        20
+      ]
+    },
+    "7fe64a3fd979ed1b": {
+      "sql": "SELECT id, settings FROM users WHERE settings = $1 LIMIT 1",
+      "params": [
+        3802
+      ]
+    },
+    "87ba1ae41bdcc82c": {
+      "sql": "SELECT id, age FROM users WHERE age = $1",
+      "params": [
+        23
+      ]
+    },
+    "9176a35cffa9d17b": {
+      "sql": "SELECT id, name, email, age, bio FROM users WHERE id = $1",
+      "params": [
+        20
+      ]
+    },
+    "98570d6c355e310d": {
+      "sql": "DELETE FROM posts\n     WHERE user_id = $1 AND status = 'archived'\n     RETURNING id AS post_id, user_id, status",
+      "params": [
+        20
+      ]
+    },
+    "a9461bf7f5999aa0": {
+      "sql": "INSERT INTO users (name, email, settings) VALUES ($1, $2, $3) RETURNING id AS \"id!\"",
+      "params": [
+        25,
+        25,
+        3802
+      ]
+    },
+    "ac3ad80eb3293890": {
+      "sql": "SELECT id, name, email, role\n   FROM users\n   WHERE email = $1",
+      "params": [
+        25
+      ]
+    },
+    "ae5979e3ccaba3bc": {
+      "sql": "SELECT u.id AS user_id, u.name, p.title, p.published FROM users u LEFT JOIN posts p ON p.user_id = u.id WHERE u.id = $1",
+      "params": [
+        20
+      ]
+    },
+    "af28ec01ba311f0f": {
+      "sql": "INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id AS \"id!\"",
+      "params": [
+        25,
+        25
+      ]
+    },
+    "b47cfde3a916dd67": {
+      "sql": "SELECT id, COALESCE(bio, 'none') AS bio_or_default, length(bio) AS bio_len FROM users WHERE bio IS NOT NULL AND id = $1",
+      "params": [
+        20
+      ]
+    },
+    "b98d1a2946b38de8": {
+      "sql": "SELECT\n     id AS \"id!\",\n     name AS \"name!\",\n     email AS \"email!\",\n     role AS \"role!\",\n     created_at AS \"createdAt!\"\n   FROM public.list_users(\n     COALESCE($1, NULL::public.user_role),\n     COALESCE($2, NULL::text),\n     COALESCE($3, NULL::bigint),\n     $4\n   )",
+      "params": [
+        "[\"public\",\"user_role\"]",
+        25,
+        20,
+        23
+      ]
+    },
+    "cc2b1ed2c4ba6015": {
+      "sql": "SELECT id, COALESCE(bio, 'no bio') AS bio_or_default, COALESCE(age, 0) AS age_or_zero FROM users WHERE id = $1",
+      "params": [
+        20
+      ]
+    },
+    "e145038ebd991f75": {
+      "sql": "SELECT id AS \"id!\", name AS \"name!\" FROM users WHERE id = $1",
+      "params": [
+        20
+      ]
+    },
+    "e45c63ca4149f4aa": {
+      "sql": "INSERT INTO users (name, email, role) VALUES ($1, $2, $3) RETURNING id AS \"id!\"",
+      "params": [
+        25,
+        25,
+        "[\"public\",\"user_role\"]"
+      ]
+    },
+    "e4dac953f7b9e3be": {
+      "sql": "UPDATE users SET settings = $1 WHERE id = $2 RETURNING id AS \"id!\", settings",
+      "params": [
+        3802,
+        20
+      ]
+    },
+    "ebfc173b7da5ce4f": {
+      "sql": "SELECT id AS \"id!\", name AS \"name!\", email AS \"email!\"\nFROM users\nWHERE role = $1\nORDER BY id\nLIMIT $2::int\n",
+      "params": [
+        "[\"public\",\"user_role\"]",
+        23
+      ]
+    },
+    "ef06e6bdfa00b896": {
+      "sql": "INSERT INTO posts (user_id, title) VALUES ($1, $2) RETURNING id AS \"id!\"",
+      "params": [
+        20,
+        25
+      ]
+    },
+    "f524aa0924299f6a": {
+      "sql": "SELECT id AS user_id, name AS user_name, email AS user_email\n     FROM users\n     WHERE ($1::text IS NULL OR name ILIKE '%' || $1 || '%')\n     ORDER BY id\n     LIMIT $2::int",
+      "params": [
+        25,
+        23
+      ]
+    },
+    "f8e7b9439c5bccb1": {
+      "sql": "SELECT u.id, p.title, p.body FROM users u LEFT JOIN posts p ON p.user_id = u.id WHERE p.body IS NOT NULL AND u.id = $1",
+      "params": [
+        20
+      ]
+    }
+  },
+  "profiles": {}
+}

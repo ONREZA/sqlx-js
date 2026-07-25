@@ -11,6 +11,15 @@
     20,
     23
   ],
+  "paramTypeIdentities": [
+    {
+      "schema": "public",
+      "name": "user_role"
+    },
+    25,
+    20,
+    23
+  ],
   "paramTsTypes": [
     "\"admin\" | \"editor\" | \"viewer\"",
     "string",

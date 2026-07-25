@@ -79,11 +79,11 @@ SQLX_JS_BENCHMARK_DURATION_MS=10000 \
   bun run benchmark:postgres
 ```
 
-The descriptor MVP control is an internal experiment. It replaces the
-parameter serializer path only for `SELECT $1::int4 AS value`, retains live
-`RowDescription`, and adds raw and managed descriptor drivers. It neither
-changes the public runtime API nor represents the final generated descriptor
-format. The result JSON records the frontend message groups used by both paths.
+The descriptor control uses the public `queryDescriptors` option for the
+managed client and the direct known-OID wire method as a raw-driver control.
+Both replace the adaptive parameter path only for
+`SELECT $1::int4 AS value`, retain live `RowDescription`, and record the
+frontend message groups in the result JSON.
 
 ## Capture CPU and allocation profiles
 

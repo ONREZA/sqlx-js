@@ -8,6 +8,9 @@
   "paramOids": [
     20
   ],
+  "paramTypeIdentities": [
+    20
+  ],
   "paramTsTypes": [
     "bigint"
   ],

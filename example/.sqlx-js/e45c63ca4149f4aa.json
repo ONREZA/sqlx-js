@@ -10,6 +10,14 @@
     25,
     0
   ],
+  "paramTypeIdentities": [
+    25,
+    25,
+    {
+      "schema": "public",
+      "name": "user_role"
+    }
+  ],
   "paramTsTypes": [
     "string",
     "string",

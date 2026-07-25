@@ -9,6 +9,7 @@ function writeSet(root: string, query = "SELECT 1") {
   const dtsPath = join(root, "sqlx-js-env.d.ts");
   mkdirSync(join(cacheDir, "functions"), { recursive: true });
   writeFileSync(join(cacheDir, "cache-manifest.json"), '{"cacheFormat":2}\n');
+  writeFileSync(join(cacheDir, "runtime-descriptors.json"), '{"formatVersion":1}\n');
   writeFileSync(join(cacheDir, "0123456789abcdef.json"), JSON.stringify({ query }));
   writeFileSync(join(cacheDir, "functions/functions.json"), '{"version":2,"functions":[]}');
   writeFileSync(dtsPath, `declare const query: ${JSON.stringify(query)};\n`);
@@ -57,6 +58,23 @@ test("compareArtifacts includes enum cache and configured output", () => {
     writeFileSync(right.enumOutputPath, "export const Role = { admin: 'admin' } as const;\n");
     writeFileSync(join(right.cacheDir, "enums/enums.json"), '{"version":1,"enums":[{"schema":"public"}]}\n');
     expect(compareArtifacts(left, right)).toEqual({ ok: false, changed: ["cache/enums/enums.json"] });
+  } finally {
+    rmSync(leftRoot, { recursive: true, force: true });
+    rmSync(rightRoot, { recursive: true, force: true });
+  }
+});
+
+test("compareArtifacts includes the runtime descriptor", () => {
+  const leftRoot = mkdtempSync(join(tmpdir(), "sqlx-js-artifacts-runtime-left-"));
+  const rightRoot = mkdtempSync(join(tmpdir(), "sqlx-js-artifacts-runtime-right-"));
+  try {
+    const left = writeSet(leftRoot);
+    const right = writeSet(rightRoot);
+    writeFileSync(join(right.cacheDir, "runtime-descriptors.json"), '{"formatVersion":2}\n');
+    expect(compareArtifacts(left, right)).toEqual({
+      ok: false,
+      changed: ["cache/runtime-descriptors.json"],
+    });
   } finally {
     rmSync(leftRoot, { recursive: true, force: true });
     rmSync(rightRoot, { recursive: true, force: true });

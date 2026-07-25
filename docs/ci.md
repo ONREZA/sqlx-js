@@ -14,7 +14,8 @@ against a disposable shadow database and then the database-free
 not target deployment drift, and never writes generated artifacts or changes
 the target database. `--json` returns a versioned per-step report.
 
-Commit the generated `sqlx-js-env.d.ts`, `.sqlx-js/` cache directory, and configured enum catalog output to your repo. In CI:
+Commit the generated `sqlx-js-env.d.ts`, `.sqlx-js/` cache directory including
+`runtime-descriptors.json`, and configured enum catalog output to your repo. In CI:
 
 ```yaml
 - run: bun install
@@ -42,6 +43,6 @@ supplied live database.
 
 The managed pgschema binary is installed under `node_modules/.cache/sqlx-js/pgschema/`, not `.sqlx-js/`, so it is not part of the committed offline cache.
 
-Generated declarations, enum modules, and cache files should be excluded from formatters and linters. TypeScript artifacts remain included in `tsconfig.json` for type checking, but rules such as Biome's empty-interface or confusing-void checks are not meaningful for generated contracts.
+Generated declarations, enum modules, and cache files should be excluded from formatters and linters. The runtime descriptor is JSON and is imported explicitly by applications that enable its fast path. TypeScript artifacts remain included in `tsconfig.json` for type checking, but rules such as Biome's empty-interface or confusing-void checks are not meaningful for generated contracts.
 
 [Documentation index](./README.md)

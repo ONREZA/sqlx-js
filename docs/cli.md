@@ -38,8 +38,8 @@ Regular `prepare` describes and plans queries across a small connection pool (de
 
 | Flag                  | Meaning                                                                              |
 |-----------------------|--------------------------------------------------------------------------------------|
-| `--check`             | Read-only offline verification of query/function/enum caches and generated files.     |
-| `--offline`           | Regenerate declarations and an enabled enum module from committed cache without a database. |
+| `--check`             | Read-only offline verification of query/function/enum caches, the runtime descriptor, and generated files. |
+| `--offline`           | Regenerate declarations, the runtime descriptor, and an enabled enum module from committed cache without a database. |
 | `--verify`            | Prepare against `DATABASE_URL` and compare generated artifacts without writing.          |
 | `--watch`             | Persistent connection, re-prepare on file change.                                    |
 | `--root <dir>`        | Source/cache/migrations root (default: cwd).                                         |

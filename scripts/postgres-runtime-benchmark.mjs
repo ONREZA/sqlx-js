@@ -21,6 +21,12 @@ const simulatedRttMs = Number(process.env.SQLX_JS_BENCHMARK_RTT_MS ?? 0);
 const wire = descriptorMvp
   ? await import(new URL("./pg/wire.js", runtimeEntryUrl).href)
   : undefined;
+const artifactVersions = descriptorMvp
+  ? await import(new URL("./artifact-versions.js", runtimeEntryUrl).href)
+  : undefined;
+const queryIds = descriptorMvp
+  ? await import(new URL("./query-id.js", runtimeEntryUrl).href)
+  : undefined;
 const suffix = `${process.pid}-${Date.now()}`;
 const container = `sqlx-js-benchmark-${suffix}`;
 const postgresImage = process.env.SQLX_JS_PG_IMAGE ?? "pgvector/pgvector:pg18";
@@ -33,6 +39,22 @@ const driverFilter = process.env.SQLX_JS_BENCHMARK_DRIVER;
 const results = [];
 const descriptorQuery = "SELECT $1::int4 AS value";
 const descriptorParameterOids = Object.freeze([23]);
+const runtimeDescriptors = descriptorMvp
+  ? {
+    formatVersion: artifactVersions.RUNTIME_DESCRIPTOR_FORMAT_VERSION,
+    cacheFormat: artifactVersions.CACHE_FORMAT_VERSION,
+    generatorRevision: artifactVersions.GENERATOR_REVISION,
+    configHash: "benchmark",
+    types: {},
+    queries: {
+      [queryIds.queryId(descriptorQuery)]: {
+        sql: descriptorQuery,
+        params: descriptorParameterOids,
+      },
+    },
+    profiles: {},
+  }
+  : undefined;
 const mixedText = "sqlx-js-mixed-";
 const mixedBigint = 9_007_199_254_740_993n;
 const mixedRowsQuery = `
@@ -196,11 +218,12 @@ async function runWindow(operation, concurrency, windowMs, collect) {
   };
 }
 
-async function internalAdapter(databaseUrl, max, name) {
+async function internalAdapter(databaseUrl, max, name, options = {}) {
   const client = createSqlClient(databaseUrl, {
     max,
     applicationName: name,
     connectTimeoutMs: 5_000,
+    ...options,
   });
   await client.ready({ timeoutMs: 5_000 });
   return {
@@ -409,7 +432,7 @@ const drivers = descriptorMvp
     { name: "sqlx-js-managed", create: internalAdapter },
     {
       name: "sqlx-js-managed-descriptor",
-      create: (...args) => descriptorAdapter(internalAdapter, ...args),
+      create: (...args) => internalAdapter(...args, { queryDescriptors: runtimeDescriptors }),
     },
     { name: "sqlx-js-raw", create: rawAdapter },
     {

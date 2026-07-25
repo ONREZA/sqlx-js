@@ -134,7 +134,7 @@ TypeScript source
   -> scan literal query sites
   -> PostgreSQL Parse + Describe + generic plan
   -> schema and AST inference
-  -> versioned cache + sqlx-js-env.d.ts
+  -> versioned cache + runtime descriptor + sqlx-js-env.d.ts
   -> TypeScript checks application calls
 ```
 
@@ -143,7 +143,7 @@ with a parameter-independent generic plan; statements outside PostgreSQL's
 server-side `PREPARE` surface remain parse-only. Runtime calls use the exact SQL
 literal as the generated registry key.
 
-The generated cache and declarations are intended to be committed. This keeps
+The generated cache, `.sqlx-js/runtime-descriptors.json`, and declarations are intended to be committed. This keeps
 editor type-checking and `prepare --check` database-free while
 `prepare --verify` can compare them with a live database without modifying the
 worktree.

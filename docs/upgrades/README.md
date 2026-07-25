@@ -5,6 +5,8 @@ main README can stay focused on the current API.
 
 ## Guides
 
+- [0.22.0](./0.22.0.md) — prepared runtime descriptors, cache regeneration,
+  and optional one-write parameter dispatch.
 - [0.20.0](./0.20.0.md) — integrated PostgreSQL runtime, ESM-only runtime
   baseline, pool option migration, and Postgres.js removal.
 - [0.18.0](./0.18.0.md) — PostgreSQL function security/planner metadata,
