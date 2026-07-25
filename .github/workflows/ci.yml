@@ -49,6 +49,9 @@ jobs:
       - name: Audit high-severity dependencies
         run: bun audit --audit-level=high
 
+      - name: Check documentation links
+        run: bun run test:docs
+
       - name: Type-check library
         run: bunx tsc --noEmit
 

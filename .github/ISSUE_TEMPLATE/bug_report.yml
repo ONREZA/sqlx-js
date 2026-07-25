@@ -1,0 +1,59 @@
+name: Bug report
+description: Report a reproducible sqlx-js defect
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues first. For vulnerabilities, follow SECURITY.md instead of opening an issue.
+  - type: input
+    id: sqlx_version
+    attributes:
+      label: sqlx-js version
+      placeholder: Output of sqlx-js --version or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: PostgreSQL, Node/Bun/Deno, TypeScript, and operating system versions
+      placeholder: PostgreSQL 17, Node 24, TypeScript 6.0, Linux
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include the smallest schema, config, query, and commands that reproduce the problem
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the complete error and generated type when relevant
+    validations:
+      required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Workarounds, regression range, logs, or related issues. Remove credentials and private data.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and upgrade guides
+          required: true
+        - label: I removed credentials and private data
+          required: true

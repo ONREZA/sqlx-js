@@ -1,0 +1,39 @@
+name: Feature request
+description: Propose a focused addition to sqlx-js
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the concrete workflow or failure mode, not only the desired API
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed contract
+      description: Show the smallest API, CLI, or generated output that would solve the problem
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include existing sqlx-js or PostgreSQL approaches and why they are insufficient
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Compatibility and ownership
+      description: Note cache, runtime, PostgreSQL version, schema ownership, or upgrade implications
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I checked the roadmap and documented non-goals
+          required: true

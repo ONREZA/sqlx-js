@@ -25,7 +25,10 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
     "ROADMAP.md",
+    "SECURITY.md",
     "docs",
     "LICENSE"
   ],
@@ -54,6 +57,7 @@
   "scripts": {
     "prepare": "node scripts/prepare-package.mjs",
     "test": "bun test tests --timeout 120000",
+    "test:docs": "node scripts/check-doc-links.mjs",
     "test:typecheck": "tsc --noEmit",
     "test:example": "bunx tsc -p example --noEmit",
     "test:runtime-boundary": "bun run build && node scripts/check-runtime-boundary.mjs",
