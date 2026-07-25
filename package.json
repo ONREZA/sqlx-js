@@ -61,6 +61,8 @@
     "test:deno-package": "bun run build && deno run --allow-env=DATABASE_URL,SQLX_JS_FILE_ROOT --allow-net scripts/deno-package-smoke.mjs",
     "test:postgres-auth-tls": "bun run build && node scripts/postgres-auth-tls-smoke.mjs",
     "test:runtime-soak": "bun run build && node scripts/postgres-runtime-soak.mjs",
+    "test:runtime-chaos": "bun run build && node scripts/postgres-runtime-chaos.mjs",
+    "benchmark:postgres": "bun run build && node scripts/postgres-runtime-benchmark.mjs",
     "test:corpus": "bun scripts/check-production-corpus.ts",
     "sqlx:prepare": "bun bin/sqlx-js.ts prepare",
     "sqlx:migrate": "bun bin/sqlx-js.ts migrate",
@@ -82,12 +84,14 @@
     "@testcontainers/postgresql": "^12.0.4",
     "@types/bun": "^1.3.14",
     "lefthook": "^2.1.10",
+    "postgres": "3.4.9",
     "testcontainers": "^12.0.4",
     "typescript": "^6.0.3"
   },
   "overrides": {
     "@grpc/grpc-js": "1.14.4",
-    "brace-expansion": "2.1.2",
+    "archiver": "8.0.0",
+    "brace-expansion": "5.0.8",
     "protobufjs": "7.6.5"
   }
 }

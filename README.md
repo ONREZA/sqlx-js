@@ -638,6 +638,8 @@ The audit is read-only and intentionally does not interpret arbitrary policy exp
 `statementTimeoutMs`, `applicationName`, `startupOptions`, `onNotice`, and
 numeric `types`, plus the managed runtime options below. `password` may be a
 string or an async provider resolved separately for every new connection.
+`connectTimeoutMs` is one deadline for password resolution, TCP, TLS, and
+PostgreSQL authentication.
 `onNotice` receives structured PostgreSQL notices and isolates observer
 failures from protocol state. `operationTimeoutMs` is opt-in because the
 library cannot choose one correct wall-clock limit for both interactive

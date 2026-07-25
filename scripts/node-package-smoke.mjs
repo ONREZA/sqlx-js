@@ -107,12 +107,36 @@ try {
       await db.ready({ timeoutMs: 5000 });
       await db.ping({ timeoutMs: 5000 });
       assert.equal(db.snapshot().state, "healthy");
+      const bytes = new Uint8Array([0x00, 0x5c, 0x7f, 0xff]);
       const row = await sql.one(
-        "SELECT 42::int4 AS value, $1::jsonb AS payload, $2::int4[] AS numbers",
+        \`SELECT
+           42::int4 AS value,
+           $1::jsonb AS payload,
+           $2::int4[] AS numbers,
+           $3::bytea AS bytes,
+           9007199254740993::int8 AS bigint,
+           '[0:2]={-2,NULL,3}'::int2[] AS bounded,
+           ARRAY[[-1,2],[3,-4]]::int4[][] AS matrix,
+           ARRAY[0::oid, 4294967295::oid, NULL]::oid[] AS oids\`,
         sql.json({ ok: true }),
         sql.array([1, 2, 3]),
+        bytes,
       );
-      assert.deepEqual(row, { value: 42, payload: { ok: true }, numbers: [1, 2, 3] });
+      assert.deepEqual(row, {
+        value: 42,
+        payload: { ok: true },
+        numbers: [1, 2, 3],
+        bytes,
+        bigint: 9007199254740993n,
+        bounded: [-2, null, 3],
+        matrix: [[-1, 2], [3, -4]],
+        oids: [0, 4294967295, null],
+      });
+      await sql.execute("SET bytea_output=escape");
+      assert.deepEqual(
+        await sql.one("SELECT decode('005c7fff', 'hex') AS bytes"),
+        { bytes },
+      );
 
       const transactionValue = await sql.transaction({ timeoutMs: 5000 }, async (tx) => {
         await tx.execute("CREATE TEMP TABLE node_package_smoke (value int NOT NULL)");

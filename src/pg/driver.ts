@@ -10,13 +10,12 @@ import {
 import { arrayElementOid, builtinArrayOids } from "./oids";
 import {
   ConnectionLostError,
-  decodeText,
+  decodeTextRange,
   parseDatabaseUrl,
   PgClient,
   type PgNotice,
   type ConnConfig,
   type FieldDescription,
-  type PgRowResult,
 } from "./wire";
 
 export type PostgresType<T = unknown> = {
@@ -458,9 +457,12 @@ class ConnectionSlot {
       if (params.some((value) => value === undefined)) {
         throw new Error("sqlx-js: undefined is not a PostgreSQL value; pass null explicitly");
       }
-      const startupAbort = new AbortController();
-      setCancel(() => startupAbort.abort(queryCancelledBeforeDispatch()));
-      const client = await this.readyClient(allowReconnect, startupAbort.signal);
+      let client = this.client;
+      if (!client || client.isClosed) {
+        const startupAbort = new AbortController();
+        setCancel(() => startupAbort.abort(queryCancelledBeforeDispatch()));
+        client = await this.readyClient(allowReconnect, startupAbort.signal);
+      }
       setCancel(() => client.cancel());
       if (isCancelled()) {
         const error = queryCancelledBeforeDispatch();
@@ -468,26 +470,24 @@ class ConnectionSlot {
         throw error;
       }
       try {
-        const described = params.length === 0 ? undefined : await client.describe(query);
-        if (isCancelled()) {
-          const error = queryCancelledBeforeDispatch();
-          client.destroy(error);
-          throw error;
-        }
-        const parameterOids = described?.paramOids ?? [];
-        const encoded = params.map((value, index) =>
-          encodeParameter(value, this.options, parameterOids[index])
-        );
-        if (isCancelled()) {
-          const error = queryCancelledBeforeDispatch();
-          client.destroy(error);
-          throw error;
-        }
-        const raw = described
-          ? await client.execDescribedParamsText(encoded)
-          : await client.execParamsText(query, encoded);
+        const values: unknown[][] = [];
+        const materializeRow = (payload: Uint8Array, fields: readonly FieldDescription[]) =>
+          decodeDataRow<Row>(payload, fields, this.options.parsers, values);
+        const raw = params.length === 0
+          ? await client.execParamsText(query, [], materializeRow)
+          : await client.execParamsTextWithSerializer(query, (parameterOids) => {
+            const encoded = params.map((value, index) =>
+              encodeParameter(value, this.options, parameterOids[index])
+            );
+            if (isCancelled()) {
+              const error = queryCancelledBeforeDispatch();
+              client.destroy(error);
+              throw error;
+            }
+            return encoded;
+          }, materializeRow);
         setCancel(() => {});
-        return decodeResult<Row>(raw, this.options.parsers);
+        return resultWithMetadata(raw.rows, values, raw.tag);
       } catch (error) {
         if (error instanceof ConnectionLostError || client.isClosed) {
           this.client = undefined;
@@ -532,34 +532,50 @@ class ConnectionSlot {
   }
 
   private async readyClient(allowReconnect: boolean, operationSignal: AbortSignal): Promise<PgClient> {
-    const signal = AbortSignal.any([this.abort.signal, operationSignal]);
-    if (signal.aborted) throw abortReason(signal);
     if (this.client && !this.client.isClosed) return this.client;
-    if (!allowReconnect) {
-      throw new ConnectionLostError(new Error("transaction connection is closed"));
-    }
-    const config = { ...this.config };
-    if (this.passwordProvider) {
-      const password = await abortable(this.passwordProvider(), signal);
-      if (typeof password !== "string") {
-        throw new Error("sqlx-js: password provider must resolve to a string");
-      }
-      config.password = password;
-    }
-    if (signal.aborted) throw abortReason(signal);
-    const client = new PgClient(config);
-    this.client = client;
-    const onAbort = () => client.destroy(abortReason(signal));
-    signal.addEventListener("abort", onAbort, { once: true });
+    const timeoutMs = this.config.connectTimeoutMs ?? 15_000;
+    const deadline = new AbortController();
+    const timer = setTimeout(() => {
+      deadline.abort(new Error(
+        `sqlx-js: connect timeout to ${this.config.host}:${this.config.port} after ${timeoutMs}ms `
+        + "(includes password + TCP + TLS + authentication)",
+      ));
+    }, timeoutMs);
+    const signal = AbortSignal.any([
+      this.abort.signal,
+      operationSignal,
+      deadline.signal,
+    ]);
     try {
-      await client.connect();
-      this.connectedAt = Date.now();
-      return client;
-    } catch (error) {
-      if (this.client === client) this.client = undefined;
-      throw error;
+      if (signal.aborted) throw abortReason(signal);
+      if (!allowReconnect) {
+        throw new ConnectionLostError(new Error("transaction connection is closed"));
+      }
+      const config = { ...this.config };
+      if (this.passwordProvider) {
+        const password = await abortable(this.passwordProvider(), signal);
+        if (typeof password !== "string") {
+          throw new Error("sqlx-js: password provider must resolve to a string");
+        }
+        config.password = password;
+      }
+      if (signal.aborted) throw abortReason(signal);
+      const client = new PgClient(config);
+      this.client = client;
+      const onAbort = () => client.destroy(abortReason(signal));
+      signal.addEventListener("abort", onAbort, { once: true });
+      try {
+        await client.connect();
+        this.connectedAt = Date.now();
+        return client;
+      } catch (error) {
+        if (this.client === client) this.client = undefined;
+        throw error;
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+      }
     } finally {
-      signal.removeEventListener("abort", onAbort);
+      clearTimeout(timer);
     }
   }
 }
@@ -601,7 +617,7 @@ function installNumericTypes(
 
 function builtinParsers(): Record<number, (value: string) => unknown> {
   const parsers: Record<number, (value: string) => unknown> = {
-    16: (value) => value === "t",
+    16: parseBoolean,
     17: parseBytea,
     20: BigInt,
     21: Number,
@@ -620,6 +636,10 @@ function builtinParsers(): Record<number, (value: string) => unknown> {
   for (const oid of builtinArrayOids()) {
     const elementOid = arrayElementOid(oid);
     if (elementOid === undefined) continue;
+    if (elementOid === 21 || elementOid === 23 || elementOid === 26) {
+      parsers[oid] = parseIntegerArray;
+      continue;
+    }
     parsers[oid] = (value) => parsePgArrayLiteral(value, parsers[elementOid] ?? String);
   }
   return parsers;
@@ -761,20 +781,80 @@ function isPostgresParameter(value: unknown): value is PostgresParameter {
   return !!value && typeof value === "object" && (value as Partial<PostgresParameter>)[PARAMETER] === true;
 }
 
-function decodeResult<Row extends Record<string, unknown>>(
-  raw: PgRowResult,
+function decodeDataRow<Row extends Record<string, unknown>>(
+  payload: Uint8Array,
+  fields: readonly FieldDescription[],
   parsers: Record<number, (value: string) => unknown>,
+  values: unknown[][],
+): Row {
+  const columnCount = (payload[0]! << 8) | payload[1]!;
+  const decoded = new Array<unknown>(columnCount);
+  const row = {} as Row;
+  let offset = 2;
+  for (let index = 0; index < columnCount; index++) {
+    const length = (
+      (payload[offset]! << 24)
+      | (payload[offset + 1]! << 16)
+      | (payload[offset + 2]! << 8)
+      | payload[offset + 3]!
+    ) | 0;
+    offset += 4;
+    const field = fields[index]!;
+    let value: unknown = null;
+    if (length !== -1) {
+      const parser = parsers[field.typeOid];
+      if (parser === parseBoolean) {
+        value = payload[offset] === 0x74;
+      } else if (parser === parseBytea && field.typeOid === 17) {
+        value = parseByteaBytes(payload, offset, offset + length);
+      } else if (parser === parseIntegerArray) {
+        value = parseIntegerArrayBytes(payload, offset, offset + length);
+      } else if (
+        parser === Number
+        && (field.typeOid === 21 || field.typeOid === 23 || field.typeOid === 26)
+      ) {
+        value = parseInteger(payload, offset, offset + length);
+      } else {
+        const text = decodeTextRange(payload, offset, offset + length);
+        value = parser ? parser(text) : text;
+      }
+      offset += length;
+    }
+    decoded[index] = value;
+    if (field.name === "__proto__") {
+      Object.defineProperty(row, field.name, {
+        value,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    } else {
+      row[field.name as keyof Row] = value as Row[keyof Row];
+    }
+  }
+  values.push(decoded);
+  return row;
+}
+
+function resultWithMetadata<Row extends Record<string, unknown>>(
+  rows: Row[],
+  values: unknown[][],
+  tag: string,
 ): PostgresResult<Row> {
-  const values = raw.rows.map((columns) => columns.map((value, index) =>
-    decodeColumn(value, raw.fields[index], parsers)
-  ));
-  const rows = values.map((columns) => Object.fromEntries(
-    raw.fields.map((field, index) => [field.name, columns[index]]),
-  )) as Row[];
-  const tag = raw.tag.trim();
-  const parts = tag ? tag.split(/\s+/) : [];
-  const last = parts.at(-1);
-  const count = last !== undefined && /^\d+$/.test(last) ? Number(last) : null;
+  const commandEnd = tag.indexOf(" ");
+  const command = tag
+    ? commandEnd === -1 ? tag : tag.slice(0, commandEnd)
+    : null;
+  const countStart = tag.lastIndexOf(" ") + 1;
+  let numericCount = countStart < tag.length;
+  for (let index = countStart; index < tag.length; index++) {
+    const code = tag.charCodeAt(index);
+    if (code < 0x30 || code > 0x39) {
+      numericCount = false;
+      break;
+    }
+  }
+  const count = numericCount ? Number(tag.slice(countStart)) : null;
   Object.defineProperties(rows, {
     [RESULT_VALUES]: {
       value: values,
@@ -785,21 +865,116 @@ function decodeResult<Row extends Record<string, unknown>>(
     },
     command: {
       configurable: true,
-      value: parts[0] ?? null,
+      value: command,
     },
   });
   return rows as PostgresResult<Row>;
 }
 
-function decodeColumn(
-  value: Uint8Array | null,
-  field: FieldDescription | undefined,
-  parsers: Record<number, (value: string) => unknown>,
-): unknown {
-  const text = decodeText(value);
-  if (text === null) return null;
-  const parser = field ? parsers[field.typeOid] : undefined;
-  return parser ? parser(text) : text;
+function parseBoolean(value: string): boolean {
+  return value === "t";
+}
+
+function parseInteger(value: Uint8Array, start: number, end: number): number {
+  let result = 0;
+  let sign = 1;
+  if (value[start] === 0x2d) {
+    sign = -1;
+    start++;
+  }
+  while (start < end) {
+    result = result * 10 + value[start++]! - 0x30;
+  }
+  return result * sign;
+}
+
+function parseByteaBytes(value: Uint8Array, start: number, end: number): Uint8Array {
+  if (value[start] === 0x5c && value[start + 1] === 0x78) {
+    start += 2;
+    const bytes = new Uint8Array((end - start) / 2);
+    for (let index = 0; index < bytes.length; index++) {
+      const high = value[start++]!;
+      const low = value[start++]!;
+      bytes[index] = (
+        (high <= 0x39 ? high - 0x30 : (high | 0x20) - 0x57) * 16
+        + (low <= 0x39 ? low - 0x30 : (low | 0x20) - 0x57)
+      );
+    }
+    return bytes;
+  }
+  const bytes = new Uint8Array(end - start);
+  let length = 0;
+  while (start < end) {
+    const current = value[start++]!;
+    if (current !== 0x5c) {
+      bytes[length++] = current;
+      continue;
+    }
+    const escaped = value[start++]!;
+    if (escaped === 0x5c) {
+      bytes[length++] = escaped;
+      continue;
+    }
+    bytes[length++] = (
+      (escaped - 0x30) * 64
+      + (value[start++]! - 0x30) * 8
+      + value[start++]! - 0x30
+    );
+  }
+  return length === bytes.length ? bytes : bytes.slice(0, length);
+}
+
+type PgIntegerArray = (number | null | PgIntegerArray)[];
+
+function parseIntegerArrayBytes(value: Uint8Array, start: number, end: number): PgIntegerArray {
+  while (start < end && value[start] !== 0x7b) start++;
+  const root: PgIntegerArray = [];
+  const stack = [root];
+  start++;
+  while (start < end) {
+    const current = stack[stack.length - 1]!;
+    const code = value[start]!;
+    if (code === 0x7b) {
+      const nested: PgIntegerArray = [];
+      current.push(nested);
+      stack.push(nested);
+      start++;
+      continue;
+    }
+    if (code === 0x7d) {
+      stack.pop();
+      start++;
+      if (stack.length === 0) return root;
+      continue;
+    }
+    if (code === 0x2c) {
+      start++;
+      continue;
+    }
+    if (code === 0x4e) {
+      current.push(null);
+      start += 4;
+      continue;
+    }
+    let sign = 1;
+    if (code === 0x2d) {
+      sign = -1;
+      start++;
+    }
+    let integer = 0;
+    while (start < end) {
+      const digit = value[start]!;
+      if (digit === 0x2c || digit === 0x7d) break;
+      integer = integer * 10 + digit - 0x30;
+      start++;
+    }
+    current.push(integer * sign);
+  }
+  return root;
+}
+
+function parseIntegerArray(value: string): PgIntegerArray {
+  return parsePgArrayLiteral(value, Number);
 }
 
 function parseBytea(value: string): Uint8Array {
