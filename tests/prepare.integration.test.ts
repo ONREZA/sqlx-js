@@ -263,7 +263,6 @@ if (!haveIntegrationDatabase) {
       const descriptorPath = join(tmp, ".sqlx-js", "runtime-descriptors.json");
       const descriptors = JSON.parse(readFileSync(descriptorPath, "utf8")) as RuntimeQueryDescriptors;
       expect(descriptors.queries[fingerprint("SELECT $value::int4 AS value")]).toEqual({
-        sql: "SELECT $1::int4 AS value",
         params: [23],
       });
       expect(Object.values(descriptors.types)).toContainEqual({
@@ -287,14 +286,32 @@ if (!haveIntegrationDatabase) {
       expect(prepare(["--offline"]).code).toBe(0);
       expect(prepare(["--verify"]).code).toBe(0);
       await setup.simpleQuery("DROP TYPE tmp_runtime_descriptor_status");
-      const staleRuntime = createRuntimeSqlClient(dbUrl, { queryDescriptors: descriptors });
+      const observedQueries: string[] = [];
+      const staleRuntime = createRuntimeSqlClient(dbUrl, {
+        queryDescriptors: descriptors,
+        onQuery: ({ query }) => observedQueries.push(query),
+      });
       try {
-        await expect(staleRuntime.unsafe(
-          "SELECT $1::tmp_runtime_descriptor_status AS value",
-          "ready",
-        )).rejects.toThrow(/queryDescriptors type public\.tmp_runtime_descriptor_status does not exist/);
+        await expect(staleRuntime.ready()).rejects.toThrow(
+          /queryDescriptors type public\.tmp_runtime_descriptor_status does not exist/,
+        );
+        expect(observedQueries).toEqual([]);
       } finally {
         await staleRuntime.close();
+      }
+
+      await setup.simpleQuery(
+        "CREATE TYPE tmp_runtime_descriptor_status AS ENUM ('ready', 'done')",
+      );
+      const recreatedRuntime = createRuntimeSqlClient(dbUrl, { queryDescriptors: descriptors });
+      try {
+        await recreatedRuntime.ready();
+        expect(await recreatedRuntime.unsafe(
+          "SELECT $1::tmp_runtime_descriptor_status AS value",
+          "ready",
+        )).toEqual([{ value: "ready" }]);
+      } finally {
+        await recreatedRuntime.close();
       }
     } finally {
       await setup.simpleQuery("DROP TYPE IF EXISTS tmp_runtime_descriptor_status").catch(() => {});

@@ -125,6 +125,7 @@ import { createSqlClient } from "@onreza/sqlx-js";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 
 const db = createSqlClient(process.env.DATABASE_URL, { queryDescriptors });
+await db.ready({ timeoutMs: 5_000 });
 ```
 
 There is no runtime filesystem lookup. The JSON is a generated, committed
@@ -134,7 +135,10 @@ the runtime selects that profile's query map and verifies its PostgreSQL role.
 
 For a matching query, built-in type OIDs are used directly. Database-local
 types are stored as schema-qualified names and resolved once per pool
-generation before application SQL is dispatched. The driver then sends
+generation before application SQL is dispatched. Calling `ready()` during
+startup makes a missing database-local type fail before the instance accepts
+traffic. The descriptor contains parameter metadata only; the driver always
+executes the SQL from the current application call. It then sends
 `Parse`, `Bind`, `Describe Portal`, `Execute`, and `Sync` in one write while
 retaining PostgreSQL's live `RowDescription`.
 
@@ -145,6 +149,19 @@ missing database-local type fails closed. PostgreSQL validates the SQL and
 declared parameter types during `Parse`; if they no longer fit the live schema,
 the following `Execute` is not processed. The descriptor path does not add
 named statements, automatic replay, runtime result validation, or pipelining.
+
+Descriptors are not a complete schema-parity check. PostgreSQL may accept a
+cast-compatible parameter change, and live `RowDescription` keeps decoding
+correct but does not compare the result to the generated TypeScript contract.
+Run `prepare --verify` against the exact schema that will receive the
+application deployment, then roll out backward-compatible DDL before the
+dependent application version.
+
+Database-local OIDs are immutable for one pool generation. Dropping and
+recreating a type underneath a running generation does not silently refresh
+that generation or replay a failed query; a new application or replacement
+generation resolves the type's current OID during `ready()`. Treat such DDL as
+a coordinated rollout boundary.
 
 ## `clearSqlFileCache()`
 

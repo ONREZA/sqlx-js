@@ -11,7 +11,6 @@ export type RuntimeDescriptorType = {
 };
 
 export type RuntimeQueryDescriptor = {
-  sql: string;
   params: readonly (number | string)[];
 };
 
@@ -61,8 +60,6 @@ function parseQueries(
     if (
       !/^[0-9a-f]{16}$/.test(id)
       || !isRecord(raw)
-      || typeof raw.sql !== "string"
-      || raw.sql.trim() === ""
       || !Array.isArray(raw.params)
     ) {
       throw descriptorError(`${location}.${id} is malformed`);
@@ -78,7 +75,6 @@ function parseQueries(
       }
     }
     queries.set(id, {
-      sql: raw.sql,
       params: Object.freeze([...params]) as readonly (number | string)[],
     });
   }

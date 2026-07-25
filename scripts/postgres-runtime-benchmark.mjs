@@ -48,7 +48,6 @@ const runtimeDescriptors = descriptorMvp
     types: {},
     queries: {
       [queryIds.queryId(descriptorQuery)]: {
-        sql: descriptorQuery,
         params: descriptorParameterOids,
       },
     },
