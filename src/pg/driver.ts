@@ -396,17 +396,21 @@ class DriverQuery<Row extends Record<string, unknown>> implements PostgresPendin
 
   execute(): this {
     if (!this.promise) {
-      this.promise = Promise.resolve()
-        .then(() => this.start(
+      let started: Promise<PostgresResult<Row>>;
+      try {
+        started = this.start(
           (cancel) => {
             this.cancelCurrent = cancel;
             if (this.cancelled) this.cancelResult = cancel();
           },
           () => this.cancelled,
-        ))
-        .finally(() => {
-          this.cancelCurrent = undefined;
-        });
+        );
+      } catch (error) {
+        started = Promise.reject(error);
+      }
+      this.promise = started.finally(() => {
+        this.cancelCurrent = undefined;
+      });
     }
     return this;
   }
@@ -429,7 +433,7 @@ class DriverQuery<Row extends Record<string, unknown>> implements PostgresPendin
     onfulfilled?: ((value: PostgresResult<Row>) => TResult1 | PromiseLike<TResult1>) | null,
     onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
   ): PromiseLike<TResult1 | TResult2> {
-    return Promise.resolve(this.execute().promise!).then(onfulfilled, onrejected);
+    return this.execute().promise!.then(onfulfilled, onrejected);
   }
 }
 
@@ -855,18 +859,16 @@ function resultWithMetadata<Row extends Record<string, unknown>>(
     }
   }
   const count = numericCount ? Number(tag.slice(countStart)) : null;
-  Object.defineProperties(rows, {
-    [RESULT_VALUES]: {
-      value: values,
-    },
-    count: {
-      configurable: true,
-      value: count,
-    },
-    command: {
-      configurable: true,
-      value: command,
-    },
+  Object.defineProperty(rows, RESULT_VALUES, {
+    value: values,
+  });
+  Object.defineProperty(rows, "count", {
+    configurable: true,
+    value: count,
+  });
+  Object.defineProperty(rows, "command", {
+    configurable: true,
+    value: command,
   });
   return rows as PostgresResult<Row>;
 }

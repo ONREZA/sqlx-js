@@ -705,6 +705,42 @@ describe("managed generations", () => {
     expect(db.snapshot()).toEqual(expect.objectContaining({ state: "closed", activeOperations: 0 }));
   });
 
+  test("close proceeds as soon as active work drains within the grace period", async () => {
+    let resolveQuery!: (value: unknown[]) => void;
+    let resolveStarted!: () => void;
+    const query = new Promise<unknown[]>((resolve) => {
+      resolveQuery = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    let ended = 0;
+    const db = managed(fakePool(() => {
+      resolveStarted();
+      return pendingQuery(query);
+    }, {
+      end: async () => { ended++; },
+    }));
+    const active = db.sql("SELECT 1");
+    await started;
+    const closing = db.close({ graceMs: 1_000, forceAfterMs: 1_000 });
+    await Promise.resolve();
+    resolveQuery([]);
+    await active;
+
+    let timer!: ReturnType<typeof setTimeout>;
+    const settled = await Promise.race([
+      closing.then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), 100);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (!settled) await closing;
+    expect(settled).toBe(true);
+    expect(ended).toBe(1);
+  });
+
   test("a timeout during close cannot reopen admission or create a replacement pool", async () => {
     let created = 0;
     let ended = 0;

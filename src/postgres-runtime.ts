@@ -112,7 +112,6 @@ type TransactionState = {
 
 type Deferred<T> = {
   promise: Promise<T>;
-  resolve(value: T): void;
   reject(error: unknown): void;
 };
 
@@ -121,7 +120,7 @@ type OperationRecord = {
   generation: PoolGeneration;
   metadata: QueryExecutionMetadata;
   startedAt: number;
-  deadlineAt?: number;
+  deadlineAt: number | undefined;
   phase: "bootstrap" | "execution";
   bootstrapStarted: boolean;
   sent: boolean;
@@ -147,13 +146,11 @@ type PoolGeneration = {
 };
 
 function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
+  const promise = new Promise<T>((_, rej) => {
     reject = rej;
   });
-  return { promise, resolve, reject };
+  return { promise, reject };
 }
 
 function resolvedFileRoot(value?: string): string {
@@ -287,9 +284,8 @@ class ManagedPostgresRuntime implements RuntimeClient {
     const timeoutMs = validateOptionalTimeout(options.timeoutMs ?? this.operationTimeoutMs, "timeoutMs");
     const metadata = { queryId: queryId("sqlx-js.transaction"), queryName: "sqlx-js.transaction" };
     const operation = this.startOperation(generation, metadata, undefined, undefined);
-    const state: TransactionState = { pending: new Set(), interrupt: deferred<never>() };
+    const state: TransactionState = { pending: new Set(), interrupt: operation.interruption };
     operation.transactionState = state;
-    void state.interrupt.promise.catch(() => {});
     let timeoutError: TransactionTimeoutError | undefined;
     let abortError: QueryAbortedError | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -309,7 +305,6 @@ class ManagedPostgresRuntime implements RuntimeClient {
         this.notifyTimeout(operation, timeoutMs);
         this.cancelTransaction(state);
         operation.interruption.reject(error);
-        state.interrupt.reject(error);
       };
       state.expire = expire;
       const remainingMs = operation.deadlineAt - performance.now();
@@ -325,7 +320,6 @@ class ManagedPostgresRuntime implements RuntimeClient {
         state.expired = error;
         this.cancelTransaction(state);
         operation.interruption.reject(error);
-        state.interrupt.reject(error);
       };
       if (options.signal.aborted) abortListener();
       else options.signal.addEventListener("abort", abortListener, { once: true });
@@ -338,7 +332,6 @@ class ManagedPostgresRuntime implements RuntimeClient {
         result = await Promise.race([
           begin,
           operation.interruption.promise,
-          state.interrupt.promise,
         ]);
       } finally {
         if (operation.deadlineAt !== undefined && performance.now() >= operation.deadlineAt) expire?.();
@@ -467,7 +460,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
       generation,
       metadata,
       startedAt,
-      ...(timeoutMs === undefined ? {} : { deadlineAt: startedAt + timeoutMs }),
+      deadlineAt: timeoutMs === undefined ? undefined : startedAt + timeoutMs,
       phase: "bootstrap",
       bootstrapStarted: false,
       sent: false,
@@ -499,7 +492,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
       operation.signal.removeEventListener("abort", operation.abortListener);
     }
     operation.generation.active.delete(operation.id);
-    if (this.activeOperationCount() === 0) {
+    if (this.activeDrainWaiters.size > 0 && this.activeOperationCount() === 0) {
       for (const resolve of this.activeDrainWaiters) resolve();
       this.activeDrainWaiters.clear();
     }
@@ -846,7 +839,6 @@ class ManagedPostgresRuntime implements RuntimeClient {
       this.cancelTransaction(operation.transactionState);
       if (!operation.transactionState.expired) {
         operation.transactionState.expired = error;
-        operation.transactionState.interrupt.reject(error);
       }
     }
     operation.interruption.reject(error);
