@@ -19,7 +19,9 @@ import type {
 export { RUNTIME_DESCRIPTOR_FILE };
 
 function sortedRecord<T>(entries: Iterable<readonly [string, T]>): Record<string, T> {
-  return Object.fromEntries([...entries].sort(([left], [right]) => left.localeCompare(right)));
+  return Object.fromEntries([...entries].sort(([left], [right]) =>
+    left < right ? -1 : left > right ? 1 : 0
+  ));
 }
 
 export function renderRuntimeDescriptors(
