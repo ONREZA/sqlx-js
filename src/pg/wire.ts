@@ -1063,6 +1063,29 @@ export class PgClient {
     ], undefined, materializeRow);
   }
 
+  async execKnownParamsText<Row = PgRawRow>(
+    sql: string,
+    parameterOids: readonly number[],
+    params: (string | null)[],
+    materializeRow?: PgRowMaterializer<Row>,
+  ): Promise<PgRowResult<Row>> {
+    if (parameterOids.length !== params.length) {
+      throw new Error(
+        `sqlx-js: expected ${parameterOids.length} parameters, received ${params.length}`,
+      );
+    }
+    const stmtName = "";
+    const parseBody = concat([
+      cstr(stmtName),
+      cstr(sql),
+      writeInt16(parameterOids.length),
+      ...parameterOids.map(writeInt32),
+    ]);
+    return await this.execBoundParamsText(params, [
+      frame("P", parseBody),
+    ], undefined, materializeRow);
+  }
+
   async execParamsTextWithSerializer<Row = PgRawRow>(
     sql: string,
     serialize: (parameterOids: readonly number[]) => (string | null)[],
