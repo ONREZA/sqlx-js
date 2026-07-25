@@ -39,7 +39,10 @@ sqlx-js snapshot check                             # when a snapshot is committe
 `--shadow-admin-url` / `--shadow-url`. `prepare --check` remains the fast
 database-free consistency check. `prepare --verify` remains available for the
 narrower advanced case of comparing query artifacts against a specifically
-supplied live database.
+supplied live database. For a prepared-descriptor deployment, run it against
+the exact target schema or an authoritative production-shaped copy after the
+intended DDL is present; descriptors optimize dispatch and do not replace this
+schema-parity gate.
 
 The managed pgschema binary is installed under `node_modules/.cache/sqlx-js/pgschema/`, not `.sqlx-js/`, so it is not part of the committed offline cache.
 

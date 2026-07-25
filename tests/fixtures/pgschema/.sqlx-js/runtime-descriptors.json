@@ -6,7 +6,6 @@
   "types": {},
   "queries": {
     "f0499b344d579030": {
-      "sql": "SELECT id, name FROM pgschema_probe WHERE id = $1",
       "params": [
         20
       ]

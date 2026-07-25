@@ -209,6 +209,7 @@ test("managed client preserves result metadata", async () => {
 test("managed client dispatches matching runtime descriptors and keeps adaptive fallback", async () => {
   const adaptive: string[] = [];
   const known: Array<{ query: string; parameterOids: readonly number[]; params: unknown[] }> = [];
+  const executionPaths: Array<{ query: string; executionPath: string | undefined }> = [];
   const query = "SELECT $1::int4 AS value";
   const fake = fakePool(
     async (sql) => {
@@ -236,9 +237,12 @@ test("managed client dispatches matching runtime descriptors and keeps adaptive 
       configHash: "test",
       types: {},
       queries: {
-        [queryId(query)]: { sql: query, params: [23] },
+        [queryId(query)]: { params: [23] },
       },
       profiles: {},
+    },
+    onQuery: ({ query: observedQuery, executionPath }) => {
+      executionPaths.push({ query: observedQuery, executionPath });
     },
   });
 
@@ -248,14 +252,25 @@ test("managed client dispatches matching runtime descriptors and keeps adaptive 
   ]);
   expect(known).toEqual([{ query, parameterOids: [23], params: [42] }]);
   expect(adaptive).toEqual(["SELECT $1::text AS value"]);
+  expect(executionPaths).toEqual([
+    { query, executionPath: "descriptor" },
+    { query: "SELECT $1::text AS value", executionPath: "adaptive" },
+  ]);
 });
 
 test("query hooks are preserved inside transactions", async () => {
   const calls: string[] = [];
+  const descriptorQuery = "UPDATE jobs SET active = $1";
   const tx = {
     unsafe: async (query: string) => {
-      calls.push(query);
+      calls.push(`adaptive:${query}`);
       return Object.assign([], { count: 1, command: "UPDATE" });
+    },
+    [EXECUTE_KNOWN_PARAMS]: (query: string) => {
+      calls.push(`descriptor:${query}`);
+      return pendingQuery(Promise.resolve(
+        Object.assign([], { count: 1, command: "UPDATE" }),
+      ));
     },
     array: (value: unknown[], oid?: number) => ({ kind: "array", value, oid }),
     json: (value: unknown) => ({ kind: "json", value }),
@@ -268,15 +283,35 @@ test("query hooks are preserved inside transactions", async () => {
     begin: async (fn: (value: typeof tx) => Promise<unknown>) => await fn(tx),
     end: async () => {},
   } as unknown as PostgresClient;
-  const events: string[] = [];
+  const events: Array<{ query: string; executionPath: string | undefined }> = [];
 
-  const db = managed(fake, { onQuery: ({ query }) => events.push(query) });
+  const db = managed(fake, {
+    queryDescriptors: {
+      formatVersion: 1,
+      cacheFormat: CACHE_FORMAT_VERSION,
+      generatorRevision: GENERATOR_REVISION,
+      configHash: "test",
+      types: {},
+      queries: {
+        [queryId(descriptorQuery)]: { params: [16] },
+      },
+      profiles: {},
+    },
+    onQuery: ({ query, executionPath }) => events.push({ query, executionPath }),
+  });
   await db.sql.transaction(async (transaction) => {
-    await transaction.execute("UPDATE jobs SET active = false");
+    await transaction.execute(descriptorQuery, false);
+    await transaction.execute("DELETE FROM jobs");
   });
 
-  expect(calls).toEqual(["UPDATE jobs SET active = false"]);
-  expect(events).toEqual(["UPDATE jobs SET active = false"]);
+  expect(calls).toEqual([
+    `descriptor:${descriptorQuery}`,
+    "adaptive:DELETE FROM jobs",
+  ]);
+  expect(events).toEqual([
+    { query: descriptorQuery, executionPath: "descriptor" },
+    { query: "DELETE FROM jobs", executionPath: undefined },
+  ]);
 });
 
 test("the internal runtime receives explicit JSON and array parameters", async () => {

@@ -16,12 +16,15 @@ export type OnQueryEvent = {
   queryName?: string;
   profile?: string;
   role?: string;
+  executionPath?: QueryExecutionPath;
   query: string;
   params: unknown[];
   durationMs: number;
   rowCount?: number;
   error?: unknown;
 };
+
+export type QueryExecutionPath = "adaptive" | "descriptor";
 
 export type OnQueryHook = (event: OnQueryEvent) => void | Promise<void>;
 export type OnQueryHookError = (error: unknown, event: OnQueryEvent) => void | Promise<void>;

@@ -9,7 +9,6 @@ import {
 } from "./artifact-versions";
 import { fingerprint, type CacheEntry } from "./cache";
 import type { DatabaseProfiles } from "./config";
-import { rewriteNamedParameters } from "./sql-params";
 import type {
   RuntimeDescriptorProfile,
   RuntimeDescriptorType,
@@ -45,7 +44,6 @@ export function renderRuntimeDescriptors(
       return key;
     });
     const descriptor: RuntimeQueryDescriptor = {
-      sql: rewriteNamedParameters(entry.query).query,
       params,
     };
     const id = fingerprint(entry.query);

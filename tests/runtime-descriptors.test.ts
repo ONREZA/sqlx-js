@@ -55,7 +55,6 @@ test("runtime descriptor rendering deduplicates database-local types and binds p
   expect(Object.keys(artifact.types)).toEqual([key]);
   expect(artifact.queries[fingerprint("SELECT 1")]).toBeUndefined();
   expect(artifact.queries[fingerprint("SELECT $value::int4")]).toEqual({
-    sql: "SELECT $1::int4",
     params: [23],
   });
   expect(prepareRuntimeDescriptors(artifact, profiles.api)).toMatchObject({

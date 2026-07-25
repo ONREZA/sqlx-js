@@ -158,9 +158,11 @@ const db = createSqlClient(process.env.DATABASE_URL, {
     },
   },
   // Fires after every query/transaction statement, success or failure.
-  onQuery: ({ queryId, queryName, query, params, durationMs, rowCount, error }) => {
-    if (error) logger.error({ queryId, queryName, query, error });
-    else if (durationMs > 200) logger.warn({ queryId, queryName, durationMs, rowCount });
+  onQuery: ({ queryId, queryName, executionPath, query, params, durationMs, rowCount, error }) => {
+    if (error) logger.error({ queryId, queryName, executionPath, query, error });
+    else if (durationMs > 200) {
+      logger.warn({ queryId, queryName, executionPath, durationMs, rowCount });
+    }
   },
   onQueryStart: ({ queryId, queryName, generation }) => {
     metrics.databaseStarted.add(1, { queryId, queryName, generation });
@@ -176,7 +178,7 @@ const db = createSqlClient(process.env.DATABASE_URL, {
 });
 ```
 
-The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. `queryId` is the stable prepare/cache fingerprint and is suitable for metric labels; `queryName` is present for named `defineQuery` calls. Profiled managed clients also attach the stable `profile` name and PostgreSQL `role` to query, query-start/timeout, client-state, and lifecycle-hook-error events, including events emitted by replacement pool generations. The hook is a non-blocking observer: synchronous throws and asynchronous rejections preserve the database result/error and are passed to `onQueryHookError` when configured. The event preserves source-level parameters for direct queries (including the named-parameter object); mapped definitions report the mapper output rather than their application input. Parameters may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
+The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. `queryId` is the stable prepare/cache fingerprint and is suitable for metric labels; `queryName` is present for named `defineQuery` calls. For parameterized queries, managed PostgreSQL clients add `executionPath` as `descriptor` for a prepared-descriptor hit or `adaptive` when parameter types are described at runtime. Parameterless queries already use one write and leave the field undefined. It is produced only for observers and does not enable hot-path counters. Profiled managed clients also attach the stable `profile` name and PostgreSQL `role` to query, query-start/timeout, client-state, and lifecycle-hook-error events, including events emitted by replacement pool generations. The hook is a non-blocking observer: synchronous throws and asynchronous rejections preserve the database result/error and are passed to `onQueryHookError` when configured. The event preserves source-level parameters for direct queries (including the named-parameter object); mapped definitions report the mapper output rather than their application input. Parameters may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
 
 Lifecycle events intentionally omit SQL text and parameters. `onQueryStart` fires before codec bootstrap. `onQueryTimeout` reports the stable ID, generation, phase, and outcome while the managed runtime cancels the query and retires the poisoned generation. `onClientStateChange` reports `healthy`, `poisoned`, `recycling`, `failed`, `closing`, and `closed` transitions.
 

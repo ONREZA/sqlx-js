@@ -53,6 +53,7 @@ export type {
   OnQueryEvent,
   OnQueryHook,
   OnQueryHookError,
+  QueryExecutionPath,
   QueryExecutionOptions,
   QueryOutcome,
   QueryTimeoutPhase,

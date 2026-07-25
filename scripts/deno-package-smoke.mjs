@@ -19,7 +19,7 @@ const db = createSqlClient(databaseUrl, {
     configHash: "deno-package-smoke",
     types: {},
     queries: {
-      [queryId(descriptorQuery)]: { sql: descriptorQuery, params: [23] },
+      [queryId(descriptorQuery)]: { params: [23] },
     },
     profiles: {},
   },

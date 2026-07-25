@@ -33,6 +33,7 @@ import { PostgresTypeRegistry, type RuntimeTypeCodecs } from "./postgres-codecs"
 import {
   prepareRuntimeDescriptors,
   type PreparedRuntimeDescriptors,
+  type RuntimeQueryDescriptor,
   type RuntimeQueryDescriptors,
 } from "./runtime-descriptors";
 import { queryId } from "./query-id";
@@ -252,18 +253,22 @@ class ManagedPostgresRuntime implements RuntimeClient {
 
   private async executeRequest(request: RuntimeQueryRequest): Promise<RuntimeQueryResult> {
     const generation = this.acceptGeneration();
+    const descriptor = this.descriptors?.queries.get(request.metadata.queryId);
     const timeoutMs = validateOptionalTimeout(
       request.options?.timeoutMs ?? this.operationTimeoutMs,
       "timeoutMs",
     );
     const operation = this.startOperation(generation, request.metadata, timeoutMs, request.options?.signal);
-    const work = this.executeQuery(generation, operation, request);
+    const work = this.executeQuery(generation, operation, request, descriptor);
     try {
       const result = await Promise.race([work, operation.interruption.promise]);
       this.lastSuccessAt = Date.now();
       if (this.onQuery) {
         this.notifyQuery({
           ...request.metadata,
+          executionPath: request.params.length === 0
+            ? undefined
+            : descriptor ? "descriptor" : "adaptive",
           query: request.observedQuery,
           params: request.observedParams,
           durationMs: performance.now() - operation.startedAt,
@@ -276,6 +281,9 @@ class ManagedPostgresRuntime implements RuntimeClient {
       if (this.onQuery) {
         this.notifyQuery({
           ...request.metadata,
+          executionPath: request.params.length === 0
+            ? undefined
+            : descriptor ? "descriptor" : "adaptive",
           query: request.observedQuery,
           params: request.observedParams,
           durationMs: performance.now() - operation.startedAt,
@@ -514,6 +522,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
     generation: PoolGeneration,
     operation: OperationRecord,
     request: RuntimeQueryRequest,
+    descriptor: RuntimeQueryDescriptor | undefined,
   ): Promise<RuntimeQueryResult> {
     this.checkOperation(operation);
     await this.bootstrap(generation, operation);
@@ -521,8 +530,15 @@ class ManagedPostgresRuntime implements RuntimeClient {
     operation.phase = "execution";
     const params = this.encodeParams(generation.pool, request.params);
     this.checkOperation(operation);
-    const pending = this.descriptors
-      ? this.pendingQuery(generation, generation.pool, request, params)
+    const pending = descriptor
+      ? this.pendingDescriptorQuery(
+        generation,
+        generation.pool,
+        request.metadata.queryId,
+        request.query,
+        descriptor,
+        params,
+      )
       : generation.pool.unsafe(request.query, params as never[]) as unknown as PendingQuery;
     this.checkOperation(operation);
     operation.pending = pending;
@@ -569,6 +585,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
     request: RuntimeQueryRequest,
   ): Promise<RuntimeQueryResult> {
     this.checkTransactionState(state);
+    const descriptor = this.descriptors?.queries.get(request.metadata.queryId);
     const timeoutMs = validateOptionalTimeout(request.options?.timeoutMs, "timeoutMs");
     const startedAt = performance.now();
     if (this.onQueryStart) {
@@ -629,8 +646,15 @@ class ManagedPostgresRuntime implements RuntimeClient {
         expire?.();
       }
       if (state.expired) throw state.expired;
-      pending = this.descriptors
-        ? this.pendingQuery(generation, client, request, params)
+      pending = descriptor
+        ? this.pendingDescriptorQuery(
+          generation,
+          client,
+          request.metadata.queryId,
+          request.query,
+          descriptor,
+          params,
+        )
         : client.unsafe(request.query, params as never[]) as unknown as PendingQuery;
       this.checkTransactionState(state);
       if (deadlineAt !== undefined && performance.now() >= deadlineAt && !state.expired) {
@@ -654,6 +678,9 @@ class ManagedPostgresRuntime implements RuntimeClient {
       if (this.onQuery) {
         this.notifyQuery({
           ...request.metadata,
+          executionPath: request.params.length === 0
+            ? undefined
+            : descriptor ? "descriptor" : "adaptive",
           query: request.observedQuery,
           params: request.observedParams,
           durationMs: performance.now() - startedAt,
@@ -666,6 +693,9 @@ class ManagedPostgresRuntime implements RuntimeClient {
       if (this.onQuery) {
         this.notifyQuery({
           ...request.metadata,
+          executionPath: request.params.length === 0
+            ? undefined
+            : descriptor ? "descriptor" : "adaptive",
           query: request.observedQuery,
           params: request.observedParams,
           durationMs: performance.now() - startedAt,
@@ -866,19 +896,17 @@ class ManagedPostgresRuntime implements RuntimeClient {
     return params.length === 0 ? params : params.map((param) => this.encodeParam(client, param));
   }
 
-  private pendingQuery(
+  private pendingDescriptorQuery(
     generation: PoolGeneration,
     client: PostgresQueryClient,
-    request: RuntimeQueryRequest,
+    queryId: string,
+    query: string,
+    descriptor: RuntimeQueryDescriptor,
     params: unknown[],
   ): PendingQuery {
-    const descriptor = this.descriptors!.queries.get(request.metadata.queryId);
-    if (!descriptor) {
-      return client.unsafe(request.query, params as never[]) as unknown as PendingQuery;
-    }
     if (descriptor.params.length !== params.length) {
       throw new Error(
-        `sqlx-js: runtime descriptor ${request.metadata.queryId} expects `
+        `sqlx-js: runtime descriptor ${queryId} expects `
         + `${descriptor.params.length} parameter(s), received ${params.length}`,
       );
     }
@@ -888,7 +916,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
     }
     const parameterOids = descriptor.params.map((type) =>
       typeof type === "number" ? type : generation.registry.descriptorOid(type));
-    return executeKnown.call(client, descriptor.sql, parameterOids, params) as unknown as PendingQuery;
+    return executeKnown.call(client, query, parameterOids, params) as unknown as PendingQuery;
   }
 
   private encodeParam(client: PostgresClient, param: unknown): unknown {

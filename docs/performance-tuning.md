@@ -82,7 +82,7 @@ replacement, unknown-outcome reporting, and bounded shutdown.
 The long-term prepared path should emit a portable runtime descriptor for every
 known query:
 
-- the rewritten positional SQL and stable query ID;
+- the stable query ID, without a second executable copy of the SQL;
 - parameter codec identities expressed by PostgreSQL type identity rather than
   database-local numeric OID;
 - the connection profile that owns the query contract.
@@ -94,7 +94,7 @@ without waiting for a separate `ParameterDescription`.
 
 The first implementation should retain the server's actual
 `RowDescription`. Omitting it saves little after the synchronization point is
-removed and weakens schema-drift detection.
+removed and would detach result decoding from the server's current contract.
 
 Dynamic `unsafe(...)` SQL remains on the adaptive describe path.
 
@@ -256,7 +256,9 @@ The production implementation now closes those gates with a derived JSON
 artifact, schema-qualified database-local type resolution, exact profile/role
 binding, and cache/check/offline/verify integration. Missing descriptors keep
 the adaptive path; a supplied incompatible descriptor fails before application
-SQL dispatch. PostgreSQL still supplies the live portal `RowDescription`.
+SQL dispatch. The descriptor contains only parameter metadata, so the driver
+always executes the current call's SQL. PostgreSQL still supplies the live
+portal `RowDescription`.
 
 A three-round, alternating-order public-path smoke test on the same local
 hardware measured managed `simple-concurrent` at a median 17,437 ops/s
