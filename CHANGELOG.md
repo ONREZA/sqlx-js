@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.22.0](https://github.com/ONREZA/sqlx-js/compare/v0.21.0...v0.22.0) (2026-07-25)
+
+
+### Features
+
+* **runtime:** add prepared descriptors ([e1cec73](https://github.com/ONREZA/sqlx-js/commit/e1cec738062f2bf5033c45180af7c62b6a3effa2))
+
+
+### Bug Fixes
+
+* **prepare:** stabilize descriptor ordering ([5cb8ea1](https://github.com/ONREZA/sqlx-js/commit/5cb8ea1d56e6c871ead0bebfc966fdde3cfbd722))
+* **runtime:** harden prepared descriptors ([396eb16](https://github.com/ONREZA/sqlx-js/commit/396eb167749f3a0404dbdacfc30330e3f1fa15b7))
+
+
+### Performance
+
+* **postgres:** optimize runtime hot paths ([d2ac320](https://github.com/ONREZA/sqlx-js/commit/d2ac3200afcde1acc00a112bded7f7c622dd7509))
+* **postgres:** prove descriptor fast path ([1a1b226](https://github.com/ONREZA/sqlx-js/commit/1a1b226f669d94d77051a204c65650b16fe02ac0))
+
 ## [0.21.0](https://github.com/ONREZA/sqlx-js/compare/v0.20.1...v0.21.0) (2026-07-25)
 
 
