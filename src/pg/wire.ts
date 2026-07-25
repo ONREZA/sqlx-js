@@ -795,8 +795,7 @@ export class PgClient {
 
   private async authenticate(): Promise<void> {
     while (true) {
-      const m = await this.next();
-      if (m.type !== "R") throw new Error(`expected R, got ${m.type}: ${stringifyMessage(m)}`);
+      const m = await this.nextAuthenticationMessage("authentication");
       if (m.code === 0) return;
       if (m.code === 3) {
         const body = cstr(this.cfg.password);
@@ -821,6 +820,17 @@ export class PgClient {
     }
   }
 
+  private async nextAuthenticationMessage(
+    context: string,
+  ): Promise<Extract<ServerMessage, { type: "R" }>> {
+    const message = await this.next();
+    if (message.type === "E") throw pgError(message.fields);
+    if (message.type !== "R") {
+      throw new Error(`${context}: expected R, got ${message.type}: ${stringifyMessage(message)}`);
+    }
+    return message;
+  }
+
   private async scramAuth(initialPayload: Uint8Array): Promise<void> {
     const mechs: string[] = [];
     let off = 0;
@@ -843,8 +853,8 @@ export class PgClient {
     ]);
     this.write(frame("p", initialBody));
 
-    const m1 = await this.next();
-    if (m1.type !== "R" || m1.code !== 11) throw new Error(`SCRAM: expected R/11, got ${stringifyMessage(m1)}`);
+    const m1 = await this.nextAuthenticationMessage("SCRAM");
+    if (m1.code !== 11) throw new Error(`SCRAM: expected R/11, got ${stringifyMessage(m1)}`);
     const serverFirst = textDecoder.decode(m1.payload);
     const sf = parseScramKv(serverFirst);
     const combinedNonce = scramField(sf, "r");
@@ -859,8 +869,8 @@ export class PgClient {
 
     this.write(frame("p", textEncoder.encode(clientFinal)));
 
-    const m2 = await this.next();
-    if (m2.type !== "R" || m2.code !== 12) throw new Error(`SCRAM: expected R/12, got ${stringifyMessage(m2)}`);
+    const m2 = await this.nextAuthenticationMessage("SCRAM");
+    if (m2.code !== 12) throw new Error(`SCRAM: expected R/12, got ${stringifyMessage(m2)}`);
     const serverFinal = textDecoder.decode(m2.payload);
     const sfKv = parseScramKv(serverFinal);
     if (sfKv.e) throw new Error(`SCRAM server error: ${sfKv.e}`);

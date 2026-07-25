@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createServer, type Server } from "node:net";
-import { ConnectionLostError, PgClient } from "../src/pg/wire";
+import { ConnectionLostError, PgClient, PgError } from "../src/pg/wire";
 
 let server: Server | null = null;
 afterEach(async () => {
@@ -20,8 +20,8 @@ function startSrv(onSocket: (s: import("node:net").Socket) => void): Promise<num
   });
 }
 
-function errorResponse(message: string): Buffer {
-  const body = Buffer.from(`SERROR\0C28P01\0M${message}\0\0`);
+function errorResponse(code: string, message: string): Buffer {
+  const body = Buffer.from(`SERROR\0C${code}\0M${message}\0\0`);
   const frame = Buffer.alloc(5 + body.length);
   frame[0] = "E".charCodeAt(0);
   frame.writeInt32BE(body.length + 4, 1);
@@ -116,7 +116,7 @@ describe("ConnectionLostError", () => {
     expect(attempts).toBe(1);
   });
 
-  test("an authentication failure closes the rejected startup socket", async () => {
+  test("a startup PostgreSQL error preserves SQLSTATE and closes the socket", async () => {
     let closed!: () => void;
     const socketClosed = new Promise<void>((resolve) => {
       closed = resolve;
@@ -130,7 +130,7 @@ describe("ConnectionLostError", () => {
           socket.write("N");
           return;
         }
-        socket.write(errorResponse("bad password"));
+        socket.write(errorResponse("57P03", "the database system is shutting down"));
       });
     });
     const client = new PgClient({
@@ -141,7 +141,9 @@ describe("ConnectionLostError", () => {
       database: "x",
       connectTimeoutMs: 1000,
     });
-    await expect(client.connect()).rejects.toThrow();
+    const connection = client.connect();
+    await expect(connection).rejects.toBeInstanceOf(PgError);
+    await expect(connection).rejects.toMatchObject({ code: "57P03" });
     await Promise.race([
       socketClosed,
       new Promise<never>((_, reject) =>
