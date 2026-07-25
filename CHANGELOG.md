@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.21.0](https://github.com/ONREZA/sqlx-js/compare/v0.20.1...v0.21.0) (2026-07-25)
+
+
+### Features
+
+* **skills:** add agent workflows ([5917e1a](https://github.com/ONREZA/sqlx-js/commit/5917e1a17429099fc39536dc55445cec99d66a82))
+
+
+### Documentation
+
+* **oss:** reorganize project documentation ([d330125](https://github.com/ONREZA/sqlx-js/commit/d330125eeb89c9f487cec251adf7bf797b0be5bd))
+
 ## [0.20.1](https://github.com/ONREZA/sqlx-js/compare/v0.20.0...v0.20.1) (2026-07-25)
 
 
