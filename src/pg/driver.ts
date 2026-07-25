@@ -533,33 +533,49 @@ class ConnectionSlot {
 
   private async readyClient(allowReconnect: boolean, operationSignal: AbortSignal): Promise<PgClient> {
     if (this.client && !this.client.isClosed) return this.client;
-    const signal = AbortSignal.any([this.abort.signal, operationSignal]);
-    if (signal.aborted) throw abortReason(signal);
-    if (!allowReconnect) {
-      throw new ConnectionLostError(new Error("transaction connection is closed"));
-    }
-    const config = { ...this.config };
-    if (this.passwordProvider) {
-      const password = await abortable(this.passwordProvider(), signal);
-      if (typeof password !== "string") {
-        throw new Error("sqlx-js: password provider must resolve to a string");
-      }
-      config.password = password;
-    }
-    if (signal.aborted) throw abortReason(signal);
-    const client = new PgClient(config);
-    this.client = client;
-    const onAbort = () => client.destroy(abortReason(signal));
-    signal.addEventListener("abort", onAbort, { once: true });
+    const timeoutMs = this.config.connectTimeoutMs ?? 15_000;
+    const deadline = new AbortController();
+    const timer = setTimeout(() => {
+      deadline.abort(new Error(
+        `sqlx-js: connect timeout to ${this.config.host}:${this.config.port} after ${timeoutMs}ms `
+        + "(includes password + TCP + TLS + authentication)",
+      ));
+    }, timeoutMs);
+    const signal = AbortSignal.any([
+      this.abort.signal,
+      operationSignal,
+      deadline.signal,
+    ]);
     try {
-      await client.connect();
-      this.connectedAt = Date.now();
-      return client;
-    } catch (error) {
-      if (this.client === client) this.client = undefined;
-      throw error;
+      if (signal.aborted) throw abortReason(signal);
+      if (!allowReconnect) {
+        throw new ConnectionLostError(new Error("transaction connection is closed"));
+      }
+      const config = { ...this.config };
+      if (this.passwordProvider) {
+        const password = await abortable(this.passwordProvider(), signal);
+        if (typeof password !== "string") {
+          throw new Error("sqlx-js: password provider must resolve to a string");
+        }
+        config.password = password;
+      }
+      if (signal.aborted) throw abortReason(signal);
+      const client = new PgClient(config);
+      this.client = client;
+      const onAbort = () => client.destroy(abortReason(signal));
+      signal.addEventListener("abort", onAbort, { once: true });
+      try {
+        await client.connect();
+        this.connectedAt = Date.now();
+        return client;
+      } catch (error) {
+        if (this.client === client) this.client = undefined;
+        throw error;
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+      }
     } finally {
-      signal.removeEventListener("abort", onAbort);
+      clearTimeout(timer);
     }
   }
 }

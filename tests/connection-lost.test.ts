@@ -56,6 +56,46 @@ describe("ConnectionLostError", () => {
     await expect(client.connect()).rejects.toBeInstanceOf(ConnectionLostError);
   });
 
+  test("connect() classifies a close before the SSL negotiation reply", async () => {
+    const port = await startSrv((socket) => {
+      socket.once("data", () => socket.destroy());
+    });
+    const client = new PgClient({
+      host: "127.0.0.1",
+      port,
+      user: "x",
+      password: "x",
+      database: "x",
+      sslmode: "prefer",
+      connectTimeoutMs: 1000,
+    });
+    await expect(client.connect()).rejects.toBeInstanceOf(ConnectionLostError);
+  });
+
+  test("connect() classifies a close during the TLS handshake", async () => {
+    const port = await startSrv((socket) => {
+      let sslRequested = false;
+      socket.on("data", () => {
+        if (!sslRequested) {
+          sslRequested = true;
+          socket.write("S");
+          return;
+        }
+        socket.destroy();
+      });
+    });
+    const client = new PgClient({
+      host: "127.0.0.1",
+      port,
+      user: "x",
+      password: "x",
+      database: "x",
+      sslmode: "require",
+      connectTimeoutMs: 1000,
+    });
+    await expect(client.connect()).rejects.toBeInstanceOf(ConnectionLostError);
+  });
+
   test("a clean handshake rejection does not retry in a loop", async () => {
     let attempts = 0;
     const port = await startSrv((socket) => {

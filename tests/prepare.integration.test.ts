@@ -2962,6 +2962,11 @@ export default {
       startupOptions: "-c bytea_output=escape",
     });
     try {
+      const hex = await sql.one(
+        "SELECT decode('005c7fff', 'hex') AS value",
+      ) as { value: Uint8Array };
+      expect(Array.from(hex.value)).toEqual([0x00, 0x5c, 0x7f, 0xff]);
+
       const literalRows = await sql("SELECT ARRAY[decode('dead', 'hex'), decode('beef', 'hex')]::bytea[] AS xs");
       const literal = (literalRows[0] as { xs: Uint8Array[] }).xs;
       expect(literal.map((x) => Array.from(x))).toEqual([[0xde, 0xad], [0xbe, 0xef]]);
@@ -3248,6 +3253,9 @@ export default {
         waited: void;
         xid: bigint;
         xids: (bigint | null)[];
+        bounded: (number | null)[];
+        matrix: number[][];
+        oids: (number | null)[];
       }>(
         `SELECT
            row_number() OVER (ORDER BY value) AS ordinal,
@@ -3261,7 +3269,10 @@ export default {
            ROW(1::int, 'value'::text) AS record,
            pg_sleep(0) AS waited,
            '123'::xid8 AS xid,
-           ARRAY['123'::xid8, NULL]::xid8[] AS xids
+           ARRAY['123'::xid8, NULL]::xid8[] AS xids,
+           '[0:2]={-2,NULL,3}'::int2[] AS bounded,
+           ARRAY[[-1,2],[3,-4]]::int4[][] AS matrix,
+           ARRAY[0::oid, 4294967295::oid, NULL]::oid[] AS oids
          FROM (VALUES (1::int)) AS values(value)`,
       );
       expect(row.ordinal).toBe(1n);
@@ -3273,6 +3284,9 @@ export default {
       expect(row.waited).toBeUndefined();
       expect(row.xid).toBe(123n);
       expect(row.xids).toEqual([123n, null]);
+      expect(row.bounded).toEqual([-2, null, 3]);
+      expect(row.matrix).toEqual([[-1, 2], [3, -4]]);
+      expect(row.oids).toEqual([0, 4294967295, null]);
       const [{ bc }] = await client.unsafe<{ bc: Date }>(
         "SELECT '4714-11-24 BC'::date AS bc",
       );
@@ -3295,6 +3309,34 @@ export default {
         "SELECT '5874897-12-31'::date",
       ))).rejects.toThrow("outside the JavaScript Date range");
       expect((await client.unsafe<{ value: number }>("SELECT 1::int AS value"))[0]!.value).toBe(1);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("driver forces ISO temporal output over startup DateStyle options", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, {
+      max: 1,
+      startupOptions: "-c DateStyle=SQL,DMY",
+    });
+    try {
+      const [row] = await client.unsafe<{
+        style: string;
+        date: Date;
+        timestamp: Date;
+        timestamptz: Date;
+      }>(
+        `SELECT
+           current_setting('DateStyle') AS style,
+           '2026-07-24'::date AS date,
+           '2026-07-24 12:34:56'::timestamp AS timestamp,
+           '2026-07-24 12:34:56+00'::timestamptz AS timestamptz`,
+      );
+      expect(row.style).toMatch(/^ISO/);
+      expect(row.date.toISOString()).toBe("2026-07-24T00:00:00.000Z");
+      expect(row.timestamp.toISOString()).toBe("2026-07-24T12:34:56.000Z");
+      expect(row.timestamptz.toISOString()).toBe("2026-07-24T12:34:56.000Z");
     } finally {
       await client.end();
     }

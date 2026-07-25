@@ -72,8 +72,8 @@ function certificate(name, commonName, usage, extension) {
   chmodSync(join(temp, `${name}.key`), 0o600);
 }
 
-function connectionUrl(port, user, password, mode, certificates = false) {
-  const url = new URL("postgresql://localhost/sqlx_js_compat");
+function connectionUrl(port, user, password, mode, certificates = false, host = "localhost") {
+  const url = new URL(`postgresql://${host}/sqlx_js_compat`);
   url.port = port;
   url.username = user;
   url.password = password;
@@ -223,6 +223,12 @@ EOF
       user: "clear_user",
       tls: true,
       url: connectionUrl(port, "clear_user", "clear-secret", "verify-full"),
+    },
+    {
+      name: "cleartext-tls-verify-full-ip",
+      user: "clear_user",
+      tls: true,
+      url: connectionUrl(port, "clear_user", "clear-secret", "verify-full", false, "127.0.0.1"),
     },
     {
       name: "client-cert-verify-ca",

@@ -1,7 +1,11 @@
 import { createHash, createHmac, pbkdf2Sync, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { Socket, connect as netConnect } from "node:net";
-import { TLSSocket, connect as tlsConnect } from "node:tls";
+import { Socket, connect as netConnect, isIP } from "node:net";
+import {
+  TLSSocket,
+  checkServerIdentity,
+  connect as tlsConnect,
+} from "node:tls";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -360,6 +364,7 @@ async function openPlainSocket(
   port: number,
   timeoutMs: number,
   signal?: AbortSignal,
+  claim?: (socket: Socket) => void,
 ): Promise<Socket> {
   return new Promise<Socket>((resolve, reject) => {
     const sock = netConnect({ host, port });
@@ -380,6 +385,7 @@ async function openPlainSocket(
     }, timeoutMs);
     const onConnect = () => {
       sock.setNoDelay(true);
+      claim?.(sock);
       finish({ socket: sock });
     };
     const onError = (error: Error) => finish({ error });
@@ -403,6 +409,7 @@ async function performSslHandshake(
   cfg: ConnConfig,
   mode: SslMode,
   signal: AbortSignal,
+  claim: (socket: AnySocket) => void,
 ): Promise<{ sock: AnySocket; tls: boolean }> {
   const reply: number = await new Promise<number>((resolve, reject) => {
     let settled = false;
@@ -456,13 +463,18 @@ async function performSslHandshake(
     const tlsSock = await new Promise<TLSSocket>((resolve, reject) => {
       const t = tlsConnect({
         socket: sock,
-        servername: cfg.host,
+        ...(isIP(cfg.host) === 0 ? { servername: cfg.host } : {}),
         rejectUnauthorized: mode === "verify-full" || mode === "verify-ca",
-        ...(mode === "verify-ca" ? { checkServerIdentity: () => undefined } : {}),
+        ...(mode === "verify-full"
+          ? { checkServerIdentity: (_hostname, cert) => checkServerIdentity(cfg.host, cert) }
+          : mode === "verify-ca"
+            ? { checkServerIdentity: () => undefined }
+            : {}),
         ...(cfg.sslRootCert ? { ca: readCertFile("sslrootcert", cfg.sslRootCert) } : {}),
         ...(cfg.sslCert ? { cert: readCertFile("sslcert", cfg.sslCert) } : {}),
         ...(cfg.sslKey ? { key: readCertFile("sslkey", cfg.sslKey) } : {}),
       });
+      claim(t);
       let settled = false;
       const finish = (result: { socket: TLSSocket } | { error: Error }) => {
         if (settled) return;
@@ -477,7 +489,15 @@ async function performSslHandshake(
       const onSecureConnect = () => finish({ socket: t });
       const onError = (error: Error) => {
         sock.destroy();
-        finish({ error });
+        const code = (error as NodeJS.ErrnoException).code;
+        finish({
+          error: code === "ECONNRESET"
+              || code === "ECONNABORTED"
+              || code === "EPIPE"
+              || code === "ERR_STREAM_PREMATURE_CLOSE"
+            ? new ConnectionLostError(error)
+            : error,
+        });
       };
       const onClose = () => {
         finish({
@@ -548,7 +568,6 @@ export class PgClient {
   private backendPid: number | undefined;
   private backendSecret: number | undefined;
   private readyStatus: string | undefined;
-  private rejectConnect: ((error: Error) => void) | undefined;
   private connectAbort: AbortController | undefined;
 
   constructor(private cfg: ConnConfig) {}
@@ -569,37 +588,20 @@ export class PgClient {
     const timeoutMs = this.cfg.connectTimeoutMs ?? 15000;
     const connectAbort = new AbortController();
     this.connectAbort = connectAbort;
-    let aborted = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        aborted = true;
-        const err = new Error(`sqlx-js: connect timeout to ${this.cfg.host}:${this.cfg.port} after ${timeoutMs}ms (includes TLS + authentication)`);
-        this.closed = true;
-        this.closeReason ??= err;
-        connectAbort.abort(err);
-        this.destroySocket();
-        reject(err);
-      }, timeoutMs);
-    });
-    let rejectInterrupted!: (error: Error) => void;
-    const interrupted = new Promise<never>((_, reject) => {
-      rejectInterrupted = reject;
-    });
-    this.rejectConnect = rejectInterrupted;
+    const timer = setTimeout(() => {
+      this.destroy(new Error(
+        `sqlx-js: connect timeout to ${this.cfg.host}:${this.cfg.port} after ${timeoutMs}ms `
+        + "(includes TCP + TLS + authentication)",
+      ));
+    }, timeoutMs);
     try {
-      await Promise.race([
-        this.connectInner(timeoutMs, () => aborted || this.closed, connectAbort.signal),
-        deadline,
-        interrupted,
-      ]);
+      await this.connectInner(timeoutMs, connectAbort.signal);
     } catch (error) {
       this.destroy(error instanceof Error ? error : new Error(String(error)));
       throw error;
     } finally {
-      if (this.rejectConnect === rejectInterrupted) this.rejectConnect = undefined;
       if (this.connectAbort === connectAbort) this.connectAbort = undefined;
-      if (timer) clearTimeout(timer);
+      clearTimeout(timer);
     }
   }
 
@@ -607,26 +609,31 @@ export class PgClient {
     try { (this.sock as AnySocket | undefined)?.destroy(); } catch { /* ignore */ }
   }
 
-  // Cooperative cancellation: a socket can finish connecting after the deadline
-  // has already rejected. Re-check `aborted` at each await boundary so a late
-  // connection is torn down instead of leaking.
   private async connectInner(
     timeoutMs: number,
-    aborted: () => boolean,
     signal: AbortSignal,
   ): Promise<void> {
     const mode: SslMode = this.cfg.sslmode ?? "prefer";
-    const plain = await openPlainSocket(this.cfg.host, this.cfg.port, timeoutMs, signal);
-    this.sock = plain;
-    if (aborted()) return this.abortConnect();
+    const claim = (socket: AnySocket) => {
+      this.sock = socket;
+      if (signal.aborted || this.closed) socket.destroy();
+    };
+    const plain = await openPlainSocket(
+      this.cfg.host,
+      this.cfg.port,
+      timeoutMs,
+      signal,
+      claim,
+    );
+    if (signal.aborted || this.closed) return this.abortConnect();
     let socket: AnySocket = plain;
     if (mode !== "disable") {
-      const result = await performSslHandshake(plain, this.cfg, mode, signal);
+      const result = await performSslHandshake(plain, this.cfg, mode, signal, claim);
       socket = result.sock;
       this.tlsEnabled = result.tls;
     }
     this.sock = socket;
-    if (aborted()) return this.abortConnect();
+    if (signal.aborted || this.closed) return this.abortConnect();
     this.attachHandlers();
 
     await this.startup();
@@ -780,6 +787,7 @@ export class PgClient {
     for (const [name, value] of Object.entries(this.cfg.startupParameters ?? {})) {
       pairs.push(cstr(name), cstr(value));
     }
+    pairs.push(cstr("DateStyle"), cstr("ISO"));
     pairs.push(new Uint8Array([0]));
     const body = concat([writeInt32(196608), concat(pairs)]);
     this.write(frame(null, body));
@@ -903,7 +911,6 @@ export class PgClient {
     this.closed = true;
     this.closeReason ??= reason;
     this.connectAbort?.abort(this.closeReason);
-    this.rejectConnect?.(this.closeReason);
     this.destroySocket();
     this.flushWaiters();
   }

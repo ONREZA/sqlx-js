@@ -90,10 +90,17 @@ test("raw client rejects timeout values outside the runtime timer range", () => 
 
 test("raw client shutdown interrupts an in-flight startup", async () => {
   let accept!: () => void;
+  let confirmClosed!: () => void;
   const accepted = new Promise<void>((resolve) => {
     accept = resolve;
   });
-  const server = createServer(() => accept());
+  const closed = new Promise<void>((resolve) => {
+    confirmClosed = resolve;
+  });
+  const server = createServer((socket) => {
+    socket.once("close", confirmClosed);
+    accept();
+  });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -108,9 +115,35 @@ test("raw client shutdown interrupts an in-flight startup", async () => {
   await accepted;
   await raw.end();
   await expect(query).rejects.toThrow("PostgreSQL pool is closed");
+  await Promise.race([
+    closed,
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("startup socket remained open after shutdown")), 500);
+    }),
+  ]);
   await new Promise<void>((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());
   });
+});
+
+test("raw connect timeout includes a stalled password provider", async () => {
+  let resolveStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    resolveStarted = resolve;
+  });
+  const raw = createClient("postgres://postgres@127.0.0.1:1/postgres", {
+    connectTimeoutMs: 20,
+    password: () => {
+      resolveStarted();
+      return new Promise<string>(() => {});
+    },
+  });
+  const query = Promise.resolve(raw.unsafe("SELECT 1"));
+  await started;
+  await expect(query).rejects.toThrow(
+    "includes password + TCP + TLS + authentication",
+  );
+  await raw.end();
 });
 
 test("raw client shutdown interrupts a stalled password provider", async () => {
