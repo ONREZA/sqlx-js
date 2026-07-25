@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.20.1](https://github.com/ONREZA/sqlx-js/compare/v0.20.0...v0.20.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* **postgres:** preserve startup SQLSTATE ([859a732](https://github.com/ONREZA/sqlx-js/commit/859a732d5f9656b5ec6c6a5abb41a4e971abc6c0))
+
+
+### Performance
+
+* **postgres:** harden runtime reliability ([1aa61e1](https://github.com/ONREZA/sqlx-js/commit/1aa61e1e0cec4d3874f04dd066e2f65c09e993eb)), closes [#32](https://github.com/ONREZA/sqlx-js/issues/32)
+
 ## [0.20.0](https://github.com/ONREZA/sqlx-js/compare/v0.19.0...v0.20.0) (2026-07-24)
 
 
