@@ -311,17 +311,23 @@ function readCString(b: Uint8Array, off: number): [string, number] {
 
 function writeInt32(n: number): Uint8Array {
   const b = new Uint8Array(4);
-  b[0] = (n >>> 24) & 0xff;
-  b[1] = (n >>> 16) & 0xff;
-  b[2] = (n >>> 8) & 0xff;
-  b[3] = n & 0xff;
+  writeInt32At(b, 0, n);
   return b;
+}
+function writeInt32At(b: Uint8Array, o: number, n: number): void {
+  b[o] = (n >>> 24) & 0xff;
+  b[o + 1] = (n >>> 16) & 0xff;
+  b[o + 2] = (n >>> 8) & 0xff;
+  b[o + 3] = n & 0xff;
 }
 function writeInt16(n: number): Uint8Array {
   const b = new Uint8Array(2);
-  b[0] = (n >>> 8) & 0xff;
-  b[1] = n & 0xff;
+  writeInt16At(b, 0, n);
   return b;
+}
+function writeInt16At(b: Uint8Array, o: number, n: number): void {
+  b[o] = (n >>> 8) & 0xff;
+  b[o + 1] = n & 0xff;
 }
 function cstr(s: string): Uint8Array {
   const enc = textEncoder.encode(s);
@@ -343,6 +349,37 @@ function frame(tag: string | null, body: Uint8Array): Uint8Array {
   const tb = new Uint8Array(1);
   tb[0] = tag.charCodeAt(0);
   return concat([tb, lenBytes, body]);
+}
+
+function bindFrame(params: (string | null)[]): Uint8Array {
+  const encoded = new Array<Uint8Array | null>(params.length);
+  let bodyLength = 8;
+  for (let index = 0; index < params.length; index++) {
+    const value = params[index];
+    const bytes = value === null ? null : textEncoder.encode(value);
+    encoded[index] = bytes;
+    bodyLength += 4 + (bytes?.length ?? 0);
+  }
+  const message = new Uint8Array(5 + bodyLength);
+  message[0] = 0x42;
+  writeInt32At(message, 1, bodyLength + 4);
+  let offset = 5;
+  message[offset++] = 0;
+  message[offset++] = 0;
+  writeInt16At(message, offset, 0);
+  offset += 2;
+  writeInt16At(message, offset, params.length);
+  offset += 2;
+  for (const bytes of encoded) {
+    writeInt32At(message, offset, bytes?.length ?? -1);
+    offset += 4;
+    if (bytes) {
+      message.set(bytes, offset);
+      offset += bytes.length;
+    }
+  }
+  writeInt16At(message, offset, 0);
+  return message;
 }
 
 function isTlsRequired(mode: SslMode): boolean {
@@ -1088,25 +1125,8 @@ export class PgClient {
     initialFields: FieldDescription[] | undefined = undefined,
     materializeRow?: PgRowMaterializer<Row>,
   ): Promise<PgRowResult<Row>> {
-    const stmtName = "";
     const portal = "";
-    const bindParts: Uint8Array[] = [
-      cstr(portal),
-      cstr(stmtName),
-      writeInt16(0),
-      writeInt16(params.length),
-    ];
-    for (const p of params) {
-      if (p === null) {
-        bindParts.push(writeInt32(-1));
-      } else {
-        const bytes = textEncoder.encode(p);
-        bindParts.push(writeInt32(bytes.length));
-        bindParts.push(bytes);
-      }
-    }
-    bindParts.push(writeInt16(0));
-    const messages = [...prefix, frame("B", concat(bindParts))];
+    const messages = [...prefix, bindFrame(params)];
     if (initialFields === undefined) {
       const describeBody = concat([new Uint8Array([0x50]), cstr(portal)]);
       messages.push(frame("D", describeBody));

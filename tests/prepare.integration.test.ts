@@ -3083,6 +3083,25 @@ export default {
     }
   });
 
+  test("internal pool cancels immediate work before dispatch", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      await client.unsafe("CREATE TEMP TABLE driver_cancel_immediate (value int NOT NULL)");
+      const pending = client.unsafe(
+        "INSERT INTO driver_cancel_immediate (value) VALUES (1)",
+      ).execute();
+      void pending.cancel();
+      await expect(Promise.resolve(pending)).rejects.toThrow("query cancelled before dispatch");
+      const [{ count }] = await client.unsafe<{ count: number }>(
+        "SELECT COUNT(*)::int AS count FROM driver_cancel_immediate",
+      );
+      expect(count).toBe(0);
+    } finally {
+      await client.end();
+    }
+  });
+
   test("cancellation during parameter encoding never dispatches the statement", async () => {
     const { createClient } = await import("../src/index");
     let pending: ReturnType<PostgresClient["unsafe"]> | undefined;
@@ -3130,6 +3149,35 @@ export default {
       await new Promise((resolve) => setTimeout(resolve, 30));
       await completed.cancel();
       expect((await later)[0]!.value).toBe(2);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("raw result metadata remains non-enumerable", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      const rows = await client.unsafe<{ value: number }>("SELECT 1::int AS value");
+      expect(rows.count).toBe(1);
+      expect(rows.command).toBe("SELECT");
+      expect(Object.keys(rows)).toEqual(["0"]);
+      expect(JSON.stringify(rows)).toBe('[{"value":1}]');
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("internal pool encodes UTF-8 and null bind parameters", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      const text = "Привет, PostgreSQL";
+      const [row] = await client.unsafe<{ value: string; missing: null }>(
+        "SELECT $1::text AS value, $2::text AS missing",
+        [text, null],
+      );
+      expect(row).toEqual({ value: text, missing: null });
     } finally {
       await client.end();
     }
