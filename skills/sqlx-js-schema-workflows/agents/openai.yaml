@@ -1,0 +1,4 @@
+interface:
+  display_name: "sqlx-js schema workflows"
+  short_description: "Choose and operate sqlx-js schema workflows"
+  default_prompt: "Use $sqlx-js-schema-workflows to plan a safe schema workflow."

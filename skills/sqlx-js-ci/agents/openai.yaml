@@ -1,0 +1,4 @@
+interface:
+  display_name: "sqlx-js CI"
+  short_description: "Build sound sqlx-js CI and deploy gates"
+  default_prompt: "Use $sqlx-js-ci to design or debug a sqlx-js CI gate."

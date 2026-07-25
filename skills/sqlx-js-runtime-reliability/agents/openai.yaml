@@ -1,0 +1,4 @@
+interface:
+  display_name: "sqlx-js runtime reliability"
+  short_description: "Protect sqlx-js runtime reliability contracts"
+  default_prompt: "Use $sqlx-js-runtime-reliability to change the runtime without weakening recovery guarantees."

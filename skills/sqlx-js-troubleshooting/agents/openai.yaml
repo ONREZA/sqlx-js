@@ -1,0 +1,4 @@
+interface:
+  display_name: "sqlx-js troubleshooting"
+  short_description: "Classify and diagnose sqlx-js failures"
+  default_prompt: "Use $sqlx-js-troubleshooting to classify this sqlx-js failure before changing code."

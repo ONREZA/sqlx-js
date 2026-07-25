@@ -56,6 +56,7 @@ runtime, generate an ORM layer, or support MySQL and SQLite.
 | Reproducible artifacts | Versioned offline cache, `prepare --check`, live `prepare --verify`, generated declarations, enum and function catalogs | [CI and deployment checks](./docs/ci.md) |
 | PostgreSQL types | Built-ins, arrays, ranges, domains, composites, pgvector, hstore, citext, ltree, application codecs | [Configuration and custom types](./docs/configuration.md) |
 | Tooling | Incremental watch mode, project doctor, JSON diagnostics, query inventory, embedded SQL generation | [CLI and workflows](./docs/cli.md) |
+| Agent workflows | Installable skills for CLI, schema, queries, inference, runtime, RLS, types, upgrades, and releases | [Agent skills](./docs/agent-skills.md) |
 
 See the [documentation index](./docs/README.md) for the complete guide set.
 
@@ -204,6 +205,7 @@ interpretation rules are documented in [Benchmarks](./docs/benchmarks.md).
 - [Type and nullability inference](./docs/type-inference.md)
 - [CI and deployment checks](./docs/ci.md)
 - [Benchmarks](./docs/benchmarks.md)
+- [Agent skills](./docs/agent-skills.md)
 - [Limitations and non-goals](./docs/limitations.md)
 - [Upgrade guides](./docs/upgrades/README.md)
 - [Roadmap](./ROADMAP.md)

@@ -1,0 +1,4 @@
+interface:
+  display_name: "sqlx-js query API"
+  short_description: "Write typed sqlx-js query contracts"
+  default_prompt: "Use $sqlx-js-query-api to write a sound typed SQL contract."

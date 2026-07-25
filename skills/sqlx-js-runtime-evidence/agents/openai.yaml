@@ -1,0 +1,4 @@
+interface:
+  display_name: "sqlx-js runtime evidence"
+  short_description: "Run and interpret runtime evidence gates"
+  default_prompt: "Use $sqlx-js-runtime-evidence to benchmark, soak, or chaos-test the runtime."

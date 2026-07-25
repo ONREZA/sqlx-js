@@ -1,0 +1,4 @@
+interface:
+  display_name: "sqlx-js inference"
+  short_description: "Develop sqlx-js prepare-time inference"
+  default_prompt: "Use $sqlx-js-inference to diagnose or extend query inference."

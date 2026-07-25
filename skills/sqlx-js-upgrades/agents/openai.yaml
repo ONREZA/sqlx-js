@@ -1,0 +1,4 @@
+interface:
+  display_name: "sqlx-js upgrades"
+  short_description: "Upgrade sqlx-js and generated artifacts safely"
+  default_prompt: "Use $sqlx-js-upgrades to plan and verify an sqlx-js upgrade."

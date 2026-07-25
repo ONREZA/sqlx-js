@@ -52,6 +52,9 @@ jobs:
       - name: Check documentation links
         run: bun run test:docs
 
+      - name: Validate agent skills
+        run: bun run test:skills
+
       - name: Type-check library
         run: bunx tsc --noEmit
 

@@ -30,6 +30,7 @@
     "ROADMAP.md",
     "SECURITY.md",
     "docs",
+    "skills",
     "LICENSE"
   ],
   "publishConfig": {
@@ -58,6 +59,7 @@
     "prepare": "node scripts/prepare-package.mjs",
     "test": "bun test tests --timeout 120000",
     "test:docs": "node scripts/check-doc-links.mjs",
+    "test:skills": "node scripts/validate-skills.mjs",
     "test:typecheck": "tsc --noEmit",
     "test:example": "bunx tsc -p example --noEmit",
     "test:runtime-boundary": "bun run build && node scripts/check-runtime-boundary.mjs",

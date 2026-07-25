@@ -1,0 +1,4 @@
+interface:
+  display_name: "sqlx-js project setup"
+  short_description: "Set up sqlx-js projects and first queries"
+  default_prompt: "Use $sqlx-js-project-setup to configure a new sqlx-js project safely."

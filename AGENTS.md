@@ -51,6 +51,7 @@ The library is **PostgreSQL-only** and keeps SQL/result validation at prepare ti
 │       └── param-map.ts      Maps $N → DML targets and predicate references
 ├── tests/                    Bun-test unit + integration tests
 ├── example/                  End-to-end fixture project used by CI integration
+├── skills/                   Installable Agent Skills for sqlx-js workflows
 ├── .github/workflows/        CI + npm publish
 ├── README.md                 User-facing documentation
 ├── ROADMAP.md                Future work, ordered by ROI
@@ -95,6 +96,7 @@ bun test --timeout 120000 # unit + integration tests
 bunx tsc -p example     # type-check the example fixture
 bun run test:corpus     # production-query inference gate
 bun run test:runtime-boundary # build + production import allowlist
+bun run test:skills     # Agent Skills structure and metadata
 bun run test:node-package     # packed Node/Bun runtime + Node CLI smoke; requires DATABASE_URL
 bun run test:deno-package     # built Deno runtime smoke; requires DATABASE_URL
 ```

@@ -1,0 +1,4 @@
+interface:
+  display_name: "sqlx-js CLI"
+  short_description: "Use the sqlx-js CLI safely and correctly"
+  default_prompt: "Use $sqlx-js-cli to choose and run the correct sqlx-js command."

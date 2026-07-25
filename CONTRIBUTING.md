@@ -88,6 +88,15 @@ relevant soak or chaos script.
 Documentation-only changes do not require the full database suite, but all
 relative links and documented commands must remain valid.
 
+Agent skill changes must also pass:
+
+```bash
+bun run test:skills
+```
+
+Keep each skill focused on one activation boundary. Put detailed source maps or
+checklists in its `references/` directory instead of expanding `SKILL.md`.
+
 ## Commit and pull request
 
 Use Conventional Commits with an imperative, lower-case subject no longer than

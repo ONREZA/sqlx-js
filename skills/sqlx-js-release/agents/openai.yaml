@@ -1,0 +1,4 @@
+interface:
+  display_name: "sqlx-js release"
+  short_description: "Release sqlx-js through verified automation"
+  default_prompt: "Use $sqlx-js-release to carry a change through the supported release flow."

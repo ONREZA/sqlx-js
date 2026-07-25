@@ -22,6 +22,8 @@ guides contain the complete contracts, operational details, and edge cases.
   row and parameter types come from and when explicit assertions are needed.
 - [Benchmarks](./benchmarks.md) documents the runtime benchmark methodology,
   controls, and interpretation boundaries.
+- [Agent skills](./agent-skills.md) lists installable workflows for coding
+  agents and their validation contract.
 - [Limitations and non-goals](./limitations.md) records intentional boundaries
   and known unsupported cases.
 - [Upgrade guides](./upgrades/README.md) contain version-specific regeneration,

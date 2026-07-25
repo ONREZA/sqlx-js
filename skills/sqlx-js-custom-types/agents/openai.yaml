@@ -1,0 +1,4 @@
+interface:
+  display_name: "sqlx-js custom types"
+  short_description: "Configure PostgreSQL and custom type codecs"
+  default_prompt: "Use $sqlx-js-custom-types to choose the correct type mapping and runtime codec."

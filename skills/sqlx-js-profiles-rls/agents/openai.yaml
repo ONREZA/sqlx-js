@@ -1,0 +1,4 @@
+interface:
+  display_name: "sqlx-js profiles and RLS"
+  short_description: "Configure role profiles and RLS context"
+  default_prompt: "Use $sqlx-js-profiles-rls to implement or audit role-scoped query execution."
