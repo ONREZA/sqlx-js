@@ -21,9 +21,10 @@ events, and bounded shutdown.
 
 Query IDs and named-parameter rewriting are cached after the first occurrence
 of a SQL string. They are not expected to dominate steady-state execution.
-Parameterized queries still discover their PostgreSQL parameter OIDs before
-binding values because database-local enums, domains, composites, arrays, and
-custom serializers cannot safely use portable numeric OIDs.
+Adaptive parameterized queries discover their PostgreSQL parameter OIDs before
+binding values. A supplied runtime descriptor removes that synchronization
+point for matching queries; database-local type identities are resolved once
+per pool generation because their numeric OIDs are not portable.
 
 ## Priorities
 
@@ -79,7 +80,7 @@ replacement, unknown-outcome reporting, and bounded shutdown.
 
 ### 4. Compile prepare output for runtime execution
 
-The long-term prepared path should emit a portable runtime descriptor for every
+The prepared path emits a portable runtime descriptor for every parameterized
 known query:
 
 - the stable query ID, without a second executable copy of the SQL;
@@ -88,15 +89,17 @@ known query:
 - the connection profile that owns the query contract.
 
 At pool generation bootstrap, the runtime resolves descriptor type identities
-to that database's OIDs and compiles parameter encoders. A known query can then
-send `Parse`, `Bind`, `Describe Portal`, `Execute`, and `Sync` in one write
-without waiting for a separate `ParameterDescription`.
+to that database's OIDs. A matching query can then encode parameters against
+that contract and send `Parse`, `Bind`, `Describe Portal`, `Execute`, and
+`Sync` in one write without waiting for a separate
+`ParameterDescription`.
 
 The first implementation should retain the server's actual
 `RowDescription`. Omitting it saves little after the synchronization point is
 removed and would detach result decoding from the server's current contract.
 
-Dynamic `unsafe(...)` SQL remains on the adaptive describe path.
+Queries absent from the selected descriptor map, including genuinely dynamic
+`unsafe(...)` SQL, remain on the adaptive describe path.
 
 #### Descriptor delivery decision
 

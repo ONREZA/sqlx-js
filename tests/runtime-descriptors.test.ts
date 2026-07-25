@@ -77,6 +77,15 @@ test("runtime descriptor parsing selects only the active profile contract", () =
   expect(prepared.types).toEqual([]);
 });
 
+test("runtime descriptor rendering uses locale-independent key order", () => {
+  const artifact = JSON.parse(renderRuntimeDescriptors([], "config-hash", {
+    a: { name: "a", role: "role_a" },
+    Z: { name: "Z", role: "role_z" },
+  })) as RuntimeQueryDescriptors;
+
+  expect(Object.keys(artifact.profiles)).toEqual(["Z", "a"]);
+});
+
 test("runtime descriptor parsing fails closed on stale revisions and profile roles", () => {
   const artifact = JSON.parse(renderRuntimeDescriptors([
     entry("SELECT $1::int4", [23], "api"),
