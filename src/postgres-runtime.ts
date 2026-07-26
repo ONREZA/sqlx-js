@@ -302,10 +302,10 @@ class ManagedPostgresRuntime implements RuntimeClient {
         else signal.addEventListener("abort", abortListener, { once: true });
       } catch (error) {
         if (timer !== undefined) clearTimeout(timer);
-        signal.removeEventListener("abort", abortListener);
         state.expire = undefined;
         state.expired ??= new Error("sqlx-js.transaction: scoped executor is no longer active");
         this.finishOperation(operation);
+        detachAbortListener(signal, abortListener);
         void operation.interruption.promise.catch(() => {});
         throw error;
       }
@@ -346,10 +346,10 @@ class ManagedPostgresRuntime implements RuntimeClient {
       throw toPgError(error) ?? error;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
-      if (signal && abortListener) signal.removeEventListener("abort", abortListener);
       state.expire = undefined;
       state.expired ??= new Error("sqlx-js.transaction: scoped executor is no longer active");
       this.finishOperation(operation);
+      detachAbortListener(signal, abortListener);
     }
   }
 
@@ -480,10 +480,8 @@ class ManagedPostgresRuntime implements RuntimeClient {
 
   private finishOperation(operation: OperationRecord): void {
     if (operation.timer !== undefined) clearTimeout(operation.timer);
-    if (operation.signal && operation.abortListener) {
-      operation.signal.removeEventListener("abort", operation.abortListener);
-    }
     operation.generation.active.delete(operation.id);
+    detachAbortListener(operation.signal, operation.abortListener);
     if (this.activeDrainWaiters.size > 0 && this.activeOperationCount() === 0) {
       for (const resolve of this.activeDrainWaiters) resolve();
       this.activeDrainWaiters.clear();
@@ -573,6 +571,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
     const deadlineAt = timeoutMs === undefined ? undefined : startedAt + timeoutMs;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let abortListener: (() => void) | undefined;
+    let abortListenerActive = true;
     let expire: (() => void) | undefined;
     let sent = false;
     const interrupt = (error: Error) => {
@@ -606,18 +605,22 @@ class ManagedPostgresRuntime implements RuntimeClient {
       else timer = setTimeout(expire, remainingMs);
     }
     if (signal) {
-      abortListener = () => interrupt(new QueryAbortedError({
-        phase: "execution",
-        outcome: sent ? "unknown" : "not_sent",
-        queryId: request.metadata.queryId,
-        generation: generation.id,
-      }, signal.reason));
+      abortListener = () => {
+        if (!abortListenerActive) return;
+        interrupt(new QueryAbortedError({
+          phase: "execution",
+          outcome: sent ? "unknown" : "not_sent",
+          queryId: request.metadata.queryId,
+          generation: generation.id,
+        }, signal.reason));
+      };
       try {
         if (signal.aborted) abortListener();
         else signal.addEventListener("abort", abortListener, { once: true });
       } catch (error) {
         if (timer !== undefined) clearTimeout(timer);
-        signal.removeEventListener("abort", abortListener);
+        abortListenerActive = false;
+        detachAbortListener(signal, abortListener);
         throw error;
       }
     }
@@ -691,7 +694,8 @@ class ManagedPostgresRuntime implements RuntimeClient {
       throw error;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
-      if (signal && abortListener) signal.removeEventListener("abort", abortListener);
+      abortListenerActive = false;
+      detachAbortListener(signal, abortListener);
       if (pending) state.pending.delete(pending);
     }
   }
@@ -1085,6 +1089,16 @@ function validateOptionalAbortSignal(value: AbortSignal | undefined): AbortSigna
     throw new TypeError("sqlx-js: signal must be an AbortSignal");
   }
   return value;
+}
+
+function detachAbortListener(
+  signal: AbortSignal | undefined,
+  listener: (() => void) | undefined,
+): void {
+  if (!signal || !listener) return;
+  try {
+    signal.removeEventListener("abort", listener);
+  } catch {}
 }
 
 async function waitAtMost(promise: PromiseLike<unknown>, timeoutMs: number): Promise<boolean> {

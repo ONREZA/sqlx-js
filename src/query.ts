@@ -27,10 +27,19 @@ type KnownProfileQueryEntry<Profile, Query extends string> = Profile extends key
 type KnownQueryEntry<Query extends string, Profiles extends readonly string[]> = Profiles extends readonly []
   ? Query extends keyof import("./index").KnownQueries ? import("./index").KnownQueries[Query] : never
   : KnownProfileQueryEntry<Profiles[number], Query>;
+type QueryEntryWireParams<Entry> =
+  Entry extends { params: infer Params extends QueryWireParams } ? Params : never;
+type UnionToIntersection<Union> =
+  (Union extends unknown ? (value: Union) => void : never) extends (value: infer Intersection) => void
+    ? Intersection
+    : never;
 type KnownQueryWireParams<Query extends string, Profiles extends readonly string[]> =
   [KnownQueryEntry<Query, Profiles>] extends [never]
-  ? QueryWireParams
-  : KnownQueryEntry<Query, Profiles> extends { params: infer Params extends QueryWireParams } ? Params : QueryWireParams;
+    ? QueryWireParams
+    : UnionToIntersection<QueryEntryWireParams<KnownQueryEntry<Query, Profiles>>> extends
+      infer Params extends QueryWireParams
+      ? Params
+      : QueryWireParams;
 type CheckedMappedWireParams<
   Query extends string,
   Profiles extends readonly string[],

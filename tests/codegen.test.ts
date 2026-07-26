@@ -77,17 +77,48 @@ test("profile registries contain only queries assigned to that connection profil
 test("profiled mapped queries validate their generated wire parameters", () => {
   const root = join(tmp, "profiled-map-params");
   const query = "SELECT id FROM users WHERE id = $id";
+  const positionalQuery = "SELECT $1::text AS id";
   mkdirSync(root, { recursive: true });
-  emitDts(join(root, "generated.d.ts"), completeEntries([{
-    profile: "api",
-    query,
-    paramOids: [2950],
-    paramTsTypes: ["string"],
-    paramNames: ["id"],
-    hasResultSet: true,
-    columns: [{ name: "id", typeOid: 2950, tsType: "string", nullable: false }],
-  }]), [], {}, {
+  emitDts(join(root, "generated.d.ts"), completeEntries([
+    {
+      profile: "api",
+      query,
+      paramOids: [2950],
+      paramTsTypes: ["string"],
+      paramNames: ["id"],
+      hasResultSet: true,
+      columns: [{ name: "id", typeOid: 2950, tsType: "string", nullable: false }],
+    },
+    {
+      profile: "worker",
+      query,
+      paramOids: [2950],
+      paramTsTypes: ["string"],
+      paramNames: ["id"],
+      paramNullable: [true],
+      hasResultSet: true,
+      columns: [{ name: "id", typeOid: 2950, tsType: "string", nullable: false }],
+    },
+    {
+      profile: "api",
+      query: positionalQuery,
+      paramOids: [25],
+      paramTsTypes: ["string"],
+      hasResultSet: true,
+      columns: [{ name: "id", typeOid: 25, tsType: "string", nullable: true }],
+    },
+    {
+      profile: "worker",
+      query: positionalQuery,
+      paramOids: [25],
+      paramTsTypes: ["string"],
+      paramNullable: [true],
+      hasResultSet: true,
+      columns: [{ name: "id", typeOid: 25, tsType: "string", nullable: true }],
+    },
+  ]), [], {}, {
     api: { name: "api", role: "app_api" },
+    worker: { name: "worker", role: "app_worker" },
   });
   writeFileSync(join(root, "consumer.ts"), `
 import { defineQuery } from "@onreza/sqlx-js";
@@ -98,6 +129,20 @@ defineQuery.for("api").one(${JSON.stringify(query)}).mapParams(
 defineQuery.for("api").one(${JSON.stringify(query)}).mapParams(
   // @ts-expect-error profiled mappers must return the prepared wire contract
   (input: { id: string }) => ({ wrong: input.id }),
+);
+defineQuery.for("api", "worker").one(${JSON.stringify(query)}).mapParams(
+  (input: { id: string }) => ({ id: input.id }),
+);
+defineQuery.for("api", "worker").one(${JSON.stringify(query)}).mapParams(
+  // @ts-expect-error multi-profile mappers must satisfy every prepared wire contract
+  (input: { id: string | null }) => ({ id: input.id }),
+);
+defineQuery.for("api", "worker").one(${JSON.stringify(positionalQuery)}).mapParams(
+  (input: { id: string }) => [input.id] as const,
+);
+defineQuery.for("api", "worker").one(${JSON.stringify(positionalQuery)}).mapParams(
+  // @ts-expect-error positional mappers must satisfy every prepared wire contract
+  (input: { id: string | null }) => [input.id] as const,
 );
 `);
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
