@@ -330,7 +330,8 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
     const enumOutput = state.session
       ? enumCatalogOutputPath(opts.root, state.session.userCfg)
       : undefined;
-    const ignored = enumOutput ? [relative(opts.root, enumOutput)] : [];
+    const ignored = [relative(opts.root, resolve(opts.root, opts.dtsPath))];
+    if (enumOutput) ignored.push(relative(opts.root, enumOutput));
     if (!shouldWatchFile(filename.toString(), ignored)) return;
     changedFiles.add(normalizePath(filename.toString()));
     trigger();
