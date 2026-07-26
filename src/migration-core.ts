@@ -108,7 +108,7 @@ async function findMigrationStore(client: PgClient): Promise<MigrationStore | nu
     SELECT n.nspname, cls.relname
     FROM pg_class cls
     JOIN pg_namespace n ON n.oid = cls.relnamespace
-    WHERE cls.oid = to_regclass('${MIGRATIONS_TABLE}')
+    WHERE cls.oid = to_regclass(format('%I.%I', current_schema(), '${MIGRATIONS_TABLE}'))
   `);
   const row = result.rows[0];
   if (!row) return null;

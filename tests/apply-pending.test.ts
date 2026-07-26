@@ -34,6 +34,7 @@ type AppliedRecord = { version: number; name: string; hash: string };
 
 class MockClient {
   applied: AppliedRecord[] = [];
+  currentSchema = "app";
   migrationSchema = "app";
   migrationTableExists = false;
   inTx = false;
@@ -46,14 +47,15 @@ class MockClient {
 
   async simpleQuery(sql: string): Promise<any> {
     this.calls.push(sql.trim().split(/\s+/).slice(0, 3).join(" "));
-    if (/to_regclass\('_sqlx_js_migrations'\)/i.test(sql)) {
-      const rows = this.migrationTableExists
+    if (/to_regclass\(/i.test(sql)) {
+      const rows = this.migrationTableExists && this.migrationSchema === this.currentSchema
         ? [[utf8(this.migrationSchema), utf8("_sqlx_js_migrations")]]
         : [];
       return { rows, fields: [], tag: "SELECT" };
     }
     if (/CREATE TABLE/i.test(sql)) {
       this.migrationTableExists = true;
+      this.migrationSchema = this.currentSchema;
       return { rows: [], fields: [], tag: "CREATE TABLE" };
     }
     if (/^SELECT version, name, up_hash/i.test(sql.trim())) {
@@ -263,7 +265,7 @@ describe("applyPending with mock client", () => {
     expect(mock.paramSql[0]).toContain('"app"."_sqlx_js_migrations"');
   });
 
-  test("reuses an existing visible migration table before creating a new one", async () => {
+  test("ignores an existing migration table outside the current schema", async () => {
     const d = newDir();
     writeMigration(d, 1, "create_users", "CREATE TABLE users (id int)");
     const mock = new MockClient();
@@ -272,8 +274,8 @@ describe("applyPending with mock client", () => {
 
     await applyPending(asClient(mock), d);
 
-    expect(mock.calls).not.toContain("CREATE TABLE IF");
-    expect(mock.paramSql[0]).toContain('"legacy"."_sqlx_js_migrations"');
+    expect(mock.calls).toContain("CREATE TABLE IF");
+    expect(mock.paramSql[0]).toContain('"app"."_sqlx_js_migrations"');
   });
 
   test("adopts squash migration when all replaced rows are already applied", async () => {
