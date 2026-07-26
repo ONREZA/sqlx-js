@@ -19,24 +19,34 @@ type NamedQueryEntry = { params: Record<string, unknown>; row: unknown };
 type PositionalQueryEntry = { params: readonly unknown[]; row: unknown };
 type QueryEntry = NamedQueryEntry | PositionalQueryEntry;
 type QueryWireParams = Record<string, unknown> | readonly unknown[];
-type KnownQueryEntry<Query extends string> = Query extends keyof import("./index").KnownQueries
-  ? import("./index").KnownQueries[Query]
+type KnownProfileQueryEntry<Profile, Query extends string> = Profile extends keyof import("./index").KnownProfiles
+  ? import("./index").KnownProfiles[Profile] extends { queries: infer Queries }
+    ? Query extends keyof Queries ? Queries[Query] : never
+    : never
   : never;
-type KnownQueryWireParams<Query extends string> = [KnownQueryEntry<Query>] extends [never]
+type KnownQueryEntry<Query extends string, Profiles extends readonly string[]> = Profiles extends readonly []
+  ? Query extends keyof import("./index").KnownQueries ? import("./index").KnownQueries[Query] : never
+  : KnownProfileQueryEntry<Profiles[number], Query>;
+type KnownQueryWireParams<Query extends string, Profiles extends readonly string[]> =
+  [KnownQueryEntry<Query, Profiles>] extends [never]
   ? QueryWireParams
-  : KnownQueryEntry<Query> extends { params: infer Params extends QueryWireParams } ? Params : QueryWireParams;
-type CheckedMappedWireParams<Query extends string, WireParams extends QueryWireParams> =
-  [KnownQueryEntry<Query>] extends [never]
+  : KnownQueryEntry<Query, Profiles> extends { params: infer Params extends QueryWireParams } ? Params : QueryWireParams;
+type CheckedMappedWireParams<
+  Query extends string,
+  Profiles extends readonly string[],
+  WireParams extends QueryWireParams,
+> =
+  [KnownQueryEntry<Query, Profiles>] extends [never]
     ? WireParams
-    : WireParams extends ReadonlyWireParams<KnownQueryWireParams<Query>>
-      ? KnownQueryWireParams<Query> extends readonly unknown[]
+    : WireParams extends ReadonlyWireParams<KnownQueryWireParams<Query, Profiles>>
+      ? KnownQueryWireParams<Query, Profiles> extends readonly unknown[]
         ? WireParams
-        : Exclude<keyof WireParams, keyof KnownQueryWireParams<Query>> extends never
+        : Exclude<keyof WireParams, keyof KnownQueryWireParams<Query, Profiles>> extends never
           ? WireParams
           : WireParams & {
-            [Key in Exclude<keyof WireParams, keyof KnownQueryWireParams<Query>>]: never;
+            [Key in Exclude<keyof WireParams, keyof KnownQueryWireParams<Query, Profiles>>]: never;
           }
-      : ReadonlyWireParams<KnownQueryWireParams<Query>>;
+      : ReadonlyWireParams<KnownQueryWireParams<Query, Profiles>>;
 declare const MAPPED_QUERY_INPUT: unique symbol;
 type QueryModeResult<Mode extends QueryExecutionMode, Row> =
   Mode extends "many" ? Row[]
@@ -47,6 +57,7 @@ type QueryModeResult<Mode extends QueryExecutionMode, Row> =
 export type QueryDefinition<
   Query extends string = string,
   Mode extends QueryExecutionMode = QueryExecutionMode,
+  Profiles extends readonly string[] = readonly [],
 > = {
   readonly query: Query;
   readonly mode: Mode;
@@ -54,7 +65,7 @@ export type QueryDefinition<
   readonly queryName?: string;
   readonly profiles?: readonly string[];
   mapParams<Input, const WireParams extends QueryWireParams>(
-    mapper: (input: Input, helpers: QueryParameterHelpers) => CheckedMappedWireParams<Query, WireParams>,
+    mapper: (input: Input, helpers: QueryParameterHelpers) => CheckedMappedWireParams<Query, Profiles, WireParams>,
   ): MappedQueryDefinition<Query, Mode, Input>;
   run<Registry extends { queries: Record<Query, NamedQueryEntry>; fileQueries: object }>(
     executor: TypedSqlForRegistry<Registry>,
@@ -127,15 +138,15 @@ export type QueryResultFor<Definition, Registry extends { queries: object }> = Q
   QueryRowFor<Definition, Registry>
 >;
 
-type DefineQueryMethod<Mode extends QueryExecutionMode> = {
-  <const Query extends string>(query: Query): QueryDefinition<Query, Mode>;
-  <const Query extends string>(name: string, query: Query): QueryDefinition<Query, Mode>;
+type DefineQueryMethod<Mode extends QueryExecutionMode, Profiles extends readonly string[] = readonly []> = {
+  <const Query extends string>(query: Query): QueryDefinition<Query, Mode, Profiles>;
+  <const Query extends string>(name: string, query: Query): QueryDefinition<Query, Mode, Profiles>;
 };
 
-function definitionMethod<Mode extends QueryExecutionMode>(
+function definitionMethod<Mode extends QueryExecutionMode, Profiles extends readonly string[] = readonly []>(
   mode: Mode,
-  profiles: readonly string[] = [],
-): DefineQueryMethod<Mode> {
+  profiles: Profiles = [] as unknown as Profiles,
+): DefineQueryMethod<Mode, Profiles> {
   return ((nameOrQuery: string, maybeQuery?: string) => {
     const query = maybeQuery ?? nameOrQuery;
     const name = maybeQuery === undefined ? undefined : nameOrQuery;
@@ -204,14 +215,14 @@ function definitionMethod<Mode extends QueryExecutionMode>(
       },
     };
     return Object.freeze(definition);
-  }) as unknown as DefineQueryMethod<Mode>;
+  }) as unknown as DefineQueryMethod<Mode, Profiles>;
 }
 
 export const defineQuery = Object.assign(definitionMethod("many"), {
   one: definitionMethod("one"),
   optional: definitionMethod("optional"),
   execute: definitionMethod("execute"),
-  for(...profiles: string[]) {
+  for<const Profiles extends readonly string[]>(...profiles: Profiles) {
     if (profiles.length === 0) {
       throw new Error("sqlx-js.defineQuery.for: at least one profile is required");
     }
@@ -221,7 +232,7 @@ export const defineQuery = Object.assign(definitionMethod("many"), {
     if (new Set(profiles).size !== profiles.length) {
       throw new Error("sqlx-js.defineQuery.for: profile names must be unique");
     }
-    const declared = Object.freeze([...profiles]);
+    const declared = Object.freeze([...profiles]) as unknown as Profiles;
     return Object.freeze({
       many: definitionMethod("many", declared),
       one: definitionMethod("one", declared),
