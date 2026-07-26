@@ -294,6 +294,23 @@ describe("analyze: non-null expressions", () => {
     expect(result.degraded).toBeUndefined();
   });
 
+  test("accounts for nullable elements in quantified array comparisons", async () => {
+    const schema = fakeSchema([]);
+    const sql = `SELECT
+      2 = ANY(ARRAY[1, NULL::int]) AS nullable_any,
+      2 = ALL(ARRAY[2, NULL::int]) AS nullable_all,
+      2 = ANY(ARRAY(SELECT NULL::int)) AS nullable_subquery,
+      2 = ANY(ARRAY[1, 2]) AS non_nullable_any`;
+    const result = await analyzeQuery(sql, rowDesc([
+      { name: "nullable_any" },
+      { name: "nullable_all" },
+      { name: "nullable_subquery" },
+      { name: "non_nullable_any" },
+    ]), schema);
+    expect(result.perColumnNullable).toEqual([true, true, true, false]);
+    expect(result.degraded).toBeUndefined();
+  });
+
   test("propagates array nullability through CTEs, VALUES, and set operations", async () => {
     const schema = fakeSchema([]);
     const cte = await analyzeQuery(
