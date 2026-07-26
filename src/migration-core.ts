@@ -105,17 +105,34 @@ function quoteIdent(ident: string): string {
 
 async function findMigrationStore(client: PgClient): Promise<MigrationStore | null> {
   const result = await client.simpleQuery(`
-    SELECT n.nspname, cls.relname
-    FROM pg_class cls
-    JOIN pg_namespace n ON n.oid = cls.relnamespace
-    WHERE cls.oid = to_regclass('${MIGRATIONS_TABLE}')
+    WITH lookup AS (
+      SELECT
+        pg_catalog.current_schema() AS current_schema,
+        pg_catalog.to_regclass('${MIGRATIONS_TABLE}') AS visible_oid
+    )
+    SELECT lookup.current_schema, current_cls.relname, visible_n.nspname, visible_cls.relname
+    FROM lookup
+    LEFT JOIN pg_catalog.pg_namespace current_n ON current_n.nspname = lookup.current_schema
+    LEFT JOIN pg_catalog.pg_class current_cls
+      ON current_cls.relnamespace = current_n.oid
+      AND current_cls.relname = '${MIGRATIONS_TABLE}'
+    LEFT JOIN pg_catalog.pg_class visible_cls ON visible_cls.oid = lookup.visible_oid
+    LEFT JOIN pg_catalog.pg_namespace visible_n ON visible_n.oid = visible_cls.relnamespace
   `);
   const row = result.rows[0];
-  if (!row) return null;
-  const schema = decodeText(row[0]!);
-  const table = decodeText(row[1]!);
-  if (!schema || !table) throw new Error(`sqlx-js.migrate: failed to resolve ${MIGRATIONS_TABLE} identifier`);
-  return { table: `${quoteIdent(schema)}.${quoteIdent(table)}` };
+  const currentSchema = decodeText(row?.[0] ?? null);
+  if (!currentSchema) throw new Error("sqlx-js.migrate: current search_path has no usable schema");
+  const currentTable = decodeText(row?.[1] ?? null);
+  if (currentTable) return { table: `${quoteIdent(currentSchema)}.${quoteIdent(currentTable)}` };
+  const visibleSchema = decodeText(row?.[2] ?? null);
+  const visibleTable = decodeText(row?.[3] ?? null);
+  if (visibleSchema && visibleTable) {
+    throw new Error(
+      `sqlx-js.migrate: refusing migration history table ${quoteIdent(visibleSchema)}.${quoteIdent(visibleTable)} `
+      + `outside current schema ${quoteIdent(currentSchema)}; move the table or make that schema current`,
+    );
+  }
+  return null;
 }
 
 async function resolveMigrationStore(client: PgClient): Promise<MigrationStore> {
