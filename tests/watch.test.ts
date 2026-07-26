@@ -406,6 +406,7 @@ test("watch reacts to source, SQL, config, and tsconfig graph changes", () => {
   expect(shouldWatchFile("package.json")).toBe(false);
   expect(shouldWatchFile("dist/sqlx-js.config.js")).toBe(false);
   expect(shouldWatchFile("sqlx-js-env.d.ts")).toBe(false);
+  expect(shouldWatchFile("types/generated.d.ts", ["types/generated.d.ts"])).toBe(false);
   expect(shouldWatchFile("src/db-enums.ts", ["src/db-enums.ts"])).toBe(false);
 });
 

@@ -74,6 +74,52 @@ test("profile registries contain only queries assigned to that connection profil
   expect(dts).toContain("interface KnownProfiles extends SqlxJsGeneratedProfiles");
 });
 
+test("profiled mapped queries validate their generated wire parameters", () => {
+  const root = join(tmp, "profiled-map-params");
+  const query = "SELECT id FROM users WHERE id = $id";
+  mkdirSync(root, { recursive: true });
+  emitDts(join(root, "generated.d.ts"), completeEntries([{
+    profile: "api",
+    query,
+    paramOids: [2950],
+    paramTsTypes: ["string"],
+    paramNames: ["id"],
+    hasResultSet: true,
+    columns: [{ name: "id", typeOid: 2950, tsType: "string", nullable: false }],
+  }]), [], {}, {
+    api: { name: "api", role: "app_api" },
+  });
+  writeFileSync(join(root, "consumer.ts"), `
+import { defineQuery } from "@onreza/sqlx-js";
+
+defineQuery.for("api").one(${JSON.stringify(query)}).mapParams(
+  (input: { id: string }) => ({ id: input.id }),
+);
+defineQuery.for("api").one(${JSON.stringify(query)}).mapParams(
+  // @ts-expect-error profiled mappers must return the prepared wire contract
+  (input: { id: string }) => ({ wrong: input.id }),
+);
+`);
+  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
+    compilerOptions: {
+      strict: true,
+      noEmit: true,
+      module: "Preserve",
+      moduleResolution: "Bundler",
+      target: "ESNext",
+      types: ["bun-types"],
+      paths: { "@onreza/sqlx-js": [resolve(import.meta.dir, "../src/index.ts")] },
+    },
+    files: ["consumer.ts", "generated.d.ts"],
+  }));
+
+  const checked = spawnSync("bunx", ["tsc", "-p", join(root, "tsconfig.json")], {
+    cwd: resolve(import.meta.dir, ".."),
+    encoding: "utf8",
+  });
+  expect(checked.status, checked.stdout + checked.stderr).toBe(0);
+});
+
 test("forceNonNull strips null from inferred-nullable column", () => {
   const dts = write([
     {
