@@ -4,14 +4,33 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { Cache, profileFingerprint, writeCacheManifest } from "../src/cache";
-import { buildQueryInventory, QueriesError } from "../src/commands/queries";
+import { Cache, profileFingerprint, type CacheEntry, writeCacheManifest } from "../src/cache";
+import { buildQueryExplanation, buildQueryInventory, QueriesError } from "../src/commands/queries";
 import { prepareConfigHash } from "../src/config";
 import { queryId } from "../src/query-id";
 import { _internal } from "../src/runtime";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const binPath = join(repoRoot, "bin/sqlx-js.ts");
+
+function cacheEntry(query: string, overrides: Partial<CacheEntry> = {}): CacheEntry {
+  const paramTsTypes = overrides.paramTsTypes ?? [];
+  const columns = overrides.columns ?? [];
+  return {
+    query,
+    paramOids: [],
+    paramTypeIdentities: [],
+    paramTsTypes,
+    paramNullable: paramTsTypes.map(() => false),
+    columns,
+    hasResultSet: columns.length > 0,
+    inference: {
+      columns: columns.map(() => ({ sources: null, reason: "test fixture" })),
+      params: paramTsTypes.map(() => ({ targets: [], reason: "test fixture" })),
+    },
+    ...overrides,
+  };
+}
 
 test("queries inventory and embedded module are deterministic and database-free", async () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-queries-"));
@@ -91,26 +110,21 @@ test("queries inventory distinguishes current and orphaned cache entries", async
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-query-cache-"));
   try {
     const query = "SELECT 1 AS value";
+    const orphanQuery = "SELECT 2";
+    const orphanId = queryId(orphanQuery);
     writeFileSync(join(root, "query.ts"), `import { sql } from "@onreza/sqlx-js"; sql(${JSON.stringify(query)});\n`);
     const cacheDir = join(root, ".sqlx-js");
     const cache = new Cache(cacheDir);
-    cache.write(queryId(query), {
-      query,
+    cache.write(queryId(query), cacheEntry(query, {
       validation: "planned",
-      paramOids: [],
-      paramTypeIdentities: [],
-      paramTsTypes: [],
       columns: [{ name: "value", typeOid: 23, tsType: "number", nullable: false }],
       hasResultSet: true,
-    });
-    cache.write("0000000000000000", {
-      query: "SELECT 2",
-      paramOids: [],
-      paramTypeIdentities: [],
-      paramTsTypes: [],
-      columns: [],
-      hasResultSet: false,
-    });
+      inference: {
+        columns: [{ sources: null, reason: "test fixture" }],
+        params: [],
+      },
+    }));
+    cache.write(orphanId, cacheEntry(orphanQuery));
     writeCacheManifest(cacheDir, prepareConfigHash({}));
     const inventory = await buildQueryInventory(root, cacheDir);
     expect(inventory.queries[0]).toMatchObject({
@@ -118,18 +132,78 @@ test("queries inventory distinguishes current and orphaned cache entries", async
       cacheStatus: "current",
       validation: "planned",
     });
-    expect(inventory.orphanedCacheIds).toEqual(["0000000000000000"]);
+    expect(inventory.orphanedCacheIds).toEqual([orphanId]);
 
-    cache.write(queryId(query), {
-      query,
-      paramOids: [],
-      paramTypeIdentities: [],
-      paramTsTypes: [],
+    cache.write(queryId(query), cacheEntry(query, {
       columns: [{ name: "value", typeOid: 23, tsType: "number", nullable: false }],
       hasResultSet: true,
-    });
+      inference: {
+        columns: [{ sources: null, reason: "test fixture" }],
+        params: [],
+      },
+    }));
     const incomplete = await buildQueryInventory(root, cacheDir);
     expect(incomplete.queries[0]).toMatchObject({ cacheStatus: "stale", validation: null });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("queries explain reports committed provenance and parameter targets", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-query-explain-"));
+  try {
+    const query = "SELECT users.id FROM users WHERE users.id = $1";
+    writeFileSync(
+      join(root, "query.ts"),
+      `import { sql } from "@onreza/sqlx-js"; sql.one(${JSON.stringify(query)}, 1);\n`,
+    );
+    const cacheDir = join(root, ".sqlx-js");
+    const cache = new Cache(cacheDir);
+    cache.write(queryId(query), cacheEntry(query, {
+      validation: "planned",
+      paramOids: [23],
+      paramTypeIdentities: [23],
+      paramTsTypes: ["number"],
+      paramNullable: [false],
+      columns: [{ name: "id", typeOid: 23, tsType: "number", nullable: false }],
+      hasResultSet: true,
+      inference: {
+        params: [{
+          targets: [{ kind: "predicate", table: "users", column: "id" }],
+          reason: "a predicate reference requires a non-null value",
+        }],
+        columns: [{
+          sources: [{ schema: "public", table: "users", column: "id", notNull: true }],
+          reason: "all source columns are NOT NULL",
+        }],
+      },
+    }));
+    writeCacheManifest(cacheDir, prepareConfigHash({}));
+
+    const explanation = await buildQueryExplanation(root, cacheDir, queryId(query));
+    expect(explanation.contracts[0]).toMatchObject({
+      profile: null,
+      params: [{
+        name: "$1",
+        targets: [{ kind: "predicate", table: "users", column: "id" }],
+      }],
+      columns: [{
+        name: "id",
+        sources: [{ schema: "public", table: "users", column: "id", notNull: true }],
+      }],
+    });
+
+    const result = spawnSync("bun", [
+      binPath,
+      "queries",
+      "explain",
+      queryId(query),
+      "--root",
+      root,
+    ], { encoding: "utf8", env: { ...process.env, DATABASE_URL: "" } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("source: public.users.id NOT NULL");
+    expect(result.stdout).toContain("predicate: users.id");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -157,16 +231,16 @@ test("queries inventory aggregates profile-specific cache contracts", async () =
     const cacheDir = join(root, ".sqlx-js");
     const cache = new Cache(cacheDir);
     for (const profile of ["api", "worker"] as const) {
-      cache.write(profileFingerprint(profile, query), {
+      cache.write(profileFingerprint(profile, query), cacheEntry(query, {
         profile,
-        query,
         validation: "planned",
-        paramOids: [],
-        paramTypeIdentities: [],
-        paramTsTypes: [],
         columns: [{ name: "value", typeOid: 23, tsType: "number", nullable: false }],
         hasResultSet: true,
-      });
+        inference: {
+          columns: [{ sources: null, reason: "test fixture" }],
+          params: [],
+        },
+      }));
     }
     writeCacheManifest(cacheDir, prepareConfigHash({ profiles }));
 

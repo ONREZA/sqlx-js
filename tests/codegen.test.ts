@@ -13,19 +13,32 @@ afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
+type CacheEntryFixture = Omit<CacheEntry, "paramTypeIdentities" | "paramNullable" | "inference"> & {
+  paramTypeIdentities?: CacheEntry["paramTypeIdentities"];
+  paramNullable?: CacheEntry["paramNullable"];
+  inference?: CacheEntry["inference"];
+};
+
+function completeEntries(entries: CacheEntryFixture[]): CacheEntry[] {
+  return entries.map((entry) => ({
+    ...entry,
+    paramTypeIdentities: entry.paramTypeIdentities ?? entry.paramOids,
+    paramNullable: entry.paramNullable ?? entry.paramTsTypes.map(() => false),
+    inference: entry.inference ?? {
+      columns: entry.columns.map(() => ({ sources: null, reason: "test fixture" })),
+      params: entry.paramTsTypes.map(() => ({ targets: [], reason: "test fixture" })),
+    },
+  }));
+}
+
 function write(
-  entries: Array<Omit<CacheEntry, "paramTypeIdentities"> & {
-    paramTypeIdentities?: CacheEntry["paramTypeIdentities"];
-  }>,
+  entries: CacheEntryFixture[],
   functions: FunctionEntry[] = [],
   runtimeTypes: Record<string, string> = {},
   profiles: DatabaseProfiles = {},
 ): string {
   const out = join(tmp, "sqlx-js-env.d.ts");
-  emitDts(out, entries.map((entry) => ({
-    ...entry,
-    paramTypeIdentities: entry.paramTypeIdentities ?? [],
-  })), functions, runtimeTypes, profiles);
+  emitDts(out, completeEntries(entries), functions, runtimeTypes, profiles);
   return readFileSync(out, "utf8");
 }
 
@@ -345,9 +358,11 @@ const primaryOnly: "SELECT primary" = null as unknown as keyof PrimaryRegistry["
 const replicaOnly: "SELECT replica" = null as unknown as keyof ReplicaRegistry["queries"];
 
 const primary = createSqlClient<PrimaryRegistry>(undefined, {
+  execution: "adaptive",
   typeCodecs: { shared_type: { parse: Number, serialize: String } },
 });
 const replica = createSqlClient<ReplicaRegistry>(undefined, {
+  execution: "adaptive",
   typeCodecs: { shared_type: { parse: String, serialize: String } },
 });
 void primary.sql(primaryKey);
@@ -378,7 +393,7 @@ void replicaOnly;
 test("createSqlClient infers the exact generated profile registry", () => {
   const root = join(tmp, "profile-registry");
   mkdirSync(root, { recursive: true });
-  emitDts(join(root, "generated.d.ts"), [
+  emitDts(join(root, "generated.d.ts"), completeEntries([
     {
       profile: "api",
       query: "SELECT api",
@@ -395,21 +410,33 @@ test("createSqlClient infers the exact generated profile registry", () => {
       hasResultSet: true,
       columns: [{ name: "worker", typeOid: 25, tsType: "string", nullable: false }],
     },
-  ], [], {}, {
+  ]), [], {}, {
     api: { name: "api", role: "app_api" },
     worker: { name: "worker", role: "app_worker" },
   });
   writeFileSync(join(root, "consumer.ts"), `
 import { createSqlClient } from "@onreza/sqlx-js";
 
+declare const queryDescriptors: import("@onreza/sqlx-js").RuntimeQueryDescriptors;
+const preparedApi = createSqlClient(undefined, {
+  queryDescriptors,
+  profile: { name: "api", role: "app_api" },
+});
+void preparedApi.sql("SELECT api");
+// @ts-expect-error descriptor and adaptive execution modes are mutually exclusive
+createSqlClient(undefined, { queryDescriptors, execution: "adaptive" });
+
 const api = createSqlClient(undefined, {
+  execution: "adaptive",
   profile: { name: "api", role: "app_api" },
 });
 void api.sql("SELECT api");
+// @ts-expect-error generated clients require queryDescriptors or an explicit adaptive opt-out
+createSqlClient(undefined, { profile: { name: "api", role: "app_api" } });
 // @ts-expect-error worker queries are not available through the api profile
 void api.sql("SELECT worker");
 // @ts-expect-error the generated api profile requires the app_api PostgreSQL role
-createSqlClient(undefined, { profile: { name: "api", role: "wrong" } });
+createSqlClient(undefined, { execution: "adaptive", profile: { name: "api", role: "wrong" } });
 `);
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
@@ -434,7 +461,7 @@ createSqlClient(undefined, { profile: { name: "api", role: "wrong" } });
 test("profile transaction settings are required and typed", () => {
   const root = join(tmp, "profile-transaction-settings");
   mkdirSync(root, { recursive: true });
-  emitDts(join(root, "generated.d.ts"), [
+  emitDts(join(root, "generated.d.ts"), completeEntries([
     {
       profile: "api",
       query: "SELECT api",
@@ -451,7 +478,7 @@ test("profile transaction settings are required and typed", () => {
       hasResultSet: true,
       columns: [{ name: "api", typeOid: 23, tsType: "number", nullable: false }],
     },
-  ], [], {}, {
+  ]), [], {}, {
     api: {
       name: "api",
       role: "app_api",
@@ -467,6 +494,7 @@ import { createSqlClient, type SqlClient } from "@onreza/sqlx-js";
 import type { SqlxJsGeneratedProfiles } from "./generated";
 
 const api = createSqlClient(undefined, {
+  execution: "adaptive",
   profile: {
     name: "api",
     role: "app_api",
@@ -480,6 +508,9 @@ void api.sql.transaction({
   },
 }, async (tx) => {
   await tx("SELECT api");
+  await tx.savepoint(async (sp) => {
+    await sp("SELECT api");
+  });
 });
 // @ts-expect-error contextual profiles execute SQL only through a transaction
 void api.sql("SELECT api");
@@ -491,6 +522,7 @@ void api.sql.transaction({
 }, async () => {});
 
 const worker = createSqlClient(undefined, {
+  execution: "adaptive",
   profile: { name: "worker", role: "app_worker" },
 });
 void worker.sql("SELECT api");
@@ -532,6 +564,7 @@ import { createClient, createSqlClient } from "@onreza/sqlx-js";
 import type { SqlxJsGeneratedRegistry } from "./generated";
 
 const client = createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
+  execution: "adaptive",
   typeCodecs: {
     geometry: {
       parse: (value) => ({ x: Number(value), y: Number(value) }),
@@ -560,6 +593,7 @@ const rawClient = createClient<SqlxJsGeneratedRegistry>(undefined, {
 void rawClient;
 
 const numericClient = createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
+  execution: "adaptive",
   types: {
     geometry: {
       to: 50_000,
@@ -573,6 +607,7 @@ void numericClient;
 
 // @ts-expect-error numeric parser output must match the configured customTypes representation
 createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
+  execution: "adaptive",
   types: {
     geometry: {
       to: 50_000,
@@ -584,6 +619,7 @@ createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
 });
 
 createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
+  execution: "adaptive",
   typeCodecs: {
     geometry: {
       // @ts-expect-error parser output must match the configured customTypes representation
@@ -594,6 +630,7 @@ createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
 });
 
 createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
+  execution: "adaptive",
   typeCodecs: {
     geometry: {
       parse: (value) => ({ x: Number(value), y: Number(value) }),
@@ -641,7 +678,7 @@ test("query definitions, executor helpers, and structural JSON compile together"
   const zeroParamsQuery = "SELECT COUNT(*)::int4 AS count FROM users";
   const executeQuery = "UPDATE users SET active = $active WHERE id = $id";
   const conditionalQuery = "UPDATE users SET email = CASE WHEN NOT $setEmail THEN email WHEN $clearEmail THEN NULL ELSE $email END WHERE id = $id";
-  emitDts(join(root, "generated.d.ts"), [
+  emitDts(join(root, "generated.d.ts"), completeEntries([
     {
       query,
       paramOids: [2950],
@@ -716,7 +753,7 @@ test("query definitions, executor helpers, and structural JSON compile together"
         { name: "email", typeOid: 25, tsType: "string", nullable: false },
       ],
     },
-  ]);
+  ]));
   writeFileSync(join(root, "consumer.ts"), `
 import {
   array,

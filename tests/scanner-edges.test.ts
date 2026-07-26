@@ -173,7 +173,7 @@ test("profiled projects reject unassigned and unknown client queries", () => {
       "let db = createSqlClient(undefined, { profile: profiles.api });\n" +
       "await db.sql(\"SELECT mutable\");\n",
   });
-  expect(() => scanProject(tmp, {}, ["api"])).toThrow(/profiled createSqlClient bindings must use const/);
+  expect(() => scanProject(tmp, {}, ["api"])).toThrow(/createSqlClient bindings must use const/);
 });
 
 test("namespace createSqlClient is detected and a local client shadow is ignored", () => {

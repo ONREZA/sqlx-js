@@ -25,14 +25,17 @@ export default defineConfig({
 
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
-import { databaseProfiles } from "../sqlx-js.config";
+import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
+import { databaseProfiles } from "../sqlx-js.config.js";
 
 export const apiDb = createSqlClient(process.env.DATABASE_URL, {
   profile: databaseProfiles.api,
+  queryDescriptors,
 });
 
 export const workerDb = createSqlClient(process.env.DATABASE_URL, {
   profile: databaseProfiles.worker,
+  queryDescriptors,
 });
 
 const users = await apiDb.sql.transaction({
@@ -120,7 +123,8 @@ PostgreSQL authentication.
 `onNotice` receives structured PostgreSQL notices and isolates observer
 failures from protocol state. `operationTimeoutMs` is opt-in because the
 library cannot choose one correct wall-clock limit for both interactive
-queries and long-running jobs.
+queries and long-running jobs. Add these options to the same descriptor-bound
+client created above.
 
 The `schema` query parameter used by Prisma PostgreSQL URLs is accepted
 directly: sqlx-js removes it before parsing the connection URL. Supported URL
@@ -130,6 +134,7 @@ parameters include `sslmode`, `sslrootcert`, `sslcert`, `sslkey`,
 
 ```ts
 const db = createSqlClient(process.env.DATABASE_URL, {
+  queryDescriptors,
   // Server-side per-connection statement timeout (ms). Also settable via
   // ?statement_timeout=5000 in DATABASE_URL.
   statementTimeoutMs: 5000,

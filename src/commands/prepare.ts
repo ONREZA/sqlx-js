@@ -9,14 +9,13 @@ import {
   type FieldDescription,
   type PlanValidation,
 } from "../pg/wire";
-import { SchemaCache, compositeLiteral, type CustomTypeInfo } from "../pg/schema";
-import { analyzeQuery, type ColumnSource } from "../pg/analyze";
-import { arrayTsType, isBuiltinOid, oidToTs, type ArrayElementNullability } from "../pg/oids";
-import { ScanError, scanProject, type QueryCallSite } from "../scan/scanner";
+import { SchemaCache } from "../pg/schema";
+import { analyzeQuery } from "../pg/analyze";
+import { isBuiltinOid } from "../pg/oids";
+import { scanProject, type QueryCallSite } from "../scan/scanner";
 import {
   assertCacheManifest,
   Cache,
-  fingerprint,
   profileFingerprint,
   effectiveNullable,
   portableCacheOid,
@@ -26,16 +25,12 @@ import {
 import { emitDts } from "../codegen";
 import {
   loadConfig,
-  lookupArrayElementNullability,
-  lookupColumnType,
-  lookupJsonbType,
   prepareConfigHash,
   type DatabaseProfile,
   type SqlxJsConfig,
 } from "../config";
 import {
   functionCacheExists,
-  functionContractDiagnostics,
   readFunctionCache,
   writeFunctionCache,
   type FunctionEntry,
@@ -44,9 +39,7 @@ import { introspectFunctions } from "../pg/functions";
 import {
   buildParamMap,
   effectiveParamTargets,
-  type ParamMap,
   type ParamMapResult,
-  type ParamTarget,
 } from "../pg/param-map";
 import { mergeExtensionTypes } from "../pg/extensions";
 import { compareArtifacts } from "../artifacts";
@@ -63,259 +56,39 @@ import {
   writeEnumCatalogModule,
   type EnumCatalogEntry,
 } from "../enum-catalog";
-import { containsUnknownType } from "../type-inspection";
 import { originalPosition, rewriteNamedParameters } from "../sql-params";
 import {
   renderRuntimeDescriptors,
   runtimeDescriptorPath,
   writeRuntimeDescriptors,
 } from "../runtime-descriptor-artifact";
-
-const JSON_OIDS = new Set([114, 3802]);
-const JSON_ARRAY_OIDS = new Set([199, 3807]);
-const JSON_INPUT_VALUE = "unknown";
-
-function jsonParameter(type: string): string {
-  return `import("@onreza/sqlx-js").JsonParameter<${type}>`;
-}
-
-function arrayParameter(type: string, nonNullElements: boolean): string {
-  return `import("@onreza/sqlx-js").PgArrayParameter<${type}, ${nonNullElements ? "false" : "boolean"}>`;
-}
-
-function enumUnion(values: string[]): string {
-  if (values.length === 0) return "never";
-  return values.map((v) => JSON.stringify(v)).join(" | ");
-}
-
-function resolveTs(oid: number, customLookup: (o: number) => CustomTypeInfo | undefined): string {
-  const c = customLookup(oid);
-  if (c) {
-    if (c.kind === "enum") return enumUnion(c.values);
-    if (c.kind === "enumArray") return arrayTsType(enumUnion(c.element.values));
-    if (c.kind === "scalar") return c.tsType;
-    if (c.kind === "scalarArray") return arrayTsType(c.element.tsType, c.element.notNull ? "non-null" : "unknown");
-    if (c.kind === "composite") return compositeLiteral(c);
-    if (c.kind === "compositeArray") return arrayTsType(compositeLiteral(c.element));
-  }
-  return oidToTs(oid).ts;
-}
-
-function isScalarColumnType(oid: number, schema: SchemaCache): boolean {
-  if (JSON_OIDS.has(oid) || JSON_ARRAY_OIDS.has(oid) || schema.arrayElement(oid) !== undefined) return false;
-  const custom = schema.customType(oid);
-  return custom?.kind !== "enumArray" && custom?.kind !== "scalarArray" && custom?.kind !== "compositeArray";
-}
-
-function resolveColumnTs(
-  f: FieldDescription,
-  schema: SchemaCache,
-  cfg: SqlxJsConfig,
-  sources: ColumnSource[] | null = null,
-  arrayElementNullability: ArrayElementNullability = "unknown",
-): string {
-  const directSource = directColumnSource(f, schema);
-  const effectiveSources = directSource ? [directSource] : sources ?? [];
-  const schemaArray = schema.arrayElement(f.typeOid);
-  const nonNullElements = arrayElementNullability === "non-null"
-    || schemaArray?.nullability === "non-null"
-    || (effectiveSources.length > 0 && effectiveSources.every((source) =>
-      lookupArrayElementNullability(cfg, source.schema, source.table, source.column) === "non-null"));
-  if (f.tableOid !== 0 && f.columnAttr !== 0) {
-    const tbl = schema.tableNameByOid(f.tableOid);
-    const colName = schema.columnNameByAttno(f.tableOid, f.columnAttr);
-    if (tbl && colName) {
-      const configured = configuredColumnTs(f.typeOid, schema, cfg, {
-        schema: tbl.schema,
-        table: tbl.name,
-        column: colName,
-      }, nonNullElements);
-      if (configured) return configured;
-    }
-  }
-  if (sources && sources.length > 0) {
-    const configured = sources.map((source) => configuredColumnTs(f.typeOid, schema, cfg, source, nonNullElements));
-    if (configured.every((type): type is string => type !== undefined) && new Set(configured).size === 1) {
-      return configured[0]!;
-    }
-  }
-  if (schemaArray) return arrayTsType(schemaArray.tsType, nonNullElements ? "non-null" : "unknown");
-  return resolveTs(f.typeOid, (oid) => schema.customType(oid));
-}
-
-function directColumnSource(f: FieldDescription, schema: SchemaCache): ColumnSource | undefined {
-  if (f.tableOid === 0 || f.columnAttr === 0) return undefined;
-  const table = schema.tableNameByOid(f.tableOid);
-  const column = schema.columnNameByAttno(f.tableOid, f.columnAttr);
-  return table && column ? { schema: table.schema, table: table.name, column } : undefined;
-}
-
-function configuredColumnTs(
-  typeOid: number,
-  schema: SchemaCache,
-  cfg: SqlxJsConfig,
-  source: ColumnSource,
-  nonNullElements: boolean,
-): string | undefined {
-  if (JSON_OIDS.has(typeOid)) {
-    return lookupJsonbType(cfg, source.schema, source.table, source.column);
-  }
-  if (JSON_ARRAY_OIDS.has(typeOid)) {
-    const declaration = lookupJsonbType(cfg, source.schema, source.table, source.column);
-    return declaration ? arrayTsType(declaration, nonNullElements ? "non-null" : "unknown") : undefined;
-  }
-  if (isScalarColumnType(typeOid, schema)) {
-    return lookupColumnType(cfg, source.schema, source.table, source.column);
-  }
-  return undefined;
-}
-
-function resolveParamTs(
-  paramIndex: number,
-  paramLabel: string,
-  paramOid: number,
-  paramMap: ParamMap,
-  schema: SchemaCache,
-  cfg: SqlxJsConfig,
-): string {
-  const sources = resolveParamSources(effectiveParamTargets(paramMap.get(paramIndex)), schema);
-  const configuredNonNullElements = sources.some((source) =>
-    lookupArrayElementNullability(cfg, source.schema, source.table, source.column) === "non-null");
-  const schemaNonNullElements = schema.arrayElement(paramOid)?.nullability === "non-null";
-  const nonNullElements = configuredNonNullElements || schemaNonNullElements;
-  if (isScalarColumnType(paramOid, schema)) {
-    const decl = resolveConfiguredParamDeclaration(
-      paramLabel,
-      "columnTypes",
-      sources,
-      (source) => lookupColumnType(cfg, source.schema, source.table, source.column),
-    );
-    if (decl) return decl;
-  }
-  if (JSON_OIDS.has(paramOid)) {
-    const decl = resolveConfiguredParamDeclaration(
-      paramLabel,
-      "jsonbTypes",
-      sources,
-      (source) => lookupJsonbType(cfg, source.schema, source.table, source.column),
-    );
-    if (decl) return jsonParameter(decl);
-    return jsonParameter(JSON_INPUT_VALUE);
-  }
-  if (JSON_ARRAY_OIDS.has(paramOid)) {
-    const decl = resolveConfiguredParamDeclaration(
-      paramLabel,
-      "jsonbTypes",
-      sources,
-      (source) => lookupJsonbType(cfg, source.schema, source.table, source.column),
-    );
-    if (decl) return arrayParameter(jsonParameter(decl), nonNullElements);
-    return arrayParameter(jsonParameter(JSON_INPUT_VALUE), nonNullElements);
-  }
-  const array = schema.arrayElement(paramOid);
-  if (array) return arrayParameter(array.tsType, nonNullElements);
-  const custom = schema.customType(paramOid);
-  if (custom) {
-    return resolveTs(paramOid, () => custom);
-  }
-  return resolveTs(paramOid, (oid) => schema.customType(oid));
-}
-
-function resolveParamSources(targets: ParamTarget[], schema: SchemaCache): ColumnSource[] {
-  const sources = new Map<string, ColumnSource>();
-  for (const target of targets) {
-    const column = resolveTargetColumn(target, schema);
-    const table = resolvedTargetTable(target, schema);
-    if (!column || !table) continue;
-    const source = { schema: table.schema, table: table.name, column };
-    sources.set(JSON.stringify([source.schema, source.table, source.column]), source);
-  }
-  return [...sources.values()];
-}
-
-function resolveConfiguredParamDeclaration(
-  paramLabel: string,
-  configKey: "columnTypes" | "jsonbTypes",
-  sources: ColumnSource[],
-  lookup: (source: ColumnSource) => string | undefined,
-): string | undefined {
-  const declarations = new Map<string, string[]>();
-  for (const source of sources) {
-    const declaration = lookup(source);
-    if (!declaration) continue;
-    const columns = declarations.get(declaration) ?? [];
-    columns.push(`${source.schema}.${source.table}.${source.column}`);
-    declarations.set(declaration, columns);
-  }
-  if (declarations.size <= 1) return declarations.keys().next().value;
-  const details = [...declarations]
-    .map(([declaration, columns]) => `${columns.sort().join(", ")} -> ${declaration}`)
-    .sort()
-    .join("; ");
-  throw new Error(`sqlx-js: parameter ${paramLabel} maps to conflicting ${configKey} declarations: ${details}`);
-}
-
-function resolvedTargetTable(
-  target: { schema?: string; table: string },
-  schema: SchemaCache,
-): { schema: string; name: string } | undefined {
-  const oid = schema.resolveTable(target.schema, target.table);
-  return oid === undefined ? undefined : schema.tableNameByOid(oid);
-}
-
-function resolveTargetColumn(target: { schema?: string; table: string; column?: string; columnIndex?: number }, schema: SchemaCache): string | undefined {
-  if (target.column) return target.column;
-  if (target.columnIndex === undefined) return undefined;
-  const oid = schema.resolveTable(target.schema, target.table);
-  if (oid === undefined) return undefined;
-  const cols = schema.columnsOf(oid);
-  if (!cols) return undefined;
-  return [...cols.values()].sort((a, b) => a.attnum - b.attnum)[target.columnIndex - 1]?.name;
-}
-
-function resolveParamNullable(
-  paramIndex: number,
-  pm: ParamMapResult,
-  schema: SchemaCache,
-): boolean {
-  const binding = pm.bindings.get(paramIndex);
-  const dmlTargets = binding?.dmlTargets ?? [];
-  if (dmlTargets.length === 0) return pm.forceNullable.has(paramIndex);
-  const propagated = dmlTargets.filter((candidate) => !candidate.nullSafe);
-  const dmlAcceptsNull = propagated.length === 0 || propagated.every(({ target }) => {
-    const oid = schema.resolveTable(target.schema, target.table);
-    if (oid === undefined) return false;
-    const column = resolveTargetColumn(target, schema);
-    if (!column) return false;
-    const col = schema.columnsOf(oid)?.get(column);
-    return col ? !col.notNull : false;
-  });
-  if (!dmlAcceptsNull) return false;
-  return binding?.referenceTargets.length === 0 || pm.forceNullable.has(paramIndex);
-}
-
-const ALIAS_OVERRIDE = /^(.+?)([!?])$/;
-
-function parseColumnOverride(name: string): { name: string; override?: "non-null" | "nullable" } {
-  const m = ALIAS_OVERRIDE.exec(name);
-  if (!m) return { name };
-  return { name: m[1]!, override: m[2] === "!" ? "non-null" : "nullable" };
-}
-
-function isAliasOrExpression(f: FieldDescription, schema: SchemaCache): boolean {
-  if (f.tableOid === 0 || f.columnAttr === 0) return true;
-  const real = schema.columnNameByAttno(f.tableOid, f.columnAttr);
-  return real !== undefined && real !== f.name;
-}
-
-function duplicateOutputColumns(fields: FieldDescription[]): string[] {
-  const counts = new Map<string, number>();
-  for (const field of fields) {
-    const name = parseColumnOverride(field.name).name;
-    counts.set(name, (counts.get(name) ?? 0) + 1);
-  }
-  return [...counts].filter(([, count]) => count > 1).map(([name]) => name).sort();
-}
+import {
+  columnInference,
+  duplicateOutputColumns,
+  isAliasOrExpression,
+  paramInference,
+  parseColumnOverride,
+  resolveColumnTs,
+  resolveParamNullable,
+  resolveParamTs,
+} from "./prepare-inference";
+import {
+  addFunctionContractDiagnostics,
+  executionIntentDiagnostics,
+  fatal,
+  formatPrepareWarning,
+  formatSite,
+  inferenceDiagnostics,
+  planningDiagnostic,
+  reportQueryDiagnostics,
+  siteDiagnostic,
+  type PrepareDiagnostic,
+} from "./prepare-diagnostics";
+export {
+  PrepareFatalError,
+  type PrepareDiagnostic,
+  type PrepareDiagnosticPhase,
+} from "./prepare-diagnostics";
 
 export type PrepareOptions = {
   root: string;
@@ -331,66 +104,6 @@ export type PrepareOptions = {
   strictInference?: boolean;
 };
 
-export type PrepareDiagnosticPhase =
-  | "config"
-  | "connect"
-  | "scan"
-  | "describe"
-  | "plan"
-  | "result-shape"
-  | "introspect"
-  | "analyze"
-  | "param-map"
-  | "inference"
-  | "function-contract"
-  | "cache"
-  | "verify";
-
-export class PrepareFatalError extends Error {
-  public readonly file?: string;
-  public readonly line?: number;
-  public readonly column?: number;
-
-  constructor(
-    public readonly phase: PrepareDiagnosticPhase,
-    message: string,
-    location: { file?: string; line?: number; column?: number } = {},
-    options?: ErrorOptions,
-  ) {
-    super(message, options);
-    this.name = "PrepareFatalError";
-    this.file = location.file;
-    this.line = location.line;
-    this.column = location.column;
-  }
-}
-
-function fatal(phase: PrepareDiagnosticPhase, error: unknown): PrepareFatalError {
-  if (error instanceof PrepareFatalError) return error;
-  const message = error instanceof Error ? error.message : String(error);
-  const location = error instanceof ScanError
-    ? { file: error.file, line: error.line, column: error.column }
-    : {};
-  return new PrepareFatalError(phase, message, location, { cause: error });
-}
-
-export type PrepareDiagnostic = {
-  severity: "error" | "warning";
-  phase: PrepareDiagnosticPhase;
-  message: string;
-  file?: string;
-  line?: number;
-  column?: number;
-  query?: string;
-  queryId?: string;
-  queryName?: string;
-  profile?: string;
-  code?: string;
-  position?: number;
-  hint?: string;
-  functionSignature?: string;
-};
-
 export type PrepareResult = {
   sites: number;
   entries: number;
@@ -400,51 +113,6 @@ export type PrepareResult = {
   enums: number;
   diagnostics: PrepareDiagnostic[];
 };
-
-function addFunctionContractDiagnostics(
-  functions: readonly FunctionEntry[],
-  diagnostics: PrepareDiagnostic[],
-  report: (message: string) => void = () => {},
-): void {
-  for (const warning of functionContractDiagnostics(functions)) {
-    const diagnostic: PrepareDiagnostic = {
-      severity: "warning",
-      phase: "function-contract",
-      code: warning.code,
-      functionSignature: warning.functionSignature,
-      message: warning.message,
-    };
-    diagnostics.push(diagnostic);
-    report(formatPrepareWarning(diagnostic));
-  }
-}
-
-function formatPrepareWarning(diagnostic: PrepareDiagnostic): string {
-  const subject = diagnostic.file
-    ? `${diagnostic.file}${diagnostic.line ? `:${diagnostic.line}:${diagnostic.column ?? 1}` : ""}`
-    : diagnostic.functionSignature;
-  return `${diagnostic.phase} warning: ${subject ? `${subject} — ` : ""}${diagnostic.message}`;
-}
-
-function formatSite(s: QueryCallSite): string {
-  const profile = s.profiles?.[0] ? ` [profile:${s.profiles[0]}]` : "";
-  return `${s.file}:${s.line}:${s.column}${s.queryName ? ` [${s.queryName}]` : ""}${profile}`;
-}
-
-function siteDiagnostic(site: QueryCallSite): Pick<
-  PrepareDiagnostic,
-  "file" | "line" | "column" | "query" | "queryId" | "queryName" | "profile"
-> {
-  return {
-    file: site.file,
-    line: site.line,
-    column: site.column,
-    query: site.query,
-    queryId: fingerprint(site.query),
-    ...(site.queryName ? { queryName: site.queryName } : {}),
-    ...(site.profiles?.[0] ? { profile: site.profiles[0] } : {}),
-  };
-}
 
 function expandProfileSites(sites: QueryCallSite[]): QueryCallSite[] {
   return sites.flatMap((site) =>
@@ -478,44 +146,6 @@ function siteUsage(sites: QueryCallSite[]): Pick<CacheEntry, "hasInline" | "inli
     hasInline: inlineQueries.length > 0,
     ...(inlineQueries.length > 0 ? { inlineQueries } : {}),
     ...(filePaths.length > 0 ? { filePaths } : {}),
-  };
-}
-
-function inferenceIssues(entry: CacheEntry): string[] {
-  const issues: string[] = [];
-  if (entry.degraded) issues.push(`nullability inference degraded: ${entry.degraded.reason}`);
-  entry.paramTsTypes.forEach((type, index) => {
-    const parameter = entry.paramNames?.[index] ? `$${entry.paramNames[index]}` : `$${index + 1}`;
-    if (containsUnknownType(type)) issues.push(`parameter ${parameter} resolved to ${type}`);
-  });
-  for (const column of entry.columns) {
-    if (containsUnknownType(column.tsType)) {
-      issues.push(`result column ${JSON.stringify(column.name)} resolved to ${column.tsType}`);
-    }
-  }
-  return issues;
-}
-
-function inferenceDiagnostics(
-  entry: CacheEntry,
-  site: QueryCallSite,
-  strict: boolean,
-): PrepareDiagnostic[] {
-  return inferenceIssues(entry).map((message) => ({
-    severity: strict ? "error" : "warning",
-    phase: "inference",
-    message,
-    ...siteDiagnostic(site),
-  }));
-}
-
-function planningDiagnostic(entry: CacheEntry, site: QueryCallSite): PrepareDiagnostic | undefined {
-  if (entry.validation !== "parse-only") return undefined;
-  return {
-    severity: "warning",
-    phase: "plan",
-    message: "statement is outside PostgreSQL's generic planning surface; validation is parse-only",
-    ...siteDiagnostic(site),
   };
 }
 
@@ -626,7 +256,13 @@ function prepareContext(
 }
 
 type ValidationOutcome =
-  | { ok: true; paramOids: number[]; fields: FieldDescription[]; validation: PlanValidation }
+  | {
+    ok: true;
+    paramOids: number[];
+    fields: FieldDescription[];
+    hasResultSet: boolean;
+    validation: PlanValidation;
+  }
   | { ok: false; phase: "describe" | "plan"; error: unknown };
 
 export function defaultPrepareConcurrency(): number {
@@ -658,7 +294,13 @@ export async function validateAll(
         const d = await client.describe(query);
         try {
           const validation = await client.plan(query, d.paramOids.length);
-          results.set(fp, { ok: true, paramOids: d.paramOids, fields: d.fields, validation });
+          results.set(fp, {
+            ok: true,
+            paramOids: d.paramOids,
+            fields: d.fields,
+            hasResultSet: d.hasResultSet,
+            validation,
+          });
         } catch (error) {
           results.set(fp, { ok: false, phase: "plan", error });
         }
@@ -744,6 +386,7 @@ export async function prepareOnce(
     paramOids: number[];
     fields: FieldDescription[];
     paramNames: string[];
+    hasResultSet: boolean;
     validation: PlanValidation;
   };
   const raw: Raw[] = [];
@@ -760,10 +403,13 @@ export async function prepareOnce(
     }
     const entry = { ...cached, ...siteUsage(item.sites) };
     const entryDiagnostics = inferenceDiagnostics(entry, item.sites[0]!, opts.strictInference === true);
-    diagnostics.push(...entryDiagnostics);
+    const intentDiagnostics = executionIntentDiagnostics(entry, item.sites, opts.strictInference === true);
+    diagnostics.push(...entryDiagnostics, ...intentDiagnostics);
+    const queryDiagnostics = [...entryDiagnostics, ...intentDiagnostics];
+    const queryFailed = reportQueryDiagnostics(queryDiagnostics, item.sites, err);
     const planDiagnostic = planningDiagnostic(entry, item.sites[0]!);
     if (planDiagnostic) diagnostics.push(planDiagnostic);
-    if (opts.strictInference && entryDiagnostics.length > 0) {
+    if (queryFailed) {
       failures++;
       continue;
     }
@@ -823,6 +469,7 @@ export async function prepareOnce(
         paramOids: outcome.paramOids,
         fields: outcome.fields,
         paramNames: toPrepare.get(fp)!.paramNames,
+        hasResultSet: outcome.hasResultSet,
         validation: outcome.validation,
       });
       continue;
@@ -994,6 +641,23 @@ export async function prepareOnce(
       err(`      query: ${snippet(r.sites[0]!.query)}`);
       continue;
     }
+    const columns: CacheEntry["columns"] = r.fields.map((f, i) => {
+      const parsed = parseColumnOverride(f.name);
+      const treatAsOverride = parsed.override !== undefined && isAliasOrExpression(f, schema);
+      return {
+        name: parsed.name,
+        typeOid: portableCacheOid(f.typeOid),
+        tsType: resolveColumnTs(
+          f,
+          schema,
+          userCfg,
+          analysis.perColumnSources[i] ?? null,
+          analysis.perColumnArrayElementNullability[i] ?? "unknown",
+        ),
+        nullable: analysis.perColumnNullable[i] ?? true,
+        ...(treatAsOverride ? { override: parsed.override } : {}),
+      };
+    });
     const entry: CacheEntry = {
       query: r.sites[0]!.query,
       ...(r.profile ? { profile: r.profile } : {}),
@@ -1011,34 +675,30 @@ export async function prepareOnce(
       paramTsTypes,
       paramNullable,
       ...(r.paramNames.length > 0 ? { paramNames: r.paramNames } : {}),
-      columns: r.fields.map((f, i) => {
-        const parsed = parseColumnOverride(f.name);
-        const treatAsOverride = parsed.override !== undefined && isAliasOrExpression(f, schema);
-        return {
-          name: parsed.name,
-          typeOid: portableCacheOid(f.typeOid),
-          tsType: resolveColumnTs(
-            f,
-            schema,
-            userCfg,
-            analysis.perColumnSources[i] ?? null,
-            analysis.perColumnArrayElementNullability[i] ?? "unknown",
-          ),
-          nullable: analysis.perColumnNullable[i] ?? true,
-          ...(treatAsOverride ? { override: parsed.override } : {}),
-        };
-      }),
-      hasResultSet: r.fields.length > 0,
+      columns,
+      hasResultSet: r.hasResultSet,
       ...(analysis.degraded ? { degraded: analysis.degraded } : {}),
+      inference: {
+        columns: columns.map((column, index) =>
+          columnInference(
+            effectiveNullable(column),
+            analysis.perColumnSources[index] ?? null,
+            schema,
+            analysis.degraded,
+            column.override,
+          )
+        ),
+        params: paramNullable.map((nullable, index) =>
+          paramInference(index + 1, nullable, pm)
+        ),
+      },
     };
     const entryDiagnostics = inferenceDiagnostics(entry, r.sites[0]!, opts.strictInference === true);
-    diagnostics.push(...entryDiagnostics);
-    if (entryDiagnostics.length > 0) {
-      for (const diagnostic of entryDiagnostics) {
-        const label = diagnostic.severity === "error" ? "inference failed" : "inference warning";
-        err(`  ${label}: ${formatSite(r.sites[0]!)} — ${diagnostic.message}`);
-      }
-      if (opts.strictInference) {
+    const intentDiagnostics = executionIntentDiagnostics(entry, r.sites, opts.strictInference === true);
+    diagnostics.push(...entryDiagnostics, ...intentDiagnostics);
+    const queryDiagnostics = [...entryDiagnostics, ...intentDiagnostics];
+    if (queryDiagnostics.length > 0) {
+      if (reportQueryDiagnostics(queryDiagnostics, r.sites, err)) {
         failures++;
         continue;
       }
@@ -1245,10 +905,14 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         }
         const current = { ...entry, ...siteUsage(u.sites) };
         const entryDiagnostics = inferenceDiagnostics(current, u.sites[0]!, opts.strictInference === true);
-        diagnostics.push(...entryDiagnostics);
+        const intentDiagnostics = executionIntentDiagnostics(current, u.sites, opts.strictInference === true);
+        diagnostics.push(...entryDiagnostics, ...intentDiagnostics);
         const planDiagnostic = planningDiagnostic(current, u.sites[0]!);
         if (planDiagnostic) diagnostics.push(planDiagnostic);
-        if (opts.strictInference && entryDiagnostics.length > 0) {
+        if (
+          (opts.strictInference && entryDiagnostics.length > 0)
+          || intentDiagnostics.some((diagnostic) => diagnostic.severity === "error")
+        ) {
           inferenceFailures++;
           continue;
         }

@@ -127,8 +127,38 @@ test("diagnostics CLI preserves function contract subjects", () => {
 test("CLI init scaffolds project files and is idempotent without DATABASE_URL", () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-init-"));
   try {
-    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "fixture", scripts: { test: "bun test" } }, null, 2));
-    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ include: ["src/**/*.ts"] }, null, 2));
+    writeFileSync(join(root, "package.json"), JSON.stringify({
+      name: "fixture",
+      type: "module",
+      scripts: { test: "bun test" },
+    }, null, 2));
+    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
+      compilerOptions: {
+        module: "NodeNext",
+        moduleResolution: "NodeNext",
+        target: "ES2023",
+        strict: true,
+        noEmit: true,
+      },
+      include: ["src/**/*.ts"],
+    }, null, 2));
+    const packageDir = join(root, "node_modules/@onreza/sqlx-js");
+    mkdirSync(packageDir, { recursive: true });
+    writeFileSync(join(packageDir, "package.json"), JSON.stringify({
+      name: "@onreza/sqlx-js",
+      type: "module",
+      exports: { ".": { types: "./index.d.ts" } },
+    }));
+    writeFileSync(join(packageDir, "index.d.ts"), `
+      export interface KnownQueries {}
+      export interface KnownFileQueries {}
+      export interface KnownFunctions {}
+      export interface KnownProfiles {}
+      export declare function createSqlClient<Registry>(
+        url?: string,
+        options?: { queryDescriptors: unknown },
+      ): { sql: unknown };
+    `);
     const r1 = spawnSync("bun", [binPath, "init", "--root", root], {
       encoding: "utf8",
       env: { ...process.env, DATABASE_URL: "" },
@@ -140,8 +170,19 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
     expect(existsSync(join(root, "migrations"))).toBe(true);
     expect(existsSync(join(root, ".env.example"))).toBe(true);
     expect(existsSync(join(root, "sqlx-js-env.d.ts"))).toBe(true);
+    expect(existsSync(join(root, "db.ts"))).toBe(true);
+    expect(readFileSync(join(root, "db.ts"), "utf8")).toContain("queryDescriptors");
+    expect(existsSync(join(root, ".sqlx-js/runtime-descriptors.json"))).toBe(true);
     expect(readFileSync(join(root, "sqlx-js.config.ts"), "utf8")).toContain("defineConfig");
-    expect(JSON.parse(readFileSync(join(root, "tsconfig.json"), "utf8")).include).toContain("sqlx-js-env.d.ts");
+    const tsconfig = JSON.parse(readFileSync(join(root, "tsconfig.json"), "utf8"));
+    expect(tsconfig.include).toContain("sqlx-js-env.d.ts");
+    expect(tsconfig.include).toContain("db.ts");
+    expect(tsconfig.compilerOptions.resolveJsonModule).toBe(true);
+    const typecheck = spawnSync(join(repoRoot, "node_modules/.bin/tsc"), ["-p", root], {
+      encoding: "utf8",
+    });
+    expect(typecheck.stderr + typecheck.stdout).toBe("");
+    expect(typecheck.status).toBe(0);
     expect(JSON.parse(readFileSync(join(root, "package.json"), "utf8")).scripts).toMatchObject({
       test: "bun test",
       "sqlx:prepare": "sqlx-js prepare",
@@ -159,6 +200,29 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
     });
     expect(r2.status).toBe(0);
     expect(r2.stdout).toContain("left unchanged");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI init preserves an explicit resolveJsonModule setting", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-init-json-setting-"));
+  try {
+    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
+      compilerOptions: { resolveJsonModule: false },
+      include: ["src/**/*.ts"],
+    }, null, 2));
+    const result = spawnSync("bun", [binPath, "init", "--root", root], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: "" },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(
+      "manual  tsconfig.json: set compilerOptions.resolveJsonModule to true",
+    );
+    const tsconfig = JSON.parse(readFileSync(join(root, "tsconfig.json"), "utf8"));
+    expect(tsconfig.compilerOptions.resolveJsonModule).toBe(false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

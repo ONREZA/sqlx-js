@@ -1190,6 +1190,7 @@ export default {
       "env",
       "cache",
       "tsconfig",
+      "descriptorCoverage",
       "database",
       "permissions",
       "runtimeTypes",
@@ -1458,6 +1459,7 @@ export default {
         { fp: "q2", query: "SELECT email FROM tmp_users" },
         { fp: "q3", query: "SELECT title FROM tmp_join_posts" },
         { fp: "q4", query: "SELECT external_id FROM tmp_join_users" },
+        { fp: "qzero", query: "SELECT FROM tmp_users LIMIT 1" },
         {
           fp: "qmerge",
           query: "MERGE INTO tmp_users AS target USING (SELECT $1::bigint AS id) AS source ON target.id = source.id WHEN MATCHED THEN UPDATE SET name = target.name",
@@ -1465,12 +1467,13 @@ export default {
         { fp: "qbad", query: "SELECT * FROM no_such_relation_xyz" },
       ];
       const results = await validateAll(cfg, session, queries, 4);
-      expect(results.size).toBe(6);
+      expect(results.size).toBe(7);
       const q1 = results.get("q1")!;
       expect(q1.ok).toBe(true);
       if (q1.ok) expect(q1.fields.map((f) => f.name)).toEqual(["id", "name"]);
       const q2 = results.get("q2")!;
       if (q2.ok) expect(q2.fields.map((f) => f.name)).toEqual(["email"]);
+      expect(results.get("qzero")).toMatchObject({ ok: true, fields: [], hasResultSet: true });
       expect(results.get("qmerge")).toMatchObject({ ok: true, validation: "planned" });
       expect(results.get("qbad")!.ok).toBe(false);
       // session connection stays usable after the pool drains
@@ -2268,7 +2271,7 @@ export default {
       "), second AS (\n" +
       "  INSERT INTO tmp_cte_param_required (value) VALUES ($value) RETURNING value\n" +
       ") SELECT first.value FROM first CROSS JOIN second`, { value: \"ready\" });\n" +
-      "await sql(`INSERT INTO tmp_cte_param_required (value)\n" +
+      "await sql.execute(`INSERT INTO tmp_cte_param_required (value)\n" +
       "  VALUES ($value), (COALESCE($value, 'ready'))`, { value: \"ready\" });\n" +
       "await sql(`WITH direct_value AS (\n" +
       "  INSERT INTO tmp_cte_param_a (value) VALUES ($value) RETURNING value\n" +
@@ -2279,9 +2282,9 @@ export default {
       "  INSERT INTO tmp_cte_param_required (value) SELECT $value::text\n" +
       "  WHERE $value::text IS NOT NULL RETURNING value\n" +
       ") SELECT COUNT(*)::int AS count FROM guarded_value`, { value: null });\n" +
-      "await sql(`UPDATE tmp_cte_param_a SET value = $value::text\n" +
+      "await sql.execute(`UPDATE tmp_cte_param_a SET value = $value::text\n" +
       "  WHERE value = $value::text`, { value: \"ready\" });\n" +
-      "await sql(`UPDATE tmp_cte_param_a SET value = $value::text\n" +
+      "await sql.execute(`UPDATE tmp_cte_param_a SET value = $value::text\n" +
       "  WHERE $value::text IS NULL OR value = $value::text`, { value: null });\n",
     );
     const result = prepareRoot(root, ["--strict-inference"]);
@@ -2409,6 +2412,71 @@ export default {
     expect(dts).toContain('"maybe_payload": import("@onreza/sqlx-js").JsonValue | null');
   });
 
+  test("prepare validates execution intent without runtime checks", () => {
+    const root = isolatedRoot("execution-intent");
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"UPDATE tmp_users SET name = name WHERE id < 0\");\n",
+    );
+    const warning = prepareRoot(root);
+    expect(warning.code, warning.stderr).toBe(0);
+    expect(warning.stderr).toContain("intent warning");
+    expect(warning.stderr).toContain("Use sql.execute()");
+
+    const strict = prepareRoot(root, ["--strict-inference"]);
+    expect(strict.code).toBe(1);
+    expect(strict.stderr).toContain("intent failed");
+
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql.execute(\"UPDATE tmp_users SET name = name WHERE id < 0 RETURNING id\");\n",
+    );
+    const discardedRows = prepareRoot(root);
+    expect(discardedRows.code, discardedRows.stderr).toBe(0);
+    expect(discardedRows.stderr).toContain("sql.execute() is discarding rows");
+
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql.one(\"UPDATE tmp_users SET name = name WHERE id < 0\");\n",
+    );
+    const invalidCardinality = prepareRoot(root);
+    expect(invalidCardinality.code).toBe(1);
+    expect(invalidCardinality.stderr).toContain("sql.one() requires a statement with a result set");
+
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql.one(\"SELECT FROM tmp_users LIMIT 1\");\n",
+    );
+    const zeroColumnResult = prepareRoot(root);
+    expect(zeroColumnResult.code, zeroColumnResult.stderr).toBe(0);
+    expect(readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8")).toContain("row: {  }");
+  });
+
+  test("prepare persists inference explanations for offline inspection", () => {
+    const root = isolatedRoot("inference-explain");
+    const query =
+      "SELECT related.id AS related_id FROM tmp_users base "
+      + "LEFT JOIN tmp_users related ON related.id = base.id + 1";
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      `await sql(${JSON.stringify(query)});\n`,
+    );
+    const result = prepareRoot(root, ["--strict-inference"]);
+    expect(result.code, result.stderr).toBe(0);
+    const entry = JSON.parse(
+      readFileSync(join(root, ".sqlx-js", `${fingerprint(query)}.json`), "utf8"),
+    );
+    expect(entry.inference.columns[0]).toMatchObject({
+      sources: [{
+        schema: "public",
+        table: "tmp_users",
+        column: "id",
+        notNull: true,
+      }],
+      reason: "widened by outer-join or nullable expression semantics",
+    });
+  });
+
   test("strict inference accepts set operations and inherited CTE scopes", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
@@ -2503,7 +2571,7 @@ export default {
       "await sql(\"SELECT plain AS set_plain FROM tmp_array_contracts UNION ALL SELECT plain AS set_plain FROM tmp_array_contracts\");\n" +
       "await sql(\"SELECT ARRAY[1, 2] AS non_null, ARRAY[1, NULL] AS nullable, ARRAY(SELECT id FROM tmp_users) AS selected\");\n" +
       "await sql(\"WITH values_source(value) AS (VALUES (1::int), (NULL::int)) SELECT ARRAY(SELECT value FROM values_source) AS values\");\n" +
-      "await sql(\"INSERT INTO tmp_array_contracts (plain, proven, wrapped, roles, domain_roles, pairs) VALUES ($1, $2, $3, $4, $5, ARRAY[ROW('label', 1)]::tmp_array_pair[])\", sql.array([\"a\"]), sql.array([\"b\"]), sql.array([\"c\", null]), sql.array([\"admin\"]), sql.array([\"member\"]));\n",
+      "await sql.execute(\"INSERT INTO tmp_array_contracts (plain, proven, wrapped, roles, domain_roles, pairs) VALUES ($1, $2, $3, $4, $5, ARRAY[ROW('label', 1)]::tmp_array_pair[])\", sql.array([\"a\"]), sql.array([\"b\"]), sql.array([\"c\", null]), sql.array([\"admin\"]), sql.array([\"member\"]));\n",
     );
     const result = prepareRoot(root, ["--strict-inference"]);
     expect(result.code, result.stderr).toBe(0);
@@ -3013,6 +3081,48 @@ export default {
       await close();
       if (prev === undefined) delete process.env.DATABASE_URL;
       else process.env.DATABASE_URL = prev;
+    }
+  });
+
+  test("typed savepoints recover PostgreSQL errors without hiding transaction failures", async () => {
+    const { createSqlClient } = await import("../src/index");
+    const db = createSqlClient(dbUrl);
+    const token = Date.now();
+    const firstEmail = `savepoint-${token}@example.com`;
+    const secondEmail = `savepoint-after-${token}@example.com`;
+    try {
+      await db.sql.transaction(async (tx) => {
+        await tx.savepoint(async (sp) => {
+          await sp.execute(
+            "INSERT INTO tmp_users (name, email) VALUES ($1, $2)",
+            "savepoint",
+            firstEmail,
+          );
+        });
+        const recovered = await tx.savepoint(async (sp) => {
+          try {
+            await sp.execute(
+              "INSERT INTO tmp_users (id, name, email) "
+              + "SELECT id, 'duplicate', 'duplicate@example.com' FROM tmp_users ORDER BY id LIMIT 1",
+            );
+          } catch {}
+          return true;
+        });
+        expect(recovered).toBe(true);
+        await tx.execute(
+          "INSERT INTO tmp_users (name, email) VALUES ($1, $2)",
+          "after-savepoint",
+          secondEmail,
+        );
+      });
+      const rows = await db.unsafe(
+        "SELECT email FROM tmp_users WHERE email IN ($1, $2) ORDER BY email",
+        firstEmail,
+        secondEmail,
+      ) as { email: string }[];
+      expect(rows.map((row) => row.email).sort()).toEqual([firstEmail, secondEmail].sort());
+    } finally {
+      await db.close();
     }
   });
 

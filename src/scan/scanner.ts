@@ -3,6 +3,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import type { DatabaseProfiles, ScanConfig } from "../config";
 import { rewriteNamedParameters } from "../sql-params";
+import {
+  resolveClientInitializer,
+  resolveLocalClientExports,
+  type ClientBinding,
+  type ClientExecution,
+} from "./client-bindings";
 
 export type QueryCallSite = {
   file: string;
@@ -15,6 +21,7 @@ export type QueryCallSite = {
   queryName?: string;
   sqlFilePath?: string;
   profiles?: string[];
+  execution?: ClientExecution;
 };
 
 export class ScanError extends Error {
@@ -84,11 +91,15 @@ export function findSourceFiles(root: string, scan: ScanConfig = {}): string[] {
 }
 
 type ScopeState = {
-  sqlAliases: Map<string, { profile?: string; transactionScoped?: boolean }>;
+  sqlAliases: Map<string, {
+    profile?: string;
+    transactionScoped?: boolean;
+    execution?: ClientExecution;
+  }>;
   namespaces: Set<string>;
   clientFactories: Set<string>;
   queryFactories: Set<string>;
-  clients: Map<string, string | undefined>;
+  clients: Map<string, ClientBinding>;
 };
 
 type Cardinality = "many" | "one" | "optional" | "execute";
@@ -102,6 +113,7 @@ function classifyCallee(
   cardinality?: Cardinality;
   profiles?: string[];
   transactionScoped?: boolean;
+  execution?: ClientExecution;
 } | null {
   if (ts.isIdentifier(callee)) {
     const binding = scope.sqlAliases.get(callee.text);
@@ -111,6 +123,7 @@ function classifyCallee(
       cardinality: "many",
       ...(binding.profile ? { profiles: [binding.profile] } : {}),
       ...(binding.transactionScoped ? { transactionScoped: true } : {}),
+      ...(binding.execution ? { execution: binding.execution } : {}),
     };
   }
 
@@ -121,13 +134,18 @@ function classifyCallee(
   if (ts.isIdentifier(callee.expression)) {
     const id = callee.expression.text;
     if (scope.namespaces.has(id)) {
-      if (methodName === "sql") return { kind: "inline", cardinality: "many" };
+      if (methodName === "sql") return { kind: "inline", cardinality: "many", execution: "adaptive" };
       return null;
     }
     if (scope.clients.has(id)) {
-      const profile = scope.clients.get(id);
+      const client = scope.clients.get(id)!;
       if (methodName === "sql") {
-        return { kind: "inline", cardinality: "many", ...(profile ? { profiles: [profile] } : {}) };
+        return {
+          kind: "inline",
+          cardinality: "many",
+          ...(client.profile ? { profiles: [client.profile] } : {}),
+          execution: client.execution,
+        };
       }
       return null;
     }
@@ -135,10 +153,15 @@ function classifyCallee(
     if (!binding) return null;
     const assigned = binding.profile ? { profiles: [binding.profile] } : {};
     const transactionScoped = binding.transactionScoped ? { transactionScoped: true } : {};
-    if (methodName === "transaction") return { kind: "transaction", ...assigned };
-    if (methodName === "file") return { kind: "file", cardinality: "many", ...assigned, ...transactionScoped };
+    const execution = binding.execution ? { execution: binding.execution } : {};
+    if (methodName === "transaction" || methodName === "savepoint") {
+      return { kind: "transaction", ...assigned, ...execution };
+    }
+    if (methodName === "file") {
+      return { kind: "file", cardinality: "many", ...assigned, ...transactionScoped, ...execution };
+    }
     if (methodName === "one" || methodName === "optional" || methodName === "execute") {
-      return { kind: "inline", cardinality: methodName, ...assigned, ...transactionScoped };
+      return { kind: "inline", cardinality: methodName, ...assigned, ...transactionScoped, ...execution };
     }
     return null;
   }
@@ -153,13 +176,16 @@ function classifyCallee(
       (scope.namespaces.has(mid.expression.text) || scope.clients.has(mid.expression.text))
     ) {
       if (mid.name.text !== "sql") return null;
-      const profile = scope.clients.get(mid.expression.text);
-      const assigned = profile ? { profiles: [profile] } : {};
+      const client = scope.clients.get(mid.expression.text);
+      const assigned = client?.profile ? { profiles: [client.profile] } : {};
+      const execution = client
+        ? { execution: client.execution }
+        : { execution: "adaptive" as const };
       if (methodName === "one" || methodName === "optional" || methodName === "execute") {
-        return { kind: "inline", cardinality: methodName, ...assigned };
+        return { kind: "inline", cardinality: methodName, ...assigned, ...execution };
       }
-      if (methodName === "file") return { kind: "file", cardinality: "many", ...assigned };
-      if (methodName === "transaction") return { kind: "transaction", ...assigned };
+      if (methodName === "file") return { kind: "file", cardinality: "many", ...assigned, ...execution };
+      if (methodName === "transaction") return { kind: "transaction", ...assigned, ...execution };
       return null;
     }
 
@@ -170,12 +196,14 @@ function classifyCallee(
       if (!binding) return null;
       if (mid.name.text !== "file") return null;
       const transactionScoped = binding.transactionScoped ? { transactionScoped: true } : {};
+      const execution = binding.execution ? { execution: binding.execution } : {};
       if (methodName === "one" || methodName === "optional" || methodName === "execute") {
         return {
           kind: "file",
           cardinality: methodName,
           ...(binding.profile ? { profiles: [binding.profile] } : {}),
           ...transactionScoped,
+          ...execution,
         };
       }
       return null;
@@ -191,8 +219,13 @@ function classifyCallee(
       mid.name.text === "file" &&
       (methodName === "one" || methodName === "optional" || methodName === "execute")
     ) {
-      const profile = scope.clients.get(mid.expression.expression.text);
-      return { kind: "file", cardinality: methodName, ...(profile ? { profiles: [profile] } : {}) };
+      const client = scope.clients.get(mid.expression.expression.text);
+      return {
+        kind: "file",
+        cardinality: methodName,
+        ...(client?.profile ? { profiles: [client.profile] } : {}),
+        execution: client?.execution ?? "adaptive",
+      };
     }
   }
 
@@ -256,6 +289,7 @@ export function scanFile(
   modules: readonly string[] = DEFAULT_SQLX_MODULES,
   profileNames: readonly string[] = [],
   transactionOnlyProfileNames: readonly string[] = [],
+  localClientCache?: Map<string, ReturnType<typeof resolveLocalClientExports>>,
 ): QueryCallSite[] {
   const text = readFileSync(absPath, "utf8");
   const source = ts.createSourceFile(absPath, text, ts.ScriptTarget.ESNext, false, scriptKind(absPath));
@@ -268,19 +302,60 @@ export function scanFile(
     throw new ScanError(file, line + 1, character + 1, ts.flattenDiagnosticMessageText(parseError.messageText, "\n"));
   }
 
+  const configuredProfiles = new Set(profileNames);
+  const transactionOnlyProfiles = new Set(transactionOnlyProfileNames);
+  const here = (node: ts.Node) => {
+    const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
+    return { line: line + 1, column: character + 1 };
+  };
+  const fileRel = relative(root, absPath).replace(/\\/g, "/");
   const importedAliases = new Set<string>();
   const importedNamespaces = new Set<string>();
   const importedClientFactories = new Set<string>();
   const importedQueryFactories = new Set<string>();
+  const importedClients = new Map<string, ClientBinding>();
   for (const stmt of source.statements) {
     if (!ts.isImportDeclaration(stmt)) continue;
     const mod = stmt.moduleSpecifier;
     if (!ts.isStringLiteral(mod)) continue;
-    if (!modules.includes(mod.text)) continue;
     const ic = stmt.importClause;
     if (!ic) continue;
     const nb = ic.namedBindings;
     if (!nb) continue;
+    const localClients = resolveLocalClientExports(
+      absPath,
+      root,
+      mod.text,
+      modules,
+      localClientCache,
+    );
+    if (localClients.size > 0 && ts.isNamedImports(nb)) {
+      for (const elem of nb.elements) {
+        const imported = (elem.propertyName ?? elem.name).text;
+        const resolved = localClients.get(imported);
+        if (!resolved) continue;
+        if (resolved.error) {
+          throw new ScanError(
+            resolved.error.file,
+            resolved.error.line,
+            resolved.error.column,
+            resolved.error.message,
+          );
+        }
+        const binding = resolved.binding!;
+        if (binding.profile && !configuredProfiles.has(binding.profile)) {
+          const pos = here(elem);
+          throw new ScanError(
+            fileRel,
+            pos.line,
+            pos.column,
+            `createSqlClient references unknown profile ${JSON.stringify(binding.profile)}`,
+          );
+        }
+        importedClients.set(elem.name.text, binding);
+      }
+    }
+    if (!modules.includes(mod.text)) continue;
     if (ts.isNamespaceImport(nb)) {
       importedNamespaces.add(nb.name.text);
     } else if (ts.isNamedImports(nb)) {
@@ -297,23 +372,18 @@ export function scanFile(
     importedAliases.size === 0 &&
     importedNamespaces.size === 0 &&
     importedClientFactories.size === 0 &&
-    importedQueryFactories.size === 0
+    importedQueryFactories.size === 0 &&
+    importedClients.size === 0
   ) return [];
 
   const out: QueryCallSite[] = [];
-  const configuredProfiles = new Set(profileNames);
-  const transactionOnlyProfiles = new Set(transactionOnlyProfileNames);
-  const here = (node: ts.Node) => {
-    const { line, character } = source.getLineAndCharacterOfPosition(node.getStart(source));
-    return { line: line + 1, column: character + 1 };
-  };
-  const fileRel = relative(root, absPath).replace(/\\/g, "/");
 
   const recordInline = (
     first: ts.Node,
     args: ts.NodeArray<ts.Expression>,
     cardinality: Cardinality,
     profiles?: string[],
+    execution?: ClientExecution,
   ): boolean => {
     if (!ts.isStringLiteralLike(first)) {
       const pos = here(first);
@@ -338,6 +408,7 @@ export function scanFile(
       kind: "inline",
       cardinality,
       ...(profiles && profiles.length > 0 ? { profiles } : {}),
+      ...(execution ? { execution } : {}),
     });
     return true;
   };
@@ -384,9 +455,9 @@ export function scanFile(
         throw new ScanError(fileRel, pos.line, pos.column, `defineQuery.for() references unknown profile ${JSON.stringify(unknown)}`);
       }
     }
-    let paramNames: string[];
+    let rewritten: ReturnType<typeof rewriteNamedParameters>;
     try {
-      paramNames = rewriteNamedParameters(queryNode.text).names;
+      rewritten = rewriteNamedParameters(queryNode.text);
     } catch (error) {
       throw new ScanError(fileRel, pos.line, pos.column, (error as Error).message.replace(/^sqlx-js: /, ""));
     }
@@ -395,7 +466,7 @@ export function scanFile(
       line: pos.line,
       column: pos.column,
       query: queryNode.text,
-      paramCount: paramNames.length,
+      paramCount: rewritten.names.length || rewritten.positionalCount,
       kind: "inline",
       cardinality,
       ...(nameNode ? { queryName: nameNode.text } : {}),
@@ -410,6 +481,7 @@ export function scanFile(
     callee: ts.Node,
     cardinality: Cardinality,
     profiles?: string[],
+    execution?: ClientExecution,
   ): boolean => {
     if (!ts.isStringLiteralLike(first)) {
       const pos = first ? here(first) : here(callee);
@@ -451,6 +523,7 @@ export function scanFile(
       cardinality,
       sqlFilePath: sqlPath,
       ...(profiles && profiles.length > 0 ? { profiles } : {}),
+      ...(execution ? { execution } : {}),
     });
     return true;
   };
@@ -514,79 +587,6 @@ export function scanFile(
       : scope;
   };
 
-  const unwrapExpression = (value: ts.Expression): ts.Expression => {
-    let current = value;
-    while (
-      ts.isParenthesizedExpression(current) ||
-      ts.isAsExpression(current) ||
-      ts.isTypeAssertionExpression(current) ||
-      ts.isNonNullExpression(current) ||
-      ts.isSatisfiesExpression(current)
-    ) {
-      current = current.expression;
-    }
-    return current;
-  };
-
-  const clientFactoryProfile = (
-    initializer: ts.Expression | undefined,
-    scope: ScopeState,
-  ): { client: boolean; profile?: string } => {
-    if (!initializer) return { client: false };
-    const expression = unwrapExpression(initializer);
-    if (!ts.isCallExpression(expression)) return { client: false };
-    const callee = unwrapExpression(expression.expression);
-    const client = ts.isIdentifier(callee)
-      ? scope.clientFactories.has(callee.text)
-      : ts.isPropertyAccessExpression(callee) &&
-      ts.isIdentifier(callee.expression) &&
-      scope.namespaces.has(callee.expression.text) &&
-      callee.name.text === "createSqlClient";
-    if (!client) return { client: false };
-    const rawOptions = expression.arguments[1];
-    if (!rawOptions) return { client: true };
-    const options = unwrapExpression(rawOptions);
-    if (!ts.isObjectLiteralExpression(options)) return { client: true };
-    const property = options.properties.find((item): item is ts.PropertyAssignment =>
-      ts.isPropertyAssignment(item) &&
-      ((ts.isIdentifier(item.name) && item.name.text === "profile") ||
-        (ts.isStringLiteralLike(item.name) && item.name.text === "profile"))
-    );
-    if (!property) return { client: true };
-    const value = unwrapExpression(property.initializer);
-    let profile: string | undefined;
-    if (ts.isPropertyAccessExpression(value)) {
-      profile = value.name.text;
-    } else if (
-      ts.isElementAccessExpression(value) &&
-      value.argumentExpression &&
-      ts.isStringLiteralLike(value.argumentExpression)
-    ) {
-      profile = value.argumentExpression.text;
-    } else if (ts.isObjectLiteralExpression(value)) {
-      const name = value.properties.find((item): item is ts.PropertyAssignment =>
-        ts.isPropertyAssignment(item) &&
-        ((ts.isIdentifier(item.name) && item.name.text === "name") ||
-          (ts.isStringLiteralLike(item.name) && item.name.text === "name"))
-      );
-      if (name && ts.isStringLiteralLike(name.initializer)) profile = name.initializer.text;
-    }
-    if (!profile) {
-      const pos = here(value);
-      throw new ScanError(
-        fileRel,
-        pos.line,
-        pos.column,
-        "createSqlClient profile must be profiles.<name>, profiles[\"name\"], or an inline profile with a literal name",
-      );
-    }
-    if (!configuredProfiles.has(profile)) {
-      const pos = here(value);
-      throw new ScanError(fileRel, pos.line, pos.column, `createSqlClient references unknown profile ${JSON.stringify(profile)}`);
-    }
-    return { client: true, profile };
-  };
-
   const scopeWithClientDeclarations = (
     scope: ScopeState,
     declarations: readonly ts.VariableDeclaration[],
@@ -596,18 +596,41 @@ export function scanFile(
     let changed = false;
     for (const declaration of declarations) {
       if (!ts.isIdentifier(declaration.name)) continue;
-      const resolved = clientFactoryProfile(declaration.initializer, scope);
+      const resolved = resolveClientInitializer(
+        declaration.initializer,
+        scope.clientFactories,
+        scope.namespaces,
+      );
       if (!resolved.client) continue;
-      if (resolved.profile && !constant) {
+      if (resolved.invalidProfile) {
+        const pos = here(resolved.invalidProfile);
+        throw new ScanError(
+          fileRel,
+          pos.line,
+          pos.column,
+          "createSqlClient profile must be profiles.<name>, profiles[\"name\"], or an inline profile with a literal name",
+        );
+      }
+      const binding = resolved.binding!;
+      if (binding.profile && !configuredProfiles.has(binding.profile)) {
         const pos = here(declaration.name);
         throw new ScanError(
           fileRel,
           pos.line,
           pos.column,
-          "profiled createSqlClient bindings must use const so their profile cannot change",
+          `createSqlClient references unknown profile ${JSON.stringify(binding.profile)}`,
         );
       }
-      nextClients.set(declaration.name.text, resolved.profile);
+      if (!constant) {
+        const pos = here(declaration.name);
+        throw new ScanError(
+          fileRel,
+          pos.line,
+          pos.column,
+          "createSqlClient bindings must use const so their profile and execution mode cannot change",
+        );
+      }
+      nextClients.set(declaration.name.text, binding);
       changed = true;
     }
     return changed ? { ...scope, clients: nextClients } : scope;
@@ -632,6 +655,7 @@ export function scanFile(
               innerSql.set(param.name.text, {
                 ...(profile ? { profile } : {}),
                 transactionScoped: true,
+                ...(classified.execution ? { execution: classified.execution } : {}),
               });
             }
             visit(fn.body, {
@@ -657,11 +681,26 @@ export function scanFile(
           if (classified.kind === "file") {
             const first = node.arguments[0];
             if (first) {
-              recordFile(first, node.arguments, node.expression, classified.cardinality ?? "many", classified.profiles);
+              recordFile(
+                first,
+                node.arguments,
+                node.expression,
+                classified.cardinality ?? "many",
+                classified.profiles,
+                classified.execution,
+              );
             }
           } else if (classified.kind === "inline") {
             const first = node.arguments[0];
-            if (first) recordInline(first, node.arguments, classified.cardinality ?? "many", classified.profiles);
+            if (first) {
+              recordInline(
+                first,
+                node.arguments,
+                classified.cardinality ?? "many",
+                classified.profiles,
+                classified.execution,
+              );
+            }
           }
         }
       }
@@ -716,11 +755,11 @@ export function scanFile(
     ts.forEachChild(node, (child) => visit(child, scope));
   };
   visit(source, {
-    sqlAliases: new Map([...importedAliases].map((name) => [name, {}])),
+    sqlAliases: new Map([...importedAliases].map((name) => [name, { execution: "adaptive" as const }])),
     namespaces: importedNamespaces,
     clientFactories: importedClientFactories,
     queryFactories: importedQueryFactories,
-    clients: new Map(),
+    clients: importedClients,
   });
   if (configuredProfiles.size > 0) {
     const unassigned = out.find((site) => !site.profiles || site.profiles.length === 0);
@@ -759,6 +798,7 @@ export function scanProject(
     : [];
   const files = findSourceFiles(root, scan);
   const out: QueryCallSite[] = [];
+  const localClientCache = new Map<string, ReturnType<typeof resolveLocalClientExports>>();
   for (const f of files) {
     for (const site of scanFile(
       f,
@@ -766,6 +806,7 @@ export function scanProject(
       scan.modules ?? DEFAULT_SQLX_MODULES,
       profileNames,
       transactionOnlyProfileNames,
+      localClientCache,
     )) out.push(site);
   }
   return out;

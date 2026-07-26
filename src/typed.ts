@@ -55,6 +55,14 @@ export type TypedSql<TQueries extends object, TFileQueries extends object> = Typ
   fileQueries: TFileQueries;
 }>;
 
+export type TypedTransactionSqlForRegistry<
+  Registry extends { queries: object; fileQueries: object },
+> = TypedSqlForRegistry<Registry> & {
+  savepoint: <R>(
+    fn: (savepoint: TypedTransactionSqlForRegistry<Registry>) => Promise<R>,
+  ) => Promise<R>;
+};
+
 type TransactionRootForRegistry<
   Registry extends { queries: object; fileQueries: object },
   TTransactionOptions,
@@ -67,12 +75,12 @@ export type TypedForRegistry<
   TTransactionOptions,
 > = TransactionRootForRegistry<Registry, TTransactionOptions> & {
   transaction: {
-    <R>(opts: TTransactionOptions, fn: (tx: TypedSqlForRegistry<Registry>) => Promise<R>): Promise<R>;
+    <R>(opts: TTransactionOptions, fn: (tx: TypedTransactionSqlForRegistry<Registry>) => Promise<R>): Promise<R>;
   } & (
     TTransactionOptions extends { settings: unknown }
       ? object
       : {
-        <R>(fn: (tx: TypedSqlForRegistry<Registry>) => Promise<R>): Promise<R>;
+        <R>(fn: (tx: TypedTransactionSqlForRegistry<Registry>) => Promise<R>): Promise<R>;
       }
   );
 };

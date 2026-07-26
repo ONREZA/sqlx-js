@@ -19,8 +19,16 @@ function entry(
     paramOids: paramTypeIdentities.map((identity) => typeof identity === "number" ? identity : 0),
     paramTypeIdentities,
     paramTsTypes: paramTypeIdentities.map(() => "unknown"),
+    paramNullable: paramTypeIdentities.map(() => false),
     columns: [],
     hasResultSet: false,
+    inference: {
+      columns: [],
+      params: paramTypeIdentities.map(() => ({
+        targets: [],
+        reason: "test fixture",
+      })),
+    },
   };
 }
 
