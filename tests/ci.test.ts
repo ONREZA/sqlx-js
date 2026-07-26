@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { buildCiSteps } from "../src/commands/ci";
 
-test("CI runs provider-aware verification and committed offline checks", () => {
+test("CI delegates source and snapshot verification to the provider-aware gate", () => {
   const steps = buildCiSteps({
     root: "/project",
     dtsPath: "types/generated.d.ts",

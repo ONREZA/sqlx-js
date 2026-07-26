@@ -11,8 +11,9 @@ sqlx-js ci
 For both providers, `ci` runs provider-aware `verify --strict-inference`
 against a disposable shadow database and then the database-free
 `prepare --check --strict-inference`. It validates the proposed schema source,
-not target deployment drift, and never writes generated artifacts or changes
-the target database. `--json` returns a versioned per-step report.
+including the default committed schema snapshot when present, not target
+deployment drift. It never writes generated artifacts or changes the target
+database. `--json` returns a versioned per-step report.
 
 Commit the generated `sqlx-js-env.d.ts`, `.sqlx-js/` cache directory including
 `runtime-descriptors.json`, and configured enum catalog output to your repo. In CI:
@@ -32,7 +33,7 @@ Keep target-specific deployment checks explicit:
 ```bash
 sqlx-js migrate run --dry-run --json               # built-in migrations
 sqlx-js pgschema plan -- --output-json plan.json   # pgschema
-sqlx-js snapshot check                             # when a snapshot is committed
+sqlx-js snapshot check                             # target or non-default snapshot drift
 ```
 
 `verify` needs credentials that can create a temporary database or an explicit

@@ -569,7 +569,14 @@ export function readSchemaSnapshot(path: string): SchemaSnapshot {
 }
 
 export function schemaSnapshotEqual(a: SchemaSnapshot, b: SchemaSnapshot): boolean {
-  return stableSchemaJson(a) === stableSchemaJson(b);
+  const comparable = (snapshot: SchemaSnapshot) => JSON.stringify({
+    ...snapshot,
+    relations: snapshot.relations.map((relation) => ({
+      ...relation,
+      columns: relation.columns.map(({ typeOid: _, ...column }) => column),
+    })),
+  });
+  return comparable(a) === comparable(b);
 }
 
 export function renderSchemaManifest(snapshot: SchemaSnapshot): string {

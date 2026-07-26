@@ -74,7 +74,8 @@ Changes target database: no`,
   verify: `usage: sqlx-js verify [--root <dir>] [--dts <path>] [--migrations <dir>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference]
 
 Build the configured schema source in a disposable shadow database and compare
-fresh query artifacts with the committed files.
+fresh query artifacts with the committed files. When the default schema
+snapshot exists, verify it against the same shadow database.
 
 --migrations and --lock-timeout apply only to the built-in provider.
 
@@ -86,10 +87,10 @@ Inspect runtime, config, environment, generated artifacts, PostgreSQL
 connectivity and shadow permissions, runtime types, and pgschema availability.`,
   ci: `usage: sqlx-js ci [--root <dir>] [--dts <path>] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--migrations <dir>]
 
-Run provider-aware \`verify\`, then the database-free artifact consistency
-check. This validates the proposed schema source without changing the target
-database. Run \`pgschema plan\` or \`migrate run --dry-run\` separately for
-target deployment drift.
+Run provider-aware \`verify\`, including the default schema snapshot when
+present, then the database-free artifact consistency check. This validates the
+proposed schema source without changing the target database. Run \`pgschema
+plan\` or \`migrate run --dry-run\` separately for target deployment drift.
 
 --migrations applies only to the built-in provider.`,
   pgschema: `usage: sqlx-js pgschema install | plan | apply
@@ -552,6 +553,7 @@ if (cmd === "init") {
         config,
         cacheDir,
         dtsPath,
+        snapshotPath: schemaPath,
         shadowUrl,
         shadowAdminUrl,
         strictInference: flag("--strict-inference"),
@@ -572,6 +574,7 @@ if (cmd === "init") {
       migrationsDir,
       cacheDir,
       dtsPath,
+      snapshotPath: schemaPath,
       shadowUrl,
       shadowAdminUrl,
       lockTimeoutMs,
