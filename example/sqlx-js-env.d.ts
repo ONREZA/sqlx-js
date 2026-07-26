@@ -69,6 +69,7 @@ export interface SqlxJsGeneratedRegistry {
   fileQueries: SqlxJsGeneratedFileQueries;
   functions: SqlxJsGeneratedFunctions;
   runtimeTypes: SqlxJsGeneratedRuntimeTypes;
+  runtimeDescriptors: true;
 }
 
 declare module "@onreza/sqlx-js" {

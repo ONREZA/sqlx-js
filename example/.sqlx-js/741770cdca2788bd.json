@@ -8,6 +8,9 @@
   "paramOids": [
     20
   ],
+  "paramTypeIdentities": [
+    20
+  ],
   "paramTsTypes": [
     "bigint"
   ],
@@ -52,5 +55,87 @@
       "nullable": false
     }
   ],
-  "hasResultSet": true
+  "hasResultSet": true,
+  "inference": {
+    "columns": [
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "posts",
+            "column": "id",
+            "notNull": true
+          }
+        ],
+        "reason": "all source columns are NOT NULL"
+      },
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "posts",
+            "column": "title",
+            "notNull": true
+          }
+        ],
+        "reason": "all source columns are NOT NULL"
+      },
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "posts",
+            "column": "status",
+            "notNull": true
+          }
+        ],
+        "reason": "all source columns are NOT NULL"
+      },
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "posts",
+            "column": "tags",
+            "notNull": true
+          }
+        ],
+        "reason": "all source columns are NOT NULL"
+      },
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "posts",
+            "column": "history",
+            "notNull": true
+          }
+        ],
+        "reason": "all source columns are NOT NULL"
+      },
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "role",
+            "notNull": true
+          }
+        ],
+        "reason": "all source columns are NOT NULL"
+      }
+    ],
+    "params": [
+      {
+        "targets": [
+          {
+            "kind": "predicate",
+            "table": "posts",
+            "column": "id"
+          }
+        ],
+        "reason": "a predicate reference requires a non-null value"
+      }
+    ]
+  }
 }

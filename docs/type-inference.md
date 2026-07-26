@@ -196,4 +196,25 @@ When strict inference fails, prefer in this order:
 4. use an explicit `!` or `?` result assertion when the database cannot expose
    the guarantee.
 
+## Explain and corpus policy
+
+Use the stable query ID from `sqlx-js queries` to inspect a committed inference
+contract without a database:
+
+```bash
+sqlx-js queries explain 0123456789abcdef
+sqlx-js queries explain 0123456789abcdef --json
+```
+
+The explanation includes result provenance and source constraints, every DML
+and predicate target for each parameter, the reason for nullable or unknown
+output, and the narrowest applicable hint. It reads the versioned prepare
+cache, so CI and editors see the same reasoning as code generation.
+
+Inference is extended from production corpus evidence rather than by trying to
+model the entire PostgreSQL AST. A new rule should start with a real query that
+degrades under strict inference, add the smallest sound analysis case, and
+finish with a live PostgreSQL regression. Unsupported shapes remain
+conservative.
+
 [Documentation index](./README.md)

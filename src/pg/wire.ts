@@ -6,6 +6,17 @@ import {
   checkServerIdentity,
   connect as tlsConnect,
 } from "node:tls";
+import {
+  MessageReader,
+  type FieldDescription,
+  type ServerMessage,
+} from "./wire-messages";
+
+export {
+  MessageReader,
+  type FieldDescription,
+  type ServerMessage,
+} from "./wire-messages";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -102,33 +113,6 @@ export function parseDatabaseUrl(url: string): ConnConfig {
   return cfg;
 }
 
-export type ServerMessage =
-  | { type: "R"; code: number; payload: Uint8Array }
-  | { type: "S"; name: string; value: string }
-  | { type: "K"; pid: number; secret: number }
-  | { type: "Z"; status: string }
-  | { type: "1" }
-  | { type: "2" }
-  | { type: "3" }
-  | { type: "n" }
-  | { type: "t"; oids: number[] }
-  | { type: "T"; fields: FieldDescription[] }
-  | { type: "E"; fields: Record<string, string> }
-  | { type: "N"; fields: Record<string, string> }
-  | { type: "C"; tag: string }
-  | { type: "D"; payload: Uint8Array }
-  | { type: "other"; tag: string; payload: Uint8Array };
-
-export type FieldDescription = {
-  name: string;
-  tableOid: number;
-  columnAttr: number;
-  typeOid: number;
-  typeSize: number;
-  typeModifier: number;
-  format: number;
-};
-
 export type PgRawRow = (Uint8Array | null)[];
 
 export type PgRowResult<Row = PgRawRow> = {
@@ -143,134 +127,6 @@ export type PgRowMaterializer<Row> = (
 ) => Row;
 
 export type PlanValidation = "planned" | "parse-only";
-
-export class MessageReader {
-  private chunks: Uint8Array[] = [];
-  private size = 0;
-  private offset = 0;
-
-  push(
-    chunk: Uint8Array,
-    consumeDataRow?: (payload: Uint8Array) => void,
-  ): ServerMessage[] {
-    this.chunks.push(chunk);
-    this.size += chunk.length;
-    return this.drain(consumeDataRow);
-  }
-
-  private buffered(): Uint8Array {
-    if (this.chunks.length === 1) return this.chunks[0]!;
-    const out = new Uint8Array(this.size);
-    let off = 0;
-    for (const c of this.chunks) {
-      out.set(c, off);
-      off += c.length;
-    }
-    this.chunks = [out];
-    return out;
-  }
-
-  private drain(consumeDataRow?: (payload: Uint8Array) => void): ServerMessage[] {
-    const out: ServerMessage[] = [];
-    while (true) {
-      const available = this.size - this.offset;
-      if (available < 5) break;
-      const view = this.buffered();
-      const len = readInt32(view, this.offset + 1);
-      const total = 1 + len;
-      if (available < total) break;
-      const tag = String.fromCharCode(view[this.offset]!);
-      const payload = view.subarray(this.offset + 5, this.offset + total);
-      if (tag === "D" && consumeDataRow) consumeDataRow(payload);
-      else out.push(parseMessage(tag, payload));
-      this.offset += total;
-    }
-    if (this.offset > 0) {
-      const view = this.buffered();
-      const tail = view.subarray(this.offset);
-      this.chunks = tail.length > 0 ? [copyOf(tail)] : [];
-      this.size = tail.length;
-      this.offset = 0;
-    }
-    return out;
-  }
-}
-
-function copyOf(view: Uint8Array): Uint8Array {
-  const out = new Uint8Array(view.length);
-  out.set(view);
-  return out;
-}
-
-function parseMessage(tag: string, payload: Uint8Array): ServerMessage {
-  switch (tag) {
-    case "R": {
-      const code = readInt32(payload, 0);
-      return { type: "R", code, payload: payload.subarray(4) };
-    }
-    case "S": {
-      const [name, rest] = readCString(payload, 0);
-      const [value] = readCString(payload, rest);
-      return { type: "S", name, value };
-    }
-    case "K":
-      return { type: "K", pid: readInt32(payload, 0), secret: readInt32(payload, 4) };
-    case "Z":
-      return { type: "Z", status: String.fromCharCode(payload[0]!) };
-    case "1":
-      return { type: "1" };
-    case "2":
-      return { type: "2" };
-    case "3":
-      return { type: "3" };
-    case "n":
-      return { type: "n" };
-    case "t": {
-      const n = readInt16(payload, 0);
-      const oids: number[] = [];
-      for (let i = 0; i < n; i++) oids.push(readUInt32(payload, 2 + i * 4));
-      return { type: "t", oids };
-    }
-    case "T": {
-      const n = readInt16(payload, 0);
-      let off = 2;
-      const fields: FieldDescription[] = [];
-      for (let i = 0; i < n; i++) {
-        const [name, next] = readCString(payload, off);
-        off = next;
-        const tableOid = readUInt32(payload, off); off += 4;
-        const columnAttr = readInt16(payload, off); off += 2;
-        const typeOid = readUInt32(payload, off); off += 4;
-        const typeSize = readSignedInt16(payload, off); off += 2;
-        const typeModifier = readInt32(payload, off); off += 4;
-        const format = readInt16(payload, off); off += 2;
-        fields.push({ name, tableOid, columnAttr, typeOid, typeSize, typeModifier, format });
-      }
-      return { type: "T", fields };
-    }
-    case "E":
-    case "N": {
-      const fields: Record<string, string> = {};
-      let off = 0;
-      while (off < payload.length && payload[off] !== 0) {
-        const code = String.fromCharCode(payload[off]!);
-        off += 1;
-        const [val, next] = readCString(payload, off);
-        fields[code] = val;
-        off = next;
-      }
-      return { type: tag as "E" | "N", fields };
-    }
-    case "C": {
-      const [tagStr] = readCString(payload, 0);
-      return { type: "C", tag: tagStr };
-    }
-    case "D":
-      return { type: "D", payload };
-    default:
-      return { type: "other", tag, payload };
-  }
-}
 
 export function parseDataRow(payload: Uint8Array): PgRawRow {
   const count = readInt16(payload, 0);
@@ -292,15 +148,8 @@ export function parseDataRow(payload: Uint8Array): PgRawRow {
 function readInt16(b: Uint8Array, o: number): number {
   return (b[o]! << 8) | b[o + 1]!;
 }
-function readSignedInt16(b: Uint8Array, o: number): number {
-  const value = readInt16(b, o);
-  return value > 0x7fff ? value - 0x1_0000 : value;
-}
 function readInt32(b: Uint8Array, o: number): number {
   return ((b[o]! << 24) | (b[o + 1]! << 16) | (b[o + 2]! << 8) | b[o + 3]!) | 0;
-}
-function readUInt32(b: Uint8Array, o: number): number {
-  return readInt32(b, o) >>> 0;
 }
 function readCString(b: Uint8Array, off: number): [string, number] {
   let end = off;
@@ -311,17 +160,23 @@ function readCString(b: Uint8Array, off: number): [string, number] {
 
 function writeInt32(n: number): Uint8Array {
   const b = new Uint8Array(4);
-  b[0] = (n >>> 24) & 0xff;
-  b[1] = (n >>> 16) & 0xff;
-  b[2] = (n >>> 8) & 0xff;
-  b[3] = n & 0xff;
+  writeInt32At(b, 0, n);
   return b;
+}
+function writeInt32At(b: Uint8Array, o: number, n: number): void {
+  b[o] = (n >>> 24) & 0xff;
+  b[o + 1] = (n >>> 16) & 0xff;
+  b[o + 2] = (n >>> 8) & 0xff;
+  b[o + 3] = n & 0xff;
 }
 function writeInt16(n: number): Uint8Array {
   const b = new Uint8Array(2);
-  b[0] = (n >>> 8) & 0xff;
-  b[1] = n & 0xff;
+  writeInt16At(b, 0, n);
   return b;
+}
+function writeInt16At(b: Uint8Array, o: number, n: number): void {
+  b[o] = (n >>> 8) & 0xff;
+  b[o + 1] = n & 0xff;
 }
 function cstr(s: string): Uint8Array {
   const enc = textEncoder.encode(s);
@@ -343,6 +198,37 @@ function frame(tag: string | null, body: Uint8Array): Uint8Array {
   const tb = new Uint8Array(1);
   tb[0] = tag.charCodeAt(0);
   return concat([tb, lenBytes, body]);
+}
+
+function bindFrame(params: (string | null)[]): Uint8Array {
+  const encoded = new Array<Uint8Array | null>(params.length);
+  let bodyLength = 8;
+  for (let index = 0; index < params.length; index++) {
+    const value = params[index];
+    const bytes = value === null ? null : textEncoder.encode(value);
+    encoded[index] = bytes;
+    bodyLength += 4 + (bytes?.length ?? 0);
+  }
+  const message = new Uint8Array(5 + bodyLength);
+  message[0] = 0x42;
+  writeInt32At(message, 1, bodyLength + 4);
+  let offset = 5;
+  message[offset++] = 0;
+  message[offset++] = 0;
+  writeInt16At(message, offset, 0);
+  offset += 2;
+  writeInt16At(message, offset, params.length);
+  offset += 2;
+  for (const bytes of encoded) {
+    writeInt32At(message, offset, bytes?.length ?? -1);
+    offset += 4;
+    if (bytes) {
+      message.set(bytes, offset);
+      offset += bytes.length;
+    }
+  }
+  writeInt16At(message, offset, 0);
+  return message;
 }
 
 function isTlsRequired(mode: SslMode): boolean {
@@ -925,7 +811,11 @@ export class PgClient {
     this.flushWaiters();
   }
 
-  async describe(sql: string): Promise<{ paramOids: number[]; fields: FieldDescription[] }> {
+  async describe(sql: string): Promise<{
+    paramOids: number[];
+    fields: FieldDescription[];
+    hasResultSet: boolean;
+  }> {
     const stmtName = "";
     const parseBody = concat([
       cstr(stmtName),
@@ -958,7 +848,7 @@ export class PgClient {
     }
     if (err) throw err;
     if (!sawRowDesc && !sawNoData) throw new Error("describe: neither RowDescription nor NoData");
-    return { paramOids, fields };
+    return { paramOids, fields, hasResultSet: sawRowDesc };
   }
 
   async plan(sql: string, paramCount: number): Promise<PlanValidation> {
@@ -1026,6 +916,29 @@ export class PgClient {
     ], undefined, materializeRow);
   }
 
+  async execKnownParamsText<Row = PgRawRow>(
+    sql: string,
+    parameterOids: readonly number[],
+    params: (string | null)[],
+    materializeRow?: PgRowMaterializer<Row>,
+  ): Promise<PgRowResult<Row>> {
+    if (parameterOids.length !== params.length) {
+      throw new Error(
+        `sqlx-js: expected ${parameterOids.length} parameters, received ${params.length}`,
+      );
+    }
+    const stmtName = "";
+    const parseBody = concat([
+      cstr(stmtName),
+      cstr(sql),
+      writeInt16(parameterOids.length),
+      ...parameterOids.map(writeInt32),
+    ]);
+    return await this.execBoundParamsText(params, [
+      frame("P", parseBody),
+    ], undefined, materializeRow);
+  }
+
   async execParamsTextWithSerializer<Row = PgRawRow>(
     sql: string,
     serialize: (parameterOids: readonly number[]) => (string | null)[],
@@ -1088,25 +1001,8 @@ export class PgClient {
     initialFields: FieldDescription[] | undefined = undefined,
     materializeRow?: PgRowMaterializer<Row>,
   ): Promise<PgRowResult<Row>> {
-    const stmtName = "";
     const portal = "";
-    const bindParts: Uint8Array[] = [
-      cstr(portal),
-      cstr(stmtName),
-      writeInt16(0),
-      writeInt16(params.length),
-    ];
-    for (const p of params) {
-      if (p === null) {
-        bindParts.push(writeInt32(-1));
-      } else {
-        const bytes = textEncoder.encode(p);
-        bindParts.push(writeInt32(bytes.length));
-        bindParts.push(bytes);
-      }
-    }
-    bindParts.push(writeInt16(0));
-    const messages = [...prefix, frame("B", concat(bindParts))];
+    const messages = [...prefix, bindFrame(params)];
     if (initialFields === undefined) {
       const describeBody = concat([new Uint8Array([0x50]), cstr(portal)]);
       messages.push(frame("D", describeBody));

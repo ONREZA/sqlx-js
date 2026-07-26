@@ -40,6 +40,7 @@ export class SchemaCache {
   private columnsByOid = new Map<number, Map<string, ColumnInfo>>();
   private fullyLoaded = new Set<number>();
   private customTypes = new Map<number, CustomTypeInfo>();
+  private typeIdentities = new Map<number, { schema: string; name: string }>();
   private customArrayElements = new Map<number, number>();
   private typesProbed = new Set<number>();
   private typeRegistry: Record<string, string> = {};
@@ -223,7 +224,7 @@ export class SchemaCache {
     for (const oid of need) this.typesProbed.add(oid);
 
     const list1 = [...new Set(need)].join(",");
-    const sql1 = `SELECT oid::int8, typname, typtype, typcategory, typelem::int8, typbasetype::int8, typrelid::int8, typnotnull FROM pg_type WHERE oid IN (${list1})`;
+    const sql1 = `SELECT t.oid::int8, t.typname, t.typtype, t.typcategory, t.typelem::int8, t.typbasetype::int8, t.typrelid::int8, t.typnotnull, n.nspname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.oid IN (${list1})`;
     const r1 = await this.client.simpleQueryAll(sql1);
 
     const enumOids: number[] = [];
@@ -240,6 +241,8 @@ export class SchemaCache {
       const typbasetype = Number(decodeText(row[5]!));
       const typrelid = Number(decodeText(row[6]!));
       const typnotnull = decodeText(row[7]!) === "t";
+      const schema = decodeText(row[8]!)!;
+      this.typeIdentities.set(oid, { schema, name });
 
       if (typcategory === "A" && typelem > 0) {
         arrayInfos.push({ arrayOid: oid, arrayName: name, elemOid: typelem });
@@ -354,6 +357,10 @@ export class SchemaCache {
 
   customType(oid: number): CustomTypeInfo | undefined {
     return this.customTypes.get(oid);
+  }
+
+  typeIdentity(oid: number): { schema: string; name: string } | undefined {
+    return this.typeIdentities.get(oid);
   }
 
   arrayElement(oid: number): { typeOid: number; tsType: string; nullability: ArrayElementNullability } | undefined {

@@ -1,13 +1,20 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, relative } from "node:path";
-import { Cache, CacheManifestStaleError, profileFingerprint, readCacheManifest } from "../cache";
+import {
+  Cache,
+  CacheManifestStaleError,
+  effectiveNullable,
+  profileFingerprint,
+  readCacheManifest,
+  type CacheEntry,
+} from "../cache";
 import { loadConfig, prepareConfigHash } from "../config";
 import { queryId } from "../query-id";
 import type { QueryExecutionMode } from "../query";
 import { ScanError, scanProject } from "../scan/scanner";
 
-export type QueriesPhase = "config" | "scan" | "cache" | "embed";
+export type QueriesPhase = "config" | "scan" | "cache" | "embed" | "explain";
 
 export class QueriesError extends Error {
   constructor(
@@ -55,6 +62,31 @@ export type QueryInventory = {
   ok: true;
   queries: QueryInventoryItem[];
   orphanedCacheIds: string[];
+};
+
+export type QueryExplanation = {
+  formatVersion: 1;
+  ok: true;
+  query: QueryInventoryItem;
+  contracts: {
+    profile: string | null;
+    params: {
+      name: string;
+      type: string;
+      nullable: boolean;
+      targets: CacheEntry["inference"]["params"][number]["targets"];
+      reason: string;
+      hint?: string;
+    }[];
+    columns: {
+      name: string;
+      type: string;
+      nullable: boolean;
+      sources: CacheEntry["inference"]["columns"][number]["sources"];
+      reason: string;
+      hint?: string;
+    }[];
+  }[];
 };
 
 export async function buildQueryInventory(root: string, cacheDir: string): Promise<QueryInventory> {
@@ -139,6 +171,57 @@ export async function buildQueryInventory(root: string, cacheDir: string): Promi
   return { formatVersion: 1, ok: true, queries, orphanedCacheIds };
 }
 
+export async function buildQueryExplanation(
+  root: string,
+  cacheDir: string,
+  id: string,
+): Promise<QueryExplanation> {
+  if (!/^[0-9a-f]{16}$/.test(id)) {
+    throw new QueriesError("explain", `query ID must be 16 lowercase hexadecimal characters, got ${JSON.stringify(id)}`);
+  }
+  const inventory = await buildQueryInventory(root, cacheDir);
+  const query = inventory.queries.find((item) => item.queryId === id);
+  if (!query) throw new QueriesError("explain", `query ${id} was not found in the scanned project`);
+  if (query.cacheStatus !== "current") {
+    throw new QueriesError(
+      "explain",
+      `query ${id} has ${query.cacheStatus} inference artifacts. Run \`sqlx-js prepare\``,
+    );
+  }
+  const cache = new Cache(cacheDir);
+  const profiles = query.profiles.length > 0 ? query.profiles : [undefined];
+  const contracts = profiles.map((profile) => {
+    const entry = cache.read(profileFingerprint(profile, query.query));
+    if (!entry) {
+      throw new QueriesError(
+        "explain",
+        `query ${id} is missing inference explanations. Run \`sqlx-js prepare\``,
+      );
+    }
+    const inference = entry.inference;
+    return {
+      profile: profile ?? null,
+      params: entry.paramTsTypes.map((type, index) => ({
+        name: entry.paramNames?.[index] ?? `$${index + 1}`,
+        type,
+        nullable: entry.paramNullable[index]!,
+        targets: inference.params[index]!.targets,
+        reason: inference.params[index]!.reason,
+        ...(inference.params[index]!.hint ? { hint: inference.params[index]!.hint } : {}),
+      })),
+      columns: entry.columns.map((column, index) => ({
+        name: column.name,
+        type: column.tsType,
+        nullable: effectiveNullable(column),
+        sources: inference.columns[index]!.sources,
+        reason: inference.columns[index]!.reason,
+        ...(inference.columns[index]!.hint ? { hint: inference.columns[index]!.hint } : {}),
+      })),
+    };
+  });
+  return { formatVersion: 1, ok: true, query, contracts };
+}
+
 export function emitEmbeddedSqlModule(path: string, inventory: QueryInventory): void {
   const sqlFiles = Object.fromEntries(
     inventory.queries
@@ -168,7 +251,39 @@ export async function runQueries(options: {
   cacheDir: string;
   json?: boolean;
   embedPath?: string;
+  explainQueryId?: string;
 }): Promise<void> {
+  if (options.explainQueryId) {
+    const explanation = await buildQueryExplanation(options.root, options.cacheDir, options.explainQueryId);
+    if (options.json) {
+      console.log(JSON.stringify(explanation, null, 2));
+      return;
+    }
+    console.log(`${explanation.query.queryId} ${explanation.query.cardinalities.join(",")} ${explanation.query.validation}`);
+    for (const site of explanation.query.callSites) console.log(`  site: ${site.file}:${site.line}:${site.column}`);
+    for (const contract of explanation.contracts) {
+      console.log(`  profile: ${contract.profile ?? "default"}`);
+      for (const param of contract.params) {
+        console.log(`    parameter ${param.name}: ${param.type}${param.nullable ? " | null" : ""}`);
+        for (const target of param.targets) {
+          const column = target.column ?? (target.columnIndex ? `#${target.columnIndex}` : "?");
+          console.log(`      ${target.kind}: ${target.schema ? `${target.schema}.` : ""}${target.table}.${column}`);
+        }
+        console.log(`      reason: ${param.reason}`);
+        if (param.hint) console.log(`      hint: ${param.hint}`);
+      }
+      for (const column of contract.columns) {
+        console.log(`    result ${column.name}: ${column.type}${column.nullable ? " | null" : ""}`);
+        for (const source of column.sources ?? []) {
+          const constraint = source.notNull === undefined ? "" : source.notNull ? " NOT NULL" : " nullable";
+          console.log(`      source: ${source.schema}.${source.table}.${source.column}${constraint}`);
+        }
+        console.log(`      reason: ${column.reason}`);
+        if (column.hint) console.log(`      hint: ${column.hint}`);
+      }
+    }
+    return;
+  }
   const inventory = await buildQueryInventory(options.root, options.cacheDir);
   if (options.embedPath) {
     try {

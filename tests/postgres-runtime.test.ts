@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ClientClosingError,
+  ConnectionLostError,
   createClient,
   createSqlClient,
   GenerationRecycledError,
@@ -15,7 +16,10 @@ import {
   type PostgresClient,
 } from "../src/index";
 import { _internal, normalizeRuntimeDatabaseUrl } from "../src/postgres-runtime";
+import { EXECUTE_KNOWN_PARAMS } from "../src/pg/driver";
 import { defineQuery } from "../src/query";
+import { CACHE_FORMAT_VERSION, GENERATOR_REVISION } from "../src/cache";
+import { queryId } from "../src/query-id";
 
 function managed(client: PostgresClient, options: CreateSqlClientOptions = {}) {
   return _internal.createManagedClient(() => client, options);
@@ -203,12 +207,92 @@ test("managed client preserves result metadata", async () => {
   expect(calls).toEqual([{ query: "UPDATE users SET active = false", params: [] }]);
 });
 
+test("managed client dispatches matching runtime descriptors and keeps adaptive fallback", async () => {
+  const adaptive: string[] = [];
+  const known: Array<{ query: string; parameterOids: readonly number[]; params: unknown[] }> = [];
+  const executionPaths: Array<{ query: string; executionPath: string | undefined }> = [];
+  const query = "SELECT $1::int4 AS value";
+  const fake = fakePool(
+    async (sql) => {
+      adaptive.push(sql);
+      return Object.assign([{ value: "adaptive" }], { count: 1, command: "SELECT" });
+    },
+    {
+      [EXECUTE_KNOWN_PARAMS]: (
+        sql: string,
+        parameterOids: readonly number[],
+        params: unknown[],
+      ) => {
+        known.push({ query: sql, parameterOids, params });
+        return pendingQuery(Promise.resolve(
+          Object.assign([{ value: 42 }], { count: 1, command: "SELECT" }),
+        ));
+      },
+    },
+  );
+  const db = managed(fake, {
+    queryDescriptors: {
+      formatVersion: 1,
+      cacheFormat: CACHE_FORMAT_VERSION,
+      generatorRevision: GENERATOR_REVISION,
+      configHash: "test",
+      types: {},
+      queries: {
+        [queryId(query)]: { params: [23] },
+      },
+      profiles: {},
+    },
+    onQuery: ({ query: observedQuery, executionPath }) => {
+      executionPaths.push({ query: observedQuery, executionPath });
+    },
+  });
+
+  expect(await db.unsafe(query, 42)).toEqual([{ value: 42 }]);
+  expect(await db.unsafe("SELECT $1::text AS value", "fallback")).toEqual([
+    { value: "adaptive" },
+  ]);
+  expect(known).toEqual([{ query, parameterOids: [23], params: [42] }]);
+  expect(adaptive).toEqual(["SELECT $1::text AS value"]);
+  expect(executionPaths).toEqual([
+    { query, executionPath: "descriptor" },
+    { query: "SELECT $1::text AS value", executionPath: "adaptive" },
+  ]);
+});
+
+test("managed client rejects conflicting descriptor and adaptive execution modes", () => {
+  expect(() => managed(fakePool(async () => []), {
+    execution: "adaptive",
+    queryDescriptors: {
+      formatVersion: 1,
+      cacheFormat: CACHE_FORMAT_VERSION,
+      generatorRevision: GENERATOR_REVISION,
+      configHash: "test",
+      types: {},
+      queries: {},
+      profiles: {},
+    },
+  })).toThrow('execution: "adaptive" cannot be combined with queryDescriptors');
+});
+
+test("managed client rejects an explicitly undefined descriptor artifact", () => {
+  expect(() => managed(fakePool(async () => []), {
+    queryDescriptors: undefined,
+  } as never)).toThrow("queryDescriptors must be an object");
+});
+
 test("query hooks are preserved inside transactions", async () => {
   const calls: string[] = [];
+  const descriptorQuery = "UPDATE jobs SET active = $1";
   const tx = {
     unsafe: async (query: string) => {
-      calls.push(query);
+      calls.push(`adaptive:${query}`);
       return Object.assign([], { count: 1, command: "UPDATE" });
+    },
+    [EXECUTE_KNOWN_PARAMS]: (query: string) => {
+      calls.push(`descriptor:${query}`);
+      return pendingQuery(Promise.resolve(
+        Object.assign([], { count: 1, command: "UPDATE" }),
+      ));
     },
     array: (value: unknown[], oid?: number) => ({ kind: "array", value, oid }),
     json: (value: unknown) => ({ kind: "json", value }),
@@ -221,15 +305,313 @@ test("query hooks are preserved inside transactions", async () => {
     begin: async (fn: (value: typeof tx) => Promise<unknown>) => await fn(tx),
     end: async () => {},
   } as unknown as PostgresClient;
-  const events: string[] = [];
+  const events: Array<{ query: string; executionPath: string | undefined }> = [];
 
-  const db = managed(fake, { onQuery: ({ query }) => events.push(query) });
+  const db = managed(fake, {
+    queryDescriptors: {
+      formatVersion: 1,
+      cacheFormat: CACHE_FORMAT_VERSION,
+      generatorRevision: GENERATOR_REVISION,
+      configHash: "test",
+      types: {},
+      queries: {
+        [queryId(descriptorQuery)]: { params: [16] },
+      },
+      profiles: {},
+    },
+    onQuery: ({ query, executionPath }) => events.push({ query, executionPath }),
+  });
   await db.sql.transaction(async (transaction) => {
-    await transaction.execute("UPDATE jobs SET active = false");
+    await transaction.execute(descriptorQuery, false);
+    await transaction.execute("DELETE FROM jobs");
   });
 
-  expect(calls).toEqual(["UPDATE jobs SET active = false"]);
-  expect(events).toEqual(["UPDATE jobs SET active = false"]);
+  expect(calls).toEqual([
+    `descriptor:${descriptorQuery}`,
+    "adaptive:DELETE FROM jobs",
+  ]);
+  expect(events).toEqual([
+    { query: descriptorQuery, executionPath: "descriptor" },
+    { query: "DELETE FROM jobs", executionPath: undefined },
+  ]);
+});
+
+test("savepoints release successful work and recover a caught PostgreSQL error", async () => {
+  const calls: string[] = [];
+  const tx = fakePool(async (query) => {
+    calls.push(query);
+    if (query === "INSERT duplicate") {
+      throw Object.assign(new Error("duplicate key"), {
+        name: "PostgresError",
+        code: "23505",
+        severity: "ERROR",
+      });
+    }
+    return Object.assign([], { count: 1, command: "UPDATE" });
+  });
+  const pool = fakePool(async () => [], {
+    begin: async (fn: (client: PostgresClient) => Promise<unknown>) => await fn(tx),
+  });
+  const db = managed(pool);
+
+  await db.sql.transaction(async (transaction) => {
+    await transaction.savepoint(async (savepoint) => {
+      await savepoint.execute("INSERT ok");
+    });
+    const recovered = await transaction.savepoint(async (savepoint) => {
+      try {
+        await savepoint.execute("INSERT duplicate");
+      } catch {}
+      return "recovered";
+    });
+    expect(recovered).toBe("recovered");
+    await transaction.execute("UPDATE after");
+  });
+
+  expect(calls).toEqual([
+    "SAVEPOINT sqlx_js_1",
+    "INSERT ok",
+    "RELEASE SAVEPOINT sqlx_js_1",
+    "SAVEPOINT sqlx_js_2",
+    "INSERT duplicate",
+    "ROLLBACK TO SAVEPOINT sqlx_js_2",
+    "RELEASE SAVEPOINT sqlx_js_2",
+    "UPDATE after",
+  ]);
+  await db.close({ graceMs: 0, forceAfterMs: 0 });
+});
+
+test("savepoints wait for dispatched queries before deciding whether to release", async () => {
+  const calls: string[] = [];
+  const tx = fakePool((query) => {
+    calls.push(query);
+    if (query === "INSERT delayed duplicate") {
+      return new Promise((_, reject) => {
+        queueMicrotask(() => reject(Object.assign(new Error("duplicate key"), {
+          name: "PostgresError",
+          code: "23505",
+          severity: "ERROR",
+        })));
+      });
+    }
+    return Object.assign([], { count: 1, command: "UPDATE" });
+  });
+  const pool = fakePool(async () => [], {
+    begin: async (fn: (client: PostgresClient) => Promise<unknown>) => await fn(tx),
+  });
+  const db = managed(pool);
+
+  await db.sql.transaction(async (transaction) => {
+    const recovered = await transaction.savepoint(async (savepoint) => {
+      const pending = savepoint.execute("INSERT delayed duplicate");
+      void pending.catch(() => {});
+      return "recovered";
+    });
+    expect(recovered).toBe("recovered");
+    await transaction.execute("UPDATE after");
+  });
+
+  expect(calls).toEqual([
+    "SAVEPOINT sqlx_js_1",
+    "INSERT delayed duplicate",
+    "ROLLBACK TO SAVEPOINT sqlx_js_1",
+    "RELEASE SAVEPOINT sqlx_js_1",
+    "UPDATE after",
+  ]);
+  await db.close({ graceMs: 0, forceAfterMs: 0 });
+});
+
+test("savepoint executors expire when their callback completes", async () => {
+  const calls: string[] = [];
+  const tx = fakePool(async (query) => {
+    calls.push(query);
+    return Object.assign([], { count: 1, command: "UPDATE" });
+  });
+  const pool = fakePool(async () => [], {
+    begin: async (fn: (client: PostgresClient) => Promise<unknown>) => await fn(tx),
+  });
+  const db = managed(pool);
+  let executeAfterRelease: (() => Promise<unknown>) | undefined;
+
+  await db.sql.transaction(async (transaction) => {
+    await transaction.savepoint(async (savepoint) => {
+      executeAfterRelease = () => savepoint.execute("INSERT too late");
+      await savepoint.execute("INSERT in scope");
+    });
+    await expect(executeAfterRelease!()).rejects.toThrow("savepoint executor is no longer active");
+    await transaction.execute("UPDATE after");
+  });
+
+  expect(calls).toEqual([
+    "SAVEPOINT sqlx_js_1",
+    "INSERT in scope",
+    "RELEASE SAVEPOINT sqlx_js_1",
+    "UPDATE after",
+  ]);
+  await db.close({ graceMs: 0, forceAfterMs: 0 });
+});
+
+test("transaction executors expire before the driver commits", async () => {
+  const calls: string[] = [];
+  const tx = fakePool(async (query) => {
+    calls.push(query);
+    return [];
+  });
+  let executeAfterCallback: (() => Promise<unknown>) | undefined;
+  const pool = fakePool(async () => [], {
+    begin: async (fn: (client: PostgresClient) => Promise<unknown>) => {
+      const value = await fn(tx);
+      await expect(executeAfterCallback!()).rejects.toThrow("scoped executor is no longer active");
+      calls.push("COMMIT");
+      return value;
+    },
+  });
+  const db = managed(pool);
+
+  await db.sql.transaction(async (transaction) => {
+    executeAfterCallback = () => transaction.execute("INSERT too late");
+    await transaction.execute("INSERT in scope");
+  });
+
+  expect(calls).toEqual(["INSERT in scope", "COMMIT"]);
+  await db.close({ graceMs: 0, forceAfterMs: 0 });
+});
+
+test("transactions settle a dispatched savepoint before committing", async () => {
+  const calls: string[] = [];
+  const tx = fakePool(async (query) => {
+    calls.push(query);
+    return [];
+  });
+  const pool = fakePool(async () => [], {
+    begin: async (fn: (client: PostgresClient) => Promise<unknown>) => {
+      const value = await fn(tx);
+      calls.push("COMMIT");
+      return value;
+    },
+  });
+  const db = managed(pool);
+
+  await db.sql.transaction(async (transaction) => {
+    void transaction.savepoint(async (savepoint) => {
+      await Promise.resolve();
+      await savepoint.execute("INSERT before commit");
+    });
+  });
+
+  expect(calls).toEqual([
+    "SAVEPOINT sqlx_js_1",
+    "INSERT before commit",
+    "RELEASE SAVEPOINT sqlx_js_1",
+    "COMMIT",
+  ]);
+  await db.close({ graceMs: 0, forceAfterMs: 0 });
+});
+
+test("savepoints require queries to use the active callback executor", async () => {
+  const calls: string[] = [];
+  const tx = fakePool(async (query) => {
+    calls.push(query);
+    return [];
+  });
+  const pool = fakePool(async () => [], {
+    begin: async (fn: (client: PostgresClient) => Promise<unknown>) => await fn(tx),
+  });
+  const db = managed(pool);
+
+  await db.sql.transaction(async (transaction) => {
+    await transaction.savepoint(async (savepoint) => {
+      await expect(transaction.execute("INSERT wrong scope")).rejects.toThrow(
+        "use the savepoint callback executor",
+      );
+      await savepoint.execute("INSERT correct scope");
+      await savepoint.savepoint(async (nested) => {
+        await nested.execute("INSERT nested");
+      });
+    });
+  });
+
+  expect(calls).toEqual([
+    "SAVEPOINT sqlx_js_1",
+    "INSERT correct scope",
+    "SAVEPOINT sqlx_js_2",
+    "INSERT nested",
+    "RELEASE SAVEPOINT sqlx_js_2",
+    "RELEASE SAVEPOINT sqlx_js_1",
+  ]);
+  await db.close({ graceMs: 0, forceAfterMs: 0 });
+});
+
+test("connection loss remains terminal across a savepoint", async () => {
+  const calls: string[] = [];
+  let rollbacks = 0;
+  const lost = new ConnectionLostError(new Error("socket closed"));
+  const tx = fakePool(async (query) => {
+    calls.push(query);
+    if (query === "SELECT lost") throw lost;
+    return [];
+  });
+  const pool = fakePool(async () => [], {
+    begin: async (fn: (client: PostgresClient) => Promise<unknown>) => {
+      try {
+        return await fn(tx);
+      } catch (error) {
+        rollbacks++;
+        throw error;
+      }
+    },
+  });
+  const db = managed(pool);
+
+  await expect(db.sql.transaction(async (transaction) => {
+    await transaction.savepoint(async (savepoint) => {
+      try {
+        await savepoint("SELECT lost");
+      } catch {}
+    });
+  })).rejects.toBe(lost);
+
+  expect(calls).toEqual(["SAVEPOINT sqlx_js_1", "SELECT lost"]);
+  expect(rollbacks).toBe(1);
+  await db.close({ graceMs: 0, forceAfterMs: 0 });
+});
+
+test("a query timeout skips savepoint recovery and aborts the outer transaction", async () => {
+  const calls: string[] = [];
+  let cancelled = 0;
+  let rollbacks = 0;
+  const tx = fakePool((query) => {
+    calls.push(query);
+    if (query === "SELECT stalled") {
+      return pendingQuery(new Promise(() => {}), () => { cancelled++; });
+    }
+    return pendingQuery(Promise.resolve([]));
+  });
+  const pool = fakePool(async () => [], {
+    begin: async (fn: (client: PostgresClient) => Promise<unknown>) => {
+      try {
+        return await fn(tx);
+      } catch (error) {
+        rollbacks++;
+        throw error;
+      }
+    },
+  });
+  const db = managed(pool, { cancelGraceMs: 20 });
+
+  await expect(db.sql.transaction(async (transaction) => {
+    await transaction.savepoint(async (savepoint) => {
+      await defineQuery("SELECT stalled").runWith(
+        { timeoutMs: 5 },
+        savepoint as never,
+      );
+    });
+  })).rejects.toBeInstanceOf(QueryTimeoutError);
+
+  expect(calls).toEqual(["SAVEPOINT sqlx_js_1", "SELECT stalled"]);
+  expect(cancelled).toBe(1);
+  expect(rollbacks).toBe(1);
+  await db.close({ graceMs: 0, forceAfterMs: 0 });
 });
 
 test("the internal runtime receives explicit JSON and array parameters", async () => {
@@ -703,6 +1085,42 @@ describe("managed generations", () => {
     await closing;
     expect(ended).toBe(1);
     expect(db.snapshot()).toEqual(expect.objectContaining({ state: "closed", activeOperations: 0 }));
+  });
+
+  test("close proceeds as soon as active work drains within the grace period", async () => {
+    let resolveQuery!: (value: unknown[]) => void;
+    let resolveStarted!: () => void;
+    const query = new Promise<unknown[]>((resolve) => {
+      resolveQuery = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    let ended = 0;
+    const db = managed(fakePool(() => {
+      resolveStarted();
+      return pendingQuery(query);
+    }, {
+      end: async () => { ended++; },
+    }));
+    const active = db.sql("SELECT 1");
+    await started;
+    const closing = db.close({ graceMs: 1_000, forceAfterMs: 1_000 });
+    await Promise.resolve();
+    resolveQuery([]);
+    await active;
+
+    let timer!: ReturnType<typeof setTimeout>;
+    const settled = await Promise.race([
+      closing.then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), 100);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (!settled) await closing;
+    expect(settled).toBe(true);
+    expect(ended).toBe(1);
   });
 
   test("a timeout during close cannot reopen admission or create a replacement pool", async () => {

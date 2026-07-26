@@ -49,6 +49,7 @@ schema ownership:
 inspection and generated artifacts:
   sqlx-js doctor [--root <dir>] [--dts <path>] [--json]
   sqlx-js queries [--json] [--embed <path>] [--root <dir>]
+  sqlx-js queries explain <query-id> [--json] [--root <dir>]
   sqlx-js snapshot dump|check
   sqlx-js --version
   sqlx-js-diagnostics github|unix < prepare-diagnostics.json
@@ -58,8 +59,8 @@ Run \`sqlx-js <command> --help\` or
 `,
   init: `usage: sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]
 
-Scaffold config, generated declaration placeholders, package scripts, and the
-selected schema source without replacing existing files.`,
+Scaffold config, a descriptor-bound db.ts, generated artifact placeholders,
+package scripts, and the selected schema source without replacing existing files.`,
   dev: `usage: sqlx-js dev [--root <dir>] [--dts <path>] [--migrations <dir>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] [--no-prune]
 
 Build the configured schema source in a disposable shadow database and
@@ -106,9 +107,11 @@ Query-artifact engine:
 
 For schema-source validation prefer \`sqlx-js dev\` or \`sqlx-js verify\`.`,
   queries: `usage: sqlx-js queries [--json] [--embed <path>] [--root <dir>]
+       sqlx-js queries explain <query-id> [--json] [--root <dir>]
 
 Scan source without a database and report query call sites, cache status,
-validation mode, profiles, definitions, and referenced SQL files.`,
+validation mode, profiles, definitions, and referenced SQL files. Explain reads
+committed inference provenance without connecting to PostgreSQL.`,
   migrate: `usage: sqlx-js migrate add|run|info|check|revert|squash|archive
 
 Manage built-in migration files and target history. Use provider-aware
@@ -120,6 +123,10 @@ schema snapshot used by sql.id() and the optional LLM-facing manifest.`,
 };
 
 const SUBCOMMAND_HELP: Record<string, string> = {
+  "queries:explain": `usage: sqlx-js queries explain <query-id> [--json] [--root <dir>]
+
+Explain result provenance, parameter targets, nullability decisions, and
+actionable inference hints from committed prepare artifacts.`,
   "pgschema:install": `usage: sqlx-js pgschema install [--root <dir>]
 
 Download and checksum the pinned pgschema binary. \`sqlx-js doctor\` reports
@@ -343,6 +350,10 @@ function validateInvocation(): void {
     cmd === "prepare" ||
     cmd === "queries"
   ) {
+    if (cmd === "queries" && positionals[0] === "explain") {
+      requirePositionals(2, 2, "queries explain");
+      return;
+    }
     requirePositionals(0, 0, cmd);
     return;
   }
@@ -720,12 +731,15 @@ if (cmd === "init") {
 } else if (cmd === "queries") {
   const { QueriesError, runQueries } = await import("../src/commands/queries");
   const embed = arg("--embed");
+  const explainQueryId = positionals[0] === "explain" ? positionals[1] : undefined;
+  if (explainQueryId && embed) usageError("--embed cannot be combined with queries explain", "queries", commandArgv);
   try {
     await runQueries({
       root,
       cacheDir,
       json: flag("--json"),
       embedPath: embed ? resolve(root, embed) : undefined,
+      explainQueryId,
     });
   } catch (error) {
     if (flag("--json")) {

@@ -8,6 +8,9 @@
   "paramOids": [
     23
   ],
+  "paramTypeIdentities": [
+    23
+  ],
   "paramTsTypes": [
     "number"
   ],
@@ -23,5 +26,21 @@
       "override": "non-null"
     }
   ],
-  "hasResultSet": true
+  "hasResultSet": true,
+  "inference": {
+    "columns": [
+      {
+        "sources": null,
+        "reason": "forced non-null by the result alias",
+        "hint": "Keep alias overrides limited to application invariants that PostgreSQL cannot express"
+      }
+    ],
+    "params": [
+      {
+        "targets": [],
+        "reason": "PostgreSQL inferred the type without a direct column target",
+        "hint": "Add an explicit PostgreSQL cast when the inferred type is not the intended wire contract"
+      }
+    ]
+  }
 }

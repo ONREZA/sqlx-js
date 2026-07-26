@@ -9,6 +9,10 @@
     20,
     25
   ],
+  "paramTypeIdentities": [
+    20,
+    25
+  ],
   "paramTsTypes": [
     "bigint",
     "string"
@@ -26,5 +30,43 @@
       "override": "non-null"
     }
   ],
-  "hasResultSet": true
+  "hasResultSet": true,
+  "inference": {
+    "columns": [
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "posts",
+            "column": "id",
+            "notNull": true
+          }
+        ],
+        "reason": "forced non-null by the result alias",
+        "hint": "Keep alias overrides limited to application invariants that PostgreSQL cannot express"
+      }
+    ],
+    "params": [
+      {
+        "targets": [
+          {
+            "kind": "dml",
+            "table": "posts",
+            "column": "user_id"
+          }
+        ],
+        "reason": "a stored target or strict predicate requires a non-null value"
+      },
+      {
+        "targets": [
+          {
+            "kind": "dml",
+            "table": "posts",
+            "column": "title"
+          }
+        ],
+        "reason": "a stored target or strict predicate requires a non-null value"
+      }
+    ]
+  }
 }

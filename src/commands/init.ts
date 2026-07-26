@@ -1,5 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import {
+  CACHE_FORMAT_VERSION,
+  GENERATOR_REVISION,
+  RUNTIME_DESCRIPTOR_FORMAT_VERSION,
+} from "../artifact-versions";
 
 const CONFIG_TEMPLATE = `import { defineConfig } from "@onreza/sqlx-js";
 
@@ -65,6 +70,7 @@ export interface SqlxJsGeneratedRegistry {
   fileQueries: SqlxJsGeneratedFileQueries;
   functions: SqlxJsGeneratedFunctions;
   runtimeTypes: SqlxJsGeneratedRuntimeTypes;
+  runtimeDescriptors: true;
 }
 
 declare module "@onreza/sqlx-js" {
@@ -76,6 +82,25 @@ declare module "@onreza/sqlx-js" {
 
 export {};
 `;
+
+const DATABASE_TEMPLATE = `import { createSqlClient } from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
+import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
+
+export const db = createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
+  queryDescriptors,
+});
+`;
+
+const RUNTIME_DESCRIPTOR_TEMPLATE = `${JSON.stringify({
+  formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
+  cacheFormat: CACHE_FORMAT_VERSION,
+  generatorRevision: GENERATOR_REVISION,
+  configHash: "unprepared",
+  types: {},
+  queries: {},
+  profiles: {},
+}, null, 2)}\n`;
 
 export type InitOptions = {
   root: string;
@@ -117,6 +142,8 @@ export function runInit(opts: InitOptions): void {
   else ensureDir("migrations");
   ensureFile(".env.example", ENV_TEMPLATE);
   ensureFile("sqlx-js-env.d.ts", DTS_TEMPLATE);
+  ensureFile("db.ts", DATABASE_TEMPLATE);
+  ensureFile(".sqlx-js/runtime-descriptors.json", RUNTIME_DESCRIPTOR_TEMPLATE);
 
   const updateJson = (rel: string, mutate: (value: Record<string, unknown>) => boolean) => {
     const full = join(opts.root, rel);
@@ -137,27 +164,49 @@ export function runInit(opts: InitOptions): void {
   };
 
   updateJson("tsconfig.json", (value) => {
+    const compilerOptions = value.compilerOptions;
+    if (
+      compilerOptions !== undefined
+      && (!compilerOptions || typeof compilerOptions !== "object" || Array.isArray(compilerOptions))
+    ) {
+      notes.push("tsconfig.json: manual update required because compilerOptions is not an object");
+      return false;
+    }
     const files = value.files;
     if (files !== undefined && (!Array.isArray(files) || !files.every((item) => typeof item === "string"))) {
       notes.push("tsconfig.json: manual update required because files is not an array of strings");
       return false;
-    }
-    if (Array.isArray(files)) {
-      if (files.includes("sqlx-js-env.d.ts")) return false;
-      files.push("sqlx-js-env.d.ts");
-      return true;
     }
     const include = value.include;
     if (include !== undefined && (!Array.isArray(include) || !include.every((item) => typeof item === "string"))) {
       notes.push("tsconfig.json: manual update required because include is not an array of strings");
       return false;
     }
-    if (Array.isArray(include)) {
-      if (include.includes("sqlx-js-env.d.ts")) return false;
-      include.push("sqlx-js-env.d.ts");
-      return true;
+    const options = (value.compilerOptions ??= {}) as Record<string, unknown>;
+    let changed = false;
+    if (options.resolveJsonModule === undefined) {
+      options.resolveJsonModule = true;
+      changed = true;
+    } else if (options.resolveJsonModule !== true) {
+      notes.push("tsconfig.json: set compilerOptions.resolveJsonModule to true to import runtime descriptors");
     }
-    return false;
+    if (Array.isArray(files)) {
+      for (const file of ["sqlx-js-env.d.ts", "db.ts"]) {
+        if (files.includes(file)) continue;
+        files.push(file);
+        changed = true;
+      }
+      return changed;
+    }
+    if (Array.isArray(include)) {
+      for (const file of ["sqlx-js-env.d.ts", "db.ts"]) {
+        if (include.includes(file)) continue;
+        include.push(file);
+        changed = true;
+      }
+      return changed;
+    }
+    return changed;
   });
 
   updateJson("package.json", (value) => {

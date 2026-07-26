@@ -2,15 +2,32 @@ import assert from "node:assert/strict";
 import {
   createSqlClient,
   defineQuery,
+  queryId,
   QueryAbortedError,
 } from "@onreza/sqlx-js";
+import descriptorVersions from "../example/.sqlx-js/runtime-descriptors.json" with { type: "json" };
 
 const databaseUrl = Deno.env.get("DATABASE_URL");
 if (!databaseUrl) throw new Error("deno package smoke requires DATABASE_URL");
 
-const db = createSqlClient(databaseUrl, { max: 1 });
+const descriptorQuery = "SELECT $1::int4 AS descriptor_value";
+const db = createSqlClient(databaseUrl, {
+  max: 1,
+  queryDescriptors: {
+    formatVersion: descriptorVersions.formatVersion,
+    cacheFormat: descriptorVersions.cacheFormat,
+    generatorRevision: descriptorVersions.generatorRevision,
+    configHash: "deno-package-smoke",
+    types: {},
+    queries: {
+      [queryId(descriptorQuery)]: { params: [23] },
+    },
+    profiles: {},
+  },
+});
 try {
   await db.ready({ timeoutMs: 5_000 });
+  assert.deepEqual(await db.sql.one(descriptorQuery, 42), { descriptor_value: 42 });
   const bytes = new Uint8Array([0x00, 0x5c, 0x7f, 0xff]);
   const row = await db.sql.one(
     `SELECT

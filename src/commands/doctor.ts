@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import ts from "typescript";
 import { assertCacheManifest } from "../cache";
@@ -13,7 +13,14 @@ import {
 import { decodeText, parseDatabaseUrl, PgClient } from "../pg/wire";
 import { mergeExtensionTypes } from "../pg/extensions";
 import { SchemaCache } from "../pg/schema";
+import { scanProject } from "../scan/scanner";
 import { assertDistinctEnumCatalogOutput, enumCatalogOutputPath } from "../enum-catalog";
+import { queryId } from "../query-id";
+import { runtimeDescriptorPath } from "../runtime-descriptor-artifact";
+import {
+  prepareRuntimeDescriptors,
+  type RuntimeQueryDescriptors,
+} from "../runtime-descriptors";
 import { probePgschema } from "./pgschema";
 
 export type DoctorCheck = {
@@ -365,6 +372,98 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
     status: tsconfig.ok ? "ok" : "error",
     message: tsconfig.message,
   });
+
+  if (configLoaded) {
+    try {
+      const parameterized = scanProject(opts.root, config.scan, config.profiles)
+        .filter((site) => site.paramCount > 0);
+      const descriptorConfigured = parameterized.filter((site) => site.execution === "descriptor");
+      const adaptive = parameterized.filter((site) => site.execution === "adaptive");
+      const unknown = parameterized.filter((site) =>
+        site.execution === undefined || site.execution === "unknown"
+      );
+      const fallbackLocations = [...adaptive, ...unknown].map((site) =>
+        `${site.file}:${site.line}:${site.column}`
+      );
+      const descriptorQueries = new Map<string, ReadonlyMap<string, unknown>>();
+      let artifactError: string | undefined;
+      if (descriptorConfigured.length > 0) {
+        const path = runtimeDescriptorPath(opts.cacheDir);
+        try {
+          const artifact = JSON.parse(readFileSync(path, "utf8")) as RuntimeQueryDescriptors;
+          if (artifact.configHash !== prepareConfigHash(config)) {
+            throw new Error(
+              `sqlx-js: runtime descriptor config hash is stale: ${path}. Run \`sqlx-js prepare\`.`,
+            );
+          }
+          for (const site of descriptorConfigured) {
+            const profileName = site.profiles?.[0];
+            const key = profileName ?? "";
+            if (descriptorQueries.has(key)) continue;
+            const profile = profileName ? config.profiles?.[profileName] : undefined;
+            descriptorQueries.set(key, prepareRuntimeDescriptors(artifact, profile).queries);
+          }
+        } catch (error) {
+          artifactError = existsSync(path)
+            ? (error as Error).message
+            : `runtime descriptor not found at ${path}; run sqlx-js prepare`;
+        }
+      }
+      const covered: typeof descriptorConfigured = [];
+      const missing: typeof descriptorConfigured = [];
+      for (const site of descriptorConfigured) {
+        const available = !artifactError
+          && descriptorQueries.get(site.profiles?.[0] ?? "")?.has(queryId(site.query));
+        (available ? covered : missing).push(site);
+      }
+      const missingLocations = missing.map((site) =>
+        `${site.file}:${site.line}:${site.column}`
+      );
+      const status = artifactError || missing.length > 0
+        ? "error"
+        : fallbackLocations.length > 0
+          ? "warning"
+          : "ok";
+      checks.push({
+        name: "descriptorCoverage",
+        status,
+        message: artifactError
+          ? `cannot validate descriptor coverage: ${artifactError}`
+          : parameterized.length === 0
+          ? "no parameterized runtime query sites require descriptors"
+          : missing.length > 0
+            ? `${covered.length}/${parameterized.length} parameterized runtime query sites are covered; `
+              + `${missing.length} descriptor-configured site(s) are absent from the artifact`
+          : fallbackLocations.length === 0
+            ? `${covered.length}/${parameterized.length} parameterized runtime query sites are covered by descriptors`
+            : `${covered.length}/${parameterized.length} parameterized runtime query sites are covered by descriptors; `
+              + `${fallbackLocations.length} remain adaptive or cannot be classified`,
+        details: {
+          parameterized: parameterized.length,
+          descriptor: covered.length,
+          descriptorConfigured: descriptorConfigured.length,
+          missing: missing.length,
+          adaptive: adaptive.length,
+          unknown: unknown.length,
+          locations: fallbackLocations,
+          missingLocations,
+          ...(artifactError ? { artifactError } : {}),
+        },
+      });
+    } catch (error) {
+      checks.push({
+        name: "descriptorCoverage",
+        status: "error",
+        message: `cannot inspect runtime query sites: ${(error as Error).message}`,
+      });
+    }
+  } else {
+    checks.push({
+      name: "descriptorCoverage",
+      status: "warning",
+      message: "descriptor coverage check skipped because config failed to load",
+    });
+  }
 
   if (configLoaded && config.enumCatalog) {
     try {

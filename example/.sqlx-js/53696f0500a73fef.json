@@ -10,6 +10,11 @@
     25,
     23
   ],
+  "paramTypeIdentities": [
+    25,
+    25,
+    23
+  ],
   "paramTsTypes": [
     "string",
     "string",
@@ -36,5 +41,65 @@
       "override": "non-null"
     }
   ],
-  "hasResultSet": true
+  "hasResultSet": true,
+  "inference": {
+    "columns": [
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "id",
+            "notNull": true
+          }
+        ],
+        "reason": "forced non-null by the result alias",
+        "hint": "Keep alias overrides limited to application invariants that PostgreSQL cannot express"
+      },
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "created_at",
+            "notNull": true
+          }
+        ],
+        "reason": "forced non-null by the result alias",
+        "hint": "Keep alias overrides limited to application invariants that PostgreSQL cannot express"
+      }
+    ],
+    "params": [
+      {
+        "targets": [
+          {
+            "kind": "dml",
+            "table": "users",
+            "column": "name"
+          }
+        ],
+        "reason": "a stored target or strict predicate requires a non-null value"
+      },
+      {
+        "targets": [
+          {
+            "kind": "dml",
+            "table": "users",
+            "column": "email"
+          }
+        ],
+        "reason": "a stored target or strict predicate requires a non-null value"
+      },
+      {
+        "targets": [
+          {
+            "kind": "dml",
+            "table": "users",
+            "column": "age"
+          }
+        ],
+        "reason": "all stored targets accept NULL and no strict predicate forbids it"
+      }
+    ]
+  }
 }

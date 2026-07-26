@@ -81,6 +81,16 @@ export type PostgresClient = PostgresQueryClient & {
   end(): Promise<void>;
 };
 
+export const EXECUTE_KNOWN_PARAMS = Symbol("sqlx-js.postgres.execute-known-params");
+
+export type KnownParamsQueryClient = {
+  [EXECUTE_KNOWN_PARAMS]<Row extends Record<string, unknown> = Record<string, unknown>>(
+    query: string,
+    parameterOids: readonly number[],
+    params: unknown[],
+  ): PostgresPendingQuery<Row>;
+};
+
 const PARAMETER = Symbol("sqlx-js.postgres.parameter");
 const RESULT_VALUES = Symbol("sqlx-js.postgres.result-values");
 
@@ -181,6 +191,23 @@ class PostgresPool implements PostgresClient {
         const lease = await this.acquire(setCancel, isCancelled);
         try {
           return await lease.slot.query(query, params, setCancel, isCancelled, true);
+        } finally {
+          lease.release();
+        }
+      },
+    );
+  }
+
+  [EXECUTE_KNOWN_PARAMS]<Row extends Record<string, unknown> = Record<string, unknown>>(
+    query: string,
+    parameterOids: readonly number[],
+    params: unknown[],
+  ): PostgresPendingQuery<Row> {
+    return new DriverQuery<Row>(
+      async (setCancel, isCancelled) => {
+        const lease = await this.acquire(setCancel, isCancelled);
+        try {
+          return await lease.slot.query(query, params, setCancel, isCancelled, true, parameterOids);
         } finally {
           lease.release();
         }
@@ -364,6 +391,28 @@ class ReservedClient implements PostgresQueryClient {
     );
   }
 
+  [EXECUTE_KNOWN_PARAMS]<Row extends Record<string, unknown> = Record<string, unknown>>(
+    query: string,
+    parameterOids: readonly number[],
+    params: unknown[],
+  ): PostgresPendingQuery<Row> {
+    return new DriverQuery<Row>(
+      (setCancel, isCancelled) => {
+        if (!this.active) {
+          throw new Error("sqlx-js: transaction client cannot be used after the transaction ends");
+        }
+        return this.slot.query(
+          query,
+          params,
+          setCancel,
+          isCancelled,
+          this.allowReconnect,
+          parameterOids,
+        );
+      },
+    );
+  }
+
   typed<T>(value: T, oid: number): PostgresParameter<T> {
     return { [PARAMETER]: true, value, oid, source: "typed" };
   }
@@ -396,17 +445,21 @@ class DriverQuery<Row extends Record<string, unknown>> implements PostgresPendin
 
   execute(): this {
     if (!this.promise) {
-      this.promise = Promise.resolve()
-        .then(() => this.start(
+      let started: Promise<PostgresResult<Row>>;
+      try {
+        started = this.start(
           (cancel) => {
             this.cancelCurrent = cancel;
             if (this.cancelled) this.cancelResult = cancel();
           },
           () => this.cancelled,
-        ))
-        .finally(() => {
-          this.cancelCurrent = undefined;
-        });
+        );
+      } catch (error) {
+        started = Promise.reject(error);
+      }
+      this.promise = started.finally(() => {
+        this.cancelCurrent = undefined;
+      });
     }
     return this;
   }
@@ -429,7 +482,7 @@ class DriverQuery<Row extends Record<string, unknown>> implements PostgresPendin
     onfulfilled?: ((value: PostgresResult<Row>) => TResult1 | PromiseLike<TResult1>) | null,
     onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
   ): PromiseLike<TResult1 | TResult2> {
-    return Promise.resolve(this.execute().promise!).then(onfulfilled, onrejected);
+    return this.execute().promise!.then(onfulfilled, onrejected);
   }
 }
 
@@ -451,11 +504,17 @@ class ConnectionSlot {
     setCancel: (cancel: () => Promise<void> | void) => void,
     isCancelled: () => boolean,
     allowReconnect: boolean,
+    parameterOids?: readonly number[],
   ): Promise<PostgresResult<Row>> {
     const result = this.tail.then(async () => {
       if (isCancelled()) throw queryCancelledBeforeDispatch();
       if (params.some((value) => value === undefined)) {
         throw new Error("sqlx-js: undefined is not a PostgreSQL value; pass null explicitly");
+      }
+      if (parameterOids && parameterOids.length !== params.length) {
+        throw new Error(
+          `sqlx-js: expected ${parameterOids.length} parameters, received ${params.length}`,
+        );
       }
       let client = this.client;
       if (!client || client.isClosed) {
@@ -473,11 +532,23 @@ class ConnectionSlot {
         const values: unknown[][] = [];
         const materializeRow = (payload: Uint8Array, fields: readonly FieldDescription[]) =>
           decodeDataRow<Row>(payload, fields, this.options.parsers, values);
-        const raw = params.length === 0
-          ? await client.execParamsText(query, [], materializeRow)
-          : await client.execParamsTextWithSerializer(query, (parameterOids) => {
+        let raw;
+        if (params.length === 0) {
+          raw = await client.execParamsText(query, [], materializeRow);
+        } else if (parameterOids) {
+          const encoded = params.map((value, index) =>
+            encodeParameter(value, this.options, parameterOids[index])
+          );
+          if (isCancelled()) {
+            const error = queryCancelledBeforeDispatch();
+            client.destroy(error);
+            throw error;
+          }
+          raw = await client.execKnownParamsText(query, parameterOids, encoded, materializeRow);
+        } else {
+          raw = await client.execParamsTextWithSerializer(query, (inferredOids) => {
             const encoded = params.map((value, index) =>
-              encodeParameter(value, this.options, parameterOids[index])
+              encodeParameter(value, this.options, inferredOids[index])
             );
             if (isCancelled()) {
               const error = queryCancelledBeforeDispatch();
@@ -486,6 +557,7 @@ class ConnectionSlot {
             }
             return encoded;
           }, materializeRow);
+        }
         setCancel(() => {});
         return resultWithMetadata(raw.rows, values, raw.tag);
       } catch (error) {
@@ -855,18 +927,16 @@ function resultWithMetadata<Row extends Record<string, unknown>>(
     }
   }
   const count = numericCount ? Number(tag.slice(countStart)) : null;
-  Object.defineProperties(rows, {
-    [RESULT_VALUES]: {
-      value: values,
-    },
-    count: {
-      configurable: true,
-      value: count,
-    },
-    command: {
-      configurable: true,
-      value: command,
-    },
+  Object.defineProperty(rows, RESULT_VALUES, {
+    value: values,
+  });
+  Object.defineProperty(rows, "count", {
+    configurable: true,
+    value: count,
+  });
+  Object.defineProperty(rows, "command", {
+    configurable: true,
+    value: command,
   });
   return rows as PostgresResult<Row>;
 }

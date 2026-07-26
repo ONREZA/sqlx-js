@@ -9,6 +9,9 @@ const envFile = join(root, ".env");
 if (!process.env.DATABASE_URL && existsSync(envFile)) process.loadEnvFile(envFile);
 if (!process.env.DATABASE_URL) throw new Error("node package smoke requires DATABASE_URL");
 const temp = mkdtempSync(join(tmpdir(), "sqlx-js-node-package-"));
+const descriptorVersions = JSON.parse(
+  readFileSync(join(root, "example/.sqlx-js/runtime-descriptors.json"), "utf8"),
+);
 
 function run(command, args, cwd = root) {
   const result = spawnSync(command, args, { cwd, encoding: "utf8", env: process.env });
@@ -98,13 +101,26 @@ try {
       const events = [];
       const runtimeUrl = new URL(process.env.DATABASE_URL);
       runtimeUrl.searchParams.set("schema", "public");
+      const descriptorQuery = "SELECT $1::int4 AS descriptor_value";
       db = createSqlClient(runtimeUrl.toString(), {
         max: 1,
         onQuery: (event) => events.push(event),
         sqlFiles: { "queries/embedded.sql": "SELECT 9::int4 AS value" },
+        queryDescriptors: {
+          formatVersion: ${descriptorVersions.formatVersion},
+          cacheFormat: ${descriptorVersions.cacheFormat},
+          generatorRevision: ${descriptorVersions.generatorRevision},
+          configHash: "node-package-smoke",
+          types: {},
+          queries: {
+            [queryId(descriptorQuery)]: { params: [23] },
+          },
+          profiles: {},
+        },
       });
       const { sql } = db;
       await db.ready({ timeoutMs: 5000 });
+      assert.deepEqual(await sql.one(descriptorQuery, 42), { descriptor_value: 42 });
       await db.ping({ timeoutMs: 5000 });
       assert.equal(db.snapshot().state, "healthy");
       const bytes = new Uint8Array([0x00, 0x5c, 0x7f, 0xff]);

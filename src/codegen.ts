@@ -7,7 +7,7 @@ import type { DatabaseProfiles } from "./config";
 
 function entrySignature(e: CacheEntry): { params: string; row: string } {
   const paramTypes = e.paramTsTypes.map((t, i) => {
-    const nullable = e.paramNullable?.[i] === true;
+    const nullable = e.paramNullable[i] === true;
     return nullable ? `${t} | null` : t;
   });
   const params = e.paramNames && e.paramNames.length > 0
@@ -102,6 +102,7 @@ function emitRegistry(
   lines.push("  fileQueries: SqlxJsGeneratedFileQueries;");
   lines.push("  functions: SqlxJsGeneratedFunctions;");
   lines.push("  runtimeTypes: SqlxJsGeneratedRuntimeTypes;");
+  lines.push("  runtimeDescriptors: true;");
   lines.push("}");
 }
 
@@ -142,6 +143,7 @@ function emitProfileRegistries(
     lines.push(`    fileQueries: SqlxJsGeneratedProfileFileQueries[${JSON.stringify(name)}];`);
     lines.push("    functions: SqlxJsGeneratedFunctions;");
     lines.push("    runtimeTypes: SqlxJsGeneratedRuntimeTypes;");
+    lines.push("    runtimeDescriptors: true;");
     const transactionSettings = profile.transactionSettings
       ? ` readonly transactionSettings: readonly [${profile.transactionSettings.map((setting) => JSON.stringify(setting)).join(", ")}];`
       : "";

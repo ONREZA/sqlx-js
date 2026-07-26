@@ -1,0 +1,214 @@
+{
+  "formatVersion": 1,
+  "cacheFormat": 5,
+  "generatorRevision": 20,
+  "configHash": "424b4eaf1971125d",
+  "types": {
+    "[\"public\",\"user_role\"]": {
+      "schema": "public",
+      "name": "user_role"
+    }
+  },
+  "queries": {
+    "05a07f6b6ff0eee8": {
+      "params": [
+        25,
+        20
+      ]
+    },
+    "0df48a32e499d61b": {
+      "params": [
+        23
+      ]
+    },
+    "0f6e334f2678de51": {
+      "params": [
+        20
+      ]
+    },
+    "114f40de129c54c2": {
+      "params": [
+        20
+      ]
+    },
+    "1740751552b0209d": {
+      "params": [
+        25,
+        25,
+        "[\"public\",\"user_role\"]"
+      ]
+    },
+    "224008784b00d703": {
+      "params": [
+        25,
+        25
+      ]
+    },
+    "3ffd4d9a1a495773": {
+      "params": [
+        20
+      ]
+    },
+    "412f6794fa8a43cf": {
+      "params": [
+        20
+      ]
+    },
+    "5302baf1602f9d8d": {
+      "params": [
+        "[\"public\",\"user_role\"]"
+      ]
+    },
+    "53696f0500a73fef": {
+      "params": [
+        25,
+        25,
+        23
+      ]
+    },
+    "55ca2c6baf721afd": {
+      "params": [
+        20
+      ]
+    },
+    "5bc57170c1bd0b31": {
+      "params": [
+        20
+      ]
+    },
+    "60403e36b79b0f9d": {
+      "params": [
+        20
+      ]
+    },
+    "657d210ada7a44ef": {
+      "params": [
+        23
+      ]
+    },
+    "67ad370ac20ebb65": {
+      "params": [
+        23,
+        23
+      ]
+    },
+    "6edac688daca58de": {
+      "params": [
+        20
+      ]
+    },
+    "741770cdca2788bd": {
+      "params": [
+        20
+      ]
+    },
+    "7c5dad29d846458f": {
+      "params": [
+        20
+      ]
+    },
+    "7fe64a3fd979ed1b": {
+      "params": [
+        3802
+      ]
+    },
+    "87ba1ae41bdcc82c": {
+      "params": [
+        23
+      ]
+    },
+    "9176a35cffa9d17b": {
+      "params": [
+        20
+      ]
+    },
+    "98570d6c355e310d": {
+      "params": [
+        20
+      ]
+    },
+    "a9461bf7f5999aa0": {
+      "params": [
+        25,
+        25,
+        3802
+      ]
+    },
+    "ac3ad80eb3293890": {
+      "params": [
+        25
+      ]
+    },
+    "ae5979e3ccaba3bc": {
+      "params": [
+        20
+      ]
+    },
+    "af28ec01ba311f0f": {
+      "params": [
+        25,
+        25
+      ]
+    },
+    "b47cfde3a916dd67": {
+      "params": [
+        20
+      ]
+    },
+    "b98d1a2946b38de8": {
+      "params": [
+        "[\"public\",\"user_role\"]",
+        25,
+        20,
+        23
+      ]
+    },
+    "cc2b1ed2c4ba6015": {
+      "params": [
+        20
+      ]
+    },
+    "e145038ebd991f75": {
+      "params": [
+        20
+      ]
+    },
+    "e45c63ca4149f4aa": {
+      "params": [
+        25,
+        25,
+        "[\"public\",\"user_role\"]"
+      ]
+    },
+    "e4dac953f7b9e3be": {
+      "params": [
+        3802,
+        20
+      ]
+    },
+    "ebfc173b7da5ce4f": {
+      "params": [
+        "[\"public\",\"user_role\"]",
+        23
+      ]
+    },
+    "ef06e6bdfa00b896": {
+      "params": [
+        20,
+        25
+      ]
+    },
+    "f524aa0924299f6a": {
+      "params": [
+        25,
+        23
+      ]
+    },
+    "f8e7b9439c5bccb1": {
+      "params": [
+        20
+      ]
+    }
+  },
+  "profiles": {}
+}

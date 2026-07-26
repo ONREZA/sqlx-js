@@ -4,7 +4,17 @@ Detailed contracts for typed queries, reusable definitions, SQL files, cardinali
 
 ## `sql(query, ...params)`
 
-The typed query function. The first argument must be a string literal that exists in `KnownQueries` (populated by `prepare`).
+The typed query function. New applications obtain it from the generated
+client boundary; the package-level `sql` export is deprecated:
+
+```ts
+import { db } from "./db.js";
+
+const { sql } = db;
+```
+
+The first argument must be a string literal that exists in the active generated
+registry (populated by `prepare`).
 
 ```ts
 const rows = await sql(`SELECT id FROM users WHERE name = $1`, "alice");
@@ -20,12 +30,12 @@ Define a query once without closing over a global client, then run the same gene
 ```ts
 import {
   defineQuery,
-  sql,
   type QueryParams,
   type QueryResult,
   type QueryRow,
   type SqlExecutor,
 } from "@onreza/sqlx-js";
+import { db } from "./db.js";
 
 export const findUser = defineQuery.optional(
   "users.findById",
@@ -36,8 +46,8 @@ type FindUserParams = QueryParams<typeof findUser>;
 type FindUserRow = QueryRow<typeof findUser>;
 type FindUserResult = QueryResult<typeof findUser>; // FindUserRow | null
 
-await findUser.run(sql, { id: userId });
-await sql.transaction((tx) => findUser.run(tx, { id: userId }));
+await findUser.run(db.sql, { id: userId });
+await db.sql.transaction((tx) => findUser.run(tx, { id: userId }));
 
 async function loadUser(executor: SqlExecutor, params: FindUserParams) {
   return findUser.run(executor, params);
@@ -117,9 +127,15 @@ sqlx-js queries --embed src/sqlx-js-files.generated.ts
 ```
 
 ```ts
-import { sqlxJsEmbeddedSql } from "./sqlx-js-files.generated";
+import { createSqlClient } from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
+import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
+import { sqlxJsEmbeddedSql } from "./sqlx-js-files.generated.js";
 
-const db = createSqlClient(databaseUrl, { sqlFiles: sqlxJsEmbeddedSql });
+const db = createSqlClient<SqlxJsGeneratedRegistry>(databaseUrl, {
+  queryDescriptors,
+  sqlFiles: sqlxJsEmbeddedSql,
+});
 ```
 
 Embedded entries take precedence over filesystem reads. The module contains only referenced external SQL files; inline SQL remains in application code.
@@ -153,6 +169,17 @@ if (result.rowCount !== 1) throw new Error("job was already claimed");
 ```
 
 `sql.file.execute(...)` and `tx.execute(...)` use the same contract. Query hooks receive the affected-row count rather than `0` for DML without `RETURNING`.
+
+Prepare compares the helper to PostgreSQL's described result shape:
+
+- `.one()` and `.optional()` without a result set are errors;
+- plain `sql()` without a result set warns, and fails under
+  `--strict-inference`;
+- `.execute()` with a result set warns because it discards returned rows.
+
+The check is entirely prepare-time. sqlx-js deliberately does not claim that
+an arbitrary query returns exactly one row; `.one()` keeps that runtime
+cardinality check.
 
 ## JSON and PostgreSQL array parameters
 

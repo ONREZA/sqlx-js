@@ -222,10 +222,12 @@ For an application-defined `customTypes` representation, provide the matching na
 
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
-import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env";
-import { parseGeometry, serializeGeometry } from "./geometry-codec";
+import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
+import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
+import { parseGeometry, serializeGeometry } from "./geometry-codec.js";
 
 const db = createSqlClient<SqlxJsGeneratedRegistry>(process.env.DATABASE_URL, {
+  queryDescriptors,
   typeCodecs: {
     vector: {
       parse: (value) => new Float32Array(
@@ -250,7 +252,7 @@ to explicit numeric `types` when raw access is required:
 
 ```ts
 import { createClient } from "@onreza/sqlx-js";
-import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env";
+import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
 
 const raw = createClient<SqlxJsGeneratedRegistry>(process.env.DATABASE_URL, {
   types: {

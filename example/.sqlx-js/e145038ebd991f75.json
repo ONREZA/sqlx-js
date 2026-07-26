@@ -8,6 +8,9 @@
   "paramOids": [
     20
   ],
+  "paramTypeIdentities": [
+    20
+  ],
   "paramTsTypes": [
     "bigint"
   ],
@@ -30,5 +33,45 @@
       "override": "non-null"
     }
   ],
-  "hasResultSet": true
+  "hasResultSet": true,
+  "inference": {
+    "columns": [
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "id",
+            "notNull": true
+          }
+        ],
+        "reason": "forced non-null by the result alias",
+        "hint": "Keep alias overrides limited to application invariants that PostgreSQL cannot express"
+      },
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "name",
+            "notNull": true
+          }
+        ],
+        "reason": "forced non-null by the result alias",
+        "hint": "Keep alias overrides limited to application invariants that PostgreSQL cannot express"
+      }
+    ],
+    "params": [
+      {
+        "targets": [
+          {
+            "kind": "predicate",
+            "table": "users",
+            "column": "id"
+          }
+        ],
+        "reason": "a predicate reference requires a non-null value"
+      }
+    ]
+  }
 }

@@ -66,6 +66,9 @@ scenario and driver.
 | `SQLX_JS_BENCHMARK_ROUNDS` | `3` | Number of alternating-order rounds |
 | `SQLX_JS_BENCHMARK_SCENARIO` | all | Run one scenario by exact name |
 | `SQLX_JS_BENCHMARK_DRIVER` | all | Run one driver by exact name |
+| `SQLX_JS_BENCHMARK_RUNTIME_ENTRY` | current `dist` | Load a detached built sqlx-js entry for exact A/B runs |
+| `SQLX_JS_BENCHMARK_RTT_MS` | `0` | Add a local TCP proxy with the delay split across both directions |
+| `SQLX_JS_BENCHMARK_DESCRIPTOR_MVP` | `0` | Compare adaptive and known-`int4` one-write paths |
 
 For example, isolate mixed row decoding:
 
@@ -75,6 +78,33 @@ SQLX_JS_BENCHMARK_ROUNDS=5 \
 SQLX_JS_BENCHMARK_DURATION_MS=10000 \
   bun run benchmark:postgres
 ```
+
+The descriptor control uses the public `queryDescriptors` option for the
+managed client and the direct known-OID wire method as a raw-driver control.
+Both replace the adaptive parameter path only for
+`SELECT $1::int4 AS value`, retain live `RowDescription`, and record the
+frontend message groups in the result JSON.
+
+## Capture CPU and allocation profiles
+
+The profiling wrapper runs one filtered benchmark under the Node CPU and heap
+sampling profilers. It writes a `.cpuprofile`, a `.heapprofile`, and the exact
+non-secret run metadata under the ignored `.profiles/` directory:
+
+```bash
+SQLX_JS_BENCHMARK_SCENARIO=simple-concurrent \
+SQLX_JS_BENCHMARK_DRIVER=sqlx-js-managed \
+  bun run benchmark:postgres:profile
+```
+
+The default profile uses a 2-second warm-up and one 10-second measurement.
+Every ordinary benchmark control still applies. Set
+`SQLX_JS_BENCHMARK_PROFILE_DIR` to choose an explicit output directory. Load
+the profile files in the Chrome DevTools Performance and Memory panels and
+compare matching baseline and candidate runs.
+
+Profiling is implemented entirely by the benchmark wrapper. It adds no
+branches, counters, or timers to the published runtime.
 
 ## Interpreting results
 
@@ -96,5 +126,8 @@ the runtime soak and chaos scripts for lifecycle and fault behavior:
 bun run test:runtime-soak
 bun run test:runtime-chaos
 ```
+
+[Runtime performance tuning](./performance-tuning.md) defines the acceptance
+gates for retaining benchmark-driven changes.
 
 [Documentation index](./README.md)

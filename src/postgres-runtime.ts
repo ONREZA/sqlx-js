@@ -21,98 +21,60 @@ import {
   type RuntimeTransactionOptions,
 } from "./runtime";
 import {
+  EXECUTE_KNOWN_PARAMS,
   createPostgresClient,
+  type KnownParamsQueryClient,
   type PostgresClient as InternalPostgresClient,
   type PostgresOptions as InternalPostgresOptions,
   type PostgresQueryClient,
   type PostgresType,
 } from "./pg/driver";
 import { PostgresTypeRegistry, type RuntimeTypeCodecs } from "./postgres-codecs";
+import {
+  prepareRuntimeDescriptors,
+  type PreparedRuntimeDescriptors,
+  type RuntimeQueryDescriptor,
+} from "./runtime-descriptors";
 import { queryId } from "./query-id";
 import type { QueryExecutionMetadata } from "./query";
-import { validateTransactionSettings, type DatabaseProfile } from "./config";
+import type { DatabaseProfile } from "./config";
+import { ConnectionLostError } from "./pg/wire";
+import {
+  createTransactionRuntimeClient,
+  type PendingQuery,
+  type TransactionState,
+} from "./postgres-transaction-runtime";
+import {
+  normalizeRuntimeDatabaseUrl,
+  profileClientOptions,
+  validateRuntimeProfile,
+  type ClientLifecycleEvent,
+  type ClientSnapshot,
+  type ClientState,
+  type CloseOptions,
+  type CreateClientOptions,
+  type CreateSqlClientOptions,
+  type DeadlineOptions,
+} from "./postgres-client-options";
+export { normalizeRuntimeDatabaseUrl } from "./postgres-client-options";
+export type {
+  ClientLifecycleEvent,
+  ClientSnapshot,
+  ClientState,
+  ClientStateChangeEvent,
+  CloseOptions,
+  CreateClientOptions,
+  CreateSqlClientOptions,
+  DeadlineOptions,
+  QueryStartEvent,
+  QueryTimeoutEvent,
+} from "./postgres-client-options";
 
 export type PostgresClient = InternalPostgresClient;
 export type PostgresOptions = InternalPostgresOptions;
 export type { PostgresType };
-export type CreateClientOptions = PostgresOptions;
-
-export type ClientState = "healthy" | "poisoned" | "recycling" | "failed" | "closing" | "closed";
-
-export type QueryStartEvent = {
-  queryId: string;
-  queryName?: string;
-  profile?: string;
-  role?: string;
-  generation: number;
-};
-
-export type QueryTimeoutEvent = QueryStartEvent & {
-  durationMs: number;
-  timeoutMs: number;
-  phase: "bootstrap" | "execution";
-  outcome: "not_sent" | "unknown";
-};
-
-export type ClientStateChangeEvent = {
-  profile?: string;
-  role?: string;
-  from: ClientState;
-  to: ClientState;
-  generation: number;
-  reason?: unknown;
-};
-
-export type ClientLifecycleEvent = QueryStartEvent | QueryTimeoutEvent | ClientStateChangeEvent;
-
-export type ClientSnapshot = {
-  generation: number;
-  state: ClientState;
-  activeOperations: number;
-  lastSuccessAt: number | null;
-  lastTimeoutAt: number | null;
-  recycleCount: number;
-};
-
-export type CloseOptions = {
-  graceMs?: number;
-  forceAfterMs?: number;
-};
-
-export type DeadlineOptions = {
-  timeoutMs?: number;
-};
-
-export type CreateSqlClientOptions = CreateClientOptions & {
-  profile?: DatabaseProfile;
-  onQuery?: OnQueryHook;
-  onQueryHookError?: OnQueryHookError;
-  onQueryStart?: (event: QueryStartEvent) => void | Promise<void>;
-  onQueryTimeout?: (event: QueryTimeoutEvent) => void | Promise<void>;
-  onClientStateChange?: (event: ClientStateChangeEvent) => void | Promise<void>;
-  onLifecycleHookError?: (error: unknown, event: ClientLifecycleEvent) => void | Promise<void>;
-  operationTimeoutMs?: number;
-  cancelGraceMs?: number;
-  fileRoot?: string;
-  reloadSqlFiles?: boolean;
-  sqlFiles?: Readonly<Record<string, string>>;
-  typeCodecs?: RuntimeTypeCodecs;
-};
-type PendingQuery = PromiseLike<RuntimeQueryResult> & {
-  cancel?: () => unknown;
-  execute?: () => PendingQuery;
-};
-type TransactionState = {
-  expired?: Error;
-  deadlineAt?: number;
-  expire?: () => void;
-  pending: Set<PendingQuery>;
-  interrupt: Deferred<never>;
-};
-
 type Deferred<T> = {
   promise: Promise<T>;
-  resolve(value: T): void;
   reject(error: unknown): void;
 };
 
@@ -121,7 +83,7 @@ type OperationRecord = {
   generation: PoolGeneration;
   metadata: QueryExecutionMetadata;
   startedAt: number;
-  deadlineAt?: number;
+  deadlineAt: number | undefined;
   phase: "bootstrap" | "execution";
   bootstrapStarted: boolean;
   sent: boolean;
@@ -147,25 +109,15 @@ type PoolGeneration = {
 };
 
 function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
+  const promise = new Promise<T>((_, rej) => {
     reject = rej;
   });
-  return { promise, resolve, reject };
+  return { promise, reject };
 }
 
 function resolvedFileRoot(value?: string): string {
   return resolve(value ?? process.env.SQLX_JS_FILE_ROOT ?? process.cwd());
-}
-
-export function normalizeRuntimeDatabaseUrl(url: string): string {
-  if (!/^postgres(?:ql)?:\/\//i.test(url)) return url;
-  const parsed = new URL(url);
-  if (!parsed.searchParams.has("schema")) return url;
-  parsed.searchParams.delete("schema");
-  return parsed.toString();
 }
 
 class ManagedPostgresRuntime implements RuntimeClient {
@@ -183,6 +135,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
   private readonly cancelGraceMs: number;
   private readonly profile?: DatabaseProfile;
   private readonly typeCodecs?: RuntimeTypeCodecs;
+  private readonly descriptors?: PreparedRuntimeDescriptors;
   private readonly createPool: () => PostgresClient;
   private current: PoolGeneration;
   private generations = new Set<PoolGeneration>();
@@ -198,6 +151,10 @@ class ManagedPostgresRuntime implements RuntimeClient {
   private recycleCount = 0;
 
   constructor(createPool: () => PostgresClient, options: CreateSqlClientOptions) {
+    const hasQueryDescriptors = Object.hasOwn(options, "queryDescriptors");
+    if (options.execution === "adaptive" && hasQueryDescriptors) {
+      throw new Error("sqlx-js: execution: \"adaptive\" cannot be combined with queryDescriptors");
+    }
     this.createPool = createPool;
     this.onQuery = options.onQuery;
     this.onQueryHookError = options.onQueryHookError;
@@ -223,6 +180,9 @@ class ManagedPostgresRuntime implements RuntimeClient {
     this.reloadSqlFiles = options.reloadSqlFiles ?? false;
     this.sqlFiles = options.sqlFiles;
     this.typeCodecs = options.typeCodecs;
+    this.descriptors = hasQueryDescriptors
+      ? prepareRuntimeDescriptors(options.queryDescriptors!, this.profile)
+      : undefined;
     this.current = this.createGeneration();
   }
 
@@ -243,18 +203,22 @@ class ManagedPostgresRuntime implements RuntimeClient {
 
   private async executeRequest(request: RuntimeQueryRequest): Promise<RuntimeQueryResult> {
     const generation = this.acceptGeneration();
+    const descriptor = this.descriptors?.queries.get(request.metadata.queryId);
     const timeoutMs = validateOptionalTimeout(
       request.options?.timeoutMs ?? this.operationTimeoutMs,
       "timeoutMs",
     );
     const operation = this.startOperation(generation, request.metadata, timeoutMs, request.options?.signal);
-    const work = this.executeQuery(generation, operation, request);
+    const work = this.executeQuery(generation, operation, request, descriptor);
     try {
       const result = await Promise.race([work, operation.interruption.promise]);
       this.lastSuccessAt = Date.now();
       if (this.onQuery) {
         this.notifyQuery({
           ...request.metadata,
+          executionPath: request.params.length === 0
+            ? undefined
+            : descriptor ? "descriptor" : "adaptive",
           query: request.observedQuery,
           params: request.observedParams,
           durationMs: performance.now() - operation.startedAt,
@@ -267,6 +231,9 @@ class ManagedPostgresRuntime implements RuntimeClient {
       if (this.onQuery) {
         this.notifyQuery({
           ...request.metadata,
+          executionPath: request.params.length === 0
+            ? undefined
+            : descriptor ? "descriptor" : "adaptive",
           query: request.observedQuery,
           params: request.observedParams,
           durationMs: performance.now() - operation.startedAt,
@@ -287,9 +254,12 @@ class ManagedPostgresRuntime implements RuntimeClient {
     const timeoutMs = validateOptionalTimeout(options.timeoutMs ?? this.operationTimeoutMs, "timeoutMs");
     const metadata = { queryId: queryId("sqlx-js.transaction"), queryName: "sqlx-js.transaction" };
     const operation = this.startOperation(generation, metadata, undefined, undefined);
-    const state: TransactionState = { pending: new Set(), interrupt: deferred<never>() };
+    const state: TransactionState = {
+      pending: new Set(),
+      interrupt: operation.interruption,
+      nextSavepoint: 1,
+    };
     operation.transactionState = state;
-    void state.interrupt.promise.catch(() => {});
     let timeoutError: TransactionTimeoutError | undefined;
     let abortError: QueryAbortedError | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -309,7 +279,6 @@ class ManagedPostgresRuntime implements RuntimeClient {
         this.notifyTimeout(operation, timeoutMs);
         this.cancelTransaction(state);
         operation.interruption.reject(error);
-        state.interrupt.reject(error);
       };
       state.expire = expire;
       const remainingMs = operation.deadlineAt - performance.now();
@@ -325,7 +294,6 @@ class ManagedPostgresRuntime implements RuntimeClient {
         state.expired = error;
         this.cancelTransaction(state);
         operation.interruption.reject(error);
-        state.interrupt.reject(error);
       };
       if (options.signal.aborted) abortListener();
       else options.signal.addEventListener("abort", abortListener, { once: true });
@@ -338,7 +306,6 @@ class ManagedPostgresRuntime implements RuntimeClient {
         result = await Promise.race([
           begin,
           operation.interruption.promise,
-          state.interrupt.promise,
         ]);
       } finally {
         if (operation.deadlineAt !== undefined && performance.now() >= operation.deadlineAt) expire?.();
@@ -438,7 +405,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
     const generation: PoolGeneration = {
       id: this.nextGeneration++,
       pool,
-      registry: new PostgresTypeRegistry(pool, this.typeCodecs),
+      registry: new PostgresTypeRegistry(pool, this.typeCodecs, this.descriptors?.types),
       state: "healthy",
       active: new Map(),
       driverPending: new Set(),
@@ -467,7 +434,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
       generation,
       metadata,
       startedAt,
-      ...(timeoutMs === undefined ? {} : { deadlineAt: startedAt + timeoutMs }),
+      deadlineAt: timeoutMs === undefined ? undefined : startedAt + timeoutMs,
       phase: "bootstrap",
       bootstrapStarted: false,
       sent: false,
@@ -499,7 +466,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
       operation.signal.removeEventListener("abort", operation.abortListener);
     }
     operation.generation.active.delete(operation.id);
-    if (this.activeOperationCount() === 0) {
+    if (this.activeDrainWaiters.size > 0 && this.activeOperationCount() === 0) {
       for (const resolve of this.activeDrainWaiters) resolve();
       this.activeDrainWaiters.clear();
     }
@@ -509,6 +476,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
     generation: PoolGeneration,
     operation: OperationRecord,
     request: RuntimeQueryRequest,
+    descriptor: RuntimeQueryDescriptor | undefined,
   ): Promise<RuntimeQueryResult> {
     this.checkOperation(operation);
     await this.bootstrap(generation, operation);
@@ -516,10 +484,16 @@ class ManagedPostgresRuntime implements RuntimeClient {
     operation.phase = "execution";
     const params = this.encodeParams(generation.pool, request.params);
     this.checkOperation(operation);
-    const pending = generation.pool.unsafe(
-      request.query,
-      params as never[],
-    ) as unknown as PendingQuery;
+    const pending = descriptor
+      ? this.pendingDescriptorQuery(
+        generation,
+        generation.pool,
+        request.metadata.queryId,
+        request.query,
+        descriptor,
+        params,
+      )
+      : generation.pool.unsafe(request.query, params as never[]) as unknown as PendingQuery;
     this.checkOperation(operation);
     operation.pending = pending;
     operation.sent = true;
@@ -547,8 +521,13 @@ class ManagedPostgresRuntime implements RuntimeClient {
     operation.sent = true;
     const driver = generation.pool.begin(async (tx) => {
       if (state.expired) throw state.expired;
-      const scoped = new TransactionRuntimeClient(this, generation, tx, state);
-      return await Promise.race([fn(scoped), state.interrupt.promise]);
+      const scoped = createTransactionRuntimeClient(this, generation, tx, state);
+      try {
+        return await Promise.race([fn(scoped), state.interrupt.promise]);
+      } finally {
+        scoped.finish();
+        await scoped.settle();
+      }
     }) as Promise<R>;
     operation.driver = driver;
     try {
@@ -565,6 +544,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
     request: RuntimeQueryRequest,
   ): Promise<RuntimeQueryResult> {
     this.checkTransactionState(state);
+    const descriptor = this.descriptors?.queries.get(request.metadata.queryId);
     const timeoutMs = validateOptionalTimeout(request.options?.timeoutMs, "timeoutMs");
     const startedAt = performance.now();
     if (this.onQueryStart) {
@@ -625,10 +605,16 @@ class ManagedPostgresRuntime implements RuntimeClient {
         expire?.();
       }
       if (state.expired) throw state.expired;
-      pending = client.unsafe(
-        request.query,
-        params as never[],
-      ) as unknown as PendingQuery;
+      pending = descriptor
+        ? this.pendingDescriptorQuery(
+          generation,
+          client,
+          request.metadata.queryId,
+          request.query,
+          descriptor,
+          params,
+        )
+        : client.unsafe(request.query, params as never[]) as unknown as PendingQuery;
       this.checkTransactionState(state);
       if (deadlineAt !== undefined && performance.now() >= deadlineAt && !state.expired) {
         expire?.();
@@ -651,6 +637,9 @@ class ManagedPostgresRuntime implements RuntimeClient {
       if (this.onQuery) {
         this.notifyQuery({
           ...request.metadata,
+          executionPath: request.params.length === 0
+            ? undefined
+            : descriptor ? "descriptor" : "adaptive",
           query: request.observedQuery,
           params: request.observedParams,
           durationMs: performance.now() - startedAt,
@@ -659,10 +648,16 @@ class ManagedPostgresRuntime implements RuntimeClient {
       }
       return result;
     } catch (cause) {
-      const error = state.expired ?? toPgError(cause) ?? cause;
+      let error = state.expired ?? toPgError(cause) ?? cause;
+      if (error instanceof ConnectionLostError) {
+        error = this.failTransaction(state, error);
+      }
       if (this.onQuery) {
         this.notifyQuery({
           ...request.metadata,
+          executionPath: request.params.length === 0
+            ? undefined
+            : descriptor ? "descriptor" : "adaptive",
           query: request.observedQuery,
           params: request.observedParams,
           durationMs: performance.now() - startedAt,
@@ -677,6 +672,36 @@ class ManagedPostgresRuntime implements RuntimeClient {
       }
       if (pending) state.pending.delete(pending);
     }
+  }
+
+  async executeTransactionControl(
+    client: PostgresQueryClient,
+    state: TransactionState,
+    query: string,
+  ): Promise<void> {
+    this.checkTransactionState(state);
+    let pending: PendingQuery | undefined;
+    try {
+      pending = client.unsafe(query, []) as unknown as PendingQuery;
+      state.pending.add(pending);
+      pending.execute?.();
+      await Promise.race([Promise.resolve(pending), state.interrupt.promise]);
+      this.checkTransactionState(state);
+    } catch (cause) {
+      const error = state.expired ?? toPgError(cause) ?? cause;
+      throw this.failTransaction(state, error);
+    } finally {
+      if (pending) state.pending.delete(pending);
+    }
+  }
+
+  private failTransaction(state: TransactionState, cause: unknown): Error {
+    if (state.expired) return state.expired;
+    const error = cause instanceof Error ? cause : new Error(String(cause));
+    state.expired = error;
+    this.cancelTransaction(state);
+    state.interrupt.reject(error);
+    return error;
   }
 
   private async bootstrap(
@@ -701,7 +726,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
     this.checkTransactionState(state);
   }
 
-  private checkTransactionState(state: TransactionState): void {
+  checkTransactionState(state: TransactionState): void {
     if (!state.expired && state.deadlineAt !== undefined && performance.now() >= state.deadlineAt) {
       state.expire?.();
     }
@@ -846,7 +871,6 @@ class ManagedPostgresRuntime implements RuntimeClient {
       this.cancelTransaction(operation.transactionState);
       if (!operation.transactionState.expired) {
         operation.transactionState.expired = error;
-        operation.transactionState.interrupt.reject(error);
       }
     }
     operation.interruption.reject(error);
@@ -862,6 +886,29 @@ class ManagedPostgresRuntime implements RuntimeClient {
 
   private encodeParams(client: PostgresClient, params: unknown[]): unknown[] {
     return params.length === 0 ? params : params.map((param) => this.encodeParam(client, param));
+  }
+
+  private pendingDescriptorQuery(
+    generation: PoolGeneration,
+    client: PostgresQueryClient,
+    queryId: string,
+    query: string,
+    descriptor: RuntimeQueryDescriptor,
+    params: unknown[],
+  ): PendingQuery {
+    if (descriptor.params.length !== params.length) {
+      throw new Error(
+        `sqlx-js: runtime descriptor ${queryId} expects `
+        + `${descriptor.params.length} parameter(s), received ${params.length}`,
+      );
+    }
+    const executeKnown = (client as PostgresQueryClient & Partial<KnownParamsQueryClient>)[EXECUTE_KNOWN_PARAMS];
+    if (!executeKnown) {
+      throw new Error("sqlx-js: queryDescriptors require the integrated PostgreSQL driver");
+    }
+    const parameterOids = descriptor.params.map((type) =>
+      typeof type === "number" ? type : generation.registry.descriptorOid(type));
+    return executeKnown.call(client, query, parameterOids, params) as unknown as PendingQuery;
   }
 
   private encodeParam(client: PostgresClient, param: unknown): unknown {
@@ -992,43 +1039,6 @@ class ManagedPostgresRuntime implements RuntimeClient {
   }
 }
 
-class TransactionRuntimeClient implements RuntimeClient {
-  readonly fileRoot: string;
-  readonly reloadSqlFiles: boolean;
-  readonly sqlFiles?: Readonly<Record<string, string>>;
-
-  constructor(
-    private readonly runtime: ManagedPostgresRuntime,
-    private readonly generation: PoolGeneration,
-    private readonly client: PostgresQueryClient,
-    private readonly state: TransactionState,
-  ) {
-    this.fileRoot = runtime.fileRoot;
-    this.reloadSqlFiles = runtime.reloadSqlFiles;
-    this.sqlFiles = runtime.sqlFiles;
-  }
-
-  async query(query: string, params: unknown[]): Promise<RuntimeQueryResult> {
-    return await this.execute({
-      query,
-      params,
-      observedQuery: query,
-      observedParams: params,
-      metadata: { queryId: queryId(query) },
-    });
-  }
-
-  async execute(request: RuntimeQueryRequest): Promise<RuntimeQueryResult> {
-    return await this.runtime.executeTransactionQuery(this.generation, this.client, this.state, request);
-  }
-
-  async transaction<R>(): Promise<R> {
-    throw new Error("sqlx-js.transaction: nested transactions are not supported");
-  }
-
-  async close(): Promise<void> {}
-}
-
 function validateTimeout(value: number, name: string, allowZero = false): number {
   const minimum = allowZero ? 0 : 1;
   if (!Number.isSafeInteger(value) || value < minimum || value > 2_147_483_647) {
@@ -1084,82 +1094,6 @@ let defaultClient: ManagedPostgresRuntime | null = null;
 export function createClient(url = process.env.DATABASE_URL, options: CreateClientOptions = {}): PostgresClient {
   if (!url) throw new Error("sqlx-js: DATABASE_URL is not set");
   return createPostgresClient(normalizeRuntimeDatabaseUrl(url), options);
-}
-
-function postgresClientOptions(options: CreateSqlClientOptions): CreateClientOptions {
-  const {
-    profile: _profile,
-    onQuery: _onQuery,
-    onQueryHookError: _onQueryHookError,
-    onQueryStart: _onQueryStart,
-    onQueryTimeout: _onQueryTimeout,
-    onClientStateChange: _onClientStateChange,
-    onLifecycleHookError: _onLifecycleHookError,
-    operationTimeoutMs: _operationTimeoutMs,
-    cancelGraceMs: _cancelGraceMs,
-    fileRoot: _fileRoot,
-    reloadSqlFiles: _reloadSqlFiles,
-    sqlFiles: _sqlFiles,
-    typeCodecs: _typeCodecs,
-    ...clientOptions
-  } = options;
-  return clientOptions;
-}
-
-function hasRoleStartupOption(value: string): boolean {
-  return /(?:^|\s)-c\s*(?:"|')?role(?:\s*=|\s+)/i.test(value);
-}
-
-function validateRuntimeProfile(profile: DatabaseProfile): void {
-  if (!profile || typeof profile !== "object") {
-    throw new Error("sqlx-js: profile must be a database profile");
-  }
-  if (typeof profile.name !== "string" || !profile.name.trim()) {
-    throw new Error("sqlx-js: profile.name must be a non-empty string");
-  }
-  if (typeof profile.role !== "string" || !profile.role.trim()) {
-    throw new Error(`sqlx-js: profile ${profile.name} must declare a non-empty PostgreSQL role`);
-  }
-  if (profile.transactionSettings !== undefined) {
-    validateTransactionSettings(
-      profile.transactionSettings,
-      `profile ${profile.name} transactionSettings`,
-    );
-  }
-}
-
-function profileClientOptions(
-  url: string,
-  options: CreateSqlClientOptions,
-): CreateClientOptions {
-  const clientOptions = postgresClientOptions(options);
-  const profile = options.profile;
-  if (profile === undefined) return clientOptions;
-  validateRuntimeProfile(profile);
-  const configuredRole = clientOptions.role;
-  if (configuredRole !== undefined && configuredRole !== profile.role) {
-    throw new Error(
-      `sqlx-js: profile ${profile.name} requires role ${profile.role}, but role is ${String(configuredRole)}`,
-    );
-  }
-  if (typeof clientOptions.startupOptions === "string" && hasRoleStartupOption(clientOptions.startupOptions)) {
-    throw new Error(`sqlx-js: profile ${profile.name} cannot be combined with a role in startupOptions`);
-  }
-  if (/^postgres(?:ql)?:\/\//i.test(url)) {
-    const parsed = new URL(url);
-    const urlRole = parsed.searchParams.get("role");
-    if (urlRole !== null && urlRole !== profile.role) {
-      throw new Error(`sqlx-js: profile ${profile.name} requires role ${profile.role}, but DATABASE_URL uses role ${urlRole}`);
-    }
-    const urlOptions = parsed.searchParams.get("options");
-    if (urlOptions && hasRoleStartupOption(urlOptions)) {
-      throw new Error(`sqlx-js: profile ${profile.name} cannot be combined with a role in DATABASE_URL options`);
-    }
-  }
-  return {
-    ...clientOptions,
-    role: profile.role,
-  };
 }
 
 function createManagedClient(url: string | undefined, options: CreateSqlClientOptions): ManagedPostgresRuntime {

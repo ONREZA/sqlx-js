@@ -12,6 +12,7 @@ import { mergeExtensionTypes } from "../src/pg/extensions";
 import { fingerprint } from "../src/cache";
 import { createSqlClient as createRuntimeSqlClient, type PostgresClient } from "../src/postgres-runtime";
 import { QueryTimeoutError } from "../src/runtime";
+import type { RuntimeQueryDescriptors } from "../src/runtime-descriptors";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-integration-"));
@@ -226,6 +227,98 @@ if (!haveIntegrationDatabase) {
     expect(queryCacheFiles().length).toBeGreaterThan(0);
   });
 
+  test("known parameter OIDs execute through the extended protocol", async () => {
+    const client = new PgClient(parseDatabaseUrl(dbUrl));
+    await client.connect();
+    try {
+      const result = await client.execKnownParamsText(
+        "SELECT $1::int4 AS value",
+        [23],
+        ["42"],
+      );
+      const value = result.rows[0]?.[0];
+      if (!value) throw new Error("expected one non-null value");
+      expect(new TextDecoder().decode(value)).toBe("42");
+      expect(result.fields[0]?.typeOid).toBe(23);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("generated runtime descriptors execute built-in and database-local parameter types", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        DROP TYPE IF EXISTS tmp_runtime_descriptor_status;
+        CREATE TYPE tmp_runtime_descriptor_status AS ENUM ('ready', 'done')
+      `);
+      writeFile("a.ts",
+        "import { sql } from \"@onreza/sqlx-js\";\n"
+        + "await sql(\"SELECT $value::int4 AS value\", { value: 42 });\n"
+        + "await sql(\"SELECT $1::tmp_runtime_descriptor_status AS value\", \"ready\");\n",
+      );
+      const prepared = prepare();
+      expect(prepared.code, prepared.stderr).toBe(0);
+      const descriptorPath = join(tmp, ".sqlx-js", "runtime-descriptors.json");
+      const descriptors = JSON.parse(readFileSync(descriptorPath, "utf8")) as RuntimeQueryDescriptors;
+      expect(descriptors.queries[fingerprint("SELECT $value::int4 AS value")]).toEqual({
+        params: [23],
+      });
+      expect(Object.values(descriptors.types)).toContainEqual({
+        schema: "public",
+        name: "tmp_runtime_descriptor_status",
+      });
+
+      const runtime = createRuntimeSqlClient(dbUrl, { queryDescriptors: descriptors });
+      try {
+        expect(await runtime.unsafe("SELECT $value::int4 AS value", { value: 42 })).toEqual([
+          { value: 42 },
+        ]);
+        expect(await runtime.unsafe(
+          "SELECT $1::tmp_runtime_descriptor_status AS value",
+          "ready",
+        )).toEqual([{ value: "ready" }]);
+      } finally {
+        await runtime.close();
+      }
+      expect(prepare(["--check"]).code).toBe(0);
+      expect(prepare(["--offline"]).code).toBe(0);
+      expect(prepare(["--verify"]).code).toBe(0);
+      await setup.simpleQuery("DROP TYPE tmp_runtime_descriptor_status");
+      const observedQueries: string[] = [];
+      const staleRuntime = createRuntimeSqlClient(dbUrl, {
+        queryDescriptors: descriptors,
+        onQuery: ({ query }) => observedQueries.push(query),
+      });
+      try {
+        await expect(staleRuntime.ready()).rejects.toThrow(
+          /queryDescriptors type public\.tmp_runtime_descriptor_status does not exist/,
+        );
+        expect(observedQueries).toEqual([]);
+      } finally {
+        await staleRuntime.close();
+      }
+
+      await setup.simpleQuery(
+        "CREATE TYPE tmp_runtime_descriptor_status AS ENUM ('ready', 'done')",
+      );
+      const recreatedRuntime = createRuntimeSqlClient(dbUrl, { queryDescriptors: descriptors });
+      try {
+        await recreatedRuntime.ready();
+        expect(await recreatedRuntime.unsafe(
+          "SELECT $1::tmp_runtime_descriptor_status AS value",
+          "ready",
+        )).toEqual([{ value: "ready" }]);
+      } finally {
+        await recreatedRuntime.close();
+      }
+    } finally {
+      await setup.simpleQuery("DROP TYPE IF EXISTS tmp_runtime_descriptor_status").catch(() => {});
+      await setup.end();
+    }
+  });
+
   test("prepare describes named parameters and emits an object contract", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
@@ -324,8 +417,8 @@ export default {
         "import { databaseProfiles } from \"./sqlx-js.config\";\n" +
         "const api = createSqlClient(undefined, { profile: databaseProfiles.api });\n" +
         "const worker = createSqlClient(undefined, { profile: databaseProfiles.worker });\n" +
-        "await api.sql.one(\"SELECT value FROM profile_target\");\n" +
-        "await worker.sql.one(\"SELECT value FROM profile_target\");\n",
+        "await api.sql.one(\"SELECT value FROM profile_target WHERE $1::boolean\", true);\n" +
+        "await worker.sql.one(\"SELECT value FROM profile_target WHERE $1::boolean\", true);\n",
       );
 
       const prepared = prepareRoot(root);
@@ -335,16 +428,19 @@ export default {
       expect(prepareRoot(root, ["--verify"]).code).toBe(0);
       const entries = queryCacheFiles(root)
         .map((file) => JSON.parse(readFileSync(join(root, ".sqlx-js", file), "utf8")))
-        .filter((entry) => entry.query === "SELECT value FROM profile_target");
+        .filter((entry) => entry.query === "SELECT value FROM profile_target WHERE $1::boolean");
       expect(entries).toHaveLength(2);
       expect(entries.map((entry) => entry.profile).sort()).toEqual(["api", "worker"]);
+      const queryDescriptors = JSON.parse(
+        readFileSync(join(root, ".sqlx-js/runtime-descriptors.json"), "utf8"),
+      ) as RuntimeQueryDescriptors;
 
       const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
       expect(dts).toMatch(
-        /"api": \{\n\s+"SELECT value FROM profile_target": \{ params: \[\]; row: \{ "value": number \} \};/,
+        /"api": \{\n\s+"SELECT value FROM profile_target WHERE \$1::boolean": \{ params: \[boolean\]; row: \{ "value": number \} \};/,
       );
       expect(dts).toMatch(
-        /"worker": \{\n\s+"SELECT value FROM profile_target": \{ params: \[\]; row: \{ "value": string \} \};/,
+        /"worker": \{\n\s+"SELECT value FROM profile_target WHERE \$1::boolean": \{ params: \[boolean\]; row: \{ "value": string \} \};/,
       );
 
       const doctorResult = spawnSync(
@@ -363,9 +459,21 @@ export default {
       const api = createRuntimeSqlClient(dbUrl, {
         profile: { name: "api", role: apiRole },
         operationTimeoutMs: 200,
+        queryDescriptors,
       });
-      const worker = createRuntimeSqlClient(dbUrl, { profile: { name: "worker", role: workerRole } });
+      const worker = createRuntimeSqlClient(dbUrl, {
+        profile: { name: "worker", role: workerRole },
+        queryDescriptors,
+      });
       try {
+        expect(await api.unsafe(
+          "SELECT value FROM profile_target WHERE $1::boolean",
+          true,
+        )).toEqual([{ value: 42 }]);
+        expect(await worker.unsafe(
+          "SELECT value FROM profile_target WHERE $1::boolean",
+          true,
+        )).toEqual([{ value: "worker" }]);
         expect(await api.unsafe("SELECT current_user AS role, value FROM profile_target"))
           .toEqual([expect.objectContaining({ role: apiRole, value: 42 })]);
         expect(await worker.unsafe("SELECT current_user AS role, value FROM profile_target"))
@@ -1082,6 +1190,7 @@ export default {
       "env",
       "cache",
       "tsconfig",
+      "descriptorCoverage",
       "database",
       "permissions",
       "runtimeTypes",
@@ -1350,6 +1459,7 @@ export default {
         { fp: "q2", query: "SELECT email FROM tmp_users" },
         { fp: "q3", query: "SELECT title FROM tmp_join_posts" },
         { fp: "q4", query: "SELECT external_id FROM tmp_join_users" },
+        { fp: "qzero", query: "SELECT FROM tmp_users LIMIT 1" },
         {
           fp: "qmerge",
           query: "MERGE INTO tmp_users AS target USING (SELECT $1::bigint AS id) AS source ON target.id = source.id WHEN MATCHED THEN UPDATE SET name = target.name",
@@ -1357,12 +1467,13 @@ export default {
         { fp: "qbad", query: "SELECT * FROM no_such_relation_xyz" },
       ];
       const results = await validateAll(cfg, session, queries, 4);
-      expect(results.size).toBe(6);
+      expect(results.size).toBe(7);
       const q1 = results.get("q1")!;
       expect(q1.ok).toBe(true);
       if (q1.ok) expect(q1.fields.map((f) => f.name)).toEqual(["id", "name"]);
       const q2 = results.get("q2")!;
       if (q2.ok) expect(q2.fields.map((f) => f.name)).toEqual(["email"]);
+      expect(results.get("qzero")).toMatchObject({ ok: true, fields: [], hasResultSet: true });
       expect(results.get("qmerge")).toMatchObject({ ok: true, validation: "planned" });
       expect(results.get("qbad")!.ok).toBe(false);
       // session connection stays usable after the pool drains
@@ -2160,7 +2271,7 @@ export default {
       "), second AS (\n" +
       "  INSERT INTO tmp_cte_param_required (value) VALUES ($value) RETURNING value\n" +
       ") SELECT first.value FROM first CROSS JOIN second`, { value: \"ready\" });\n" +
-      "await sql(`INSERT INTO tmp_cte_param_required (value)\n" +
+      "await sql.execute(`INSERT INTO tmp_cte_param_required (value)\n" +
       "  VALUES ($value), (COALESCE($value, 'ready'))`, { value: \"ready\" });\n" +
       "await sql(`WITH direct_value AS (\n" +
       "  INSERT INTO tmp_cte_param_a (value) VALUES ($value) RETURNING value\n" +
@@ -2171,9 +2282,9 @@ export default {
       "  INSERT INTO tmp_cte_param_required (value) SELECT $value::text\n" +
       "  WHERE $value::text IS NOT NULL RETURNING value\n" +
       ") SELECT COUNT(*)::int AS count FROM guarded_value`, { value: null });\n" +
-      "await sql(`UPDATE tmp_cte_param_a SET value = $value::text\n" +
+      "await sql.execute(`UPDATE tmp_cte_param_a SET value = $value::text\n" +
       "  WHERE value = $value::text`, { value: \"ready\" });\n" +
-      "await sql(`UPDATE tmp_cte_param_a SET value = $value::text\n" +
+      "await sql.execute(`UPDATE tmp_cte_param_a SET value = $value::text\n" +
       "  WHERE $value::text IS NULL OR value = $value::text`, { value: null });\n",
     );
     const result = prepareRoot(root, ["--strict-inference"]);
@@ -2301,6 +2412,71 @@ export default {
     expect(dts).toContain('"maybe_payload": import("@onreza/sqlx-js").JsonValue | null');
   });
 
+  test("prepare validates execution intent without runtime checks", () => {
+    const root = isolatedRoot("execution-intent");
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"UPDATE tmp_users SET name = name WHERE id < 0\");\n",
+    );
+    const warning = prepareRoot(root);
+    expect(warning.code, warning.stderr).toBe(0);
+    expect(warning.stderr).toContain("intent warning");
+    expect(warning.stderr).toContain("Use sql.execute()");
+
+    const strict = prepareRoot(root, ["--strict-inference"]);
+    expect(strict.code).toBe(1);
+    expect(strict.stderr).toContain("intent failed");
+
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql.execute(\"UPDATE tmp_users SET name = name WHERE id < 0 RETURNING id\");\n",
+    );
+    const discardedRows = prepareRoot(root);
+    expect(discardedRows.code, discardedRows.stderr).toBe(0);
+    expect(discardedRows.stderr).toContain("sql.execute() is discarding rows");
+
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql.one(\"UPDATE tmp_users SET name = name WHERE id < 0\");\n",
+    );
+    const invalidCardinality = prepareRoot(root);
+    expect(invalidCardinality.code).toBe(1);
+    expect(invalidCardinality.stderr).toContain("sql.one() requires a statement with a result set");
+
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql.one(\"SELECT FROM tmp_users LIMIT 1\");\n",
+    );
+    const zeroColumnResult = prepareRoot(root);
+    expect(zeroColumnResult.code, zeroColumnResult.stderr).toBe(0);
+    expect(readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8")).toContain("row: {  }");
+  });
+
+  test("prepare persists inference explanations for offline inspection", () => {
+    const root = isolatedRoot("inference-explain");
+    const query =
+      "SELECT related.id AS related_id FROM tmp_users base "
+      + "LEFT JOIN tmp_users related ON related.id = base.id + 1";
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      `await sql(${JSON.stringify(query)});\n`,
+    );
+    const result = prepareRoot(root, ["--strict-inference"]);
+    expect(result.code, result.stderr).toBe(0);
+    const entry = JSON.parse(
+      readFileSync(join(root, ".sqlx-js", `${fingerprint(query)}.json`), "utf8"),
+    );
+    expect(entry.inference.columns[0]).toMatchObject({
+      sources: [{
+        schema: "public",
+        table: "tmp_users",
+        column: "id",
+        notNull: true,
+      }],
+      reason: "widened by outer-join or nullable expression semantics",
+    });
+  });
+
   test("strict inference accepts set operations and inherited CTE scopes", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
@@ -2395,7 +2571,7 @@ export default {
       "await sql(\"SELECT plain AS set_plain FROM tmp_array_contracts UNION ALL SELECT plain AS set_plain FROM tmp_array_contracts\");\n" +
       "await sql(\"SELECT ARRAY[1, 2] AS non_null, ARRAY[1, NULL] AS nullable, ARRAY(SELECT id FROM tmp_users) AS selected\");\n" +
       "await sql(\"WITH values_source(value) AS (VALUES (1::int), (NULL::int)) SELECT ARRAY(SELECT value FROM values_source) AS values\");\n" +
-      "await sql(\"INSERT INTO tmp_array_contracts (plain, proven, wrapped, roles, domain_roles, pairs) VALUES ($1, $2, $3, $4, $5, ARRAY[ROW('label', 1)]::tmp_array_pair[])\", sql.array([\"a\"]), sql.array([\"b\"]), sql.array([\"c\", null]), sql.array([\"admin\"]), sql.array([\"member\"]));\n",
+      "await sql.execute(\"INSERT INTO tmp_array_contracts (plain, proven, wrapped, roles, domain_roles, pairs) VALUES ($1, $2, $3, $4, $5, ARRAY[ROW('label', 1)]::tmp_array_pair[])\", sql.array([\"a\"]), sql.array([\"b\"]), sql.array([\"c\", null]), sql.array([\"admin\"]), sql.array([\"member\"]));\n",
     );
     const result = prepareRoot(root, ["--strict-inference"]);
     expect(result.code, result.stderr).toBe(0);
@@ -2908,6 +3084,48 @@ export default {
     }
   });
 
+  test("typed savepoints recover PostgreSQL errors without hiding transaction failures", async () => {
+    const { createSqlClient } = await import("../src/index");
+    const db = createSqlClient(dbUrl);
+    const token = Date.now();
+    const firstEmail = `savepoint-${token}@example.com`;
+    const secondEmail = `savepoint-after-${token}@example.com`;
+    try {
+      await db.sql.transaction(async (tx) => {
+        await tx.savepoint(async (sp) => {
+          await sp.execute(
+            "INSERT INTO tmp_users (name, email) VALUES ($1, $2)",
+            "savepoint",
+            firstEmail,
+          );
+        });
+        const recovered = await tx.savepoint(async (sp) => {
+          try {
+            await sp.execute(
+              "INSERT INTO tmp_users (id, name, email) "
+              + "SELECT id, 'duplicate', 'duplicate@example.com' FROM tmp_users ORDER BY id LIMIT 1",
+            );
+          } catch {}
+          return true;
+        });
+        expect(recovered).toBe(true);
+        await tx.execute(
+          "INSERT INTO tmp_users (name, email) VALUES ($1, $2)",
+          "after-savepoint",
+          secondEmail,
+        );
+      });
+      const rows = await db.unsafe(
+        "SELECT email FROM tmp_users WHERE email IN ($1, $2) ORDER BY email",
+        firstEmail,
+        secondEmail,
+      ) as { email: string }[];
+      expect(rows.map((row) => row.email).sort()).toEqual([firstEmail, secondEmail].sort());
+    } finally {
+      await db.close();
+    }
+  });
+
   test("transaction timeout cancels work, rolls back, and keeps the pool usable", async () => {
     const { sql, close, TransactionTimeoutError } = await import("../src/index");
     const prev = process.env.DATABASE_URL;
@@ -3083,6 +3301,25 @@ export default {
     }
   });
 
+  test("internal pool cancels immediate work before dispatch", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      await client.unsafe("CREATE TEMP TABLE driver_cancel_immediate (value int NOT NULL)");
+      const pending = client.unsafe(
+        "INSERT INTO driver_cancel_immediate (value) VALUES (1)",
+      ).execute();
+      void pending.cancel();
+      await expect(Promise.resolve(pending)).rejects.toThrow("query cancelled before dispatch");
+      const [{ count }] = await client.unsafe<{ count: number }>(
+        "SELECT COUNT(*)::int AS count FROM driver_cancel_immediate",
+      );
+      expect(count).toBe(0);
+    } finally {
+      await client.end();
+    }
+  });
+
   test("cancellation during parameter encoding never dispatches the statement", async () => {
     const { createClient } = await import("../src/index");
     let pending: ReturnType<PostgresClient["unsafe"]> | undefined;
@@ -3130,6 +3367,35 @@ export default {
       await new Promise((resolve) => setTimeout(resolve, 30));
       await completed.cancel();
       expect((await later)[0]!.value).toBe(2);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("raw result metadata remains non-enumerable", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      const rows = await client.unsafe<{ value: number }>("SELECT 1::int AS value");
+      expect(rows.count).toBe(1);
+      expect(rows.command).toBe("SELECT");
+      expect(Object.keys(rows)).toEqual(["0"]);
+      expect(JSON.stringify(rows)).toBe('[{"value":1}]');
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("internal pool encodes UTF-8 and null bind parameters", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1 });
+    try {
+      const text = "Привет, PostgreSQL";
+      const [row] = await client.unsafe<{ value: string; missing: null }>(
+        "SELECT $1::text AS value, $2::text AS missing",
+        [text, null],
+      );
+      expect(row).toEqual({ value: text, missing: null });
     } finally {
       await client.end();
     }

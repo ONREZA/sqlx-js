@@ -9,6 +9,10 @@
     3802,
     20
   ],
+  "paramTypeIdentities": [
+    3802,
+    20
+  ],
   "paramTsTypes": [
     "import(\"@onreza/sqlx-js\").JsonParameter<SqlxJsJson.UserSettings>",
     "bigint"
@@ -32,5 +36,54 @@
       "nullable": false
     }
   ],
-  "hasResultSet": true
+  "hasResultSet": true,
+  "inference": {
+    "columns": [
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "id",
+            "notNull": true
+          }
+        ],
+        "reason": "forced non-null by the result alias",
+        "hint": "Keep alias overrides limited to application invariants that PostgreSQL cannot express"
+      },
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "settings",
+            "notNull": true
+          }
+        ],
+        "reason": "all source columns are NOT NULL"
+      }
+    ],
+    "params": [
+      {
+        "targets": [
+          {
+            "kind": "dml",
+            "table": "users",
+            "column": "settings"
+          }
+        ],
+        "reason": "a stored target or strict predicate requires a non-null value"
+      },
+      {
+        "targets": [
+          {
+            "kind": "predicate",
+            "table": "users",
+            "column": "id"
+          }
+        ],
+        "reason": "a predicate reference requires a non-null value"
+      }
+    ]
+  }
 }

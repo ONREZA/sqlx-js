@@ -1,7 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
-import { PgClient, parseDatabaseUrl, PgError } from "./pg/wire";
-import { applyPending, acquireMigrateLock, releaseMigrateLock, DEFAULT_MIGRATE_LOCK_KEY } from "./migration-core";
+import { PgError } from "./pg/wire";
 import { bindNamedParameters, rewriteNamedParameters } from "./sql-params";
 import { queryId } from "./query-id";
 import {
@@ -10,18 +7,30 @@ import {
   type QueryExecutionMode,
   type QueryExecutorMethod,
 } from "./query";
+import {
+  clearIdentifierCache,
+  clearSqlFileCache,
+  id,
+  loadSqlFile,
+} from "./runtime-files";
+
+export { clearSqlFileCache, id } from "./runtime-files";
+export { migrate, type MigrateOptions } from "./runtime-migrate";
 
 export type OnQueryEvent = {
   queryId: string;
   queryName?: string;
   profile?: string;
   role?: string;
+  executionPath?: QueryExecutionPath;
   query: string;
   params: unknown[];
   durationMs: number;
   rowCount?: number;
   error?: unknown;
 };
+
+export type QueryExecutionPath = "adaptive" | "descriptor";
 
 export type OnQueryHook = (event: OnQueryEvent) => void | Promise<void>;
 export type OnQueryHookError = (error: unknown, event: OnQueryEvent) => void | Promise<void>;
@@ -55,6 +64,7 @@ export type RuntimeClient = {
   execute?: (request: RuntimeQueryRequest) => Promise<RuntimeQueryResult>;
   transformParams?: (params: unknown[]) => unknown[] | PromiseLike<unknown[]>;
   transaction: <R>(fn: (client: RuntimeClient) => Promise<R>, options?: RuntimeTransactionOptions) => Promise<R>;
+  savepoint?: <R>(fn: (client: RuntimeClient) => Promise<R>) => Promise<R>;
   close: () => Promise<void>;
   onQuery?: OnQueryHook;
   onQueryHookError?: OnQueryHookError;
@@ -644,167 +654,6 @@ async function runOptional(
   throw new TooManyRowsError(rows.length, "0 or 1");
 }
 
-type SqlFileCacheEntry = { mtimeMs: number; size: number; content: string };
-const sqlFileCache = new Map<string, SqlFileCacheEntry>();
-function loadSqlFile(
-  path: string,
-  fileRoot = process.env.SQLX_JS_FILE_ROOT ?? process.cwd(),
-  reload = false,
-  embedded?: Readonly<Record<string, string>>,
-): string {
-  const root = resolve(fileRoot);
-  if (isAbsolute(path)) {
-    throw new Error(`sqlx-js.sql.file: path must be relative to fileRoot: ${path}`);
-  }
-  const full = resolve(root, path);
-  const rel = relative(root, full);
-  if (rel === ".." || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(rel)) {
-    throw new Error(`sqlx-js.sql.file: path escapes fileRoot: ${path}`);
-  }
-  if (embedded && Object.hasOwn(embedded, path)) return embedded[path]!;
-  try {
-    const cached = sqlFileCache.get(full);
-    if (cached && !reload) return cached.content;
-    const st = statSync(full);
-    if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
-      return cached.content;
-    }
-    const content = readFileSync(full, "utf8");
-    sqlFileCache.set(full, { mtimeMs: st.mtimeMs, size: st.size, content });
-    return content;
-  } catch (err) {
-    throw new Error(`sqlx-js.sql.file: cannot read ${path}: ${(err as Error).message}`);
-  }
-}
-
-export function clearSqlFileCache(): void {
-  sqlFileCache.clear();
-}
-
-type IdentifierWhitelist = {
-  names: Set<string>;
-  paths: Set<string>;
-};
-
-type IdentifierCacheEntry = {
-  path: string;
-  mtimeMs: number;
-  size: number;
-  whitelist: IdentifierWhitelist;
-};
-
-let identifierCache: IdentifierCacheEntry | null = null;
-
-function clearIdentifierCache(): void {
-  identifierCache = null;
-}
-
-function identifierSnapshotPath(): string {
-  return process.env.SQLX_JS_SCHEMA_PATH
-    ? resolve(process.cwd(), process.env.SQLX_JS_SCHEMA_PATH)
-    : resolve(process.cwd(), ".sqlx-js/schema/schema.json");
-}
-
-function addPath(whitelist: IdentifierWhitelist, parts: string[]): void {
-  for (const part of parts) whitelist.names.add(part);
-  whitelist.paths.add(parts.join("\0"));
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" ? value as Record<string, unknown> : null;
-}
-
-function arrayProp(obj: Record<string, unknown> | null, key: string): unknown[] {
-  const value = obj?.[key];
-  return Array.isArray(value) ? value : [];
-}
-
-function stringProp(obj: Record<string, unknown> | null, key: string): string | undefined {
-  const value = obj?.[key];
-  return typeof value === "string" ? value : undefined;
-}
-
-function buildIdentifierWhitelist(snapshot: unknown): IdentifierWhitelist {
-  const whitelist: IdentifierWhitelist = { names: new Set(), paths: new Set() };
-  const root = asRecord(snapshot);
-  for (const schema of arrayProp(root, "schemas")) {
-    if (typeof schema === "string") whitelist.names.add(schema);
-  }
-  for (const relRaw of arrayProp(root, "relations")) {
-    const rel = asRecord(relRaw);
-    const schema = stringProp(rel, "schema");
-    const name = stringProp(rel, "name");
-    if (!schema || !name) continue;
-    addPath(whitelist, [schema, name]);
-    for (const colRaw of arrayProp(rel, "columns")) {
-      const colName = stringProp(asRecord(colRaw), "name");
-      if (!colName) continue;
-      whitelist.names.add(colName);
-      addPath(whitelist, [name, colName]);
-      addPath(whitelist, [schema, name, colName]);
-    }
-    for (const idxRaw of arrayProp(rel, "indexes")) {
-      const idxName = stringProp(asRecord(idxRaw), "name");
-      if (idxName) addPath(whitelist, [schema, idxName]);
-    }
-    for (const constraintRaw of arrayProp(rel, "constraints")) {
-      const constraintName = stringProp(asRecord(constraintRaw), "name");
-      if (constraintName) {
-        addPath(whitelist, [schema, constraintName]);
-        addPath(whitelist, [name, constraintName]);
-        addPath(whitelist, [schema, name, constraintName]);
-      }
-    }
-  }
-  for (const typeRaw of arrayProp(root, "types")) {
-    const t = asRecord(typeRaw);
-    const schema = stringProp(t, "schema");
-    const name = stringProp(t, "name");
-    if (schema && name) addPath(whitelist, [schema, name]);
-  }
-  for (const fnRaw of arrayProp(root, "functions")) {
-    const fn = asRecord(fnRaw);
-    const schema = stringProp(fn, "schema");
-    const name = stringProp(fn, "name");
-    if (schema && name) addPath(whitelist, [schema, name]);
-  }
-  return whitelist;
-}
-
-function loadIdentifierWhitelist(): IdentifierWhitelist {
-  const path = identifierSnapshotPath();
-  if (!existsSync(path)) {
-    throw new Error(`sqlx-js.id: schema snapshot not found at ${path}. Run \`sqlx-js snapshot dump\`.`);
-  }
-  const st = statSync(path);
-  if (identifierCache && identifierCache.path === path && identifierCache.mtimeMs === st.mtimeMs && identifierCache.size === st.size) {
-    return identifierCache.whitelist;
-  }
-  const snapshot = JSON.parse(readFileSync(path, "utf8"));
-  const whitelist = buildIdentifierWhitelist(snapshot);
-  identifierCache = { path, mtimeMs: st.mtimeMs, size: st.size, whitelist };
-  return whitelist;
-}
-
-function quoteIdentifier(part: string): string {
-  if (part.length === 0) throw new Error("sqlx-js.id: identifier segment must not be empty");
-  if (part.includes("\0")) throw new Error("sqlx-js.id: identifier segment must not contain NUL");
-  return `"${part.replace(/"/g, '""')}"`;
-}
-
-export function id(...parts: string[]): string {
-  if (parts.length === 0) throw new Error("sqlx-js.id: at least one identifier segment is required");
-  if (parts.length > 3) throw new Error("sqlx-js.id: expected 1 to 3 identifier segments");
-  const whitelist = loadIdentifierWhitelist();
-  const ok = parts.length === 1
-    ? whitelist.names.has(parts[0]!)
-    : whitelist.paths.has(parts.join("\0"));
-  if (!ok) {
-    throw new Error(`sqlx-js.id: identifier is not present in schema snapshot: ${parts.join(".")}`);
-  }
-  return parts.map(quoteIdentifier).join(".");
-}
-
 type FileCallable = AnyFn & { one: AnyOneFn; optional: AnyOptionalFn; execute: AnyExecuteFn };
 type SqlCallable = AnyFn & {
   file: FileCallable;
@@ -815,6 +664,10 @@ type SqlCallable = AnyFn & {
   json: typeof json;
   array: typeof array;
   [QUERY_EXECUTOR]: QueryExecutorMethod;
+};
+
+type SavepointSqlCallable = SqlCallable & {
+  savepoint: <R>(fn: (client: SavepointSqlCallable) => Promise<R>) => Promise<R>;
 };
 
 function executeDefinedQuery(
@@ -831,7 +684,7 @@ function executeDefinedQuery(
   return runQuery(client, query, params, metadata, options);
 }
 
-function makeBoundCallable(client: RuntimeClient): SqlCallable {
+function makeBoundCallable(client: RuntimeClient): SavepointSqlCallable {
   const fn: AnyFn = (async (query: string, ...params: unknown[]) => {
     return runQuery(client, query, params);
   }) as AnyFn;
@@ -863,7 +716,15 @@ function makeBoundCallable(client: RuntimeClient): SqlCallable {
   (fn as SqlCallable)[QUERY_EXECUTOR] = (mode, query, params, metadata, options) => {
     return executeDefinedQuery(client, mode, query, params, metadata, options);
   };
-  return fn as SqlCallable;
+  (fn as SavepointSqlCallable).savepoint = async <R>(
+    callback: (savepoint: SavepointSqlCallable) => Promise<R>,
+  ): Promise<R> => {
+    if (!client.savepoint) throw new Error("sqlx-js.savepoint: savepoints require a transaction-scoped executor");
+    return await client.savepoint(async (savepointClient) =>
+      await callback(makeBoundCallable(savepointClient))
+    );
+  };
+  return fn as SavepointSqlCallable;
 }
 
 type TransactionOptionBase = {
@@ -1054,63 +915,4 @@ export function createSqlRuntime(getClient: () => RuntimeClient): RuntimeApi {
   }) as (query: string, ...params: unknown[]) => Promise<Record<string, unknown>[]>;
 
   return { sql: root, unsafe };
-}
-
-export type MigrateOptions = {
-  dir?: string;
-  databaseUrl?: string;
-  log?: (msg: string) => void;
-  lockKey?: number | bigint;
-  lockTimeoutMs?: number;
-};
-
-function normalizeLockKey(lockKey: number | bigint): bigint {
-  if (typeof lockKey === "bigint") return lockKey;
-  if (!Number.isSafeInteger(lockKey)) {
-    throw new Error(`sqlx-js.migrate: lockKey must be a safe integer or bigint, got ${lockKey}`);
-  }
-  return BigInt(lockKey);
-}
-
-export async function migrate(opts: MigrateOptions = {}): Promise<void> {
-  const url = opts.databaseUrl ?? process.env.DATABASE_URL;
-  if (!url) throw new Error("sqlx-js.migrate: DATABASE_URL is required");
-  const dir = opts.dir ?? "migrations";
-  const log = opts.log ?? ((m: string) => console.log(`[sqlx-js] ${m}`));
-  const lockKey = normalizeLockKey(opts.lockKey ?? DEFAULT_MIGRATE_LOCK_KEY);
-
-  const cfg = parseDatabaseUrl(url);
-  const client = new PgClient(cfg);
-  await client.connect();
-  let locked = false;
-  try {
-    await acquireMigrateLock(client, lockKey, opts.lockTimeoutMs);
-    locked = true;
-    let appliedAny = false;
-    const result = await applyPending(client, dir, (e) => {
-      if (e.kind === "applied") {
-        log(`migrate: applied ${String(e.version).padStart(4, "0")}_${e.name}`);
-        appliedAny = true;
-      } else if (e.kind === "adopted") {
-        log(`migrate: adopted ${String(e.version).padStart(4, "0")}_${e.name} (${e.replaced} replaced)`);
-        appliedAny = true;
-      } else if (e.kind === "tampered") {
-        throw new Error(
-          `sqlx-js.migrate: ${e.version}_${e.name} hash mismatch (applied ${e.applied.slice(0, 16)}… vs current ${e.current.slice(0, 16)}…)`,
-        );
-      } else {
-        throw new Error(`sqlx-js.migrate: ${e.version}_${e.name} failed — ${e.error}`);
-      }
-    });
-    if (!appliedAny) log(`migrate: up-to-date (${result.applied + result.failed + result.tampered === 0 ? "no pending" : ""})`);
-  } finally {
-    if (locked) {
-      try {
-        await releaseMigrateLock(client, lockKey);
-      } catch (e) {
-        log(`migrate: failed to release advisory lock: ${(e as Error).message}`);
-      }
-    }
-    await client.end();
-  }
 }

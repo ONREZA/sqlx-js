@@ -9,6 +9,10 @@
     25,
     20
   ],
+  "paramTypeIdentities": [
+    25,
+    20
+  ],
   "paramTsTypes": [
     "string",
     "bigint"
@@ -18,5 +22,30 @@
     false
   ],
   "columns": [],
-  "hasResultSet": false
+  "hasResultSet": false,
+  "inference": {
+    "columns": [],
+    "params": [
+      {
+        "targets": [
+          {
+            "kind": "dml",
+            "table": "users",
+            "column": "name"
+          }
+        ],
+        "reason": "a stored target or strict predicate requires a non-null value"
+      },
+      {
+        "targets": [
+          {
+            "kind": "predicate",
+            "table": "users",
+            "column": "id"
+          }
+        ],
+        "reason": "a predicate reference requires a non-null value"
+      }
+    ]
+  }
 }

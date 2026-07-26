@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,8 +8,22 @@ import {
   fingerprint,
   portableCacheOid,
   readCacheManifest,
+  type CacheEntry,
   writeCacheManifest,
 } from "../src/cache";
+
+function emptyEntry(query: string, hasResultSet = false): CacheEntry {
+  return {
+    query,
+    paramOids: [],
+    paramTypeIdentities: [],
+    paramTsTypes: [],
+    paramNullable: [],
+    columns: [],
+    hasResultSet,
+    inference: { columns: [], params: [] },
+  };
+}
 
 test("portable cache OIDs keep built-ins and normalize database-local types", () => {
   expect(portableCacheOid(20)).toBe(20);
@@ -57,6 +71,7 @@ test("Cache rejects malformed named parameter metadata", () => {
     writeFileSync(join(dir, "bad.json"), JSON.stringify({
       query: "SELECT $1",
       paramOids: [23],
+      paramTypeIdentities: [23],
       paramTsTypes: ["number"],
       paramNames: ["id", "extra"],
       columns: [],
@@ -66,6 +81,7 @@ test("Cache rejects malformed named parameter metadata", () => {
     writeFileSync(join(dir, "bad.json"), JSON.stringify({
       query: "SELECT $user_id",
       paramOids: [23],
+      paramTypeIdentities: [23],
       paramTsTypes: ["number"],
       paramNames: ["id"],
       columns: [],
@@ -77,17 +93,60 @@ test("Cache rejects malformed named parameter metadata", () => {
   }
 });
 
+test("Cache rejects missing or incomplete inference explanations", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sqlx-js-cache-inference-"));
+  try {
+    const path = join(dir, "bad.json");
+    writeFileSync(path, JSON.stringify({
+      ...emptyEntry("SELECT 1"),
+      inference: undefined,
+    }));
+    expect(() => new Cache(dir).read("bad")).toThrow(/has no inference explanations.*sqlx-js prepare/);
+
+    writeFileSync(path, JSON.stringify({
+      ...emptyEntry("SELECT 1"),
+      columns: [{ name: "value", typeOid: 23, tsType: "number", nullable: false }],
+    }));
+    expect(() => new Cache(dir).read("bad")).toThrow(/invalid inference explanations.*sqlx-js prepare/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Cache validates inference explanations before publishing an entry", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sqlx-js-cache-write-inference-"));
+  try {
+    const cache = new Cache(dir);
+    expect(() => cache.write("bad", {
+      ...emptyEntry("SELECT $1"),
+      paramOids: [23],
+      paramTypeIdentities: [23],
+      paramTsTypes: ["number"],
+      paramNullable: [false],
+    })).toThrow(/invalid inference explanations.*sqlx-js prepare/);
+    expect(existsSync(join(dir, "bad.json"))).toBe(false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Cache rejects a production entry whose query does not match its fingerprint", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sqlx-js-cache-identity-"));
+  try {
+    expect(() => new Cache(dir).write(
+      "0000000000000000",
+      emptyEntry("SELECT 1"),
+    )).toThrow(/does not match its query\/profile fingerprint.*sqlx-js prepare/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("Cache round-trips entries to disk", () => {
   const dir = join(import.meta.dir, ".tmp-cache");
   rmSync(dir, { recursive: true, force: true });
   const c = new Cache(dir);
-  c.write("abc", {
-    query: "SELECT 1",
-    paramOids: [],
-    paramTsTypes: [],
-    columns: [],
-    hasResultSet: false,
-  });
+  c.write("abc", emptyEntry("SELECT 1"));
   expect(c.has("abc")).toBe(true);
   expect(c.read("abc")?.query).toBe("SELECT 1");
   expect(c.list().length).toBe(1);
@@ -100,8 +159,9 @@ test("Cache.list ignores files outside .json", () => {
   const dir = join(import.meta.dir, ".tmp-cache-list");
   rmSync(dir, { recursive: true, force: true });
   const c = new Cache(dir);
-  c.write("a1", { query: "x", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: false });
-  c.write("b2", { query: "y", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: false });
+  c.write("a1", emptyEntry("x"));
+  c.write("b2", emptyEntry("y"));
+  writeFileSync(join(dir, "runtime-descriptors.json"), "{}");
   const fps = c.list().map((e) => e.fp).sort();
   expect(fps).toEqual(["a1", "b2"]);
   rmSync(dir, { recursive: true, force: true });
@@ -111,10 +171,10 @@ test("Cache.prune keeps requested fps, removes the rest", () => {
   const dir = join(import.meta.dir, ".tmp-cache-prune");
   rmSync(dir, { recursive: true, force: true });
   const c = new Cache(dir);
-  c.write("keep1", { query: "a", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: false });
-  c.write("keep2", { query: "b", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: false });
-  c.write("drop1", { query: "c", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: false });
-  c.write("drop2", { query: "d", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: false });
+  c.write("keep1", emptyEntry("a"));
+  c.write("keep2", emptyEntry("b"));
+  c.write("drop1", emptyEntry("c"));
+  c.write("drop2", emptyEntry("d"));
 
   const removed = c.prune(["keep1", "keep2"]).sort();
   expect(removed).toEqual(["drop1", "drop2"]);
@@ -130,8 +190,8 @@ test("Cache.prune with empty keep removes everything", () => {
   const dir = join(import.meta.dir, ".tmp-cache-prune-all");
   rmSync(dir, { recursive: true, force: true });
   const c = new Cache(dir);
-  c.write("x", { query: "x", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: false });
-  c.write("y", { query: "y", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: false });
+  c.write("x", emptyEntry("x"));
+  c.write("y", emptyEntry("y"));
   expect(c.prune([]).sort()).toEqual(["x", "y"]);
   expect(c.list()).toHaveLength(0);
   rmSync(dir, { recursive: true, force: true });
@@ -141,8 +201,8 @@ test("Cache.prune with full keep removes nothing", () => {
   const dir = join(import.meta.dir, ".tmp-cache-prune-none");
   rmSync(dir, { recursive: true, force: true });
   const c = new Cache(dir);
-  c.write("x", { query: "x", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: false });
-  c.write("y", { query: "y", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: false });
+  c.write("x", emptyEntry("x"));
+  c.write("y", emptyEntry("y"));
   expect(c.prune(["x", "y"])).toEqual([]);
   expect(c.list()).toHaveLength(2);
   rmSync(dir, { recursive: true, force: true });
@@ -158,6 +218,7 @@ test("Cache.read rejects legacy schema (forceNonNull) with actionable message", 
     JSON.stringify({
       query: "SELECT id FROM users",
       paramOids: [],
+      paramTypeIdentities: [],
       paramTsTypes: [],
       columns: [{ name: "id", typeOid: 20, tsType: "bigint", nullable: false, forceNonNull: true }],
       hasResultSet: true,
@@ -178,6 +239,7 @@ test("Cache.list rejects legacy schema (forceNullable) with actionable message",
     JSON.stringify({
       query: "SELECT name FROM t",
       paramOids: [],
+      paramTypeIdentities: [],
       paramTsTypes: [],
       columns: [{ name: "name", typeOid: 25, tsType: "string", nullable: true, forceNullable: true }],
       hasResultSet: true,
@@ -203,7 +265,7 @@ test("Cache.remove on missing fp is a no-op", () => {
   const dir = join(import.meta.dir, ".tmp-cache-rm");
   rmSync(dir, { recursive: true, force: true });
   const c = new Cache(dir);
-  c.write("present", { query: "x", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: false });
+  c.write("present", emptyEntry("x"));
   c.remove("absent");
   expect(c.has("present")).toBe(true);
   rmSync(dir, { recursive: true, force: true });
@@ -229,10 +291,10 @@ test("Cache.replaceAll stages the complete successful query set before pruning",
   const dir = join(import.meta.dir, ".tmp-cache-replace");
   rmSync(dir, { recursive: true, force: true });
   const cache = new Cache(dir);
-  cache.write("old", { query: "SELECT old", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: true });
+  cache.write("old", emptyEntry("SELECT old", true));
   const removed = cache.replaceAll([
-    { fp: "new-a", entry: { query: "SELECT a", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: true } },
-    { fp: "new-b", entry: { query: "SELECT b", paramOids: [], paramTsTypes: [], columns: [], hasResultSet: true } },
+    { fp: "new-a", entry: emptyEntry("SELECT a", true) },
+    { fp: "new-b", entry: emptyEntry("SELECT b", true) },
   ]);
   expect(removed).toEqual(["old"]);
   expect(cache.list().map((item) => item.fp).sort()).toEqual(["new-a", "new-b"]);

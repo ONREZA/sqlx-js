@@ -1,0 +1,15 @@
+{
+  "formatVersion": 1,
+  "cacheFormat": 5,
+  "generatorRevision": 20,
+  "configHash": "a157b3fd369ef884",
+  "types": {},
+  "queries": {
+    "f0499b344d579030": {
+      "params": [
+        20
+      ]
+    }
+  },
+  "profiles": {}
+}

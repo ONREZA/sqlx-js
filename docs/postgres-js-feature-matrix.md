@@ -82,7 +82,7 @@ Status values are intentionally explicit:
 | `BEGIN` / `COMMIT` / `ROLLBACK` callback | Yes | Yes | A transaction owns one connection until completion. |
 | Concurrent calls inside one transaction | Partial | Yes | sqlx-js serializes them on the reserved connection in call order. |
 | Isolation, read-only, and deferrable options | Yes | Yes | Applied immediately after `BEGIN`. |
-| Nested savepoint callback | Yes | No | Add when the typed transaction API defines failure and cancellation semantics. |
+| Nested savepoint callback | Yes | Yes | Typed callbacks recover ordinary PostgreSQL errors with `ROLLBACK TO`; timeout, abort, and connection loss remain terminal for the outer transaction. |
 | Two-phase `PREPARE TRANSACTION` helper | Yes | No | Raw SQL remains possible; no dedicated high-level API is planned today. |
 | Transaction-local RLS settings contract | No | Yes | Generated profiles require and apply the exact setting allowlist. |
 | End-to-end operation and transaction deadlines | No | Yes | Includes pool wait, codec bootstrap, execution, and transaction cleanup. |
