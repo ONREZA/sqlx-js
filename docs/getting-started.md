@@ -40,10 +40,11 @@ provider. Both build the proposed schema in a disposable shadow database, so
 they do not apply DDL to the target database. `dev` regenerates committed query
 artifacts; `verify` compares fresh artifacts without writing.
 
-`init` creates `sqlx-js.config.ts`, `sqlx-js-env.d.ts`, `.env.example`, and
-either `migrations/` or `schema.sql`. For strict JSON it also adds the
+`init` creates `sqlx-js.config.ts`, `sqlx-js-env.d.ts`, a user-owned `db.ts`,
+an initial `.sqlx-js/runtime-descriptors.json`, `.env.example`, and either
+`migrations/` or `schema.sql`. For strict JSON it also adds the
 provider-independent `sqlx:dev`, `sqlx:verify`, `sqlx:check`, and `sqlx:ci`
-scripts to `package.json` and includes the declaration file in `tsconfig.json`.
+scripts to `package.json` and includes the declaration and client files in `tsconfig.json`.
 Existing values are never replaced.
 
 ### 2. Configure PostgreSQL
@@ -122,9 +123,9 @@ report incomplete state.
 ### 4. Write queries
 
 ```ts
-import { sql } from "@onreza/sqlx-js";
+import { db } from "./db.js";
 
-const users = await sql(
+const users = await db.sql(
   `SELECT id, name FROM users WHERE id = $1`,
   1n,
 );
@@ -134,7 +135,7 @@ For queries with several values, named parameters keep SQL and arguments
 aligned:
 
 ```ts
-const rows = await sql(
+const rows = await db.sql(
   `SELECT id, name
    FROM users
    WHERE email = $email OR recovery_email = $email
@@ -160,5 +161,10 @@ sqlx-js prepare --check  # database-free committed-artifact check
 
 The declaration is written to `sqlx-js-env.d.ts` by default. Add it to
 `tsconfig.json` when it is not already included.
+
+The generated registry makes descriptor ownership explicit. A scoped
+`createSqlClient<SqlxJsGeneratedRegistry>(...)` must receive
+`queryDescriptors`, or opt out deliberately with `execution: "adaptive"`.
+There is no runtime artifact discovery.
 
 [Documentation index](./README.md)

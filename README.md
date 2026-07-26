@@ -11,10 +11,12 @@ Write ordinary SQL strings. A `prepare` step validates them against PostgreSQL
 and generates TypeScript declarations. Invalid SQL and schema drift fail before
 deployment; parameter and row types are checked by TypeScript.
 
-```ts
-import { sql } from "@onreza/sqlx-js";
+> Strict at prepare. Fast and safe at runtime.
 
-const users = await sql(
+```ts
+import { db } from "./db.js";
+
+const users = await db.sql(
   `SELECT id, name, role FROM users WHERE id = $id`,
   { id: 1n },
 );
@@ -50,7 +52,7 @@ runtime, generate an ORM layer, or support MySQL and SQLite.
 | --- | --- | --- |
 | Typed queries | Positional and named parameters, reusable `defineQuery`, external SQL files, one/optional/execute cardinality helpers | [Query API](./docs/query-api.md) |
 | Inference | PostgreSQL metadata, joins, CTEs, set operations, DML targets, expression nullability, WHERE narrowing, enums, arrays, JSON | [Type and nullability inference](./docs/type-inference.md) |
-| Runtime | Managed and raw clients, transactions, deadlines, lifecycle recovery, observers, migrations, custom codecs | [Runtime and clients](./docs/runtime.md) |
+| Runtime | Descriptor-backed managed clients, transactions and savepoints, deadlines, lifecycle recovery, observers, migrations, custom codecs | [Runtime and clients](./docs/runtime.md) |
 | Roles and RLS | Profile-scoped query registries, planning under the effective role, required transaction-local settings, RLS diagnostics | [Connection profiles and RLS](./docs/profiles-and-rls.md) |
 | Schema workflows | Built-in linear migrations or declarative pgschema, disposable shadow databases, snapshots, squash baselines | [CLI and workflows](./docs/cli.md) |
 | Reproducible artifacts | Versioned offline cache, `prepare --check`, live `prepare --verify`, generated declarations, enum and function catalogs | [CI and deployment checks](./docs/ci.md) |
@@ -106,9 +108,9 @@ Write a literal query and run `dev` again whenever the schema or queries
 change:
 
 ```ts
-import { sql } from "@onreza/sqlx-js";
+import { db } from "./db.js";
 
-const user = await sql.optional(
+const user = await db.sql.optional(
   `SELECT id, email FROM users WHERE email = $email`,
   { email: "alice@example.com" },
 );
@@ -167,6 +169,9 @@ provider-specific step.
 generations, end-to-end operation deadlines, runtime type discovery, poisoned
 generation replacement, lifecycle state, and bounded shutdown. Dispatched SQL
 is never replayed after a connection loss because its outcome may be unknown.
+`init` creates a user-owned `db.ts` that binds the generated registry and
+runtime descriptor explicitly. The global `sql` export remains a deprecated
+convenience path for gradual migration.
 
 `createClient(...)` is the lower-level wire client for callers that explicitly
 own pool access and lifecycle. The two APIs are separate reliability

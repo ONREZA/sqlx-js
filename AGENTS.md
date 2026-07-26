@@ -17,11 +17,15 @@ The library is **PostgreSQL-only** and keeps SQL/result validation at prepare ti
 │   └── sqlx-js-diagnostics.ts JSON diagnostic adapter for GitHub and editors
 ├── src/
 │   ├── index.ts              Public package entry (sql, migrate, types)
-│   ├── runtime.ts            Shared runtime core + key renaming + migrate()
+│   ├── runtime.ts            Shared query runtime + callable SQL assembly
+│   ├── runtime-files.ts      SQL-file cache + schema-backed identifier whitelist
+│   ├── runtime-migrate.ts    Public startup migration wrapper
 │   ├── query.ts              Reusable query definitions + public query helper types
 │   ├── query-id.ts           Shared prepare/runtime query fingerprint
 │   ├── migration-core.ts     Lightweight migration apply/lock path shared by runtime + CLI
 │   ├── postgres-runtime.ts   Managed PostgreSQL runtime
+│   ├── postgres-client-options.ts Profile/startup option ownership
+│   ├── postgres-transaction-runtime.ts Transaction/savepoint executor
 │   ├── pg/driver.ts          Integrated raw client and connection pool
 │   ├── postgres-codecs.ts    Name-based runtime codecs + database-local OID bootstrap
 │   ├── artifacts.ts          Generated-artifact comparison for prepare --verify
@@ -34,15 +38,19 @@ The library is **PostgreSQL-only** and keeps SQL/result validation at prepare ti
 │   ├── commands/
 │   │   ├── doctor.ts         Runtime/config/DB/RLS/cache/generated-output/tsconfig diagnostics
 │   │   ├── prepare.ts        runPrepare + openSession + prepareOnce + validateAll pool
+│   │   ├── prepare-diagnostics.ts Prepare diagnostic and execution-intent policy
+│   │   ├── prepare-inference.ts Type/nullability resolution and explanations
 │   │   ├── migrate.ts        CLI migrateRun + shared applyPending
 │   │   ├── schema.ts         snapshot dump/check commands
 │   │   ├── init.ts           sqlx-js init scaffolding
 │   │   ├── queries.ts        Read-only query inventory + embedded SQL emitter
 │   │   └── watch.ts          fs.watch loop with debounced re-prepare
 │   ├── scan/
-│   │   └── scanner.ts        TypeScript AST walk for sql() call sites
+│   │   ├── scanner.ts        TypeScript AST walk for sql() call sites
+│   │   └── client-bindings.ts Local createSqlClient binding resolution
 │   └── pg/
 │       ├── wire.ts           Raw PG wire protocol client (SCRAM-SHA-256)
+│       ├── wire-messages.ts  PostgreSQL server-message framing and decoding
 │       ├── oids.ts           Built-in OID → TS type table
 │       ├── schema.ts         query-time pg_class / pg_attribute / pg_type / pg_enum loaders
 │       ├── extensions.ts     Built-in extension type registry
@@ -63,19 +71,19 @@ The library is **PostgreSQL-only** and keeps SQL/result validation at prepare ti
 A `prepare` run executes the following pipeline:
 
 1. **Scan** (`src/scan/scanner.ts`) — TypeScript AST walk over files selected by the root `tsconfig.json` and its project references, with optional `scan.include` / `scan.exclude` overrides. Finds direct named imports and namespace imports from `@onreza/sqlx-js`, including `sql(...)`, `sql.one(...)`, `sql.optional(...)`, `sql.execute(...)`, `sql.file(...)`, reusable `defineQuery` definitions, direct bindings returned by imported `createSqlClient(...)`, and the same SQL surface inside recognized transaction callbacks. Configured connection profiles are propagated from direct client bindings or explicit `defineQuery.for(...)` declarations. Profiles with `transactionSettings` reject root query sites during scanning. Refuses non-literal query/file/profile arguments.
-2. **Describe** (`src/pg/wire.ts`) — for each unique query, sends `Parse` + `Describe Statement` + `Sync` to PostgreSQL. Returns parameter OIDs and `RowDescription` (column name, type OID, source table OID, source column attno).
+2. **Describe** (`src/pg/wire.ts`) — for each unique query, sends `Parse` + `Describe Statement` + `Sync` to PostgreSQL. Returns parameter OIDs and distinguishes `RowDescription` from `NoData`, including valid zero-column result sets; row fields carry column name, type OID, source table OID, and source column attno.
 3. **Plan** (`src/pg/wire.ts`) — after Describe establishes the server-side parameter contract, statements accepted by PostgreSQL's SQL `PREPARE` surface are prepared on the same session and run through `EXPLAIN EXECUTE` under `plan_cache_mode = force_generic_plan`. Profiled queries use a dedicated session with `SET ROLE` applied before Describe/Plan, so PostgreSQL validates the role's planning-time privileges. This invokes a parameter-independent PostgreSQL plan without `ANALYZE` or query execution. Statements outside that server-owned surface are persisted and reported as `parse-only`.
 4. **Schema introspection** (`src/pg/schema.ts`) — batch-loads `pg_class`, `pg_attribute`, `pg_type`, `pg_enum` for everything touched by the queries. Cached per-session.
 5. **AST analysis** (`src/pg/analyze.ts`) — parses each query via `libpg-query`, builds a scope of aliases with their join-nullability, walks each target to determine per-column nullability and direct source provenance, and combines branch contracts for `UNION` / `INTERSECT` / `EXCEPT`. Calls into `src/pg/narrow.ts` for WHERE-clause forced-non-null tracking.
 6. **Param mapping** (`src/pg/param-map.ts`) — maps `$N` to every direct `(table, column)` target across top-level statements and data-modifying CTEs for supported INSERT VALUES / INSERT SELECT, set-operation inputs, ON CONFLICT UPDATE, UPDATE SET (including row assignments), value-producing CASE/COALESCE/GREATEST/LEAST branches and the stored side of NULLIF, WHERE/JOIN equality, and IN-list positions. DML targets provide type provenance while strict predicate references still constrain nullability; compatible application-owned declarations are aggregated and conflicting declarations fail prepare.
 7. **Type resolution** — combines OID, custom enum/array info, schema's `jsonbTypes` / direct-scalar `columnTypes` assertions, and analysis output into the final TS type strings for every column and parameter.
-8. **Persistence** — after every query validates successfully, publishes the complete query set through atomic per-file replacement, writes function/enum catalogs plus the version/config manifest, emits `sqlx-js-env.d.ts` with global `KnownQueries` / `KnownFileQueries` declarations or profile-scoped `KnownProfiles` registries for `@onreza/sqlx-js`, and optionally emits schema-scoped PostgreSQL enums as a root-relative `as const` module. Function entries preserve PostgreSQL security/planner metadata and produce non-blocking contract warnings from both live and cached artifacts. Profiled cache keys bind the SQL fingerprint to the profile name.
+8. **Persistence** — after every query validates successfully, publishes the complete query set through atomic per-file replacement, writes inference explanations, function/enum catalogs plus the version/config manifest, emits `sqlx-js-env.d.ts` with global `KnownQueries` / `KnownFileQueries` declarations or profile-scoped `KnownProfiles` registries for `@onreza/sqlx-js`, and optionally emits schema-scoped PostgreSQL enums as a root-relative `as const` module. Function entries preserve PostgreSQL security/planner metadata and produce non-blocking contract warnings from both live and cached artifacts. Profiled cache keys bind the SQL fingerprint to the profile name. Prepare also validates execution intent: one/optional require a result set, plain SQL without one warns or fails in strict mode, and execute with returned rows warns.
 
 `prepare --check` skips steps 2–7 and read-only verifies cache/generator versions, the type-affecting config hash, every scanned fingerprint, function/enum caches, and generated files. `prepare --offline` deliberately regenerates the declaration and configured enum module from committed cache. `prepare --verify` performs a fresh live prepare in a temporary directory and compares all generated artifacts without modifying the worktree.
 
 `prepare --watch` keeps the `PgClient` + `SchemaCache` warm and re-runs steps 1–8 on every debounced filesystem event.
 
-The runtime (`src/index.ts` + `src/runtime.ts` + `src/postgres-runtime.ts` + `src/pg/driver.ts`) executes unnamed extended-protocol queries through an integrated lazy pool and managed pool generations. Every connection is strictly serial; automatic pipelining and named prepared-statement caches are permanent non-goals. End-to-end operation deadlines begin before codec bootstrap; a dispatched timeout poisons the current generation, rejects every active operation from it, and single-flight replaces the pool without replaying SQL. Before the first application query, `src/postgres-codecs.ts` discovers database-local enum/domain/composite/extension OIDs once per generation and installs scalar/array codecs shared by every connection. Profiled clients carry the exact generated profile registry and send its PostgreSQL role as a startup parameter on every pool connection and replacement generation. Profiles can also declare required `transactionSettings`; generated transaction options require their exact string keys, and the runtime validates then applies them through parameterized transaction-local `set_config(..., true)` after `BEGIN`/`SET TRANSACTION` and before the callback. Contextual profiles reject root/`unsafe` execution before dispatch, so their SQL runs only through the transaction boundary. Generated registries carry explicit `customTypes` into required name-based `typeCodecs` or typed numeric driver `types` for `createSqlClient<SqlxJsGeneratedRegistry>()`; raw `createClient<SqlxJsGeneratedRegistry>()` accepts only explicit numeric `types` and has no managed recovery guarantees. Domain-specific overrides are intentionally rejected because PostgreSQL exposes their base OID in result metadata; domains inherit their base codec instead. Strict query typing comes from an overload keyed on the active query registry — the global convenience API uses `KnownQueries`, while a scoped client binds one generated project or connection-profile contract. `defineQuery` keeps a SQL literal/cardinality contract reusable across the root and transaction `SqlExecutor` surfaces; `mapParams` can bind a narrower application input to the generated wire contract before execution. Optional enum modules are plain application constants generated at prepare time; exact include/exclude filters select exports, schema-qualified aliases resolve collisions, and the dynamic registry is emitted only when explicitly enabled. They add no runtime database introspection or validation. Runtime observers receive the same stable query ID used by prepare/cache. Transaction deadlines cover context setup through `COMMIT`/`ROLLBACK`; unconfirmed cleanup recycles the generation.
+The runtime (`src/index.ts` + `src/runtime.ts` + `src/runtime-files.ts` + `src/runtime-migrate.ts` + `src/postgres-runtime.ts` + `src/postgres-transaction-runtime.ts` + `src/pg/driver.ts`) executes unnamed extended-protocol queries through an integrated lazy pool and managed pool generations. Every connection is strictly serial; automatic pipelining and named prepared-statement caches are permanent non-goals. Generated registries require an explicitly imported runtime descriptor or `execution: "adaptive"`; runtime filesystem discovery is a permanent non-goal. End-to-end operation deadlines begin before codec bootstrap; a dispatched timeout poisons the current generation, rejects every active operation from it, and single-flight replaces the pool without replaying SQL. Before the first application query, `src/postgres-codecs.ts` discovers database-local enum/domain/composite/extension OIDs once per generation and installs scalar/array codecs shared by every connection. Profiled clients carry the exact generated profile registry and send its PostgreSQL role as a startup parameter on every pool connection and replacement generation. Profiles can also declare required `transactionSettings`; generated transaction options require their exact string keys, and the runtime validates then applies them through parameterized transaction-local `set_config(..., true)` after `BEGIN`/`SET TRANSACTION` and before the callback. Contextual profiles reject root/`unsafe` execution before dispatch, so their SQL runs only through the transaction boundary. Generated registries carry explicit `customTypes` into required name-based `typeCodecs` or typed numeric driver `types` for `createSqlClient<SqlxJsGeneratedRegistry>()`; raw `createClient<SqlxJsGeneratedRegistry>()` accepts only explicit numeric `types` and has no managed recovery guarantees. Domain-specific overrides are intentionally rejected because PostgreSQL exposes their base OID in result metadata; domains inherit their base codec instead. Strict query typing comes from an overload keyed on the active query registry — the deprecated global convenience API uses `KnownQueries`, while a scoped client binds one generated project or connection-profile contract. `defineQuery` keeps a SQL literal/cardinality contract reusable across the root and transaction `SqlExecutor` surfaces; `mapParams` can bind a narrower application input to the generated wire contract before execution. Optional enum modules are plain application constants generated at prepare time; exact include/exclude filters select exports, schema-qualified aliases resolve collisions, and the dynamic registry is emitted only when explicitly enabled. They add no runtime database introspection or validation. Runtime observers receive the same stable query ID used by prepare/cache. Typed savepoints recover ordinary PostgreSQL failures on the owned transaction connection; timeout, abort, and connection loss remain terminal. Transaction deadlines cover context setup through `COMMIT`/`ROLLBACK`; unconfirmed cleanup recycles the generation.
 
 RLS policy DDL remains owned by migrations, `schema.sql`, or pgschema. `doctor` only audits the effective profile roles and accessible RLS-enabled tables for superuser/`BYPASSRLS`, direct or inherited table-owner privileges without `FORCE ROW LEVEL SECURITY`, and granted commands without an inherited applicable permissive policy; it never claims to prove arbitrary `USING`/`WITH CHECK` expressions.
 
@@ -195,6 +203,23 @@ Skipping hooks for a single commit: `LEFTHOOK=0 git commit ...`. Don't make a ha
 - **Backward compatibility**: cache artifacts are committed by users. Pre-1.0 changes must bump the cache/generator revision and fail with actionable regeneration guidance; after 1.0 they require a major version or graceful migration.
 - **TypeScript strict mode**. No `any` in public API. Internal helpers can use `any` only when walking the libpg-query AST, which is genuinely loose-typed.
 - **English everywhere** — source, docs, tests, commit messages.
+
+## Hard module-boundary rules
+
+1. Split a file, module, or component when it owns more than two or three
+   unrelated domains. Responsibility count is the deciding signal, not line
+   count.
+2. Do not let one domain grow indefinitely in one file:
+   - up to roughly 800 lines is normal;
+   - at 800–1200 lines, every change must look for a natural extraction
+     boundary;
+   - at 1200–1500 lines, keeping the module whole requires a clear reason;
+   - above 1500 lines, a split is mandatory unless there is a documented
+     exception.
+
+An exception is valid only when splitting would damage the API, navigation, or
+readability more than it helps. Record the exception next to the module with a
+short `why` comment or in a concrete refactor issue/task.
 
 ## Things to be careful about
 

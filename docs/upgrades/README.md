@@ -5,6 +5,9 @@ main README can stay focused on the current API.
 
 ## Guides
 
+- [0.23.0](./0.23.0.md) — descriptor-first generated clients, inference
+  explanations, execution-intent diagnostics, typed savepoints, and cache
+  regeneration.
 - [0.22.0](./0.22.0.md) — prepared runtime descriptors, cache regeneration,
   and optional one-write parameter dispatch.
 - [0.20.0](./0.20.0.md) — integrated PostgreSQL runtime, ESM-only runtime

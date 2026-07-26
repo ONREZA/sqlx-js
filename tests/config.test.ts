@@ -10,6 +10,7 @@ import {
   prepareConfigHash,
 } from "../src/config";
 import { inspectDoctor } from "../src/commands/doctor";
+import { renderRuntimeDescriptors } from "../src/runtime-descriptor-artifact";
 
 const roots: string[] = [];
 
@@ -331,6 +332,88 @@ test("doctor follows tsconfig project references when checking generated declara
     dtsPath: join(dir, "sqlx-js-env.d.ts"),
   });
   expect(checks.find((check) => check.name === "tsconfig")).toMatchObject({ status: "ok" });
+});
+
+test("doctor reports parameterized descriptor coverage by runtime call site", async () => {
+  const dir = root();
+  mkdirSync(join(dir, ".sqlx-js"), { recursive: true });
+  writeFileSync(
+    join(dir, ".sqlx-js/runtime-descriptors.json"),
+    renderRuntimeDescriptors([{
+      query: "SELECT $1::int4",
+      validation: "planned",
+      paramOids: [23],
+      paramTypeIdentities: [23],
+      paramTsTypes: ["number"],
+      paramNullable: [false],
+      columns: [],
+      hasResultSet: false,
+      inference: {
+        columns: [],
+        params: [{ targets: [], reason: "test fixture" }],
+      },
+    }], prepareConfigHash({})),
+  );
+  writeFileSync(join(dir, "queries.ts"), `
+    import { createSqlClient, defineQuery } from "@onreza/sqlx-js";
+    const prepared = createSqlClient(undefined, { queryDescriptors });
+    const adaptive = createSqlClient(undefined, { execution: "adaptive" });
+    const reusable = defineQuery("SELECT $1::bigint");
+    prepared.sql("SELECT $1::int4", 1);
+    adaptive.sql("SELECT $1::text", "x");
+  `);
+  const checks = await inspectDoctor({
+    root: dir,
+    databaseUrl: "",
+    cacheDir: join(dir, ".sqlx-js"),
+    dtsPath: join(dir, "sqlx-js-env.d.ts"),
+  });
+  expect(checks.find((check) => check.name === "descriptorCoverage")).toMatchObject({
+    status: "warning",
+    details: {
+      parameterized: 3,
+      descriptor: 1,
+      descriptorConfigured: 1,
+      missing: 0,
+      adaptive: 1,
+      unknown: 1,
+    },
+  });
+});
+
+test("doctor reports a descriptor-configured query missing from the artifact", async () => {
+  const dir = root();
+  mkdirSync(join(dir, ".sqlx-js"), { recursive: true });
+  writeFileSync(
+    join(dir, ".sqlx-js/runtime-descriptors.json"),
+    renderRuntimeDescriptors([], prepareConfigHash({})),
+  );
+  writeFileSync(join(dir, "db.ts"), `
+    import { createSqlClient } from "@onreza/sqlx-js";
+    import descriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
+    export const db = createSqlClient(undefined, { queryDescriptors: descriptors });
+  `);
+  writeFileSync(join(dir, "queries.ts"), `
+    import { db } from "./db.js";
+    db.sql("SELECT $1::int4", 1);
+  `);
+
+  const checks = await inspectDoctor({
+    root: dir,
+    databaseUrl: "",
+    cacheDir: join(dir, ".sqlx-js"),
+    dtsPath: join(dir, "sqlx-js-env.d.ts"),
+  });
+  expect(checks.find((check) => check.name === "descriptorCoverage")).toMatchObject({
+    status: "error",
+    details: {
+      parameterized: 1,
+      descriptor: 0,
+      descriptorConfigured: 1,
+      missing: 1,
+      missingLocations: ["queries.ts:3:12"],
+    },
+  });
 });
 
 test("doctor checks the configured enum catalog output", async () => {

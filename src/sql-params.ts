@@ -11,6 +11,7 @@ import {
 export type RewrittenSql = {
   query: string;
   names: string[];
+  positionalCount: number;
   positionMap: number[];
 };
 
@@ -18,6 +19,7 @@ export function rewriteNamedParameters(query: string): RewrittenSql {
   let out = "";
   let i = 0;
   let positional = false;
+  let positionalCount = 0;
   const names: string[] = [];
   const indexes = new Map<string, number>();
   const positionMap: number[] = [];
@@ -65,6 +67,7 @@ export function rewriteNamedParameters(query: string): RewrittenSql {
       const positionalMatch = /^\$[1-9][0-9]*/.exec(query.slice(i));
       if (positionalMatch) {
         positional = true;
+        positionalCount = Math.max(positionalCount, Number(positionalMatch[0].slice(1)));
         i += positionalMatch[0].length;
         append(positionalMatch[0], start);
         continue;
@@ -92,7 +95,7 @@ export function rewriteNamedParameters(query: string): RewrittenSql {
     throw new Error("sqlx-js: named and positional parameters cannot be mixed in one query");
   }
   positionMap.push(query.length);
-  return { query: out, names, positionMap };
+  return { query: out, names, positionalCount, positionMap };
 }
 
 export function bindNamedParameters(

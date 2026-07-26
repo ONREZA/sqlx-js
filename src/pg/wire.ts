@@ -6,6 +6,17 @@ import {
   checkServerIdentity,
   connect as tlsConnect,
 } from "node:tls";
+import {
+  MessageReader,
+  type FieldDescription,
+  type ServerMessage,
+} from "./wire-messages";
+
+export {
+  MessageReader,
+  type FieldDescription,
+  type ServerMessage,
+} from "./wire-messages";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -102,33 +113,6 @@ export function parseDatabaseUrl(url: string): ConnConfig {
   return cfg;
 }
 
-export type ServerMessage =
-  | { type: "R"; code: number; payload: Uint8Array }
-  | { type: "S"; name: string; value: string }
-  | { type: "K"; pid: number; secret: number }
-  | { type: "Z"; status: string }
-  | { type: "1" }
-  | { type: "2" }
-  | { type: "3" }
-  | { type: "n" }
-  | { type: "t"; oids: number[] }
-  | { type: "T"; fields: FieldDescription[] }
-  | { type: "E"; fields: Record<string, string> }
-  | { type: "N"; fields: Record<string, string> }
-  | { type: "C"; tag: string }
-  | { type: "D"; payload: Uint8Array }
-  | { type: "other"; tag: string; payload: Uint8Array };
-
-export type FieldDescription = {
-  name: string;
-  tableOid: number;
-  columnAttr: number;
-  typeOid: number;
-  typeSize: number;
-  typeModifier: number;
-  format: number;
-};
-
 export type PgRawRow = (Uint8Array | null)[];
 
 export type PgRowResult<Row = PgRawRow> = {
@@ -143,134 +127,6 @@ export type PgRowMaterializer<Row> = (
 ) => Row;
 
 export type PlanValidation = "planned" | "parse-only";
-
-export class MessageReader {
-  private chunks: Uint8Array[] = [];
-  private size = 0;
-  private offset = 0;
-
-  push(
-    chunk: Uint8Array,
-    consumeDataRow?: (payload: Uint8Array) => void,
-  ): ServerMessage[] {
-    this.chunks.push(chunk);
-    this.size += chunk.length;
-    return this.drain(consumeDataRow);
-  }
-
-  private buffered(): Uint8Array {
-    if (this.chunks.length === 1) return this.chunks[0]!;
-    const out = new Uint8Array(this.size);
-    let off = 0;
-    for (const c of this.chunks) {
-      out.set(c, off);
-      off += c.length;
-    }
-    this.chunks = [out];
-    return out;
-  }
-
-  private drain(consumeDataRow?: (payload: Uint8Array) => void): ServerMessage[] {
-    const out: ServerMessage[] = [];
-    while (true) {
-      const available = this.size - this.offset;
-      if (available < 5) break;
-      const view = this.buffered();
-      const len = readInt32(view, this.offset + 1);
-      const total = 1 + len;
-      if (available < total) break;
-      const tag = String.fromCharCode(view[this.offset]!);
-      const payload = view.subarray(this.offset + 5, this.offset + total);
-      if (tag === "D" && consumeDataRow) consumeDataRow(payload);
-      else out.push(parseMessage(tag, payload));
-      this.offset += total;
-    }
-    if (this.offset > 0) {
-      const view = this.buffered();
-      const tail = view.subarray(this.offset);
-      this.chunks = tail.length > 0 ? [copyOf(tail)] : [];
-      this.size = tail.length;
-      this.offset = 0;
-    }
-    return out;
-  }
-}
-
-function copyOf(view: Uint8Array): Uint8Array {
-  const out = new Uint8Array(view.length);
-  out.set(view);
-  return out;
-}
-
-function parseMessage(tag: string, payload: Uint8Array): ServerMessage {
-  switch (tag) {
-    case "R": {
-      const code = readInt32(payload, 0);
-      return { type: "R", code, payload: payload.subarray(4) };
-    }
-    case "S": {
-      const [name, rest] = readCString(payload, 0);
-      const [value] = readCString(payload, rest);
-      return { type: "S", name, value };
-    }
-    case "K":
-      return { type: "K", pid: readInt32(payload, 0), secret: readInt32(payload, 4) };
-    case "Z":
-      return { type: "Z", status: String.fromCharCode(payload[0]!) };
-    case "1":
-      return { type: "1" };
-    case "2":
-      return { type: "2" };
-    case "3":
-      return { type: "3" };
-    case "n":
-      return { type: "n" };
-    case "t": {
-      const n = readInt16(payload, 0);
-      const oids: number[] = [];
-      for (let i = 0; i < n; i++) oids.push(readUInt32(payload, 2 + i * 4));
-      return { type: "t", oids };
-    }
-    case "T": {
-      const n = readInt16(payload, 0);
-      let off = 2;
-      const fields: FieldDescription[] = [];
-      for (let i = 0; i < n; i++) {
-        const [name, next] = readCString(payload, off);
-        off = next;
-        const tableOid = readUInt32(payload, off); off += 4;
-        const columnAttr = readInt16(payload, off); off += 2;
-        const typeOid = readUInt32(payload, off); off += 4;
-        const typeSize = readSignedInt16(payload, off); off += 2;
-        const typeModifier = readInt32(payload, off); off += 4;
-        const format = readInt16(payload, off); off += 2;
-        fields.push({ name, tableOid, columnAttr, typeOid, typeSize, typeModifier, format });
-      }
-      return { type: "T", fields };
-    }
-    case "E":
-    case "N": {
-      const fields: Record<string, string> = {};
-      let off = 0;
-      while (off < payload.length && payload[off] !== 0) {
-        const code = String.fromCharCode(payload[off]!);
-        off += 1;
-        const [val, next] = readCString(payload, off);
-        fields[code] = val;
-        off = next;
-      }
-      return { type: tag as "E" | "N", fields };
-    }
-    case "C": {
-      const [tagStr] = readCString(payload, 0);
-      return { type: "C", tag: tagStr };
-    }
-    case "D":
-      return { type: "D", payload };
-    default:
-      return { type: "other", tag, payload };
-  }
-}
 
 export function parseDataRow(payload: Uint8Array): PgRawRow {
   const count = readInt16(payload, 0);
@@ -292,15 +148,8 @@ export function parseDataRow(payload: Uint8Array): PgRawRow {
 function readInt16(b: Uint8Array, o: number): number {
   return (b[o]! << 8) | b[o + 1]!;
 }
-function readSignedInt16(b: Uint8Array, o: number): number {
-  const value = readInt16(b, o);
-  return value > 0x7fff ? value - 0x1_0000 : value;
-}
 function readInt32(b: Uint8Array, o: number): number {
   return ((b[o]! << 24) | (b[o + 1]! << 16) | (b[o + 2]! << 8) | b[o + 3]!) | 0;
-}
-function readUInt32(b: Uint8Array, o: number): number {
-  return readInt32(b, o) >>> 0;
 }
 function readCString(b: Uint8Array, off: number): [string, number] {
   let end = off;
@@ -962,7 +811,11 @@ export class PgClient {
     this.flushWaiters();
   }
 
-  async describe(sql: string): Promise<{ paramOids: number[]; fields: FieldDescription[] }> {
+  async describe(sql: string): Promise<{
+    paramOids: number[];
+    fields: FieldDescription[];
+    hasResultSet: boolean;
+  }> {
     const stmtName = "";
     const parseBody = concat([
       cstr(stmtName),
@@ -995,7 +848,7 @@ export class PgClient {
     }
     if (err) throw err;
     if (!sawRowDesc && !sawNoData) throw new Error("describe: neither RowDescription nor NoData");
-    return { paramOids, fields };
+    return { paramOids, fields, hasResultSet: sawRowDesc };
   }
 
   async plan(sql: string, paramCount: number): Promise<PlanValidation> {

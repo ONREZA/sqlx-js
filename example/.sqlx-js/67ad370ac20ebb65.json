@@ -53,5 +53,63 @@
       "nullable": true
     }
   ],
-  "hasResultSet": true
+  "hasResultSet": true,
+  "inference": {
+    "columns": [
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "id",
+            "notNull": true
+          }
+        ],
+        "reason": "all source columns are NOT NULL"
+      },
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "email",
+            "notNull": true
+          }
+        ],
+        "reason": "all source columns are NOT NULL"
+      },
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "role",
+            "notNull": true
+          }
+        ],
+        "reason": "all source columns are NOT NULL"
+      },
+      {
+        "sources": null,
+        "reason": "the supported SQL expression is proven non-null"
+      },
+      {
+        "sources": null,
+        "reason": "the supported SQL expression can produce NULL",
+        "hint": "Use an explicit projection or a ! alias only when an application invariant proves non-null"
+      }
+    ],
+    "params": [
+      {
+        "targets": [],
+        "reason": "PostgreSQL inferred the type without a direct column target",
+        "hint": "Add an explicit PostgreSQL cast when the inferred type is not the intended wire contract"
+      },
+      {
+        "targets": [],
+        "reason": "PostgreSQL inferred the type without a direct column target",
+        "hint": "Add an explicit PostgreSQL cast when the inferred type is not the intended wire contract"
+      }
+    ]
+  }
 }

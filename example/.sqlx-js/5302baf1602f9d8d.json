@@ -28,5 +28,32 @@
       "nullable": false
     }
   ],
-  "hasResultSet": true
+  "hasResultSet": true,
+  "inference": {
+    "columns": [
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "id",
+            "notNull": true
+          }
+        ],
+        "reason": "all source columns are NOT NULL"
+      }
+    ],
+    "params": [
+      {
+        "targets": [
+          {
+            "kind": "predicate",
+            "table": "users",
+            "column": "role"
+          }
+        ],
+        "reason": "a predicate reference requires a non-null value"
+      }
+    ]
+  }
 }

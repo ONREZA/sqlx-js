@@ -34,6 +34,35 @@ export type CacheColumn = {
   override?: "non-null" | "nullable";
 };
 
+export type CacheInferenceSource = {
+  schema: string;
+  table: string;
+  column: string;
+  notNull?: boolean;
+};
+
+export type CacheInferenceTarget = {
+  kind: "dml" | "predicate";
+  schema?: string;
+  table: string;
+  column?: string;
+  columnIndex?: number;
+  nullSafe?: boolean;
+};
+
+export type CacheInference = {
+  columns: {
+    sources: CacheInferenceSource[] | null;
+    reason: string;
+    hint?: string;
+  }[];
+  params: {
+    targets: CacheInferenceTarget[];
+    reason: string;
+    hint?: string;
+  }[];
+};
+
 export type CacheEntry = {
   query: string;
   profile?: string;
@@ -42,13 +71,14 @@ export type CacheEntry = {
   paramOids: number[];
   paramTypeIdentities: (number | { schema: string; name: string })[];
   paramTsTypes: string[];
-  paramNullable?: boolean[];
+  paramNullable: boolean[];
   paramNames?: string[];
   columns: CacheColumn[];
   hasResultSet: boolean;
   hasInline?: boolean;
   filePaths?: string[];
   degraded?: { reason: string };
+  inference: CacheInference;
 };
 
 export function portableCacheOid(oid: number): number {
@@ -110,6 +140,7 @@ function assertEntryShape(fp: string, raw: unknown): CacheEntry {
   const paramTsTypes = entry.paramTsTypes;
   if (
     paramOids.some((oid) => !Number.isSafeInteger(oid) || oid < 0)
+    || paramTsTypes.some((type) => typeof type !== "string" || type.length === 0)
     || paramOids.length !== paramTsTypes.length
     || paramTypeIdentities.length !== paramTsTypes.length
     || paramTypeIdentities.some((identity, index) => {
@@ -136,6 +167,16 @@ function assertEntryShape(fp: string, raw: unknown): CacheEntry {
   }
   if (entry.profile !== undefined && (typeof entry.profile !== "string" || entry.profile.trim() === "")) {
     throw new Error(`sqlx-js: cache entry ${fp}.json has invalid profile metadata. Run \`sqlx-js prepare\`.`);
+  }
+  if (
+    typeof entry.query === "string"
+    && /^[0-9a-f]{16}$/.test(fp)
+    && profileFingerprint(
+      typeof entry.profile === "string" ? entry.profile : undefined,
+      entry.query,
+    ) !== fp
+  ) {
+    throw new Error(`sqlx-js: cache entry ${fp}.json does not match its query/profile fingerprint. Run \`sqlx-js prepare\`.`);
   }
   let expectedNames: string[];
   try {
@@ -166,6 +207,102 @@ function assertEntryShape(fp: string, raw: unknown): CacheEntry {
       );
     }
   }
+  if (
+    typeof entry.hasResultSet !== "boolean"
+    || cols.some((column) => {
+      if (!column || typeof column !== "object" || Array.isArray(column)) return true;
+      const value = column as Record<string, unknown>;
+      return (
+        typeof value.name !== "string"
+        || value.name.length === 0
+        || !Number.isSafeInteger(value.typeOid)
+        || (value.typeOid as number) < 0
+        || typeof value.tsType !== "string"
+        || value.tsType.length === 0
+        || typeof value.nullable !== "boolean"
+        || (
+          value.override !== undefined
+          && value.override !== "non-null"
+          && value.override !== "nullable"
+        )
+      );
+    })
+  ) {
+    throw new Error(`sqlx-js: cache entry ${fp}.json has invalid result metadata. Run \`sqlx-js prepare\`.`);
+  }
+  if (
+    !Array.isArray(entry.paramNullable)
+    || entry.paramNullable.length !== paramTsTypes.length
+    || entry.paramNullable.some((nullable) => typeof nullable !== "boolean")
+  ) {
+    throw new Error(`sqlx-js: cache entry ${fp}.json has invalid parameter nullability. Run \`sqlx-js prepare\`.`);
+  }
+  const inference = entry.inference;
+  const validOptionalString = (value: unknown) =>
+    value === undefined || (typeof value === "string" && value.length > 0);
+  const validSource = (value: unknown) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const source = value as Record<string, unknown>;
+    return (
+      typeof source.schema === "string"
+      && source.schema.length > 0
+      && typeof source.table === "string"
+      && source.table.length > 0
+      && typeof source.column === "string"
+      && source.column.length > 0
+      && (source.notNull === undefined || typeof source.notNull === "boolean")
+    );
+  };
+  const validTarget = (value: unknown) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const target = value as Record<string, unknown>;
+    return (
+      (target.kind === "dml" || target.kind === "predicate")
+      && typeof target.table === "string"
+      && target.table.length > 0
+      && validOptionalString(target.schema)
+      && validOptionalString(target.column)
+      && (
+        target.columnIndex === undefined
+        || (Number.isSafeInteger(target.columnIndex) && (target.columnIndex as number) > 0)
+      )
+      && (target.nullSafe === undefined || typeof target.nullSafe === "boolean")
+    );
+  };
+  if (
+    !inference
+    || typeof inference !== "object"
+    || Array.isArray(inference)
+    || !Array.isArray((inference as Record<string, unknown>).columns)
+    || !Array.isArray((inference as Record<string, unknown>).params)
+  ) {
+    throw new Error(`sqlx-js: cache entry ${fp}.json has no inference explanations. Run \`sqlx-js prepare\`.`);
+  }
+  const inferenceColumns = (inference as { columns: unknown[] }).columns;
+  const inferenceParams = (inference as { params: unknown[] }).params;
+  const validExplanation = (value: unknown) =>
+    !!value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && typeof (value as Record<string, unknown>).reason === "string"
+    && ((value as Record<string, unknown>).reason as string).length > 0
+    && validOptionalString((value as Record<string, unknown>).hint);
+  if (
+    inferenceColumns.length !== cols.length
+    || inferenceParams.length !== paramTsTypes.length
+    || inferenceColumns.some((value) => {
+      if (!validExplanation(value)) return true;
+      const sources = (value as Record<string, unknown>).sources;
+      return sources !== null && (!Array.isArray(sources) || sources.some((source) => !validSource(source)));
+    })
+    || inferenceParams.some((value) => {
+      if (!validExplanation(value)) return true;
+      const targets = (value as Record<string, unknown>).targets;
+      return !Array.isArray(targets) || targets.some((target) => !validTarget(target));
+    })
+  ) {
+    throw new Error(`sqlx-js: cache entry ${fp}.json has invalid inference explanations. Run \`sqlx-js prepare\`.`);
+  }
   return raw as CacheEntry;
 }
 
@@ -188,6 +325,7 @@ export class Cache {
 
   write(fp: string, entry: CacheEntry): void {
     this.ensure();
+    assertEntryShape(fp, entry);
     const final = join(this.dir, `${fp}.json`);
     const tmp = `${final}.tmp-${randomBytes(4).toString("hex")}`;
     writeFileSync(tmp, JSON.stringify(entry, null, 2));
@@ -204,6 +342,7 @@ export class Cache {
     const staged: { fp: string; tmp: string; final: string }[] = [];
     try {
       for (const { fp, entry } of entries) {
+        assertEntryShape(fp, entry);
         const final = join(this.dir, `${fp}.json`);
         const tmp = `${final}.tmp-${randomBytes(4).toString("hex")}`;
         writeFileSync(tmp, JSON.stringify(entry, null, 2));

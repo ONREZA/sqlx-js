@@ -5,6 +5,7 @@ import {
   queryId,
   QueryAbortedError,
 } from "@onreza/sqlx-js";
+import descriptorVersions from "../example/.sqlx-js/runtime-descriptors.json" with { type: "json" };
 
 const databaseUrl = Deno.env.get("DATABASE_URL");
 if (!databaseUrl) throw new Error("deno package smoke requires DATABASE_URL");
@@ -13,9 +14,9 @@ const descriptorQuery = "SELECT $1::int4 AS descriptor_value";
 const db = createSqlClient(databaseUrl, {
   max: 1,
   queryDescriptors: {
-    formatVersion: 1,
-    cacheFormat: 4,
-    generatorRevision: 19,
+    formatVersion: descriptorVersions.formatVersion,
+    cacheFormat: descriptorVersions.cacheFormat,
+    generatorRevision: descriptorVersions.generatorRevision,
     configHash: "deno-package-smoke",
     types: {},
     queries: {

@@ -1,4 +1,4 @@
-import { existsSync, watch as fsWatch } from "node:fs";
+import { existsSync, readFileSync, watch as fsWatch } from "node:fs";
 import { basename, relative, resolve } from "node:path";
 import {
   closePrepareSession,
@@ -43,6 +43,7 @@ export type WatchOptions = PrepareOptions & {
 export type WatchState = {
   session: PrepareSession | null;
   sitesByFile?: Map<string, QueryCallSite[]>;
+  clientBindingFiles?: Set<string>;
   dirtyFiles?: Set<string>;
   dirtyFps?: Set<string>;
 };
@@ -104,13 +105,26 @@ export async function prepareWatchedOnce(
   }
   if (!state.session) state.session = await active.openSession(opts);
 
-  const full = resetSession || !state.sitesByFile || changedFiles.some(isProjectGraphFile);
+  const clientBindingChanged = changedFiles.some((file) => {
+    const projectFile = projectPath(opts.root, file);
+    return state.clientBindingFiles?.has(projectFile)
+      || isClientBindingGraphFile(opts.root, file);
+  });
+  const full = resetSession
+    || !state.sitesByFile
+    || changedFiles.some(isProjectGraphFile)
+    || clientBindingChanged;
   let nextSites: Map<string, QueryCallSite[]>;
   let changedFps = new Set<string>();
   if (full) {
     const sites = active.scanProject(opts.root, currentConfig.scan, currentConfig.profiles ?? {});
     nextSites = groupSites(sites);
     changedFps = new Set(sites.flatMap(siteFingerprints));
+    state.clientBindingFiles = new Set(
+      active.findSourceFiles(opts.root, currentConfig.scan)
+        .map((file) => projectPath(opts.root, file))
+        .filter((file) => isClientBindingGraphFile(opts.root, file)),
+    );
   } else {
     const previousSites = state.sitesByFile!;
     const dirtyFiles = state.dirtyFiles ?? new Set<string>();
@@ -173,12 +187,18 @@ export async function prepareWatchedOnce(
       .flatMap(siteFingerprints)
       .filter((fp) => !changedFps.has(fp) && !dirtyFps.has(fp)),
   );
-  const result = await active.prepareOnce(opts, state.session, log, err, 1, {
-    sites,
-    reuseCacheFps,
-    reuseEnumCatalog: !full,
-  });
   state.sitesByFile = nextSites;
+  let result: PrepareResult;
+  try {
+    result = await active.prepareOnce(opts, state.session, log, err, 1, {
+      sites,
+      reuseCacheFps,
+      reuseEnumCatalog: !full,
+    });
+  } catch (error) {
+    state.dirtyFps = new Set([...dirtyFps, ...changedFps]);
+    throw error;
+  }
   if (result.failures === 0) {
     state.dirtyFps = new Set();
   } else {
@@ -198,6 +218,21 @@ function projectPath(root: string, path: string): string {
 function isProjectGraphFile(path: string): boolean {
   const base = basename(path);
   return CONFIG_FILES.has(base) || /^tsconfig(?:\.[^.]+)*\.json$/.test(base);
+}
+
+function isClientBindingGraphFile(
+  root: string,
+  path: string,
+): boolean {
+  if (!/\.(ts|tsx|mts|cts)$/.test(path)) return false;
+  const projectFile = projectPath(root, path);
+  const absolute = resolve(root, projectFile);
+  if (!existsSync(absolute)) return true;
+  try {
+    return /\bcreateSqlClient\b/.test(readFileSync(absolute, "utf8"));
+  } catch {
+    return true;
+  }
 }
 
 function groupSites(sites: QueryCallSite[]): Map<string, QueryCallSite[]> {

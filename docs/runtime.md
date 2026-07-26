@@ -2,14 +2,19 @@
 
 Transactions, managed and raw clients, dynamic escape hatches, migrations, lifecycle APIs, errors, and runtime options.
 
+The preferred application boundary is the user-owned `db.ts` created by
+`sqlx-js init`. It imports the generated registry and runtime descriptors, so
+parameterized prepared queries use the one-write path without runtime
+filesystem discovery.
+
 ## `sql.transaction(fn)`
 
 Wrap a function body in a database transaction. The callback receives a scoped `tx` that has the same typed `()` and `.file()` surface, but routes through the transaction's dedicated connection. The scanner recognises the callback parameter name and validates inner queries against `KnownQueries`.
 
 ```ts
-import { sql } from "@onreza/sqlx-js";
+import { db } from "./db.js";
 
-const { userId, postId } = await sql.transaction(async (tx) => {
+const { userId, postId } = await db.sql.transaction(async (tx) => {
   const u = await tx(
     `INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id AS "id!"`,
     "Alice", "alice@example.com",
@@ -24,6 +29,39 @@ const { userId, postId } = await sql.transaction(async (tx) => {
 
 If the callback throws, the transaction is rolled back. The return value of the callback becomes the return value of `transaction`.
 
+### Typed savepoints
+
+Transaction executors expose recursively typed savepoints:
+
+```ts
+await db.sql.transaction(async (tx) => {
+  await tx.savepoint(async (sp) => {
+    await sp.execute(
+      `INSERT INTO audit_log (message) VALUES ($1)`,
+      "created",
+    );
+  });
+});
+```
+
+A successful callback releases the savepoint. If the callback throws, or a
+PostgreSQL statement fails even when the callback catches that error, the
+runtime issues `ROLLBACK TO SAVEPOINT` and then releases it. This restores the
+transaction to a usable state without hiding the callback error.
+
+Await every `savepoint(...)` call, and issue work through the executor passed to
+the currently active callback (`sp`, or its nested child). Parent and completed
+scoped executors reject new work so queries cannot escape their savepoint or
+transaction ownership boundary.
+
+Timeouts, aborts, and connection loss remain terminal for the outer
+transaction. They skip savepoint recovery because a dispatched statement may
+have an unknown outcome. Nested savepoints use the same rule and stay on the
+transaction's single owned connection. These semantics follow PostgreSQL's
+[`SAVEPOINT`](https://www.postgresql.org/docs/current/sql-savepoint.html) and
+[`ROLLBACK TO SAVEPOINT`](https://www.postgresql.org/docs/current/sql-rollback-to.html)
+behavior.
+
 ## `unsafe(query, ...params)`
 
 Same runtime as `sql` but without type-checking. For dynamic SQL where compile-time validation isn't possible.
@@ -33,10 +71,10 @@ Same runtime as `sql` but without type-checking. For dynamic SQL where compile-t
 Quote a dynamic identifier only if it exists in the generated schema snapshot. This is for the narrow cases where a table, column, function, type, index, or constraint name must be chosen dynamically.
 
 ```ts
-import { unsafe, sql } from "@onreza/sqlx-js";
+import { db } from "./db.js";
 
-const orderBy = sql.id("users", "created_at");
-await unsafe(`SELECT id, email FROM ${sql.id("users")} ORDER BY ${orderBy} DESC`);
+const orderBy = db.sql.id("users", "created_at");
+await db.unsafe(`SELECT id, email FROM ${db.sql.id("users")} ORDER BY ${orderBy} DESC`);
 ```
 
 The default snapshot path is `.sqlx-js/schema/schema.json`. Override it at runtime with `SQLX_JS_SCHEMA_PATH`. `sql.id(...)` accepts one to three identifier segments. Pass schema-qualified identifiers as separate segments: `sql.id("public", "users")`, not `sql.id("public.users")`.
@@ -88,10 +126,17 @@ For dependency injection, read replicas, tests, or several independent pools in 
 
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
-import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env";
+import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
+import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 
-const primary = createSqlClient<SqlxJsGeneratedRegistry>(process.env.DATABASE_URL);
-const replica = createSqlClient<SqlxJsGeneratedRegistry>(process.env.REPLICA_DATABASE_URL);
+const primary = createSqlClient<SqlxJsGeneratedRegistry>(
+  process.env.DATABASE_URL,
+  { queryDescriptors },
+);
+const replica = createSqlClient<SqlxJsGeneratedRegistry>(
+  process.env.REPLICA_DATABASE_URL,
+  { execution: "adaptive" },
+);
 
 await Promise.all([
   primary.ready({ timeoutMs: 5_000 }),
@@ -107,7 +152,7 @@ await Promise.all([
 ]);
 ```
 
-Each generated `sqlx-js-env.d.ts` exports its own `SqlxJsGeneratedRegistry`. Passing it to `createSqlClient<...>()` keeps a scoped client on that project's query contract even when a monorepo TypeScript program includes declarations for several databases. The global `sql` export remains available for the single-client convenience path.
+Each generated `sqlx-js-env.d.ts` exports its own `SqlxJsGeneratedRegistry`. Passing it to `createSqlClient<...>()` keeps a scoped client on that project's query contract even when a monorepo TypeScript program includes declarations for several databases. The global `sql` export remains as a deprecated migration convenience path.
 
 When a workspace package exports database source to other TypeScript programs, bind `SqlxJsGeneratedRegistry` at that package's client boundary. A consumer does not automatically include the database package's ambient `.d.ts`; exporting an unscoped client can therefore collapse its literal parameters to `never` outside the package.
 
@@ -122,9 +167,13 @@ each managed client that should use the one-write parameter path:
 
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 
-const db = createSqlClient(process.env.DATABASE_URL, { queryDescriptors });
+const db = createSqlClient<SqlxJsGeneratedRegistry>(
+  process.env.DATABASE_URL,
+  { queryDescriptors },
+);
 await db.ready({ timeoutMs: 5_000 });
 ```
 
@@ -142,8 +191,11 @@ executes the SQL from the current application call. It then sends
 `Parse`, `Bind`, `Describe Portal`, `Execute`, and `Sync` in one write while
 retaining PostgreSQL's live `RowDescription`.
 
-Omitting `queryDescriptors`, or executing a query absent from the selected
-map, preserves the adaptive describe path. A supplied artifact with an
+Generated registries require either `queryDescriptors` or an explicit
+`execution: "adaptive"` opt-out. Executing a query absent from the selected map
+still uses the adaptive describe path. `doctor` reports parameterized runtime
+call sites that remain adaptive or cannot be classified, and errors when a
+descriptor-configured site is absent from the selected artifact. A supplied artifact with an
 incompatible revision, malformed matching contract, wrong profile role, or
 missing database-local type fails closed. PostgreSQL validates the SQL and
 declared parameter types during `Parse`; if they no longer fit the live schema,

@@ -5,6 +5,7 @@ import {
   type ParamMapResult,
   type ParamTarget,
 } from "../src/pg/param-map";
+import { paramInference } from "../src/commands/prepare-inference";
 
 function target(result: ParamMapResult, param: number): ParamTarget | undefined {
   return effectiveParamTargets(result.bindings.get(param))[0];
@@ -299,6 +300,9 @@ test("COALESCE nested inside INSERT keeps target provenance and nullability", as
   expect(isDmlBound(r, 2)).toBe(true);
   expect(r.bindings.get(2)?.dmlTargets[0]?.nullSafe).toBe(true);
   expect(r.forceNullable.has(2)).toBe(true);
+  expect(paramInference(2, true, r).reason).toBe(
+    "a NULL-safe SQL branch explicitly accepts NULL",
+  );
 });
 
 test("data-modifying CTEs map stored parameters to every target column", async () => {

@@ -38,6 +38,19 @@ test("accepts one object argument for named parameters", () => {
   expect(scanProject(tmp)[0]).toMatchObject({ query: "SELECT $id", paramCount: 1 });
 });
 
+test("counts positional parameters in reusable query definitions", () => {
+  setup({
+    "a.ts": `
+      import { defineQuery } from "@onreza/sqlx-js";
+      export const byId = defineQuery.one("users.by-id", "SELECT id FROM users WHERE id = $1");
+    `,
+  });
+  expect(scanProject(tmp)[0]).toMatchObject({
+    queryName: "users.by-id",
+    paramCount: 1,
+  });
+});
+
 test("rejects named parameters without one object argument", () => {
   setup({ "a.ts": `import { sql } from "@onreza/sqlx-js"; sql("SELECT $id", 1, 2);` });
   expect(() => scanProject(tmp)).toThrow(/exactly one parameter object/);
@@ -325,16 +338,133 @@ test("transaction tx.one / tx.optional / tx.file.one are scanned inside the call
       "  await tx.one(\"SELECT id FROM users WHERE id = $1\", 1);\n" +
       "  await tx.optional(\"SELECT id FROM users WHERE email = $1\", \"x\");\n" +
       "  await tx.file.one(\"./q/by_id.sql\", 1);\n" +
+      "  await tx.savepoint(async (sp) => sp.execute(\"DELETE FROM jobs WHERE id = $1\", 1));\n" +
       "});\n",
     "q/by_id.sql": "SELECT id FROM users WHERE id = $1\n",
   });
   const sites = scanProject(tmp).slice().sort((a, b) => a.line - b.line);
-  expect(sites).toHaveLength(4);
+  expect(sites).toHaveLength(5);
   expect(sites[0]!.query).toBe("SELECT 1 AS one");
   expect(sites[1]!.query).toBe("SELECT id FROM users WHERE id = $1");
   expect(sites[2]!.query).toBe("SELECT id FROM users WHERE email = $1");
   expect(sites[3]!.kind).toBe("file");
   expect(sites[3]!.sqlFilePath).toBe("./q/by_id.sql");
+  expect(sites[4]).toMatchObject({
+    query: "DELETE FROM jobs WHERE id = $1",
+    cardinality: "execute",
+    execution: "adaptive",
+  });
+});
+
+test("scanner classifies generated client descriptor coverage", () => {
+  setup({
+    "a.ts": `
+      import { createSqlClient } from "@onreza/sqlx-js";
+      import descriptors from "./descriptors.json";
+      const prepared = createSqlClient(undefined, { queryDescriptors: descriptors });
+      const adaptive = createSqlClient(undefined, { execution: "adaptive" });
+      await prepared.sql("SELECT $1::int4", 1);
+      await adaptive.sql("SELECT $1::text", "x");
+    `,
+  });
+  expect(scanProject(tmp).map((site) => site.execution)).toEqual([
+    "descriptor",
+    "adaptive",
+  ]);
+});
+
+test("scanner follows a generated client imported from the project database module", () => {
+  setup({
+    "tsconfig.json": JSON.stringify({ include: ["src/**/*.ts"] }),
+    "db.ts": `
+      import { createSqlClient } from "@onreza/sqlx-js";
+      import descriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
+      export const db = createSqlClient(undefined, { queryDescriptors: descriptors });
+    `,
+    "src/a.ts": `
+      import { db as database } from "../db.js";
+      await database.sql.one("SELECT $1::int4", 1);
+      await database.sql.transaction(async (tx) => {
+        await tx.savepoint(async (sp) => sp.execute("DELETE FROM jobs WHERE id = $1", 1));
+      });
+    `,
+  });
+
+  expect(scanProject(tmp).map((site) => ({
+    query: site.query,
+    cardinality: site.cardinality,
+    execution: site.execution,
+  }))).toEqual([
+    {
+      query: "SELECT $1::int4",
+      cardinality: "one",
+      execution: "descriptor",
+    },
+    {
+      query: "DELETE FROM jobs WHERE id = $1",
+      cardinality: "execute",
+      execution: "descriptor",
+    },
+  ]);
+});
+
+test("scanner preserves profiles from an imported project database client", () => {
+  setup({
+    "tsconfig.json": JSON.stringify({ include: ["src/**/*.ts"] }),
+    "db.ts": `
+      import { createSqlClient } from "@onreza/sqlx-js";
+      import descriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
+      const profiles = {
+        api: {
+          name: "api",
+          role: "app_api",
+          transactionSettings: ["app.tenant_id"],
+        },
+      } as const;
+      export const db = createSqlClient(undefined, {
+        profile: profiles.api,
+        queryDescriptors: descriptors,
+      });
+    `,
+    "src/a.ts": `
+      import { db } from "../db.js";
+      await db.sql.transaction({ settings: { "app.tenant_id": "tenant-1" } }, async (tx) => {
+        await tx.one("SELECT $1::int4", 1);
+      });
+    `,
+  });
+
+  expect(scanProject(tmp, {}, {
+    api: {
+      name: "api",
+      role: "app_api",
+      transactionSettings: ["app.tenant_id"],
+    },
+  })).toEqual([
+    expect.objectContaining({
+      query: "SELECT $1::int4",
+      cardinality: "one",
+      profiles: ["api"],
+      execution: "descriptor",
+    }),
+  ]);
+});
+
+test("scanner rejects a mutable imported project database client", () => {
+  setup({
+    "tsconfig.json": JSON.stringify({ include: ["src/**/*.ts"] }),
+    "db.ts": `
+      import { createSqlClient } from "@onreza/sqlx-js";
+      import descriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
+      export let db = createSqlClient(undefined, { queryDescriptors: descriptors });
+    `,
+    "src/a.ts": `
+      import { db } from "../db.js";
+      await db.sql("SELECT $1::int4", 1);
+    `,
+  });
+
+  expect(() => scanProject(tmp)).toThrow(/db\.ts:4:18.*createSqlClient bindings must use const/);
 });
 
 test("scanner follows tsconfig project references in a monorepo", () => {

@@ -138,6 +138,197 @@ test("watch reuses unchanged fingerprints and scans only the changed source", as
   }
 });
 
+test("watch preserves rescanned sites and dirty fingerprints after a fatal prepare", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-watch-fatal-"));
+  const state: WatchState = { session: null };
+  const oldA = { file: "a.ts", line: 1, column: 1, query: "SELECT old", paramCount: 0, kind: "inline" as const };
+  const newA = { ...oldA, query: "SELECT new" };
+  const stableB = { file: "b.ts", line: 1, column: 1, query: "SELECT stable", paramCount: 0, kind: "inline" as const };
+  const inputs: PrepareIncrementalInput[] = [];
+  let prepares = 0;
+  writeFileSync(join(root, "a.ts"), "export {};\n");
+  writeFileSync(join(root, "b.ts"), "export {};\n");
+  try {
+    const deps = {
+      loadConfig: async () => ({}),
+      openSession: async () => session("watch", []),
+      scanProject: () => [oldA, stableB],
+      scanFile: (path: string) => path.endsWith("a.ts") ? [newA] : [stableB],
+      findSourceFiles: () => [join(root, "a.ts"), join(root, "b.ts")],
+      prepareOnce: async (...args: unknown[]) => {
+        inputs.push(args[5] as PrepareIncrementalInput);
+        prepares++;
+        if (prepares === 2) throw new Error("artifact publish failed");
+        return result(2);
+      },
+    };
+    const currentOpts = { ...opts(), root };
+
+    await prepareWatchedOnce(currentOpts, state, () => {}, () => {}, deps);
+    await expect(
+      prepareWatchedOnce(currentOpts, state, () => {}, () => {}, deps, ["a.ts"]),
+    ).rejects.toThrow("artifact publish failed");
+    await prepareWatchedOnce(currentOpts, state, () => {}, () => {}, deps, ["b.ts"]);
+
+    expect(inputs[2]!.sites?.map((site) => site.query).sort()).toEqual([
+      "SELECT new",
+      "SELECT stable",
+    ]);
+    expect(inputs[2]!.reuseCacheFps).not.toContain(profileFingerprint(undefined, "SELECT new"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("watch fully rescans consumers when a local client binding changes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-watch-client-"));
+  const state: WatchState = { session: null };
+  const descriptorSite = {
+    file: "a.ts",
+    line: 1,
+    column: 1,
+    query: "SELECT $1",
+    paramCount: 1,
+    kind: "inline" as const,
+    execution: "descriptor" as const,
+  };
+  const adaptiveSite = {
+    ...descriptorSite,
+    execution: "adaptive" as const,
+  };
+  let projectScans = 0;
+  let fileScans = 0;
+  writeFileSync(join(root, "a.ts"), "export {};\n");
+  writeFileSync(
+    join(root, "db.ts"),
+    'import { createSqlClient } from "@onreza/sqlx-js";\nexport const db = createSqlClient();\n',
+  );
+  try {
+    const deps = {
+      loadConfig: async () => ({}),
+      openSession: async () => session("watch", []),
+      scanProject: () => {
+        projectScans++;
+        return projectScans === 1 ? [descriptorSite] : [adaptiveSite];
+      },
+      scanFile: () => {
+        fileScans++;
+        return [];
+      },
+      findSourceFiles: () => [join(root, "a.ts"), join(root, "db.ts")],
+      prepareOnce: async () => result(),
+    };
+
+    await prepareWatchedOnce({ ...opts(), root }, state, () => {}, () => {}, deps);
+    await prepareWatchedOnce({ ...opts(), root }, state, () => {}, () => {}, deps, ["db.ts"]);
+
+    expect(projectScans).toBe(2);
+    expect(fileScans).toBe(0);
+    expect(state.sitesByFile?.get("a.ts")?.[0]?.execution).toBe("adaptive");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("watch fully rescans consumers when a local client binding is removed", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-watch-client-remove-"));
+  const state: WatchState = { session: null };
+  const descriptorSite = {
+    file: "a.ts",
+    line: 1,
+    column: 1,
+    query: "SELECT $1",
+    paramCount: 1,
+    kind: "inline" as const,
+    execution: "descriptor" as const,
+  };
+  let projectScans = 0;
+  let fileScans = 0;
+  writeFileSync(join(root, "a.ts"), "export {};\n");
+  writeFileSync(
+    join(root, "db.ts"),
+    'import { createSqlClient } from "@onreza/sqlx-js";\nexport const db = createSqlClient();\n',
+  );
+  try {
+    const deps = {
+      loadConfig: async () => ({}),
+      openSession: async () => session("watch", []),
+      scanProject: () => {
+        projectScans++;
+        return projectScans === 1 ? [descriptorSite] : [];
+      },
+      scanFile: () => {
+        fileScans++;
+        return [];
+      },
+      findSourceFiles: () => [join(root, "a.ts"), join(root, "db.ts")],
+      prepareOnce: async () => result(),
+    };
+
+    await prepareWatchedOnce({ ...opts(), root }, state, () => {}, () => {}, deps);
+    writeFileSync(join(root, "db.ts"), "export const db = {};\n");
+    await prepareWatchedOnce({ ...opts(), root }, state, () => {}, () => {}, deps, ["db.ts"]);
+
+    expect(projectScans).toBe(2);
+    expect(fileScans).toBe(0);
+    expect(state.sitesByFile?.has("a.ts")).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("watch fully rescans when a deleted client module also owned query sites", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-watch-client-delete-"));
+  const state: WatchState = { session: null };
+  const consumerSite = {
+    file: "a.ts",
+    line: 1,
+    column: 1,
+    query: "SELECT $1",
+    paramCount: 1,
+    kind: "inline" as const,
+    execution: "descriptor" as const,
+  };
+  const clientSite = {
+    ...consumerSite,
+    file: "db.ts",
+    query: "SELECT $2",
+  };
+  let projectScans = 0;
+  let fileScans = 0;
+  writeFileSync(join(root, "a.ts"), "export {};\n");
+  writeFileSync(
+    join(root, "db.ts"),
+    'import { createSqlClient } from "@onreza/sqlx-js";\nexport const db = createSqlClient();\n',
+  );
+  try {
+    const deps = {
+      loadConfig: async () => ({}),
+      openSession: async () => session("watch", []),
+      scanProject: () => {
+        projectScans++;
+        return projectScans === 1 ? [consumerSite, clientSite] : [consumerSite];
+      },
+      scanFile: () => {
+        fileScans++;
+        return [];
+      },
+      findSourceFiles: () => [join(root, "a.ts")],
+      prepareOnce: async () => result(),
+    };
+
+    await prepareWatchedOnce({ ...opts(), root }, state, () => {}, () => {}, deps);
+    rmSync(join(root, "db.ts"));
+    await prepareWatchedOnce({ ...opts(), root }, state, () => {}, () => {}, deps, ["db.ts"]);
+
+    expect(projectScans).toBe(2);
+    expect(fileScans).toBe(0);
+    expect(state.sitesByFile?.has("db.ts")).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("watch prunes deleted sources even when the filesystem reports only a different file", async () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-watch-delete-"));
   const state: WatchState = { session: null };

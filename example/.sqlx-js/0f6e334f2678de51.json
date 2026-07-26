@@ -52,5 +52,81 @@
       "nullable": true
     }
   ],
-  "hasResultSet": true
+  "hasResultSet": true,
+  "inference": {
+    "columns": [
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "id",
+            "notNull": true
+          }
+        ],
+        "reason": "forced non-null by the result alias",
+        "hint": "Keep alias overrides limited to application invariants that PostgreSQL cannot express"
+      },
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "name",
+            "notNull": true
+          }
+        ],
+        "reason": "forced non-null by the result alias",
+        "hint": "Keep alias overrides limited to application invariants that PostgreSQL cannot express"
+      },
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "email",
+            "notNull": true
+          }
+        ],
+        "reason": "forced non-null by the result alias",
+        "hint": "Keep alias overrides limited to application invariants that PostgreSQL cannot express"
+      },
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "age",
+            "notNull": false
+          }
+        ],
+        "reason": "at least one source column allows NULL",
+        "hint": "Add a NOT NULL constraint or a supported narrowing predicate when that matches the schema contract"
+      },
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "bio",
+            "notNull": false
+          }
+        ],
+        "reason": "at least one source column allows NULL",
+        "hint": "Add a NOT NULL constraint or a supported narrowing predicate when that matches the schema contract"
+      }
+    ],
+    "params": [
+      {
+        "targets": [
+          {
+            "kind": "predicate",
+            "table": "users",
+            "column": "id"
+          }
+        ],
+        "reason": "a predicate reference requires a non-null value"
+      }
+    ]
+  }
 }

@@ -38,6 +38,11 @@ test("named and positional parameters cannot be mixed", () => {
   expect(() => rewriteNamedParameters("SELECT $id, $1")).toThrow(/cannot be mixed/);
 });
 
+test("positional parameter count ignores quoted and commented placeholders", () => {
+  const rewritten = rewriteNamedParameters("SELECT $2, '$9', $$ $8 $$ -- $7\n, $1");
+  expect(rewritten.positionalCount).toBe(2);
+});
+
 test("rewritten PostgreSQL positions map back to the source query", () => {
   const rewritten = rewriteNamedParameters("SELECT $long_name + broken");
   expect(originalPosition(rewritten, rewritten.query.indexOf("broken") + 1)).toBe(21);

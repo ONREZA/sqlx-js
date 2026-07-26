@@ -11,10 +11,7 @@ Items already shipped live in the [README](./README.md) feature list; this file 
 | pgschema snapshot and migration handoff | 6 | Provider-aware `dev` / `verify` validates application SQL against `schema.sql` in disposable shadow databases. Next, automate snapshot handoff for teams migrating from built-in migrations without creating two DDL authorities. |
 | Generated function call API | 5 | Consider a typed callable surface only after function identity, default arguments, named arguments, procedures, overload resolution, and security metadata are represented soundly. The existing `KnownFunctions` catalog remains the lower-risk foundation. |
 | Built-in migration lifecycle maintenance | 5 | Keep provider-aware `dev` / `verify` and `migrate run/revert/squash/archive` stable for simple projects and application startup, but avoid expanding the built-in provider into a full PostgreSQL schema-as-code system. |
-| Schema-aware `jsonb` runtime validation | 5 | Optional opt-in: pass a Zod / Valibot / ArkType schema, validate rows on read. Currently we are compile-time-only by design. |
-| MySQL backend | 5 | Some runtime clients support it, but MySQL has no `Describe Statement` equivalent. Would need a real SQL parser pass + `INFORMATION_SCHEMA` introspection. |
 | Multidimensional array contracts | 4 | Preserve runtime dimensions in generated row and parameter types without treating declared `int[2][2]` bounds as enforced shape. The text codec already handles nested values and explicit lower bounds; the public typed wrapper remains one-dimensional until both input and output contracts can stay sound. |
-| SQLite backend | 4 | SQLite's column types are dynamic. Would require running `EXPLAIN` and a heuristic mapper, or schema-driven inference per-statement. |
 | Streaming / cursor / COPY typing | 4 | Extend the integrated wire runtime with proper row types, backpressure, and connection ownership once a concrete large-result or bulk-ingest consumer justifies expanding the public surface. |
 | Query-plan policy gates | 4 | Allow explicit blocking rules only for teams that maintain a representative planning database and accept environment-specific baselines. Generic-plan cost changes and sequential scans should never fail CI by default. |
 | Multi-statement queries | 2 | One SQL string with multiple statements separated by `;`. PG's `Parse` is single-statement; this would require client-side splitting. |
@@ -22,6 +19,20 @@ Items already shipped live in the [README](./README.md) feature list; this file 
 | Tagged-template literal API (`` sql`SELECT ${x}` ``) | Rejected | A runtime tag can bind values, but TypeScript does not expose literal template fragments to the tag's type, so it cannot select the generated query registry entry. sqlx-js will not own `ts-patch`, a runtime-specific source rewriter, or the consumer build pipeline for syntax that is only marginally shorter than the portable typed function call. |
 | Separate runtime package | Deferred | The audited root import already excludes compile-time modules. Making TypeScript an optional peer reduced a clean production install from about 33 MB to 2.4 MB; a second public package and release boundary is not justified for the remaining analyzer dependency unless production consumers demonstrate measurable pressure. |
 | Editor integration / LSP | Deferred | Keep the versioned batch JSON, incremental `prepare --watch --jsonl`, and `sqlx-js-diagnostics` transport stable, but do not build or maintain a VS Code extension or full LSP until real consumer demand justifies the separate editor clients and release lifecycle. |
+
+## Permanent boundaries
+
+- PostgreSQL remains the only backend. MySQL and SQLite would replace the
+  server-owned Describe/plan contract with heuristic parsing and dilute the
+  library's strict-prepare model.
+- Runtime SQL parsing, automatic descriptor discovery, result-schema
+  validation, automatic replay, named prepared-statement caches, and implicit
+  pipelining are rejected for the default path.
+- Inference grows only from real production-corpus shapes. A new sound rule
+  requires a degraded strict-inference case plus a live PostgreSQL regression;
+  completing the entire PostgreSQL AST is not a goal.
+- Full editor/LSP ownership remains deferred. Versioned JSON diagnostics,
+  watch JSONL, and `queries explain` are the portable editor and CI boundary.
 
 ## Tagged-template literal API
 
