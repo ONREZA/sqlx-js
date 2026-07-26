@@ -101,10 +101,11 @@ if (!haveIntegrationDatabase) {
     command: "dev" | "verify",
     root = tmp,
     databaseUrl = dbUrl,
+    args: string[] = [],
   ): { code: number; stdout: string; stderr: string } {
     const r = spawnSync(
       "bun",
-      [join(repoRoot, "bin/sqlx-js.ts"), command, "--root", root],
+      [join(repoRoot, "bin/sqlx-js.ts"), command, ...args, "--root", root],
       { env: { ...process.env, DATABASE_URL: databaseUrl }, encoding: "utf8" },
     );
     return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
@@ -131,10 +132,24 @@ if (!haveIntegrationDatabase) {
     return databaseUrlWithDatabase(dbUrl, name);
   }
 
-  function snapshot(args: string[] = []): { code: number; stdout: string; stderr: string } {
+  async function dropDatabase(databaseUrl: string): Promise<void> {
+    const database = decodeURIComponent(new URL(databaseUrl).pathname.slice(1));
+    const admin = new PgClient(parseDatabaseUrl(databaseUrlWithDatabase(dbUrl, "postgres")));
+    await admin.connect();
+    try {
+      await admin.simpleQuery(`DROP DATABASE IF EXISTS ${quoteIdent(database)}`);
+    } finally {
+      await admin.end();
+    }
+  }
+
+  function snapshot(
+    args: string[] = [],
+    root = tmp,
+  ): { code: number; stdout: string; stderr: string } {
     const r = spawnSync(
       "bun",
-      [join(repoRoot, "bin/sqlx-js.ts"), "snapshot", ...args, "--root", tmp],
+      [join(repoRoot, "bin/sqlx-js.ts"), "snapshot", ...args, "--root", root],
       { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
     );
     return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
@@ -1975,6 +1990,56 @@ export default {
         .map((name) => [name, readFileSync(join(root, ".sqlx-js", name), "utf8")]))
         .toEqual(beforeCache);
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("verify rejects a committed snapshot expanded beyond the schema source", async () => {
+    const root = isolatedRoot("verify-snapshot-source");
+    const shadowDatabaseUrl = await createShadowDatabase(
+      `sqlx_js_verify_snapshot_${process.pid}_${Date.now().toString(36)}`,
+    );
+    try {
+      writeRootFile(root, "migrations/0302_base.up.sql",
+        "CREATE TABLE tmp_verify_snapshot_users (\n"
+        + "  id BIGSERIAL PRIMARY KEY,\n"
+        + "  email TEXT NOT NULL\n"
+        + ");\n",
+      );
+      writeRootFile(root, "migrations/0302_base.down.sql",
+        "DROP TABLE IF EXISTS tmp_verify_snapshot_users;\n",
+      );
+      writeRootFile(root, "a.ts",
+        "import { sql } from \"@onreza/sqlx-js\";\n"
+        + "await sql(\"SELECT id, email FROM tmp_verify_snapshot_users WHERE id = $1\", 1);\n",
+      );
+
+      const generated = workflowCommand("dev", root, dbUrl, ["--shadow-url", shadowDatabaseUrl]);
+      expect({ code: generated.code, stderr: generated.stderr }).toEqual({ code: 0, stderr: "" });
+      const dumped = snapshot(["dump", "--shadow-url", shadowDatabaseUrl], root);
+      expect({ code: dumped.code, stderr: dumped.stderr }).toEqual({ code: 0, stderr: "" });
+
+      const current = workflowCommand("verify", root, dbUrl, ["--shadow-url", shadowDatabaseUrl]);
+      expect({ code: current.code, stderr: current.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(current.stdout).toContain("snapshot: ok");
+
+      const snapshotPath = join(root, ".sqlx-js/schema/schema.json");
+      const poisoned = JSON.parse(readFileSync(snapshotPath, "utf8")) as {
+        relations: { name: string; columns: Record<string, unknown>[] }[];
+      };
+      const users = poisoned.relations.find((relation) => relation.name === "tmp_verify_snapshot_users")!;
+      users.columns.push({
+        ...users.columns[0],
+        name: "forbidden_secret",
+        ordinal: users.columns.length + 1,
+      });
+      writeFileSync(snapshotPath, JSON.stringify(poisoned, null, 2) + "\n");
+
+      const rejected = workflowCommand("verify", root, dbUrl, ["--shadow-url", shadowDatabaseUrl]);
+      expect(rejected.code).not.toBe(0);
+      expect(rejected.stderr).toContain("snapshot is stale");
+    } finally {
+      await dropDatabase(shadowDatabaseUrl);
       rmSync(root, { recursive: true, force: true });
     }
   });

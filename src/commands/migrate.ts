@@ -50,6 +50,7 @@ export type MigrationWorkflowOptions = MigrateOptions & {
   root: string;
   cacheDir: string;
   dtsPath: string;
+  snapshotPath: string;
   prune?: boolean;
   shadowUrl?: string;
   shadowAdminUrl?: string;
@@ -801,6 +802,13 @@ export async function migrateVerify(opts: MigrationWorkflowOptions): Promise<voi
   await withWorkflowShadowDatabase(opts, async (shadowDatabaseUrl) => {
     await applyMigrationsForWorkflow(shadowDatabaseUrl, opts.migrationsDir, opts.lockKey, opts.lockTimeoutMs);
     await validateLatestDownForWorkflow(shadowDatabaseUrl, opts.migrationsDir);
+    if (existsSync(opts.snapshotPath)) {
+      const { runSchemaCheck } = await import("./schema");
+      await runSchemaCheck({
+        databaseUrl: shadowDatabaseUrl,
+        snapshotPath: opts.snapshotPath,
+      });
+    }
     ok = await prepareInTemporaryArtifacts(opts, shadowDatabaseUrl);
   });
   if (!ok) process.exit(1);

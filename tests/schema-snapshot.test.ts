@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { renderSchemaManifest, stableSchemaJson, type SchemaSnapshot } from "../src/schema-snapshot";
+import {
+  renderSchemaManifest,
+  schemaSnapshotEqual,
+  stableSchemaJson,
+  type SchemaSnapshot,
+} from "../src/schema-snapshot";
 
 const snapshot: SchemaSnapshot = {
   version: 2,
@@ -59,6 +64,14 @@ test("stableSchemaJson is deterministic and newline terminated", () => {
   const text = stableSchemaJson(snapshot);
   expect(text).toEndWith("\n");
   expect(text).toBe(stableSchemaJson(JSON.parse(text) as SchemaSnapshot));
+});
+
+test("schema snapshot equality ignores cluster-local OIDs but preserves identifiers", () => {
+  const other = structuredClone(snapshot);
+  other.relations[0]!.columns[0]!.typeOid = 50_000;
+  expect(schemaSnapshotEqual(snapshot, other)).toBe(true);
+  other.relations[0]!.columns[0]!.name = "forbidden_secret";
+  expect(schemaSnapshotEqual(snapshot, other)).toBe(false);
 });
 
 test("renderSchemaManifest includes constraints, indexes, types, and functions", () => {

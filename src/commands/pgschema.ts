@@ -64,6 +64,7 @@ export type PgschemaWorkflowOptions = {
   config: SqlxJsConfig;
   cacheDir: string;
   dtsPath: string;
+  snapshotPath: string;
   shadowUrl?: string;
   shadowAdminUrl?: string;
   prune?: boolean;
@@ -303,6 +304,13 @@ export async function runPgschemaVerify(opts: PgschemaWorkflowOptions): Promise<
   let ok = true;
   await withWorkflowShadowDatabase(opts, async (shadowDatabaseUrl) => {
     applyDesiredSchema(opts, shadowDatabaseUrl);
+    if (existsSync(opts.snapshotPath)) {
+      const { runSchemaCheck } = await import("./schema");
+      await runSchemaCheck({
+        databaseUrl: shadowDatabaseUrl,
+        snapshotPath: opts.snapshotPath,
+      });
+    }
     const { verifyPrepareArtifacts } = await import("./prepare");
     const verification = await verifyPrepareArtifacts(
       {
