@@ -34,7 +34,7 @@ type TypeRow = {
 };
 
 type CompositeField = {
-  name?: string;
+  name: string;
   typeOid: number;
 };
 
@@ -349,19 +349,19 @@ export class PostgresTypeRegistry {
     const fieldsByRelation = new Map<number, CompositeField[]>();
     if (relationOids.length > 0) {
       const fieldRows = await this.client.unsafe(`
-        SELECT attrelid::int8, attname, atttypid::int8, attisdropped
+        SELECT attrelid::int8, attname, atttypid::int8
         FROM pg_catalog.pg_attribute
         WHERE attrelid IN (${relationOids.join(", ")})
           AND attnum > 0
+          AND NOT attisdropped
         ORDER BY attrelid, attnum
       `, []).values();
       for (const row of fieldRows) {
         const relationOid = numberValue(row[0]);
         const fields = fieldsByRelation.get(relationOid) ?? [];
-        const dropped = row[3] === true;
         fields.push({
-          ...(dropped ? {} : { name: String(row[1]) }),
-          typeOid: dropped ? 0 : numberValue(row[2]),
+          name: String(row[1]),
+          typeOid: numberValue(row[2]),
         });
         fieldsByRelation.set(relationOid, fields);
       }
@@ -410,7 +410,6 @@ export class PostgresTypeRegistry {
         implementation = (value) => {
           const raw = parseCompositeLiteral(value);
           return Object.fromEntries(fields.flatMap((field, index) => {
-            if (!field.name) return [];
             const item = raw[index] ?? null;
             return [[field.name, item === null ? null : parserFor(field.typeOid)(item)]];
           }));
@@ -452,7 +451,6 @@ export class PostgresTypeRegistry {
           }
           const record = value as Record<string, unknown>;
           return serializeCompositeLiteral(fields.map((field) => {
-            if (!field.name) return null;
             const item = record[field.name];
             if (item === undefined) {
               throw new Error(

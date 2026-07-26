@@ -204,11 +204,12 @@ class ManagedPostgresRuntime implements RuntimeClient {
   private async executeRequest(request: RuntimeQueryRequest): Promise<RuntimeQueryResult> {
     const generation = this.acceptGeneration();
     const descriptor = this.descriptors?.queries.get(request.metadata.queryId);
+    const signal = validateOptionalAbortSignal(request.options?.signal);
     const timeoutMs = validateOptionalTimeout(
       request.options?.timeoutMs ?? this.operationTimeoutMs,
       "timeoutMs",
     );
-    const operation = this.startOperation(generation, request.metadata, timeoutMs, request.options?.signal);
+    const operation = this.startOperation(generation, request.metadata, timeoutMs, signal);
     const work = this.executeQuery(generation, operation, request, descriptor);
     try {
       const result = await Promise.race([work, operation.interruption.promise]);
@@ -251,6 +252,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
     options: RuntimeTransactionOptions = {},
   ): Promise<R> {
     const generation = this.acceptGeneration();
+    const signal = validateOptionalAbortSignal(options.signal);
     const timeoutMs = validateOptionalTimeout(options.timeoutMs ?? this.operationTimeoutMs, "timeoutMs");
     const metadata = { queryId: queryId("sqlx-js.transaction"), queryName: "sqlx-js.transaction" };
     const operation = this.startOperation(generation, metadata, undefined, undefined);
@@ -285,18 +287,28 @@ class ManagedPostgresRuntime implements RuntimeClient {
       if (remainingMs <= 0) expire();
       else timer = setTimeout(expire, remainingMs);
     }
-    if (options.signal) {
+    if (signal) {
       abortListener = () => {
         if (operation.interrupted || state.expired || !generation.active.has(operation.id)) return;
-        const error = new QueryAbortedError(this.interruptionDetails(operation), options.signal?.reason);
+        const error = new QueryAbortedError(this.interruptionDetails(operation), signal.reason);
         abortError = error;
         operation.interrupted = error;
         state.expired = error;
         this.cancelTransaction(state);
         operation.interruption.reject(error);
       };
-      if (options.signal.aborted) abortListener();
-      else options.signal.addEventListener("abort", abortListener, { once: true });
+      try {
+        if (signal.aborted) abortListener();
+        else signal.addEventListener("abort", abortListener, { once: true });
+      } catch (error) {
+        if (timer !== undefined) clearTimeout(timer);
+        signal.removeEventListener("abort", abortListener);
+        state.expire = undefined;
+        state.expired ??= new Error("sqlx-js.transaction: scoped executor is no longer active");
+        this.finishOperation(operation);
+        void operation.interruption.promise.catch(() => {});
+        throw error;
+      }
     }
 
     const begin = this.executeTransaction(generation, operation, state, fn);
@@ -334,7 +346,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
       throw toPgError(error) ?? error;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
-      if (options.signal && abortListener) options.signal.removeEventListener("abort", abortListener);
+      if (signal && abortListener) signal.removeEventListener("abort", abortListener);
       state.expire = undefined;
       state.expired ??= new Error("sqlx-js.transaction: scoped executor is no longer active");
       this.finishOperation(operation);
@@ -454,8 +466,14 @@ class ManagedPostgresRuntime implements RuntimeClient {
     }
     if (signal) {
       operation.abortListener = () => this.abortOperation(operation, signal.reason);
-      if (signal.aborted) operation.abortListener();
-      else signal.addEventListener("abort", operation.abortListener, { once: true });
+      try {
+        if (signal.aborted) operation.abortListener();
+        else signal.addEventListener("abort", operation.abortListener, { once: true });
+      } catch (error) {
+        this.finishOperation(operation);
+        void operation.interruption.promise.catch(() => {});
+        throw error;
+      }
     }
     return operation;
   }
@@ -545,6 +563,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
   ): Promise<RuntimeQueryResult> {
     this.checkTransactionState(state);
     const descriptor = this.descriptors?.queries.get(request.metadata.queryId);
+    const signal = validateOptionalAbortSignal(request.options?.signal);
     const timeoutMs = validateOptionalTimeout(request.options?.timeoutMs, "timeoutMs");
     const startedAt = performance.now();
     if (this.onQueryStart) {
@@ -586,16 +605,21 @@ class ManagedPostgresRuntime implements RuntimeClient {
       if (remainingMs <= 0) expire();
       else timer = setTimeout(expire, remainingMs);
     }
-    if (request.options?.signal) {
-      const signal = request.options.signal;
+    if (signal) {
       abortListener = () => interrupt(new QueryAbortedError({
         phase: "execution",
         outcome: sent ? "unknown" : "not_sent",
         queryId: request.metadata.queryId,
         generation: generation.id,
       }, signal.reason));
-      if (signal.aborted) abortListener();
-      else signal.addEventListener("abort", abortListener, { once: true });
+      try {
+        if (signal.aborted) abortListener();
+        else signal.addEventListener("abort", abortListener, { once: true });
+      } catch (error) {
+        if (timer !== undefined) clearTimeout(timer);
+        signal.removeEventListener("abort", abortListener);
+        throw error;
+      }
     }
     let pending: PendingQuery | undefined;
     try {
@@ -667,9 +691,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
       throw error;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
-      if (request.options?.signal && abortListener) {
-        request.options.signal.removeEventListener("abort", abortListener);
-      }
+      if (signal && abortListener) signal.removeEventListener("abort", abortListener);
       if (pending) state.pending.delete(pending);
     }
   }
@@ -1049,6 +1071,20 @@ function validateTimeout(value: number, name: string, allowZero = false): number
 
 function validateOptionalTimeout(value: number | undefined, name: string): number | undefined {
   return value === undefined ? undefined : validateTimeout(value, name);
+}
+
+function validateOptionalAbortSignal(value: AbortSignal | undefined): AbortSignal | undefined {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== "object"
+    || value === null
+    || typeof value.aborted !== "boolean"
+    || typeof value.addEventListener !== "function"
+    || typeof value.removeEventListener !== "function"
+  ) {
+    throw new TypeError("sqlx-js: signal must be an AbortSignal");
+  }
+  return value;
 }
 
 async function waitAtMost(promise: PromiseLike<unknown>, timeoutMs: number): Promise<boolean> {

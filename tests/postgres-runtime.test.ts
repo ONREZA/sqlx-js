@@ -1237,6 +1237,37 @@ describe("managed generations", () => {
 });
 
 describe("managed transaction deadline", () => {
+  test("rejects malformed abort signals without retaining managed operations", async () => {
+    const transactionPool = fakePool(async () => []);
+    const db = managed(fakePool(async () => [], {
+      begin: async (fn: (client: PostgresClient) => Promise<unknown>) => await fn(transactionPool),
+    }));
+    const signals = [
+      {} as AbortSignal,
+      {
+        aborted: false,
+        addEventListener: () => { throw new Error("listener failed"); },
+        removeEventListener: () => {},
+      } as unknown as AbortSignal,
+    ];
+
+    for (const signal of signals) {
+      await expect(defineQuery("SELECT 1").runWith({ timeoutMs: 10, signal }, db.sql)).rejects.toThrow();
+      await expect(db.sql.transaction({ timeoutMs: 10, signal }, async () => {})).rejects.toThrow();
+      await expect(db.sql.transaction(async (transaction) => {
+        await defineQuery("SELECT 1").runWith({ timeoutMs: 10, signal }, transaction);
+      })).rejects.toThrow();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(db.snapshot()).toEqual(expect.objectContaining({
+      generation: 1,
+      state: "healthy",
+      activeOperations: 0,
+      recycleCount: 0,
+    }));
+    await db.close({ graceMs: 0, forceAfterMs: 0 });
+  });
+
   test("does not dispatch a query after synchronous callback work crosses the transaction deadline", async () => {
     let dispatched = 0;
     let rollbacks = 0;
