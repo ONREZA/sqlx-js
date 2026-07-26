@@ -82,6 +82,32 @@ test("runtime codec bootstrap rejects domain-specific codecs", async () => {
   );
 });
 
+test("runtime composite codecs exclude dropped attributes", async () => {
+  const client = {
+    options: { parsers: {}, serializers: {}, types: {} } as {
+      parsers: Record<number, (value: string) => unknown>;
+      serializers: Record<number, (value: unknown) => unknown>;
+      types: Record<string, never>;
+    },
+    unsafe: (query: string) => ({
+      values: async () => query.includes("pg_catalog.pg_attribute")
+        ? query.includes("NOT attisdropped")
+          ? [[70_002, "tenant", 25], [70_002, "role", 25]]
+          : [[70_002, "........pg.dropped.1........", 0, true], [70_002, "tenant", 25, false]]
+        : [["public", "membership", 70_000, 70_001, "c", 0, 70_002]],
+    }),
+  };
+  const registry = new PostgresTypeRegistry(client);
+  await registry.ready();
+
+  expect(client.options.parsers[70_000]!("(tenant_b,role_user)")).toEqual({
+    tenant: "tenant_b",
+    role: "role_user",
+  });
+  expect(client.options.serializers[70_000]!({ tenant: "tenant_b", role: "role_user" }))
+    .toBe('("tenant_b","role_user")');
+});
+
 test("runtime codec bootstrap retries after a transient catalog failure", async () => {
   let attempts = 0;
   const client = {

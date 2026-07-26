@@ -2774,6 +2774,7 @@ export default {
         CREATE EXTENSION IF NOT EXISTS citext;
         CREATE EXTENSION IF NOT EXISTS ltree;
         DROP TYPE IF EXISTS tmp_runtime_item CASCADE;
+        DROP TYPE IF EXISTS tmp_runtime_membership CASCADE;
         DROP TYPE IF EXISTS tmp_runtime_role CASCADE;
         DROP DOMAIN IF EXISTS tmp_runtime_role_domain CASCADE;
         DROP DOMAIN IF EXISTS tmp_runtime_vectors CASCADE;
@@ -2783,6 +2784,8 @@ export default {
         CREATE DOMAIN tmp_runtime_positive AS integer CHECK (VALUE > 0);
         CREATE DOMAIN tmp_runtime_vectors AS vector[];
         CREATE TYPE tmp_runtime_item AS (label text, score integer);
+        CREATE TYPE tmp_runtime_membership AS (legacy text, tenant text, role text);
+        ALTER TYPE tmp_runtime_membership DROP ATTRIBUTE legacy;
       `);
     } finally {
       await setup.end();
@@ -2803,6 +2806,7 @@ export default {
           ARRAY['[9,10]'::vector, '[11,12]'::vector]::tmp_runtime_vectors AS domain_vector_values,
           ROW('literal', 7)::tmp_runtime_item AS composite_value,
           ARRAY[ROW('first', 1), NULL]::tmp_runtime_item[] AS composite_values,
+          ROW('tenant_b', 'role_user')::tmp_runtime_membership AS dropped_composite_value,
           ARRAY['[1,2]'::vector, '[3,4]'::vector] AS vector_values,
           ARRAY['Mixed', NULL]::citext[] AS citext_values,
           ARRAY['Top.Child'::ltree, NULL] AS ltree_values
@@ -2817,6 +2821,7 @@ export default {
         domain_vector_values: [[9, 10], [11, 12]],
         composite_value: { label: "literal", score: 7 },
         composite_values: [{ label: "first", score: 1 }, null],
+        dropped_composite_value: { tenant: "tenant_b", role: "role_user" },
         vector_values: [[1, 2], [3, 4]],
         citext_values: ["Mixed", null],
         ltree_values: ["Top.Child", null],
@@ -2830,7 +2835,8 @@ export default {
                 $5::tmp_runtime_item AS composite_value,
                 $6::tmp_runtime_item[] AS composite_values,
                 $7::vector[] AS vector_values,
-                $8::tmp_runtime_vectors AS domain_vector_values`,
+                $8::tmp_runtime_vectors AS domain_vector_values,
+                $9::tmp_runtime_membership AS dropped_composite_value`,
         [8, 9],
         { key: "value", nullable: null, 'quote"slash\\': 'comma, arrow=> and "quote"' },
         "member",
@@ -2839,6 +2845,7 @@ export default {
         array([{ label: "array\\value", score: 12 }, null]),
         array([[5, 6], [7, 8]]),
         array([[13, 14], [15, 16]]),
+        { tenant: "tenant_c", role: "role_admin" },
       );
       expect(params[0]).toEqual({
         vector_value: [8, 9],
@@ -2849,6 +2856,7 @@ export default {
         composite_values: [{ label: "array\\value", score: 12 }, null],
         vector_values: [[5, 6], [7, 8]],
         domain_vector_values: [[13, 14], [15, 16]],
+        dropped_composite_value: { tenant: "tenant_c", role: "role_admin" },
       });
       await expect(runtime.unsafe(
         "SELECT $1::tmp_runtime_item",
