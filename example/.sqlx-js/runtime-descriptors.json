@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "cacheFormat": 5,
-  "generatorRevision": 20,
+  "generatorRevision": 21,
   "configHash": "424b4eaf1971125d",
   "types": {
     "[\"public\",\"user_role\"]": {

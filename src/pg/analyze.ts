@@ -111,14 +111,16 @@ async function analyzeValues(
     return conservative(rowDesc, "VALUES rows do not match the described columns");
   }
   const scope = await buildScope(select, schema, inheritedCtes);
+  const perColumnNullable: boolean[] = [];
   const perColumnArrayElementNullability: ArrayElementNullability[] = [];
   for (let index = 0; index < rowDesc.length; index++) {
+    perColumnNullable.push(await anyExpressionNullable(rows.map((row: any[]) => row[index]), scope));
     const states: ArrayElementNullability[] = [];
     for (const row of rows) states.push(await expressionArrayElementNullability(row[index], scope));
     perColumnArrayElementNullability.push(mergeArrayElementNullability(states));
   }
   return {
-    perColumnNullable: rowDesc.map((_, index) => rows.some((row: any[]) => expressionNullable(row[index], scope))),
+    perColumnNullable,
     perColumnSources: rowDesc.map(() => null),
     perColumnArrayElementNullability,
     referencedTables: [],
@@ -434,7 +436,7 @@ async function analyzedOutputColumns(
       ?? colNameOfColumnRef(target?.ResTarget?.val)
       ?? `?column?${targetIndex}`;
     const nullable = scope
-      ? computeTargetNullable(target, scope)
+      ? await computeTargetNullable(target, scope)
       : analysis?.perColumnNullable[targetIndex] ?? true;
     const sources = scope
       ? columnSourcesOfTarget(target, scope)
@@ -562,7 +564,7 @@ async function runTargets(
       const joinNullable = anyAliasNullableForOid(f.tableOid, scope);
       nullables[i] = !(notNull === true && !joinNullable);
     } else {
-      nullables[i] = expressionNullable(val, scope);
+      nullables[i] = await expressionNullable(val, scope);
     }
   }
   return {
@@ -621,9 +623,9 @@ function addForcedNonNull(scope: Scope, set: NonNullSet): void {
   for (const k of set) scope.forcedNonNull.add(k);
 }
 
-function computeTargetNullable(target: any, scope: Scope): boolean {
+async function computeTargetNullable(target: any, scope: Scope): Promise<boolean> {
   const val = target?.ResTarget?.val;
-  return expressionNullable(val, scope);
+  return await expressionNullable(val, scope);
 }
 
 function nullableFromRowDescConservative(f: FieldDescription, scope: Scope): boolean {
@@ -850,7 +852,7 @@ async function expressionArrayElementNullability(val: any, scope: Scope): Promis
     const states: ArrayElementNullability[] = [];
     for (const element of val.A_ArrayExpr.elements ?? []) {
       const nested = await expressionArrayElementNullability(element, scope);
-      states.push(nested === "unknown" ? (expressionNullable(element, scope) ? "nullable" : "non-null") : nested);
+      states.push(nested === "unknown" ? (await expressionNullable(element, scope) ? "nullable" : "non-null") : nested);
     }
     return mergeArrayElementNullability(states);
   }
@@ -865,7 +867,7 @@ async function expressionArrayElementNullability(val: any, scope: Scope): Promis
     const arg = val.FuncCall.args?.[0];
     if (!arg) return "unknown";
     const nested = await expressionArrayElementNullability(arg, scope);
-    return nested === "unknown" ? (expressionNullable(arg, scope) ? "nullable" : "non-null") : nested;
+    return nested === "unknown" ? (await expressionNullable(arg, scope) ? "nullable" : "non-null") : nested;
   }
 
   if (val.SubLink?.subLinkType === "ARRAY_SUBLINK") {
@@ -900,7 +902,21 @@ async function expressionArrayElementNullability(val: any, scope: Scope): Promis
   return "unknown";
 }
 
-function expressionNullable(val: any, scope: Scope): boolean {
+async function anyExpressionNullable(values: any[], scope: Scope): Promise<boolean> {
+  for (const value of values) {
+    if (await expressionNullable(value, scope)) return true;
+  }
+  return false;
+}
+
+async function everyExpressionNullable(values: any[], scope: Scope): Promise<boolean> {
+  for (const value of values) {
+    if (!await expressionNullable(value, scope)) return false;
+  }
+  return true;
+}
+
+async function expressionNullable(val: any, scope: Scope): Promise<boolean> {
   if (!val) return true;
 
   if (val.A_Const !== undefined) {
@@ -923,12 +939,12 @@ function expressionNullable(val: any, scope: Scope): boolean {
     if (name && COUNT_FUNCS.has(name)) return false;
     if (name && NON_NULL_FUNCS.has(name)) {
       const args = val.FuncCall.args ?? [];
-      return args.some((a: any) => expressionNullable(a, scope));
+      return await anyExpressionNullable(args, scope);
     }
     if (name === "greatest" || name === "least") {
       const args = val.FuncCall.args ?? [];
       if (args.length === 0) return true;
-      return args.every((a: any) => expressionNullable(a, scope));
+      return await everyExpressionNullable(args, scope);
     }
     return true;
   }
@@ -936,13 +952,13 @@ function expressionNullable(val: any, scope: Scope): boolean {
   if (val.CoalesceExpr) {
     const args = val.CoalesceExpr.args ?? [];
     if (args.length === 0) return true;
-    return args.every((a: any) => expressionNullable(a, scope));
+    return await everyExpressionNullable(args, scope);
   }
 
   if (val.MinMaxExpr) {
     const args = val.MinMaxExpr.args ?? [];
     if (args.length === 0) return true;
-    return args.every((a: any) => expressionNullable(a, scope));
+    return await everyExpressionNullable(args, scope);
   }
 
   if (val.NullIfExpr) {
@@ -955,12 +971,16 @@ function expressionNullable(val: any, scope: Scope): boolean {
     const hasElse = c.defresult !== undefined && c.defresult !== null;
     if (!hasElse) return true;
     const elseExpr = c.defresult;
-    return [...branches, elseExpr].some((b: any) => expressionNullable(b, scope));
+    return await anyExpressionNullable([...branches, elseExpr], scope);
   }
 
   if (val.A_Expr) {
     const e = val.A_Expr;
-    return expressionNullable(e.lexpr, scope) || expressionNullable(e.rexpr, scope);
+    if (await expressionNullable(e.lexpr, scope) || await expressionNullable(e.rexpr, scope)) return true;
+    if (e.kind === "AEXPR_OP_ANY" || e.kind === "AEXPR_OP_ALL") {
+      return await expressionArrayElementNullability(e.rexpr, scope) !== "non-null";
+    }
+    return false;
   }
 
   if (val.SubLink) {
@@ -969,12 +989,12 @@ function expressionNullable(val: any, scope: Scope): boolean {
   }
 
   if (val.TypeCast) {
-    return expressionNullable(val.TypeCast.arg, scope);
+    return await expressionNullable(val.TypeCast.arg, scope);
   }
 
   if (val.BoolExpr) {
     const a = val.BoolExpr.args ?? [];
-    return a.some((x: any) => expressionNullable(x, scope));
+    return await anyExpressionNullable(a, scope);
   }
 
   return true;
