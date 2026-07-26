@@ -1268,6 +1268,55 @@ describe("managed transaction deadline", () => {
     await db.close({ graceMs: 0, forceAfterMs: 0 });
   });
 
+  test("settles operations when abort listener cleanup throws", async () => {
+    const transactionPool = fakePool(async () => []);
+    const db = managed(fakePool(async () => [], {
+      begin: async (fn: (client: PostgresClient) => Promise<unknown>) => await fn(transactionPool),
+    }));
+    const throwingDetachSignal = () => {
+      let listener: (() => void) | undefined;
+      let detaches = 0;
+      return {
+        signal: {
+          aborted: false,
+          reason: "late abort",
+          addEventListener: (_event: string, next: () => void) => { listener = next; },
+          removeEventListener: () => {
+            detaches++;
+            throw new Error("detach failed");
+          },
+        } as unknown as AbortSignal,
+        abort: () => listener?.(),
+        detaches: () => detaches,
+      };
+    };
+
+    const root = throwingDetachSignal();
+    await expect(defineQuery("SELECT 1").runWith({ signal: root.signal }, db.sql)).resolves.toEqual([]);
+    expect(root.detaches()).toBe(1);
+    root.abort();
+
+    const outer = throwingDetachSignal();
+    await expect(db.sql.transaction({ signal: outer.signal }, async () => {})).resolves.toBeUndefined();
+    expect(outer.detaches()).toBe(1);
+    outer.abort();
+
+    const scoped = throwingDetachSignal();
+    await expect(db.sql.transaction(async (transaction) => {
+      await defineQuery("SELECT 1").runWith({ signal: scoped.signal }, transaction);
+      expect(scoped.detaches()).toBe(1);
+      scoped.abort();
+      await transaction("SELECT 2");
+    })).resolves.toBeUndefined();
+    expect(db.snapshot()).toEqual(expect.objectContaining({
+      generation: 1,
+      state: "healthy",
+      activeOperations: 0,
+      recycleCount: 0,
+    }));
+    await db.close({ graceMs: 0, forceAfterMs: 0 });
+  });
+
   test("does not dispatch a query after synchronous callback work crosses the transaction deadline", async () => {
     let dispatched = 0;
     let rollbacks = 0;
