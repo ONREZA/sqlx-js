@@ -25,7 +25,8 @@ class MockClient {
   async simpleQuery(sql: string): Promise<any> {
     this.calls.push(sql.trim().split(/\s+/)[0]!);
     if (/to_regclass\(/i.test(sql)) {
-      const rows = this.migrationTableExists ? [[utf8("app"), utf8("_sqlx_js_migrations")]] : [];
+      const table = this.migrationTableExists ? utf8("_sqlx_js_migrations") : null;
+      const rows = [[utf8("app"), table, this.migrationTableExists ? utf8("app") : null, table]];
       return { rows, fields: [], tag: "SELECT" };
     }
     if (/CREATE TABLE/i.test(sql)) {
