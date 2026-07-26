@@ -17,5 +17,14 @@
       "nullable": false
     }
   ],
-  "hasResultSet": true
+  "hasResultSet": true,
+  "inference": {
+    "columns": [
+      {
+        "sources": null,
+        "reason": "the supported SQL expression is proven non-null"
+      }
+    ],
+    "params": []
+  }
 }

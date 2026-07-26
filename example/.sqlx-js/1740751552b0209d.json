@@ -44,5 +44,65 @@
       "override": "non-null"
     }
   ],
-  "hasResultSet": true
+  "hasResultSet": true,
+  "inference": {
+    "columns": [
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "id",
+            "notNull": true
+          }
+        ],
+        "reason": "forced non-null by the result alias",
+        "hint": "Keep alias overrides limited to application invariants that PostgreSQL cannot express"
+      },
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "role",
+            "notNull": true
+          }
+        ],
+        "reason": "forced non-null by the result alias",
+        "hint": "Keep alias overrides limited to application invariants that PostgreSQL cannot express"
+      }
+    ],
+    "params": [
+      {
+        "targets": [
+          {
+            "kind": "dml",
+            "table": "users",
+            "column": "name"
+          }
+        ],
+        "reason": "a stored target or strict predicate requires a non-null value"
+      },
+      {
+        "targets": [
+          {
+            "kind": "dml",
+            "table": "users",
+            "column": "email"
+          }
+        ],
+        "reason": "a stored target or strict predicate requires a non-null value"
+      },
+      {
+        "targets": [
+          {
+            "kind": "dml",
+            "table": "users",
+            "column": "role"
+          }
+        ],
+        "reason": "a stored target or strict predicate requires a non-null value"
+      }
+    ]
+  }
 }

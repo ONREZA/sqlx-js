@@ -230,6 +230,53 @@ test("watch fully rescans consumers when a local client binding changes", async 
   }
 });
 
+test("watch fully rescans consumers when a local client binding is removed", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-watch-client-remove-"));
+  const state: WatchState = { session: null };
+  const descriptorSite = {
+    file: "a.ts",
+    line: 1,
+    column: 1,
+    query: "SELECT $1",
+    paramCount: 1,
+    kind: "inline" as const,
+    execution: "descriptor" as const,
+  };
+  let projectScans = 0;
+  let fileScans = 0;
+  writeFileSync(join(root, "a.ts"), "export {};\n");
+  writeFileSync(
+    join(root, "db.ts"),
+    'import { createSqlClient } from "@onreza/sqlx-js";\nexport const db = createSqlClient();\n',
+  );
+  try {
+    const deps = {
+      loadConfig: async () => ({}),
+      openSession: async () => session("watch", []),
+      scanProject: () => {
+        projectScans++;
+        return projectScans === 1 ? [descriptorSite] : [];
+      },
+      scanFile: () => {
+        fileScans++;
+        return [];
+      },
+      findSourceFiles: () => [join(root, "a.ts"), join(root, "db.ts")],
+      prepareOnce: async () => result(),
+    };
+
+    await prepareWatchedOnce({ ...opts(), root }, state, () => {}, () => {}, deps);
+    writeFileSync(join(root, "db.ts"), "export const db = {};\n");
+    await prepareWatchedOnce({ ...opts(), root }, state, () => {}, () => {}, deps, ["db.ts"]);
+
+    expect(projectScans).toBe(2);
+    expect(fileScans).toBe(0);
+    expect(state.sitesByFile?.has("a.ts")).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("watch fully rescans when a deleted client module also owned query sites", async () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-watch-client-delete-"));
   const state: WatchState = { session: null };

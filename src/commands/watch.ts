@@ -43,6 +43,7 @@ export type WatchOptions = PrepareOptions & {
 export type WatchState = {
   session: PrepareSession | null;
   sitesByFile?: Map<string, QueryCallSite[]>;
+  clientBindingFiles?: Set<string>;
   dirtyFiles?: Set<string>;
   dirtyFps?: Set<string>;
 };
@@ -104,16 +105,26 @@ export async function prepareWatchedOnce(
   }
   if (!state.session) state.session = await active.openSession(opts);
 
+  const clientBindingChanged = changedFiles.some((file) => {
+    const projectFile = projectPath(opts.root, file);
+    return state.clientBindingFiles?.has(projectFile)
+      || isClientBindingGraphFile(opts.root, file);
+  });
   const full = resetSession
     || !state.sitesByFile
     || changedFiles.some(isProjectGraphFile)
-    || changedFiles.some((file) => isClientBindingGraphFile(opts.root, file));
+    || clientBindingChanged;
   let nextSites: Map<string, QueryCallSite[]>;
   let changedFps = new Set<string>();
   if (full) {
     const sites = active.scanProject(opts.root, currentConfig.scan, currentConfig.profiles ?? {});
     nextSites = groupSites(sites);
     changedFps = new Set(sites.flatMap(siteFingerprints));
+    state.clientBindingFiles = new Set(
+      active.findSourceFiles(opts.root, currentConfig.scan)
+        .map((file) => projectPath(opts.root, file))
+        .filter((file) => isClientBindingGraphFile(opts.root, file)),
+    );
   } else {
     const previousSites = state.sitesByFile!;
     const dirtyFiles = state.dirtyFiles ?? new Set<string>();

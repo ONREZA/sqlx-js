@@ -31,5 +31,50 @@
       "nullable": true
     }
   ],
-  "hasResultSet": true
+  "hasResultSet": true,
+  "inference": {
+    "columns": [
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "users",
+            "column": "id",
+            "notNull": true
+          }
+        ],
+        "reason": "widened by outer-join or nullable expression semantics",
+        "hint": "Use an explicit projection or a ! alias only when an application invariant proves non-null"
+      },
+      {
+        "sources": [
+          {
+            "schema": "public",
+            "table": "posts",
+            "column": "id",
+            "notNull": true
+          }
+        ],
+        "reason": "widened by outer-join or nullable expression semantics",
+        "hint": "Use an explicit projection or a ! alias only when an application invariant proves non-null"
+      }
+    ],
+    "params": [
+      {
+        "targets": [
+          {
+            "kind": "predicate",
+            "table": "users",
+            "column": "id"
+          },
+          {
+            "kind": "predicate",
+            "table": "posts",
+            "column": "id"
+          }
+        ],
+        "reason": "a predicate reference requires a non-null value"
+      }
+    ]
+  }
 }
