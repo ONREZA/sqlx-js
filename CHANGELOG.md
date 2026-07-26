@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.23.1](https://github.com/ONREZA/sqlx-js/compare/v0.23.0...v0.23.1) (2026-07-26)
+
+
+### Bug Fixes
+
+* **ci:** restrict trusted publishing ([c6cb5ca](https://github.com/ONREZA/sqlx-js/commit/c6cb5ca1bca87a1e46053e567fd81d7995d8a9e8)), closes [#43](https://github.com/ONREZA/sqlx-js/issues/43)
+* **ci:** verify committed schema snapshots ([#47](https://github.com/ONREZA/sqlx-js/issues/47)) ([9779e29](https://github.com/ONREZA/sqlx-js/commit/9779e297547a9a1f44a6e3599b80a2c5931a5991))
+* close security audit follow-ups ([#51](https://github.com/ONREZA/sqlx-js/issues/51)) ([f1062fd](https://github.com/ONREZA/sqlx-js/commit/f1062fdb7af50b370ca222273afd16f82b7b239c))
+* **migrate:** reject foreign history stores ([2bfd810](https://github.com/ONREZA/sqlx-js/commit/2bfd81061b21e3c62e884b65f2ea04b6a7fa4eaa)), closes [#42](https://github.com/ONREZA/sqlx-js/issues/42)
+* **prepare:** infer quantified array nulls ([#49](https://github.com/ONREZA/sqlx-js/issues/49)) ([a54829c](https://github.com/ONREZA/sqlx-js/commit/a54829c8cbb3f64d87ca5b4ffffb5bbc13ff7188))
+* **runtime:** skip dropped composite fields ([#46](https://github.com/ONREZA/sqlx-js/issues/46)) ([efbcaaf](https://github.com/ONREZA/sqlx-js/commit/efbcaaf62b8577231d236a0532a09fe2fffe5971))
+* **runtime:** validate abort signals ([#45](https://github.com/ONREZA/sqlx-js/issues/45)) ([16ad4a8](https://github.com/ONREZA/sqlx-js/commit/16ad4a8a5507464bbb626844158f4908a444b16e))
+* **types:** validate profiled query mappers ([#48](https://github.com/ONREZA/sqlx-js/issues/48)) ([b5b5773](https://github.com/ONREZA/sqlx-js/commit/b5b577319a1b1c417786d8da4fb2295a978d8159))
+* **watch:** ignore custom declaration output ([#50](https://github.com/ONREZA/sqlx-js/issues/50)) ([eb0a0f7](https://github.com/ONREZA/sqlx-js/commit/eb0a0f7e55a549c79e645539a86111ec6692aa82))
+
 ## [0.23.0](https://github.com/ONREZA/sqlx-js/compare/v0.22.0...v0.23.0) (2026-07-26)
 
 
