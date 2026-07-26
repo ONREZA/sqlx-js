@@ -9,6 +9,9 @@ const envFile = join(root, ".env");
 if (!process.env.DATABASE_URL && existsSync(envFile)) process.loadEnvFile(envFile);
 if (!process.env.DATABASE_URL) throw new Error("node package smoke requires DATABASE_URL");
 const temp = mkdtempSync(join(tmpdir(), "sqlx-js-node-package-"));
+const descriptorVersions = JSON.parse(
+  readFileSync(join(root, "example/.sqlx-js/runtime-descriptors.json"), "utf8"),
+);
 
 function run(command, args, cwd = root) {
   const result = spawnSync(command, args, { cwd, encoding: "utf8", env: process.env });
@@ -104,9 +107,9 @@ try {
         onQuery: (event) => events.push(event),
         sqlFiles: { "queries/embedded.sql": "SELECT 9::int4 AS value" },
         queryDescriptors: {
-          formatVersion: 1,
-          cacheFormat: 4,
-          generatorRevision: 19,
+          formatVersion: ${descriptorVersions.formatVersion},
+          cacheFormat: ${descriptorVersions.cacheFormat},
+          generatorRevision: ${descriptorVersions.generatorRevision},
           configHash: "node-package-smoke",
           types: {},
           queries: {
