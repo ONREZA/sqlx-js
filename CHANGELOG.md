@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.0](https://github.com/ONREZA/sqlx-js/compare/v0.22.0...v0.23.0) (2026-07-26)
+
+
+### Features
+
+* make strict prepare the default workflow ([#40](https://github.com/ONREZA/sqlx-js/issues/40)) ([c4174cf](https://github.com/ONREZA/sqlx-js/commit/c4174cf2cc8e34b820660354bedf88d98ef7b7ab))
+
 ## [0.22.0](https://github.com/ONREZA/sqlx-js/compare/v0.21.0...v0.22.0) (2026-07-25)
 
 
