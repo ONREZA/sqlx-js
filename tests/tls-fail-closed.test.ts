@@ -119,7 +119,7 @@ describe("TLS fail-closed negotiation", () => {
       socket.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
     });
 
-    await expect(client(port, "require", 25).connect()).rejects.toThrow(
+    await expect(client(port, "require", 250).connect()).rejects.toThrow(
       "TCP + TLS + authentication",
     );
     await within(closed, "stalled TLS socket remained open");
