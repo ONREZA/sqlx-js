@@ -5,6 +5,10 @@ main README can stay focused on the current API.
 
 ## Guides
 
+- [0.25.0](./0.25.0.md) — compact prepare output, explicit warning and verbose
+  detail modes, and clarified doctor ownership and coverage counters.
+- [0.24.0 / 0.24.1](./0.24.0.md) — generator-bound temporal infinity policy,
+  runtime enforcement, artifact regeneration, and the 0.24.1 patch scope.
 - [0.23.0](./0.23.0.md) — descriptor-first generated clients, inference
   explanations, execution-intent diagnostics, typed savepoints, and cache
   regeneration.
