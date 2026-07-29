@@ -242,6 +242,40 @@ if (!haveIntegrationDatabase) {
     expect(queryCacheFiles().length).toBeGreaterThan(0);
   });
 
+  test("temporal reject policy couples generated Date types to runtime descriptors", () => {
+    const root = isolatedRoot("temporal-reject");
+    try {
+      writeRootFile(root, "sqlx-js.config.ts", `export default {
+        temporal: { infinity: "reject" },
+      };\n`);
+      writeRootFile(root, "queries.ts", `
+        import { defineQuery } from "@onreza/sqlx-js";
+        export const at = defineQuery.one(
+          "SELECT $1::timestamptz AS value, $2::timestamptz[] AS values",
+        );
+      `);
+
+      const prepared = prepareRoot(root);
+      expect(prepared.code, prepared.stderr).toBe(0);
+      const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
+      expect(dts).toContain(
+        '"SELECT $1::timestamptz AS value, $2::timestamptz[] AS values": '
+        + '{ params: [Date, import("@onreza/sqlx-js").PgArrayParameter<Date, boolean>]; '
+        + 'row: { "value": Date | null; "values": (Date | null)[] | null } }',
+      );
+      expect(dts).toContain('temporalInfinity: "reject"');
+      const descriptors = JSON.parse(
+        readFileSync(join(root, ".sqlx-js/runtime-descriptors.json"), "utf8"),
+      ) as RuntimeQueryDescriptors;
+      expect(descriptors.temporal).toEqual({ infinity: "reject" });
+      expect(descriptors.queries[
+        fingerprint("SELECT $1::timestamptz AS value, $2::timestamptz[] AS values")
+      ]).toEqual({ params: [1184, 1185] });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("known parameter OIDs execute through the extended protocol", async () => {
     const client = new PgClient(parseDatabaseUrl(dbUrl));
     await client.connect();
@@ -3648,6 +3682,35 @@ export default {
         "SELECT '5874897-12-31'::date",
       ))).rejects.toThrow("outside the JavaScript Date range");
       expect((await client.unsafe<{ value: number }>("SELECT 1::int AS value"))[0]!.value).toBe(1);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("temporal reject policy drains rejected infinity results and keeps the pool usable", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, {
+      max: 1,
+      temporal: { infinity: "reject" },
+    });
+    try {
+      await expect(Promise.resolve(client.unsafe(
+        "SELECT 'infinity'::timestamptz AS value",
+      ))).rejects.toThrow("PostgreSQL timestamptz infinity is rejected");
+      await expect(Promise.resolve(client.unsafe(
+        "SELECT $1::date AS value",
+        ["-infinity"],
+      ))).rejects.toThrow("PostgreSQL date infinity is rejected");
+      await expect(Promise.resolve(client.unsafe(
+        "SELECT ARRAY['infinity'::timestamptz] AS value",
+      ))).rejects.toThrow("PostgreSQL timestamptz infinity is rejected");
+      await expect(Promise.resolve(client.unsafe(
+        "SELECT $1::date[] AS value",
+        [client.array(["-infinity"])],
+      ))).rejects.toThrow("PostgreSQL date infinity is rejected");
+      expect((await client.unsafe<{ value: number }>(
+        "SELECT 1::int AS value",
+      ))[0]!.value).toBe(1);
     } finally {
       await client.end();
     }

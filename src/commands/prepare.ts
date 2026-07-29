@@ -191,7 +191,7 @@ export async function openSession(opts: PrepareOptions): Promise<PrepareSession>
     await client.end().catch(() => {});
     throw fatal("connect", error);
   }
-  const schema = new SchemaCache(client);
+  const schema = new SchemaCache(client, userCfg.temporal);
   schema.setTypeRegistry(mergeExtensionTypes(userCfg.customTypes), userCfg.customTypes);
   try {
     await schema.validateUserTypeRegistry();
@@ -210,7 +210,7 @@ export async function openSession(opts: PrepareOptions): Promise<PrepareSession>
       try {
         await profileClient.connect();
         await setRole(profileClient, profile.role);
-        const profileSchema = new SchemaCache(profileClient);
+        const profileSchema = new SchemaCache(profileClient, userCfg.temporal);
         profileSchema.setTypeRegistry(mergeExtensionTypes(userCfg.customTypes), userCfg.customTypes);
         await profileSchema.validateUserTypeRegistry();
         profiles.set(profile.name, { profile, client: profileClient, schema: profileSchema });
@@ -762,9 +762,22 @@ export async function prepareOnce(
       log(message);
     }
     const configHash = prepareConfigHash(userCfg);
-    writeRuntimeDescriptors(opts.cacheDir, entries, configHash, userCfg.profiles);
+    writeRuntimeDescriptors(
+      opts.cacheDir,
+      entries,
+      configHash,
+      userCfg.profiles,
+      userCfg.temporal,
+    );
     writeCacheManifest(opts.cacheDir, configHash);
-    emitDts(opts.dtsPath, entries, functions, userCfg.customTypes, userCfg.profiles);
+    emitDts(
+      opts.dtsPath,
+      entries,
+      functions,
+      userCfg.customTypes,
+      userCfg.profiles,
+      userCfg.temporal,
+    );
     if (enumModule) writeEnumCatalogModule(enumModule.path, enumModule.content);
   } catch (error) {
     throw fatal("cache", error);
@@ -952,7 +965,14 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-check-"));
         const generatedDts = join(tmp, "sqlx-js-env.d.ts");
         try {
-          emitDts(generatedDts, entries, functions, userCfg.customTypes, userCfg.profiles);
+          emitDts(
+            generatedDts,
+            entries,
+            functions,
+            userCfg.customTypes,
+            userCfg.profiles,
+            userCfg.temporal,
+          );
           if (!existsSync(opts.dtsPath) || readFileSync(opts.dtsPath, "utf8") !== readFileSync(generatedDts, "utf8")) {
             diagnostics.push({
               severity: "error",
@@ -966,6 +986,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
             entries,
             prepareConfigHash(userCfg),
             userCfg.profiles,
+            userCfg.temporal,
           );
           const descriptorPath = runtimeDescriptorPath(opts.cacheDir);
           if (!existsSync(descriptorPath) || readFileSync(descriptorPath, "utf8") !== expectedDescriptors) {
@@ -1023,12 +1044,20 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         return;
       }
       if (opts.offline) {
-        emitDts(opts.dtsPath, entries, functions, userCfg.customTypes, userCfg.profiles);
+        emitDts(
+          opts.dtsPath,
+          entries,
+          functions,
+          userCfg.customTypes,
+          userCfg.profiles,
+          userCfg.temporal,
+        );
         writeRuntimeDescriptors(
           opts.cacheDir,
           entries,
           prepareConfigHash(userCfg),
           userCfg.profiles,
+          userCfg.temporal,
         );
         if (enumOutput) writeEnumCatalogModule(enumOutput, renderEnumCatalog(enums, userCfg.enumCatalog));
       }

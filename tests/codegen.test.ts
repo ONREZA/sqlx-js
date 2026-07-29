@@ -6,6 +6,7 @@ import { emitDts } from "../src/codegen";
 import type { CacheEntry } from "../src/cache";
 import type { FunctionEntry } from "../src/function-cache";
 import type { DatabaseProfiles } from "../src/config";
+import type { TemporalPolicy } from "../src/temporal";
 
 const tmp = join(import.meta.dir, ".tmp-codegen");
 
@@ -36,9 +37,10 @@ function write(
   functions: FunctionEntry[] = [],
   runtimeTypes: Record<string, string> = {},
   profiles: DatabaseProfiles = {},
+  temporal?: TemporalPolicy,
 ): string {
   const out = join(tmp, "sqlx-js-env.d.ts");
-  emitDts(out, completeEntries(entries), functions, runtimeTypes, profiles);
+  emitDts(out, completeEntries(entries), functions, runtimeTypes, profiles, temporal);
   return readFileSync(out, "utf8");
 }
 
@@ -72,6 +74,85 @@ test("profile registries contain only queries assigned to that connection profil
   expect(dts).toContain('"SELECT api": { params: []; row: { "api": number } }');
   expect(dts).toContain('"SELECT worker": { params: []; row: { "worker": string } }');
   expect(dts).toContain("interface KnownProfiles extends SqlxJsGeneratedProfiles");
+});
+
+test("temporal reject registries are scoped and require the matching runtime policy", () => {
+  const dts = write([
+    {
+      query: "SELECT $1::timestamptz AS value",
+      paramOids: [1184],
+      paramTsTypes: ["Date"],
+      hasResultSet: true,
+      columns: [{ name: "value", typeOid: 1184, tsType: "Date", nullable: false }],
+    },
+  ], [], {}, {}, { infinity: "reject" });
+
+  expect(dts).toContain('temporalInfinity: "reject"');
+  expect(dts).toContain(
+    '"SELECT $1::timestamptz AS value": { params: [Date]; row: { "value": Date } }',
+  );
+  expect(dts).not.toContain("interface KnownQueries extends SqlxJsGeneratedQueries");
+  expect(dts).not.toContain("interface KnownFileQueries extends SqlxJsGeneratedFileQueries");
+});
+
+test("temporal reject registries compile with descriptor and explicit adaptive policies", () => {
+  const root = join(tmp, "temporal-reject");
+  mkdirSync(root, { recursive: true });
+  emitDts(join(root, "generated.d.ts"), completeEntries([
+    {
+      query: "SELECT $1::timestamptz AS value",
+      paramOids: [1184],
+      paramTsTypes: ["Date"],
+      hasResultSet: true,
+      columns: [{ name: "value", typeOid: 1184, tsType: "Date", nullable: false }],
+    },
+  ]), [], {}, {}, { infinity: "reject" });
+  writeFileSync(join(root, "consumer.ts"), `
+import { createClient, createSqlClient } from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedRegistry } from "./generated";
+
+declare const queryDescriptors: import("@onreza/sqlx-js").RuntimeQueryDescriptors;
+const unscopedManaged = createSqlClient(undefined, {
+  execution: "adaptive",
+  temporal: { infinity: "reject" },
+});
+const unscopedRaw = createClient(undefined, {
+  temporal: { infinity: "reject" },
+});
+const prepared = createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
+  queryDescriptors,
+});
+const adaptive = createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
+  execution: "adaptive",
+  temporal: { infinity: "reject" },
+});
+const raw = createClient<SqlxJsGeneratedRegistry>(undefined, {
+  temporal: { infinity: "reject" },
+});
+void prepared.sql("SELECT $1::timestamptz AS value", new Date());
+void adaptive.sql("SELECT $1::timestamptz AS value", new Date());
+void unscopedManaged;
+void unscopedRaw;
+void raw;
+`);
+  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
+    compilerOptions: {
+      strict: true,
+      noEmit: true,
+      module: "Preserve",
+      moduleResolution: "Bundler",
+      target: "ESNext",
+      types: ["bun-types"],
+      paths: { "@onreza/sqlx-js": [resolve(import.meta.dir, "../src/index.ts")] },
+    },
+    files: ["consumer.ts", "generated.d.ts"],
+  }));
+
+  const checked = spawnSync("bunx", ["tsc", "-p", join(root, "tsconfig.json")], {
+    cwd: resolve(import.meta.dir, ".."),
+    encoding: "utf8",
+  });
+  expect(checked.status, checked.stdout + checked.stderr).toBe(0);
 });
 
 test("profiled mapped queries validate their generated wire parameters", () => {

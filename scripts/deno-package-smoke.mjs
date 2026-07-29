@@ -18,6 +18,7 @@ const db = createSqlClient(databaseUrl, {
     cacheFormat: descriptorVersions.cacheFormat,
     generatorRevision: descriptorVersions.generatorRevision,
     configHash: "deno-package-smoke",
+    temporal: descriptorVersions.temporal,
     types: {},
     queries: {
       [queryId(descriptorQuery)]: { params: [23] },

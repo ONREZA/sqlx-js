@@ -34,6 +34,7 @@ export type {
   ScanConfig,
   SqlxJsConfig,
 } from "./config";
+export type { TemporalInfinityMode, TemporalPolicy } from "./temporal";
 export type { SslMode, ConnConfig, PgNotice } from "./pg/wire";
 export { PgError, ConnectionLostError } from "./pg/wire";
 export {
@@ -72,6 +73,7 @@ export type {
   PostgresClient,
   PostgresOptions,
   PostgresType,
+  QueryErrorEvent,
   QueryStartEvent,
   QueryTimeoutEvent,
 } from "./postgres-runtime";
@@ -86,6 +88,7 @@ export type QueryRegistry = {
   runtimeTypes?: object;
   profile?: import("./config").DatabaseProfile;
   runtimeDescriptors?: true;
+  temporalInfinity?: import("./temporal").TemporalInfinityMode;
 };
 
 export interface DefaultQueryRegistry {
@@ -132,32 +135,48 @@ export type RuntimePostgresTypesFor<Registry extends QueryRegistry> = {
 type GeneratedPostgresTypesFor<Registry extends QueryRegistry> =
   NonNullable<import("./postgres-runtime").CreateClientOptions["types"]> &
   RuntimePostgresTypesFor<Registry>;
+type RegistryTemporalInfinity<Registry extends QueryRegistry> =
+  Registry extends {
+    temporalInfinity: infer Mode extends import("./temporal").TemporalInfinityMode;
+  } ? Mode : undefined;
+type ExplicitTemporalOptionsFor<Registry extends QueryRegistry> =
+  RegistryTemporalInfinity<Registry> extends "reject"
+    ? { temporal: { infinity: "reject" } }
+    : RegistryTemporalInfinity<Registry> extends "preserve"
+      ? { temporal?: { infinity: "preserve" } }
+      : { temporal?: import("./temporal").TemporalPolicy };
+type DescriptorTemporalOptionsFor<Registry extends QueryRegistry> =
+  RegistryTemporalInfinity<Registry> extends "reject"
+    ? { temporal?: { infinity: "reject" } }
+    : RegistryTemporalInfinity<Registry> extends "preserve"
+      ? { temporal?: { infinity: "preserve" } }
+      : { temporal?: import("./temporal").TemporalPolicy };
 type ExecutionOptionsFor<Registry extends QueryRegistry> =
   Registry extends { runtimeDescriptors: true }
     ? (
-      | {
+      | ({
         queryDescriptors: import("./runtime-descriptors").RuntimeQueryDescriptors;
         execution?: never;
-      }
-      | {
+      } & DescriptorTemporalOptionsFor<Registry>)
+      | ({
         queryDescriptors?: never;
         execution: "adaptive";
-      }
+      } & ExplicitTemporalOptionsFor<Registry>)
     )
     : (
-      | {
+      | ({
         queryDescriptors: import("./runtime-descriptors").RuntimeQueryDescriptors;
         execution?: never;
-      }
-      | {
+      } & DescriptorTemporalOptionsFor<Registry>)
+      | ({
         queryDescriptors?: never;
         execution?: "adaptive";
-      }
+      } & ExplicitTemporalOptionsFor<Registry>)
     );
 type GeneratedClientOptionsFor<Registry extends QueryRegistry> =
   Omit<
     import("./postgres-runtime").CreateSqlClientOptions,
-    "typeCodecs" | "types" | "profile" | "queryDescriptors" | "execution"
+    "typeCodecs" | "types" | "profile" | "queryDescriptors" | "execution" | "temporal"
   > & ExecutionOptionsFor<Registry> & (
     | {
       typeCodecs: RuntimeTypeCodecsFor<Registry>;
@@ -175,7 +194,7 @@ type GeneratedClientOptionsFor<Registry extends QueryRegistry> =
 type PlainClientOptionsFor<Registry extends QueryRegistry> =
   Omit<
     import("./postgres-runtime").CreateSqlClientOptions,
-    "profile" | "queryDescriptors" | "execution"
+    "profile" | "queryDescriptors" | "execution" | "temporal"
   > & ExecutionOptionsFor<Registry> & (
     Registry extends { profile: infer Profile extends import("./config").DatabaseProfile }
       ? { profile: Profile }
@@ -192,14 +211,21 @@ type CreateClientArgs<Registry extends QueryRegistry> =
     : keyof RegistryRuntimeTypes<Registry> extends never
       ? Registry extends { runtimeDescriptors: true }
         ? [url: string | undefined, options: PlainClientOptionsFor<Registry>]
-        : [url?: string, options?: PlainClientOptionsFor<Registry>]
+        : RegistryTemporalInfinity<Registry> extends "reject"
+          ? [url: string | undefined, options: PlainClientOptionsFor<Registry>]
+          : [url?: string, options?: PlainClientOptionsFor<Registry>]
       : [url: string | undefined, options: GeneratedClientOptionsFor<Registry>];
+type RawClientOptionsFor<Registry extends QueryRegistry> =
+  Omit<import("./postgres-runtime").CreateClientOptions, "temporal">
+  & ExplicitTemporalOptionsFor<Registry>;
 type CreateRawClientArgs<Registry extends QueryRegistry> =
   keyof RegistryRuntimeTypes<Registry> extends never
-    ? [url?: string, options?: import("./postgres-runtime").CreateClientOptions]
+    ? RegistryTemporalInfinity<Registry> extends "reject"
+      ? [url: string | undefined, options: RawClientOptionsFor<Registry>]
+      : [url?: string, options?: RawClientOptionsFor<Registry>]
     : [
       url: string | undefined,
-      options: Omit<import("./postgres-runtime").CreateClientOptions, "types"> & {
+      options: Omit<RawClientOptionsFor<Registry>, "types"> & {
         types: GeneratedPostgresTypesFor<Registry>;
       },
     ];

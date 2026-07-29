@@ -45,6 +45,7 @@ const runtimeDescriptors = descriptorMvp
     cacheFormat: artifactVersions.CACHE_FORMAT_VERSION,
     generatorRevision: artifactVersions.GENERATOR_REVISION,
     configHash: "benchmark",
+    temporal: { infinity: "preserve" },
     types: {},
     queries: {
       [queryIds.queryId(descriptorQuery)]: {

@@ -9,6 +9,7 @@ import {
   loadRootEnv,
   prepareConfigHash,
 } from "../src/config";
+import type { CacheEntry } from "../src/cache";
 import { inspectDoctor } from "../src/commands/doctor";
 import { renderRuntimeDescriptors } from "../src/runtime-descriptor-artifact";
 
@@ -24,6 +25,23 @@ function root(): string {
   const value = mkdtempSync(join(tmpdir(), "sqlx-js-config-"));
   roots.push(value);
   return value;
+}
+
+function descriptorEntry(query: string, oid = 23): CacheEntry {
+  return {
+    query,
+    validation: "planned",
+    paramOids: [oid],
+    paramTypeIdentities: [oid],
+    paramTsTypes: [oid === 23 ? "number" : "unknown"],
+    paramNullable: [false],
+    columns: [],
+    hasResultSet: false,
+    inference: {
+      columns: [],
+      params: [{ targets: [], reason: "test fixture" }],
+    },
+  };
 }
 
 test("loadRootEnv loads .env without overriding the process environment", () => {
@@ -159,6 +177,9 @@ test("prepare config hash includes column and function catalog contracts", () =>
   expect(prepareConfigHash({ enumCatalog: { output: "src/db-enums.ts", schemas: ["public"] } })).not.toBe(base);
   expect(prepareConfigHash({
     profiles: { api: { name: "api", role: "app_api" } },
+  })).not.toBe(base);
+  expect(prepareConfigHash({
+    temporal: { infinity: "reject" },
   })).not.toBe(base);
   expect(prepareConfigHash({
     profiles: {
@@ -339,20 +360,11 @@ test("doctor reports parameterized descriptor coverage by runtime call site", as
   mkdirSync(join(dir, ".sqlx-js"), { recursive: true });
   writeFileSync(
     join(dir, ".sqlx-js/runtime-descriptors.json"),
-    renderRuntimeDescriptors([{
-      query: "SELECT $1::int4",
-      validation: "planned",
-      paramOids: [23],
-      paramTypeIdentities: [23],
-      paramTsTypes: ["number"],
-      paramNullable: [false],
-      columns: [],
-      hasResultSet: false,
-      inference: {
-        columns: [],
-        params: [{ targets: [], reason: "test fixture" }],
-      },
-    }], prepareConfigHash({})),
+    renderRuntimeDescriptors([
+      descriptorEntry("SELECT $1::int4"),
+      descriptorEntry("SELECT $1::text", 25),
+      descriptorEntry("SELECT $1::bigint", 20),
+    ], prepareConfigHash({})),
   );
   writeFileSync(join(dir, "queries.ts"), `
     import { createSqlClient, defineQuery } from "@onreza/sqlx-js";
@@ -372,11 +384,95 @@ test("doctor reports parameterized descriptor coverage by runtime call site", as
     status: "warning",
     details: {
       parameterized: 3,
-      descriptor: 1,
+      queryContracts: 3,
+      descriptor: 3,
       descriptorConfigured: 1,
       missing: 0,
       adaptive: 1,
-      unknown: 1,
+      unknown: 0,
+      definitions: 1,
+      executionSites: 2,
+    },
+  });
+});
+
+test("doctor validates descriptor artifacts independently of factory and DI wiring", async () => {
+  const dir = root();
+  mkdirSync(join(dir, ".sqlx-js"), { recursive: true });
+  writeFileSync(
+    join(dir, ".sqlx-js/runtime-descriptors.json"),
+    renderRuntimeDescriptors([
+      descriptorEntry("SELECT $1::int4"),
+      descriptorEntry("SELECT $1::text", 25),
+    ], prepareConfigHash({})),
+  );
+  writeFileSync(join(dir, "queries.ts"), `
+    import { defineQuery } from "@onreza/sqlx-js";
+    export const byId = defineQuery.one("SELECT $1::int4");
+    export const byName = defineQuery.one("SELECT $1::text");
+  `);
+
+  const checks = await inspectDoctor({
+    root: dir,
+    databaseUrl: "",
+    cacheDir: join(dir, ".sqlx-js"),
+    dtsPath: join(dir, "sqlx-js-env.d.ts"),
+  });
+  expect(checks.find((check) => check.name === "descriptorCoverage")).toMatchObject({
+    status: "ok",
+    message: expect.stringContaining("no direct execution sites were statically observable"),
+    details: {
+      parameterized: 2,
+      queryContracts: 2,
+      descriptor: 2,
+      descriptorConfigured: 0,
+      missing: 0,
+      definitions: 2,
+      executionSites: 0,
+      adaptive: 0,
+      unknown: 0,
+      locations: [],
+    },
+  });
+});
+
+test("doctor counts one reusable query once per profile contract", async () => {
+  const dir = root();
+  const profiles = {
+    api: { name: "api", role: "app_api" },
+    worker: { name: "worker", role: "app_worker" },
+  } as const;
+  writeFileSync(
+    join(dir, "sqlx-js.config.mjs"),
+    `export default ${JSON.stringify({ profiles })};\n`,
+  );
+  mkdirSync(join(dir, ".sqlx-js"), { recursive: true });
+  writeFileSync(
+    join(dir, ".sqlx-js/runtime-descriptors.json"),
+    renderRuntimeDescriptors([
+      { ...descriptorEntry("SELECT $1::int4"), profile: "api" },
+      { ...descriptorEntry("SELECT $1::int4"), profile: "worker" },
+    ], prepareConfigHash({ profiles }), profiles),
+  );
+  writeFileSync(join(dir, "queries.ts"), `
+    import { defineQuery } from "@onreza/sqlx-js";
+    export const shared = defineQuery.for("api", "worker").one("SELECT $1::int4");
+  `);
+
+  const checks = await inspectDoctor({
+    root: dir,
+    databaseUrl: "",
+    cacheDir: join(dir, ".sqlx-js"),
+    dtsPath: join(dir, "sqlx-js-env.d.ts"),
+  });
+  expect(checks.find((check) => check.name === "descriptorCoverage")).toMatchObject({
+    status: "ok",
+    details: {
+      parameterized: 1,
+      queryContracts: 2,
+      descriptor: 2,
+      definitions: 1,
+      executionSites: 0,
     },
   });
 });

@@ -1,8 +1,12 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseEnv } from "node:util";
+import {
+  resolveTemporalPolicy,
+  type TemporalPolicy,
+} from "./temporal";
 
 export type ScanConfig = {
   include?: string[];
@@ -45,6 +49,7 @@ export type SqlxJsConfig = {
   enumCatalog?: EnumCatalogConfig;
   profiles?: DatabaseProfiles;
   scan?: ScanConfig;
+  temporal?: TemporalPolicy;
   schema?: {
     provider?: "builtin" | "pgschema";
     file?: string;
@@ -127,11 +132,46 @@ export async function loadConfig(root: string): Promise<SqlxJsConfig> {
   if (!path) return {};
   const url = pathToFileURL(path);
   url.searchParams.set("mtime", String(statSync(path).mtimeMs));
-  const mod = await import(url.href);
+  let mod: Record<string, unknown>;
+  try {
+    mod = await import(url.href);
+  } catch (error) {
+    throw configImportError(error, path);
+  }
   if (!("default" in mod)) {
     throw new Error(`sqlx-js: ${path} must default-export a config object`);
   }
   return validateConfig(mod.default, path);
+}
+
+function configImportError(error: unknown, path: string): unknown {
+  if (
+    !error
+    || typeof error !== "object"
+    || (error as { code?: unknown }).code !== "ERR_MODULE_NOT_FOUND"
+    || typeof (error as { url?: unknown }).url !== "string"
+  ) return error;
+
+  let missingPath: string;
+  try {
+    missingPath = fileURLToPath((error as { url: string }).url);
+  } catch {
+    return error;
+  }
+  if (extname(missingPath) !== "") return error;
+  const resolvedPath = [".ts", ".mts", ".js", ".mjs", ".cts", ".cjs"]
+    .map((extension) => `${missingPath}${extension}`)
+    .find(existsSync);
+  if (!resolvedPath) return error;
+
+  let specifier = relative(dirname(path), resolvedPath).replace(/\\/g, "/");
+  if (!specifier.startsWith(".")) specifier = `./${specifier}`;
+  return new Error(
+    `sqlx-js: Node.js ESM could not resolve an extensionless local import while loading ${path}. `
+      + `Import it with its file extension, for example ${JSON.stringify(specifier)}. `
+      + "If the project intentionally relies on Bun resolution, run the CLI with `bun --bun sqlx-js ...`.",
+    { cause: error },
+  );
 }
 
 function validateStringRecord(value: unknown, name: string, path: string): void {
@@ -206,6 +246,16 @@ function validateProfiles(value: unknown, path: string): void {
         `${path} profiles.${name}.transactionSettings`,
       );
     }
+  }
+}
+
+function validateTemporal(value: unknown, path: string): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`sqlx-js: ${path} temporal must be an object`);
+  }
+  const temporal = value as Record<string, unknown>;
+  if (temporal.infinity !== "preserve" && temporal.infinity !== "reject") {
+    throw new Error(`sqlx-js: ${path} temporal.infinity must be preserve or reject`);
   }
 }
 
@@ -350,6 +400,7 @@ function validateConfig(value: unknown, path: string): SqlxJsConfig {
   }
   if (config.enumCatalog !== undefined) validateEnumCatalog(config.enumCatalog, path);
   if (config.profiles !== undefined) validateProfiles(config.profiles, path);
+  if (config.temporal !== undefined) validateTemporal(config.temporal, path);
   if (config.scan !== undefined) {
     if (!config.scan || typeof config.scan !== "object" || Array.isArray(config.scan)) {
       throw new Error(`sqlx-js: ${path} scan must be an object`);
@@ -390,6 +441,7 @@ export function prepareConfigHash(cfg: SqlxJsConfig): string {
       ? { schemas: [...new Set(cfg.enumCatalog.schemas)].sort() }
       : false,
     profiles: cfg.profiles ?? false,
+    temporal: resolveTemporalPolicy(cfg.temporal),
   });
   return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
 }

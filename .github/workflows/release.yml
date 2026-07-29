@@ -100,6 +100,8 @@ jobs:
         run: bun run build
 
       - name: Verify PostgreSQL authentication and TLS
+        env:
+          SQLX_JS_PG_IMAGE: postgres:18
         run: node scripts/postgres-auth-tls-smoke.mjs
 
       - name: Run PostgreSQL runtime fault soak

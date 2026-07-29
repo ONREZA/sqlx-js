@@ -28,7 +28,7 @@ Status values are intentionally explicit:
 | URL and environment connection settings | Yes | Partial | URL configuration is supported; sqlx-js does not reproduce every libpq/Postgres.js option. |
 | TCP connections | Yes | Yes | Shared by prepare, migrations, and runtime. |
 | Unix-domain sockets | Yes | No | Add only with a concrete deployment need. |
-| TLS modes and client certificates | Yes | Yes | `disable`, `prefer`, `require`, `verify-ca`, and `verify-full`. |
+| TLS modes and client certificates | Yes | Yes | `disable`, `prefer`, `require`, `verify-ca`, and `verify-full`; required modes fail closed before PostgreSQL startup on negotiation or certificate failure. |
 | Cleartext, MD5, and SCRAM-SHA-256 authentication | Yes | Yes | Covered by the shared wire client. |
 | Dynamic password providers | Yes | Yes | A string or async `password` provider is resolved for every new connection. |
 | Multiple hosts and `target_session_attrs` | Yes | No | Candidate only for deployments that cannot delegate failover to their endpoint or proxy. |
@@ -87,7 +87,7 @@ Status values are intentionally explicit:
 | Transaction-local RLS settings contract | No | Yes | Generated profiles require and apply the exact setting allowlist. |
 | End-to-end operation and transaction deadlines | No | Yes | Includes pool wait, codec bootstrap, execution, and transaction cleanup. |
 | Poisoned-generation single-flight replacement | No | Yes | All collateral operations are rejected; no SQL is replayed. |
-| Runtime lifecycle and query observers | Partial | Yes | Stable query IDs, profile/role, generation transitions, timeout phase, and outcome are exposed. |
+| Runtime lifecycle and query observers | Partial | Yes | Dedicated lifecycle events expose stable IDs, profile/role, generation transitions, timeout/failure phase, and outcome without SQL, parameters, URLs, credentials, or certificate objects; the separate source-level `onQuery` hook remains caller-redacted. |
 | Structured PostgreSQL notice callback | Yes | Yes | `onNotice` receives message, severity, SQLSTATE, detail, and hint without owning protocol flow. |
 
 ## Types and adjacent PostgreSQL features
@@ -97,7 +97,7 @@ Status values are intentionally explicit:
 | Explicit JSON and PostgreSQL array parameters | Yes | Yes | `sql.json(...)` and `sql.array(...)` keep representations unambiguous. |
 | Built-in scalar and array codecs | Yes | Yes | Includes `int8` as `bigint` and the sqlx-js PostgreSQL type table. |
 | Native `bigint` for PostgreSQL `int8` | Partial | Yes | sqlx-js never silently narrows `int8` to `number` or exposes it as a decimal string. |
-| Temporal infinity values | Partial | Yes | `PgTemporal` preserves `infinity` and `-infinity` instead of constructing an invalid `Date`. |
+| Temporal infinity values | Partial | Yes | The default `PgTemporal` preserves both infinities; an explicit generator/runtime policy can instead reject them and expose `Date`. |
 | Automatic database array-OID discovery | Yes | Yes | Managed generations discover database-local scalar and array OIDs once. |
 | Numeric-OID custom codecs | Yes | Yes | Available on raw and managed clients. |
 | Name-based custom codec discovery | No | Yes | Managed clients bind generated custom type names to database-local OIDs. |

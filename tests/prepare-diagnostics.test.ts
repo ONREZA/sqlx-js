@@ -28,6 +28,7 @@ test("query diagnostics report the exact reused call site", () => {
       query: entry.query,
       paramCount: 0,
       kind: "inline",
+      origin: "execution",
       cardinality: "execute",
     },
     {
@@ -37,6 +38,7 @@ test("query diagnostics report the exact reused call site", () => {
       query: entry.query,
       paramCount: 0,
       kind: "inline",
+      origin: "execution",
       cardinality: "one",
     },
   ];

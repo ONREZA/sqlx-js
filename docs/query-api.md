@@ -210,13 +210,15 @@ PostgreSQL column `NOT NULL` constrains the array value, not its elements. There
 
 Both helpers also work with `unsafe(...)`. `encodePgArrayLiteral(arr)` remains exported for code that explicitly needs a PostgreSQL array literal string.
 
-PostgreSQL `date`, `timestamp`, and `timestamptz` values use the exported
-`PgTemporal` type: `Date | "infinity" | "-infinity"`. The literal values
-preserve PostgreSQL's supported infinities and avoid constructing an invalid
-JavaScript `Date`. Other PostgreSQL temporal values outside JavaScript's finite
-`Date` range fail decoding explicitly instead of returning an `Invalid Date`.
-Finite timestamp precision follows JavaScript `Date` and is therefore
-milliseconds.
+By default, PostgreSQL `date`, `timestamp`, and `timestamptz` values use the
+exported `PgTemporal` type: `Date | "infinity" | "-infinity"`. The literal
+values preserve PostgreSQL's supported infinities and avoid constructing an
+invalid JavaScript `Date`. Applications that prohibit infinity can configure
+`temporal.infinity: "reject"` to generate `Date` while making the matching
+runtime reject infinite results and parameters. Other PostgreSQL temporal
+values outside JavaScript's finite `Date` range fail decoding explicitly
+instead of returning an `Invalid Date`. Finite timestamp precision follows
+JavaScript `Date` and is therefore milliseconds.
 
 ## Parameter nullability
 

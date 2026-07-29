@@ -17,6 +17,7 @@ export type QueryCallSite = {
   query: string;
   paramCount: number;
   kind: "inline" | "file";
+  origin: "definition" | "execution";
   cardinality?: "many" | "one" | "optional" | "execute";
   queryName?: string;
   sqlFilePath?: string;
@@ -406,6 +407,7 @@ export function scanFile(
       query: first.text,
       paramCount: args.length - 1,
       kind: "inline",
+      origin: "execution",
       cardinality,
       ...(profiles && profiles.length > 0 ? { profiles } : {}),
       ...(execution ? { execution } : {}),
@@ -468,6 +470,7 @@ export function scanFile(
       query: queryNode.text,
       paramCount: rewritten.names.length || rewritten.positionalCount,
       kind: "inline",
+      origin: "definition",
       cardinality,
       ...(nameNode ? { queryName: nameNode.text } : {}),
       ...(profiles ? { profiles } : {}),
@@ -520,6 +523,7 @@ export function scanFile(
       query,
       paramCount: args.length - 1,
       kind: "file",
+      origin: "execution",
       cardinality,
       sqlFilePath: sqlPath,
       ...(profiles && profiles.length > 0 ? { profiles } : {}),

@@ -13,7 +13,7 @@ import {
 import { decodeText, parseDatabaseUrl, PgClient } from "../pg/wire";
 import { mergeExtensionTypes } from "../pg/extensions";
 import { SchemaCache } from "../pg/schema";
-import { scanProject } from "../scan/scanner";
+import { scanProject, type QueryCallSite } from "../scan/scanner";
 import { assertDistinctEnumCatalogOutput, enumCatalogOutputPath } from "../enum-catalog";
 import { queryId } from "../query-id";
 import { runtimeDescriptorPath } from "../runtime-descriptor-artifact";
@@ -377,17 +377,38 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
     try {
       const parameterized = scanProject(opts.root, config.scan, config.profiles)
         .filter((site) => site.paramCount > 0);
-      const descriptorConfigured = parameterized.filter((site) => site.execution === "descriptor");
-      const adaptive = parameterized.filter((site) => site.execution === "adaptive");
-      const unknown = parameterized.filter((site) =>
+      const definitions = parameterized.filter((site) => site.origin === "definition");
+      const executions = parameterized.filter((site) => site.origin === "execution");
+      const descriptorConfigured = executions.filter((site) => site.execution === "descriptor");
+      const adaptive = executions.filter((site) => site.execution === "adaptive");
+      const unknown = executions.filter((site) =>
         site.execution === undefined || site.execution === "unknown"
       );
       const fallbackLocations = [...adaptive, ...unknown].map((site) =>
         `${site.file}:${site.line}:${site.column}`
       );
+      const queryTargets = new Map<string, {
+        site: QueryCallSite;
+        profileName?: string;
+        queryId: string;
+      }>();
+      for (const site of parameterized) {
+        const profileNames = site.profiles?.length ? site.profiles : [undefined];
+        for (const profileName of profileNames) {
+          const id = queryId(site.query);
+          const key = `${profileName ?? ""}\0${id}`;
+          if (!queryTargets.has(key)) {
+            queryTargets.set(key, {
+              site,
+              ...(profileName ? { profileName } : {}),
+              queryId: id,
+            });
+          }
+        }
+      }
       const descriptorQueries = new Map<string, ReadonlyMap<string, unknown>>();
       let artifactError: string | undefined;
-      if (descriptorConfigured.length > 0) {
+      if (queryTargets.size > 0) {
         const path = runtimeDescriptorPath(opts.cacheDir);
         try {
           const artifact = JSON.parse(readFileSync(path, "utf8")) as RuntimeQueryDescriptors;
@@ -396,8 +417,7 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
               `sqlx-js: runtime descriptor config hash is stale: ${path}. Run \`sqlx-js prepare\`.`,
             );
           }
-          for (const site of descriptorConfigured) {
-            const profileName = site.profiles?.[0];
+          for (const { profileName } of queryTargets.values()) {
             const key = profileName ?? "";
             if (descriptorQueries.has(key)) continue;
             const profile = profileName ? config.profiles?.[profileName] : undefined;
@@ -409,16 +429,23 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
             : `runtime descriptor not found at ${path}; run sqlx-js prepare`;
         }
       }
-      const covered: typeof descriptorConfigured = [];
-      const missing: typeof descriptorConfigured = [];
-      for (const site of descriptorConfigured) {
+      const covered: Array<{
+        site: QueryCallSite;
+        profileName?: string;
+        queryId: string;
+      }> = [];
+      const missing: typeof covered = [];
+      for (const target of queryTargets.values()) {
         const available = !artifactError
-          && descriptorQueries.get(site.profiles?.[0] ?? "")?.has(queryId(site.query));
-        (available ? covered : missing).push(site);
+          && descriptorQueries.get(target.profileName ?? "")?.has(target.queryId);
+        (available ? covered : missing).push(target);
       }
-      const missingLocations = missing.map((site) =>
+      const missingLocations = missing.map(({ site }) =>
         `${site.file}:${site.line}:${site.column}`
       );
+      const staticExecutionNote = definitions.length > 0 && executions.length === 0
+        ? "; no direct execution sites were statically observable"
+        : "";
       const status = artifactError || missing.length > 0
         ? "error"
         : fallbackLocations.length > 0
@@ -430,19 +457,23 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
         message: artifactError
           ? `cannot validate descriptor coverage: ${artifactError}`
           : parameterized.length === 0
-          ? "no parameterized runtime query sites require descriptors"
+          ? "no parameterized queries require runtime descriptors"
           : missing.length > 0
-            ? `${covered.length}/${parameterized.length} parameterized runtime query sites are covered; `
-              + `${missing.length} descriptor-configured site(s) are absent from the artifact`
+            ? `${covered.length}/${queryTargets.size} parameterized query contracts are present in the runtime descriptor; `
+              + `${missing.length} are absent`
           : fallbackLocations.length === 0
-            ? `${covered.length}/${parameterized.length} parameterized runtime query sites are covered by descriptors`
-            : `${covered.length}/${parameterized.length} parameterized runtime query sites are covered by descriptors; `
-              + `${fallbackLocations.length} remain adaptive or cannot be classified`,
+            ? `${covered.length}/${queryTargets.size} parameterized query contracts are present in the runtime descriptor`
+              + staticExecutionNote
+            : `${covered.length}/${queryTargets.size} parameterized query contracts are present in the runtime descriptor; `
+              + `${fallbackLocations.length} execution site(s) remain adaptive or cannot be classified`,
         details: {
           parameterized: parameterized.length,
+          queryContracts: queryTargets.size,
           descriptor: covered.length,
           descriptorConfigured: descriptorConfigured.length,
           missing: missing.length,
+          definitions: definitions.length,
+          executionSites: executions.length,
           adaptive: adaptive.length,
           unknown: unknown.length,
           locations: fallbackLocations,

@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { CACHE_FORMAT_VERSION, GENERATOR_REVISION } from "../src/cache";
+import {
+  CACHE_FORMAT_VERSION,
+  GENERATOR_REVISION,
+  RUNTIME_DESCRIPTOR_FORMAT_VERSION,
+} from "../src/artifact-versions";
 import { fingerprint, type CacheEntry } from "../src/cache";
 import { renderRuntimeDescriptors } from "../src/runtime-descriptor-artifact";
 import {
@@ -50,10 +54,11 @@ test("runtime descriptor rendering deduplicates database-local types and binds p
   const key = JSON.stringify(["app", "status"]);
 
   expect(artifact).toMatchObject({
-    formatVersion: 1,
+    formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
     cacheFormat: CACHE_FORMAT_VERSION,
     generatorRevision: GENERATOR_REVISION,
     configHash: "config-hash",
+    temporal: { infinity: "preserve" },
     types: { [key]: status },
     profiles: {
       api: { role: "app_api" },
@@ -67,6 +72,20 @@ test("runtime descriptor rendering deduplicates database-local types and binds p
   });
   expect(prepareRuntimeDescriptors(artifact, profiles.api)).toMatchObject({
     types: [{ key, ...status }],
+    temporal: { infinity: "preserve" },
+  });
+});
+
+test("runtime descriptors carry the generated temporal policy", () => {
+  const artifact = JSON.parse(renderRuntimeDescriptors(
+    [],
+    "config-hash",
+    {},
+    { infinity: "reject" },
+  )) as RuntimeQueryDescriptors;
+
+  expect(prepareRuntimeDescriptors(artifact).temporal).toEqual({
+    infinity: "reject",
   });
 });
 

@@ -5,13 +5,12 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const temp = mkdtempSync(join(tmpdir(), "sqlx-js-postgres-compat-"));
+const temp = mkdtempSync(join("/var/tmp", "sqlx-js-postgres-compat-"));
 const container = `sqlx-js-postgres-compat-${process.pid}-${Date.now()}`;
 const image = process.env.SQLX_JS_PG_IMAGE ?? "pgvector/pgvector:pg17";
 
@@ -72,20 +71,59 @@ function certificate(name, commonName, usage, extension) {
   chmodSync(join(temp, `${name}.key`), 0o600);
 }
 
-function connectionUrl(port, user, password, mode, certificates = false, host = "localhost") {
+function connectionUrl(
+  port,
+  user,
+  password,
+  mode,
+  certificates = false,
+  host = "localhost",
+  rootCertificate = "ca.crt",
+) {
   const url = new URL(`postgresql://${host}/sqlx_js_compat`);
   url.port = port;
   url.username = user;
   url.password = password;
   url.searchParams.set("sslmode", mode);
   if (mode === "verify-ca" || mode === "verify-full") {
-    url.searchParams.set("sslrootcert", join(temp, "ca.crt"));
+    url.searchParams.set("sslrootcert", join(temp, rootCertificate));
   }
   if (certificates) {
     url.searchParams.set("sslcert", join(temp, "client.crt"));
     url.searchParams.set("sslkey", join(temp, "client.key"));
   }
   return url.toString();
+}
+
+function runClients(name, config) {
+  const configPath = join(temp, `${name}.json`);
+  writeFileSync(configPath, JSON.stringify(config));
+  const clientScript = join(root, "scripts/postgres-auth-tls-client.mjs");
+  process.stdout.write(run("node", [clientScript, configPath]) + "\n");
+  process.stdout.write(run("bun", [clientScript, configPath]) + "\n");
+  process.stdout.write(run("deno", [
+    "run",
+    "--allow-env=SQLX_JS_FILE_ROOT",
+    "--allow-net",
+    `--allow-read=${root},${temp}`,
+    clientScript,
+    configPath,
+  ]) + "\n");
+}
+
+function installServerCertificate(name) {
+  run("docker", [
+    "exec",
+    container,
+    "bash",
+    "-ceu",
+    [
+      `install -m 600 -o postgres -g postgres /fixture/${name}.key /var/lib/postgresql/certs/server.key`,
+      `install -m 644 -o postgres -g postgres /fixture/${name}.crt /var/lib/postgresql/certs/server.crt`,
+      "psql -U postgres -d sqlx_js_compat -c 'SELECT pg_reload_conf()'",
+    ].join(" && "),
+  ]);
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
 }
 
 function waitUntilReady() {
@@ -125,11 +163,33 @@ try {
     "-out",
     "ca.crt",
   ]);
+  openssl([
+    "req",
+    "-x509",
+    "-newkey",
+    "rsa:2048",
+    "-sha256",
+    "-days",
+    "1",
+    "-nodes",
+    "-subj",
+    "/CN=sqlx-js-wrong-ca",
+    "-keyout",
+    "wrong-ca.key",
+    "-out",
+    "wrong-ca.crt",
+  ]);
   certificate(
     "server",
     "localhost",
     "serverAuth",
     "subjectAltName=DNS:localhost,IP:127.0.0.1",
+  );
+  certificate(
+    "server-wrong-host",
+    "wrong.example",
+    "serverAuth",
+    "subjectAltName=DNS:wrong.example,IP:192.0.2.1",
   );
   certificate("client", "tls_user", "clientAuth", "subjectAltName=DNS:tls_user");
 
@@ -199,65 +259,117 @@ EOF
   const published = run("docker", ["port", container, "5432/tcp"]);
   const port = published.slice(published.lastIndexOf(":") + 1);
 
-  const cases = [
-    {
-      name: "scram-no-tls",
-      user: "scram_user",
-      tls: false,
-      url: connectionUrl(port, "scram_user", "scram-secret", "disable"),
-    },
-    {
-      name: "scram-tls-require",
-      user: "scram_user",
-      tls: true,
-      url: connectionUrl(port, "scram_user", "scram-secret", "require"),
-    },
-    {
-      name: "md5-no-tls",
-      user: "md5_user",
-      tls: false,
-      url: connectionUrl(port, "md5_user", "md5-secret", "disable"),
-    },
-    {
-      name: "cleartext-tls-verify-full",
-      user: "clear_user",
-      tls: true,
-      url: connectionUrl(port, "clear_user", "clear-secret", "verify-full"),
-    },
-    {
-      name: "cleartext-tls-verify-full-ip",
-      user: "clear_user",
-      tls: true,
-      url: connectionUrl(port, "clear_user", "clear-secret", "verify-full", false, "127.0.0.1"),
-    },
-    {
-      name: "client-cert-verify-ca",
-      user: "tls_user",
-      tls: true,
-      clientCertificate: true,
-      url: connectionUrl(port, "tls_user", "", "verify-ca", true),
-    },
-    {
-      name: "client-cert-verify-full",
-      user: "tls_user",
-      tls: true,
-      clientCertificate: true,
-      url: connectionUrl(port, "tls_user", "", "verify-full", true),
-    },
-  ];
-  const configPath = join(temp, "cases.json");
-  writeFileSync(configPath, JSON.stringify(cases));
-  const clientScript = join(root, "scripts/postgres-auth-tls-client.mjs");
+  const managedUrl = connectionUrl(
+    port,
+    "clear_user",
+    "clear-secret",
+    "verify-full",
+  );
+  runClients("valid-server", {
+    managedUrl,
+    cases: [
+      {
+        name: "scram-no-tls",
+        user: "scram_user",
+        tls: false,
+        url: connectionUrl(port, "scram_user", "scram-secret", "disable"),
+      },
+      {
+        name: "scram-tls-require",
+        user: "scram_user",
+        tls: true,
+        url: connectionUrl(port, "scram_user", "scram-secret", "require"),
+      },
+      {
+        name: "md5-no-tls",
+        user: "md5_user",
+        tls: false,
+        url: connectionUrl(port, "md5_user", "md5-secret", "disable"),
+      },
+      {
+        name: "cleartext-tls-verify-full",
+        user: "clear_user",
+        tls: true,
+        url: connectionUrl(port, "clear_user", "clear-secret", "verify-full"),
+      },
+      {
+        name: "cleartext-tls-verify-full-ip",
+        user: "clear_user",
+        tls: true,
+        url: connectionUrl(port, "clear_user", "clear-secret", "verify-full", false, "127.0.0.1"),
+      },
+      {
+        name: "client-cert-verify-ca",
+        user: "tls_user",
+        tls: true,
+        clientCertificate: true,
+        url: connectionUrl(port, "tls_user", "", "verify-ca", true),
+      },
+      {
+        name: "client-cert-verify-full",
+        user: "tls_user",
+        tls: true,
+        clientCertificate: true,
+        url: connectionUrl(port, "tls_user", "", "verify-full", true),
+      },
+      {
+        name: "wrong-ca-verify-ca",
+        failure: true,
+        managedFailure: true,
+        url: connectionUrl(
+          port,
+          "clear_user",
+          "clear-secret",
+          "verify-ca",
+          false,
+          "localhost",
+          "wrong-ca.crt",
+        ),
+      },
+      {
+        name: "wrong-ca-verify-full",
+        failure: true,
+        url: connectionUrl(
+          port,
+          "clear_user",
+          "clear-secret",
+          "verify-full",
+          false,
+          "localhost",
+          "wrong-ca.crt",
+        ),
+      },
+    ],
+  });
 
-  process.stdout.write(run("node", [clientScript, configPath]) + "\n");
-  process.stdout.write(run("bun", [clientScript, configPath]) + "\n");
-  process.stdout.write(run("deno", [
-    "run",
-    "--allow-net",
-    `--allow-read=${root},${temp}`,
-    clientScript,
-    configPath,
-  ]) + "\n");
+  installServerCertificate("server-wrong-host");
+  runClients("wrong-host-server", {
+    cases: [
+      {
+        name: "verify-ca-ignores-hostname",
+        user: "clear_user",
+        tls: true,
+        url: connectionUrl(port, "clear_user", "clear-secret", "verify-ca"),
+      },
+      {
+        name: "verify-full-rejects-dns-san",
+        failure: true,
+        url: connectionUrl(port, "clear_user", "clear-secret", "verify-full"),
+      },
+      {
+        name: "verify-full-rejects-ip-san",
+        failure: true,
+        url: connectionUrl(
+          port,
+          "clear_user",
+          "clear-secret",
+          "verify-full",
+          false,
+          "127.0.0.1",
+        ),
+      },
+    ],
+  });
 } catch (error) {
   const logs = spawnSync("docker", ["logs", container], { encoding: "utf8" });
   process.stderr.write(logs.stdout ?? "");

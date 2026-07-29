@@ -23,6 +23,16 @@ test("array OIDs include nullable elements by default", () => {
   expect(oidToTs(1016).ts).toBe("(bigint | null)[]");
 });
 
+test("temporal reject policy generates Date for scalars and arrays", () => {
+  const temporal = { infinity: "reject" } as const;
+  expect(oidToTs(1082, temporal).ts).toBe("Date");
+  expect(oidToTs(1114, temporal).ts).toBe("Date");
+  expect(oidToTs(1184, temporal).ts).toBe("Date");
+  expect(oidToTs(1182, temporal).ts).toBe("(Date | null)[]");
+  expect(oidToTs(1115, temporal).ts).toBe("(Date | null)[]");
+  expect(oidToTs(1185, temporal).ts).toBe("(Date | null)[]");
+});
+
 test("unknown OID falls back to unknown", () => {
   expect(oidToTs(999_999).ts).toBe("unknown");
 });

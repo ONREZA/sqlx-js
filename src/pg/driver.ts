@@ -9,6 +9,10 @@ import {
 } from "../runtime";
 import { arrayElementOid, builtinArrayOids } from "./oids";
 import {
+  resolveTemporalPolicy,
+  type TemporalPolicy,
+} from "../temporal";
+import {
   ConnectionLostError,
   decodeTextRange,
   parseDatabaseUrl,
@@ -38,6 +42,7 @@ export type PostgresOptions = {
   startupOptions?: string;
   role?: string;
   onNotice?: (notice: PgNotice) => void | Promise<void>;
+  temporal?: TemporalPolicy;
   types?: Readonly<Record<string, PostgresType>>;
 };
 
@@ -50,6 +55,7 @@ type ParsedPostgresOptions = {
   applicationName?: string;
   startupOptions?: string;
   role?: string;
+  temporal: TemporalPolicy;
   types: Readonly<Record<string, PostgresType>>;
   parsers: Record<number, (value: string) => unknown>;
   serializers: Record<number, (value: unknown) => unknown>;
@@ -83,6 +89,8 @@ export type PostgresClient = PostgresQueryClient & {
 
 export const EXECUTE_KNOWN_PARAMS = Symbol("sqlx-js.postgres.execute-known-params");
 
+// Pool slots and OID codecs share one mutable per-generation parser/serializer
+// contract; splitting them would duplicate the dispatch boundary used by both paths.
 export type KnownParamsQueryClient = {
   [EXECUTE_KNOWN_PARAMS]<Row extends Record<string, unknown> = Record<string, unknown>>(
     query: string,
@@ -164,6 +172,7 @@ class PostgresPool implements PostgresClient {
       config.startupParameters = { ...(config.startupParameters ?? {}), role: options.role };
     }
     if (options.onNotice !== undefined) config.onNotice = options.onNotice;
+    const temporal = resolveTemporalPolicy(options.temporal);
     const types = options.types ?? {};
     this.options = {
       max,
@@ -174,11 +183,13 @@ class PostgresPool implements PostgresClient {
       ...(options.applicationName === undefined ? {} : { applicationName: options.applicationName }),
       ...(options.startupOptions === undefined ? {} : { startupOptions: options.startupOptions }),
       ...(options.role === undefined ? {} : { role: options.role }),
+      temporal,
       types,
-      parsers: builtinParsers(),
-      serializers: builtinSerializers(),
+      parsers: builtinParsers(temporal),
+      serializers: builtinSerializers(temporal),
     };
     installNumericTypes(this.options, types);
+    enforceTemporalPolicy(this.options);
     this.config = config;
   }
 
@@ -687,7 +698,13 @@ function installNumericTypes(
   }
 }
 
-function builtinParsers(): Record<number, (value: string) => unknown> {
+function builtinParsers(temporal: TemporalPolicy): Record<number, (value: string) => unknown> {
+  const parseTemporal = (
+    parse: (value: string) => PgTemporal,
+    type: string,
+  ) => temporal.infinity === "reject"
+    ? (value: string) => rejectTemporalInfinity(parse(value), type)
+    : parse;
   const parsers: Record<number, (value: string) => unknown> = {
     16: parseBoolean,
     17: parseBytea,
@@ -698,9 +715,9 @@ function builtinParsers(): Record<number, (value: string) => unknown> {
     114: JSON.parse,
     700: Number,
     701: Number,
-    1082: parseDate,
-    1114: parseTimestamp,
-    1184: parseTimestamptz,
+    1082: parseTemporal(parseDate, "date"),
+    1114: parseTemporal(parseTimestamp, "timestamp"),
+    1184: parseTemporal(parseTimestamptz, "timestamptz"),
     2278: () => undefined,
     3802: JSON.parse,
     5069: BigInt,
@@ -717,7 +734,13 @@ function builtinParsers(): Record<number, (value: string) => unknown> {
   return parsers;
 }
 
-function builtinSerializers(): Record<number, (value: unknown) => unknown> {
+function builtinSerializers(temporal: TemporalPolicy): Record<number, (value: unknown) => unknown> {
+  const serializeTemporal = (
+    serialize: (value: unknown) => string,
+    type: string,
+  ) => temporal.infinity === "reject"
+    ? (value: unknown) => serialize(rejectTemporalInfinity(value, type))
+    : serialize;
   const serializers: Record<number, (value: unknown) => unknown> = {
     16: serializeBoolean,
     17: serializeBytea,
@@ -728,9 +751,9 @@ function builtinSerializers(): Record<number, (value: unknown) => unknown> {
     114: serializeJson,
     700: String,
     701: String,
-    1082: serializeDate,
-    1114: serializeTimestamp,
-    1184: serializeTimestamp,
+    1082: serializeTemporal(serializeDate, "date"),
+    1114: serializeTemporal(serializeTimestamp, "timestamp"),
+    1184: serializeTemporal(serializeTimestamp, "timestamptz"),
     3802: serializeJson,
     5069: String,
   };
@@ -747,6 +770,25 @@ function builtinSerializers(): Record<number, (value: unknown) => unknown> {
     };
   }
   return serializers;
+}
+
+function rejectTemporalInfinity<T>(value: T, type: string): T {
+  if (value === "infinity" || value === "-infinity") {
+    throw new Error(
+      `sqlx-js: PostgreSQL ${type} infinity is rejected by temporal.infinity policy`,
+    );
+  }
+  return value;
+}
+
+function enforceTemporalPolicy(options: ParsedPostgresOptions): void {
+  if (options.temporal.infinity !== "reject") return;
+  const parsers = builtinParsers(options.temporal);
+  const serializers = builtinSerializers(options.temporal);
+  for (const oid of [1082, 1114, 1184, 1115, 1182, 1185]) {
+    options.parsers[oid] = parsers[oid]!;
+    options.serializers[oid] = serializers[oid]!;
+  }
 }
 
 function encodeParameter(

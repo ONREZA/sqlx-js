@@ -1,3 +1,8 @@
+import {
+  resolveTemporalPolicy,
+  type TemporalPolicy,
+} from "../temporal";
+
 export type TsTypeInfo = {
   ts: string;
   bigint?: boolean;
@@ -11,6 +16,7 @@ export function arrayTsType(elementTs: string, nullability: ArrayElementNullabil
 
 const JSON_VALUE = 'import("@onreza/sqlx-js").JsonValue';
 const PG_TEMPORAL = 'import("@onreza/sqlx-js").PgTemporal';
+const TEMPORAL_OIDS = new Set([1082, 1114, 1184]);
 
 const SCALAR: Record<number, TsTypeInfo> = {
   16: { ts: "boolean" },
@@ -172,11 +178,21 @@ const ARRAY: Record<number, number> = {
   6157: 4536,
 };
 
-export function oidToTs(oid: number): TsTypeInfo {
+export function oidToTs(
+  oid: number,
+  temporal?: TemporalPolicy,
+): TsTypeInfo {
+  const temporalType = resolveTemporalPolicy(temporal).infinity === "reject"
+    ? "Date"
+    : PG_TEMPORAL;
+  if (TEMPORAL_OIDS.has(oid)) return { ts: temporalType };
   const direct = SCALAR[oid];
   if (direct) return direct;
   const inner = ARRAY[oid];
   if (inner !== undefined) {
+    if (TEMPORAL_OIDS.has(inner)) {
+      return { ts: arrayTsType(temporalType) };
+    }
     const t = SCALAR[inner];
     return { ts: arrayTsType(t?.ts ?? "unknown"), bigint: t?.bigint };
   }
@@ -197,10 +213,13 @@ export function arrayElementOid(oid: number): number | undefined {
 
 export type ResolveTs = (oid: number) => string;
 
-export function makeResolver(custom: (oid: number) => string | undefined): ResolveTs {
+export function makeResolver(
+  custom: (oid: number) => string | undefined,
+  temporal?: TemporalPolicy,
+): ResolveTs {
   return (oid: number) => {
     const c = custom(oid);
     if (c !== undefined) return c;
-    return oidToTs(oid).ts;
+    return oidToTs(oid, temporal).ts;
   };
 }
