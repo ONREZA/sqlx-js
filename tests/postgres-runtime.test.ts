@@ -9,6 +9,7 @@ import {
   createClient,
   createSqlClient,
   GenerationRecycledError,
+  PgError,
   QueryAbortedError,
   QueryTimeoutError,
   TransactionTimeoutError,
@@ -18,7 +19,11 @@ import {
 import { _internal, normalizeRuntimeDatabaseUrl } from "../src/postgres-runtime";
 import { EXECUTE_KNOWN_PARAMS } from "../src/pg/driver";
 import { defineQuery } from "../src/query";
-import { CACHE_FORMAT_VERSION, GENERATOR_REVISION } from "../src/cache";
+import {
+  CACHE_FORMAT_VERSION,
+  GENERATOR_REVISION,
+  RUNTIME_DESCRIPTOR_FORMAT_VERSION,
+} from "../src/artifact-versions";
 import { queryId } from "../src/query-id";
 
 function managed(client: PostgresClient, options: CreateSqlClientOptions = {}) {
@@ -77,6 +82,33 @@ test("statementTimeoutMs configures only the PostgreSQL session parameter", asyn
     applicationName: "sqlx-js-test",
     statementTimeoutMs: 1_234,
   }));
+  await raw.end();
+});
+
+test("raw temporal reject policy fails closed for scalar and array infinity", async () => {
+  const raw = createClient("postgres://app:secret@127.0.0.1:1/app", {
+    temporal: { infinity: "reject" },
+  });
+  const options = (raw as unknown as {
+    options: {
+      parsers: Record<number, (value: string) => unknown>;
+      serializers: Record<number, (value: unknown) => unknown>;
+    };
+  }).options;
+
+  expect(() => options.parsers[1184]!("infinity")).toThrow(
+    "PostgreSQL timestamptz infinity is rejected",
+  );
+  expect(() => options.parsers[1185]!('{"-infinity"}')).toThrow(
+    "PostgreSQL timestamptz infinity is rejected",
+  );
+  expect(() => options.serializers[1082]!("-infinity")).toThrow(
+    "PostgreSQL date infinity is rejected",
+  );
+  expect(() => options.serializers[1182]!(["infinity"])).toThrow(
+    "PostgreSQL date infinity is rejected",
+  );
+  expect(options.parsers[1184]!("2026-07-29 00:00:00+00")).toBeInstanceOf(Date);
   await raw.end();
 });
 
@@ -232,10 +264,11 @@ test("managed client dispatches matching runtime descriptors and keeps adaptive 
   );
   const db = managed(fake, {
     queryDescriptors: {
-      formatVersion: 1,
+      formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
       cacheFormat: CACHE_FORMAT_VERSION,
       generatorRevision: GENERATOR_REVISION,
       configHash: "test",
+      temporal: { infinity: "preserve" },
       types: {},
       queries: {
         [queryId(query)]: { params: [23] },
@@ -259,14 +292,53 @@ test("managed client dispatches matching runtime descriptors and keeps adaptive 
   ]);
 });
 
+test("managed client adopts and enforces the descriptor temporal policy", async () => {
+  let observed: unknown;
+  const db = _internal.createManagedClient(
+    (temporal) => {
+      observed = temporal;
+      return fakePool(async () => []);
+    },
+    {
+      queryDescriptors: {
+        formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
+        cacheFormat: CACHE_FORMAT_VERSION,
+        generatorRevision: GENERATOR_REVISION,
+        configHash: "test",
+        temporal: { infinity: "reject" },
+        types: {},
+        queries: {},
+        profiles: {},
+      },
+    },
+  );
+
+  expect(observed).toEqual({ infinity: "reject" });
+  await db.close();
+  expect(() => managed(fakePool(async () => []), {
+    temporal: { infinity: "preserve" },
+    queryDescriptors: {
+      formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
+      cacheFormat: CACHE_FORMAT_VERSION,
+      generatorRevision: GENERATOR_REVISION,
+      configHash: "test",
+      temporal: { infinity: "reject" },
+      types: {},
+      queries: {},
+      profiles: {},
+    },
+  })).toThrow("temporal.infinity does not match the generated query descriptor");
+});
+
 test("managed client rejects conflicting descriptor and adaptive execution modes", () => {
   expect(() => managed(fakePool(async () => []), {
     execution: "adaptive",
     queryDescriptors: {
-      formatVersion: 1,
+      formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
       cacheFormat: CACHE_FORMAT_VERSION,
       generatorRevision: GENERATOR_REVISION,
       configHash: "test",
+      temporal: { infinity: "preserve" },
       types: {},
       queries: {},
       profiles: {},
@@ -309,10 +381,11 @@ test("query hooks are preserved inside transactions", async () => {
 
   const db = managed(fake, {
     queryDescriptors: {
-      formatVersion: 1,
+      formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
       cacheFormat: CACHE_FORMAT_VERSION,
       generatorRevision: GENERATOR_REVISION,
       configHash: "test",
+      temporal: { infinity: "preserve" },
       types: {},
       queries: {
         [queryId(descriptorQuery)]: { params: [16] },
@@ -719,6 +792,102 @@ test("lifecycle observer failures are isolated from successful queries", async (
 
   expect(await db.sql("SELECT 1")).toEqual([{ value: 1 }]);
   expect(reported).toEqual([{ error: observerError, generation: 1 }]);
+  await db.close({ graceMs: 0, forceAfterMs: 0 });
+});
+
+test("query-error observer failures preserve the database error", async () => {
+  const databaseError = new Error("database unavailable");
+  const observerError = new Error("observer failed");
+  const reported: unknown[] = [];
+  const db = managed(fakePool(async () => {
+    throw databaseError;
+  }), {
+    onQueryError: () => {
+      throw observerError;
+    },
+    onLifecycleHookError: (error) => reported.push(error),
+  });
+
+  await expect(db.sql("SELECT 1")).rejects.toBe(databaseError);
+  expect(reported).toEqual([observerError]);
+  await db.close({ graceMs: 0, forceAfterMs: 0 });
+});
+
+test("bootstrap failures emit safe not_sent lifecycle details", async () => {
+  const tlsError = Object.assign(new Error("certificate for db.internal included a secret"), {
+    code: "ERR_TLS_CERT_ALTNAME_INVALID",
+    cert: { raw: "private certificate bytes" },
+  });
+  const lost = new ConnectionLostError(tlsError);
+  const errors: unknown[] = [];
+  const db = managed(fakePool(() => ({
+    values: () => Promise.reject(lost),
+  }), {
+    options: { parsers: {}, serializers: {}, types: {} },
+  }), {
+    onQueryError: (event) => errors.push(event),
+  });
+
+  await expect(db.ready()).rejects.toBe(lost);
+  expect(errors).toEqual([expect.objectContaining({
+    queryName: "sqlx-js.ready",
+    generation: 1,
+    phase: "bootstrap",
+    outcome: "not_sent",
+    errorName: "ConnectionLostError",
+    errorCode: "ERR_TLS_CERT_ALTNAME_INVALID",
+  })]);
+  expect(JSON.stringify(errors)).not.toContain("db.internal");
+  expect(JSON.stringify(errors)).not.toContain("private certificate bytes");
+  await db.close({ graceMs: 0, forceAfterMs: 0 });
+});
+
+test("lifecycle failures discard unsafe user-controlled names and codes", async () => {
+  const unsafe = Object.assign(new Error("transport detail"), {
+    name: "postgres://user:secret@db.internal/app",
+    code: "password=secret",
+  });
+  const errors: unknown[] = [];
+  const db = managed(fakePool(async () => {
+    throw unsafe;
+  }), {
+    onQueryError: (event) => errors.push(event),
+  });
+
+  await expect(db.sql("SELECT 1")).rejects.toBe(unsafe);
+  expect(errors).toEqual([expect.objectContaining({
+    errorName: "Error",
+  })]);
+  expect(errors[0]).not.toHaveProperty("errorCode");
+  expect(JSON.stringify(errors)).not.toContain("secret");
+  await db.close({ graceMs: 0, forceAfterMs: 0 });
+});
+
+test("database lifecycle failures preserve SQLSTATE and server message", async () => {
+  const databaseError = new PgError({
+    C: "42501",
+    M: "permission denied for table accounts",
+    S: "ERROR",
+  });
+  const errors: unknown[] = [];
+  const db = managed(fakePool(async () => {
+    throw databaseError;
+  }), {
+    onQueryError: (event) => errors.push(event),
+  });
+
+  await expect(db.sql("SELECT * FROM accounts")).rejects.toBe(databaseError);
+  expect(errors).toEqual([expect.objectContaining({
+    phase: "execution",
+    outcome: "unknown",
+    errorName: "PgError",
+    errorCode: "42501",
+    databaseError: {
+      sqlstate: "42501",
+      message: "permission denied for table accounts",
+      severity: "ERROR",
+    },
+  })]);
   await db.close({ graceMs: 0, forceAfterMs: 0 });
 });
 

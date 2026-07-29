@@ -33,7 +33,11 @@ function enumUnion(values: string[]): string {
   return values.map((v) => JSON.stringify(v)).join(" | ");
 }
 
-function resolveTs(oid: number, customLookup: (o: number) => CustomTypeInfo | undefined): string {
+function resolveTs(
+  oid: number,
+  customLookup: (o: number) => CustomTypeInfo | undefined,
+  cfg: SqlxJsConfig,
+): string {
   const c = customLookup(oid);
   if (c) {
     if (c.kind === "enum") return enumUnion(c.values);
@@ -43,7 +47,7 @@ function resolveTs(oid: number, customLookup: (o: number) => CustomTypeInfo | un
     if (c.kind === "composite") return compositeLiteral(c);
     if (c.kind === "compositeArray") return arrayTsType(compositeLiteral(c.element));
   }
-  return oidToTs(oid).ts;
+  return oidToTs(oid, cfg.temporal).ts;
 }
 
 function isScalarColumnType(oid: number, schema: SchemaCache): boolean {
@@ -85,7 +89,7 @@ export function resolveColumnTs(
     }
   }
   if (schemaArray) return arrayTsType(schemaArray.tsType, nonNullElements ? "non-null" : "unknown");
-  return resolveTs(f.typeOid, (oid) => schema.customType(oid));
+  return resolveTs(f.typeOid, (oid) => schema.customType(oid), cfg);
 }
 
 function directColumnSource(f: FieldDescription, schema: SchemaCache): ColumnSource | undefined {
@@ -161,9 +165,9 @@ export function resolveParamTs(
   if (array) return arrayParameter(array.tsType, nonNullElements);
   const custom = schema.customType(paramOid);
   if (custom) {
-    return resolveTs(paramOid, () => custom);
+    return resolveTs(paramOid, () => custom, cfg);
   }
-  return resolveTs(paramOid, (oid) => schema.customType(oid));
+  return resolveTs(paramOid, (oid) => schema.customType(oid), cfg);
 }
 
 function resolveParamSources(targets: ParamTarget[], schema: SchemaCache): ColumnSource[] {

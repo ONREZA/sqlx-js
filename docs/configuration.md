@@ -4,7 +4,18 @@ Configure scanning, schema ownership, application type assertions, enum generati
 
 `sqlx-js.config.ts` at the project root is optional.
 
-Under Node.js, TypeScript config is loaded through Node 24's native type stripping, so keep it to erasable TypeScript syntax. The generated `defineConfig(...)` form works on both Node and Bun; use `.mjs` if the config needs runtime constructs that Node cannot strip.
+Under Node.js, TypeScript config is loaded through Node 24's native type
+stripping, so keep it to erasable TypeScript syntax. Node's ESM resolver also
+requires file extensions on local imports, including `.ts`:
+
+```ts
+import { databaseProfiles } from "./src/database-profiles.ts";
+```
+
+The generated `defineConfig(...)` form works on both Node and Bun; use `.mjs`
+if the config needs runtime constructs that Node cannot strip. Projects that
+intentionally rely on Bun's extensionless TypeScript resolution can invoke the
+installed CLI as `bun --bun sqlx-js ...`.
 
 ```ts
 import { defineConfig } from "@onreza/sqlx-js";
@@ -33,6 +44,9 @@ export default defineConfig({
   arrayElementNullability: {
     "analytics_event.tags": "non-null",
   },
+  temporal: {
+    infinity: "reject",
+  },
   functionCatalog: {
     // Extension-owned functions and their contract warnings are excluded by default.
     includeExtensionOwned: false,
@@ -49,6 +63,23 @@ export default defineConfig({
   },
 });
 ```
+
+## Temporal infinity policy
+
+PostgreSQL `date`, `timestamp`, and `timestamptz` support `infinity` and
+`-infinity`, but JavaScript `Date` does not. The default
+`temporal.infinity: "preserve"` contract keeps those values lossless and
+generates `PgTemporal`, which is `Date | "infinity" | "-infinity"`.
+
+Set `temporal.infinity: "reject"` when the application invariant excludes
+infinite temporal values. Prepare then generates `Date` (and `Date` array
+elements), stores the policy in the runtime descriptor, and the runtime rejects
+infinity on both result decoding and parameter encoding. A descriptor-bound
+`createSqlClient` adopts the generated policy automatically. Adaptive managed
+clients and raw `createClient` calls using that generated registry must pass
+`temporal: { infinity: "reject" }` explicitly. The deprecated global `sql`
+surface is not generated in reject mode because it cannot bind a project-owned
+runtime policy.
 
 By default the scanner uses the root `tsconfig.json` file list and follows TypeScript project references, so a referenced monorepo is scanned without walking unrelated folders. `scan.include` replaces that source-file universe with TypeScript glob patterns; `scan.exclude` is added to the built-in dependency/build exclusions. `scan.modules` replaces the default `@onreza/sqlx-js` import source list, which lets an application re-export `sql` through a shared database module without requiring arbitrary re-export graph analysis. Include `@onreza/sqlx-js` explicitly when direct imports and application-module imports are both used. If there is no root `tsconfig.json`, the fallback is a recursive TypeScript scan.
 

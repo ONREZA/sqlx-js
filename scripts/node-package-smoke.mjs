@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -111,6 +111,7 @@ try {
           cacheFormat: ${descriptorVersions.cacheFormat},
           generatorRevision: ${descriptorVersions.generatorRevision},
           configHash: "node-package-smoke",
+          temporal: ${JSON.stringify(descriptorVersions.temporal)},
           types: {},
           queries: {
             [queryId(descriptorQuery)]: { params: [23] },
@@ -224,6 +225,50 @@ try {
   const cliPath = join(packageRoot, packageJson.bin["sqlx-js"]);
   const cliVersion = run("node", [cliPath, "--version"], temp).trim();
   if (cliVersion !== packageJson.version) throw new Error(`packed CLI version ${cliVersion} does not match ${packageJson.version}`);
+  const extensionlessConfigRoot = join(temp, "extensionless-config");
+  mkdirSync(extensionlessConfigRoot);
+  writeFileSync(join(extensionlessConfigRoot, "package.json"), '{"type":"module"}');
+  writeFileSync(
+    join(extensionlessConfigRoot, "sqlx-js.config.ts"),
+    'import { scan } from "./scan";\nexport default { scan };\n',
+  );
+  writeFileSync(
+    join(extensionlessConfigRoot, "scan.ts"),
+    'export const scan = { include: ["src/**/*.ts"] };\n',
+  );
+  const nodeConfigFailure = spawnSync(
+    "node",
+    [cliPath, "pgschema", "plan", "--root", extensionlessConfigRoot],
+    { cwd: temp, encoding: "utf8", env: process.env },
+  );
+  if (
+    nodeConfigFailure.status !== 2
+    || !nodeConfigFailure.stderr.includes(
+      'Import it with its file extension, for example "./scan.ts"',
+    )
+    || !nodeConfigFailure.stderr.includes("bun --bun sqlx-js")
+  ) {
+    throw new Error(
+      "packed Node CLI does not explain extensionless TypeScript config imports: "
+      + `status=${nodeConfigFailure.status} stdout=${JSON.stringify(nodeConfigFailure.stdout)} `
+      + `stderr=${JSON.stringify(nodeConfigFailure.stderr)}`,
+    );
+  }
+  const bunConfig = spawnSync(
+    "bun",
+    [cliPath, "pgschema", "plan", "--root", extensionlessConfigRoot],
+    { cwd: temp, encoding: "utf8", env: process.env },
+  );
+  if (
+    bunConfig.status !== 2
+    || !bunConfig.stderr.includes('set schema.provider = "pgschema"')
+  ) {
+    throw new Error(
+      "packed Bun CLI did not load the extensionless TypeScript config: "
+      + `status=${bunConfig.status} stdout=${JSON.stringify(bunConfig.stdout)} `
+      + `stderr=${JSON.stringify(bunConfig.stderr)}`,
+    );
+  }
   const missingTypeScript = spawnSync("node", [cliPath, "prepare", "--check", "--root", temp], {
     cwd: temp,
     encoding: "utf8",

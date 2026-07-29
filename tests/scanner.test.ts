@@ -48,6 +48,7 @@ test("counts positional parameters in reusable query definitions", () => {
   expect(scanProject(tmp)[0]).toMatchObject({
     queryName: "users.by-id",
     paramCount: 1,
+    origin: "definition",
   });
 });
 

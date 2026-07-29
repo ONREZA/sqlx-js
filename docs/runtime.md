@@ -111,6 +111,13 @@ runtime codecs, exposes lifecycle state, and performs bounded shutdown. It
 deliberately does not expose its raw pool because a retained raw reference
 would bypass generation replacement.
 
+TLS configuration belongs to the pool factory and is reapplied to every slot
+in every generation. `require`, `verify-ca`, and `verify-full` never dispatch
+PostgreSQL startup, authentication, codec discovery, or application SQL until
+TLS succeeds; they never downgrade after a negotiation or certificate failure.
+A failed or timed-out operation is not replayed during slot replacement or
+managed generation recycling.
+
 `createClient(...)` is the explicit raw wire-client escape hatch. It preserves
 sqlx-js's built-in bigint and PostgreSQL array codecs, reconnects subsequent
 operations after a broken connection, and exposes the integrated pool directly.
@@ -193,14 +200,17 @@ retaining PostgreSQL's live `RowDescription`.
 
 Generated registries require either `queryDescriptors` or an explicit
 `execution: "adaptive"` opt-out. Executing a query absent from the selected map
-still uses the adaptive describe path. `doctor` reports parameterized runtime
-call sites that remain adaptive or cannot be classified, and errors when a
-descriptor-configured site is absent from the selected artifact. A supplied artifact with an
-incompatible revision, malformed matching contract, wrong profile role, or
-missing database-local type fails closed. PostgreSQL validates the SQL and
-declared parameter types during `Parse`; if they no longer fit the live schema,
-the following `Execute` is not processed. The descriptor path does not add
-named statements, automatic replay, runtime result validation, or pipelining.
+still uses the adaptive describe path. `doctor` validates unique parameterized
+query contracts against the generated artifact independently of whether static
+scanning can follow a client through a factory or DI container. A contract is
+one query under one connection profile. `doctor` separately reports direct
+execution sites that remain adaptive or cannot be classified. A supplied
+artifact with an incompatible revision, malformed matching contract, wrong
+profile role, or missing database-local type fails closed. PostgreSQL validates
+the SQL and declared parameter types during `Parse`; if they no longer fit the
+live schema, the following `Execute` is not processed. The descriptor path does
+not add named statements, automatic replay, runtime result validation, or
+pipelining.
 
 Descriptors are not a complete schema-parity check. PostgreSQL may accept a
 cast-compatible parameter change, and live `RowDescription` keeps decoding

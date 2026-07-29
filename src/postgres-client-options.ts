@@ -26,6 +26,19 @@ export type QueryTimeoutEvent = QueryStartEvent & {
   outcome: "not_sent" | "unknown";
 };
 
+export type QueryErrorEvent = QueryStartEvent & {
+  durationMs: number;
+  phase: "bootstrap" | "execution";
+  outcome: "not_sent" | "unknown";
+  errorName: string;
+  errorCode?: string;
+  databaseError?: {
+    sqlstate: string;
+    message: string;
+    severity?: string;
+  };
+};
+
 export type ClientStateChangeEvent = {
   profile?: string;
   role?: string;
@@ -35,7 +48,11 @@ export type ClientStateChangeEvent = {
   reason?: unknown;
 };
 
-export type ClientLifecycleEvent = QueryStartEvent | QueryTimeoutEvent | ClientStateChangeEvent;
+export type ClientLifecycleEvent =
+  | QueryStartEvent
+  | QueryTimeoutEvent
+  | QueryErrorEvent
+  | ClientStateChangeEvent;
 
 export type ClientSnapshot = {
   generation: number;
@@ -61,6 +78,7 @@ type ManagedClientOptions = {
   onQueryHookError?: OnQueryHookError;
   onQueryStart?: (event: QueryStartEvent) => void | Promise<void>;
   onQueryTimeout?: (event: QueryTimeoutEvent) => void | Promise<void>;
+  onQueryError?: (event: QueryErrorEvent) => void | Promise<void>;
   onClientStateChange?: (event: ClientStateChangeEvent) => void | Promise<void>;
   onLifecycleHookError?: (error: unknown, event: ClientLifecycleEvent) => void | Promise<void>;
   operationTimeoutMs?: number;
@@ -100,6 +118,7 @@ function postgresClientOptions(options: CreateSqlClientOptions): CreateClientOpt
     onQueryHookError: _onQueryHookError,
     onQueryStart: _onQueryStart,
     onQueryTimeout: _onQueryTimeout,
+    onQueryError: _onQueryError,
     onClientStateChange: _onClientStateChange,
     onLifecycleHookError: _onLifecycleHookError,
     operationTimeoutMs: _operationTimeoutMs,

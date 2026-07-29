@@ -1,8 +1,11 @@
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "cacheFormat": 5,
-  "generatorRevision": 21,
-  "configHash": "424b4eaf1971125d",
+  "generatorRevision": 22,
+  "configHash": "611f4c56c07cffe9",
+  "temporal": {
+    "infinity": "preserve"
+  },
   "types": {
     "[\"public\",\"user_role\"]": {
       "schema": "public",

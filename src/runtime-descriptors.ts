@@ -4,6 +4,7 @@ import {
   RUNTIME_DESCRIPTOR_FORMAT_VERSION,
 } from "./artifact-versions";
 import { isBuiltinOid } from "./pg/oids";
+import type { TemporalPolicy } from "./temporal";
 
 export type RuntimeDescriptorType = {
   schema: string;
@@ -24,6 +25,9 @@ export type RuntimeQueryDescriptors = {
   cacheFormat: number;
   generatorRevision: number;
   configHash: string;
+  temporal: {
+    readonly infinity: string;
+  };
   types: Readonly<Record<string, RuntimeDescriptorType>>;
   queries: Readonly<Record<string, RuntimeQueryDescriptor>>;
   profiles: Readonly<Record<string, RuntimeDescriptorProfile>>;
@@ -32,6 +36,7 @@ export type RuntimeQueryDescriptors = {
 export type PreparedRuntimeDescriptors = {
   queries: ReadonlyMap<string, RuntimeQueryDescriptor>;
   types: readonly (RuntimeDescriptorType & { key: string })[];
+  temporal: TemporalPolicy;
 };
 
 type ActiveProfile = {
@@ -96,6 +101,15 @@ export function prepareRuntimeDescriptors(
   if (typeof value.configHash !== "string" || !isRecord(value.types) || !isRecord(value.profiles)) {
     throw descriptorError("is malformed");
   }
+  if (
+    !isRecord(value.temporal)
+    || (value.temporal.infinity !== "preserve" && value.temporal.infinity !== "reject")
+  ) {
+    throw descriptorError("contains an invalid temporal policy");
+  }
+  const temporal: TemporalPolicy = Object.freeze({
+    infinity: value.temporal.infinity,
+  });
 
   const types = new Map<string, RuntimeDescriptorType>();
   for (const [key, raw] of Object.entries(value.types)) {
@@ -140,5 +154,6 @@ export function prepareRuntimeDescriptors(
   return {
     queries,
     types: [...usedTypes].sort().map((key) => ({ key, ...types.get(key)! })),
+    temporal,
   };
 }

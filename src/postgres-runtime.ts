@@ -38,7 +38,11 @@ import {
 import { queryId } from "./query-id";
 import type { QueryExecutionMetadata } from "./query";
 import type { DatabaseProfile } from "./config";
-import { ConnectionLostError } from "./pg/wire";
+import {
+  resolveTemporalPolicy,
+  type TemporalPolicy,
+} from "./temporal";
+import { ConnectionLostError, PgError } from "./pg/wire";
 import {
   createTransactionRuntimeClient,
   type PendingQuery,
@@ -67,6 +71,7 @@ export type {
   CreateSqlClientOptions,
   DeadlineOptions,
   QueryStartEvent,
+  QueryErrorEvent,
   QueryTimeoutEvent,
 } from "./postgres-client-options";
 
@@ -120,6 +125,51 @@ function resolvedFileRoot(value?: string): string {
   return resolve(value ?? process.env.SQLX_JS_FILE_ROOT ?? process.cwd());
 }
 
+const SAFE_LIFECYCLE_ERROR_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+const SAFE_LIFECYCLE_ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+function lifecycleErrorCode(error: unknown): string | undefined {
+  let current = error;
+  const seen = new Set<unknown>();
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && SAFE_LIFECYCLE_ERROR_CODE.test(code)) return code;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+function lifecycleErrorDetails(error: unknown): {
+  errorName: string;
+  errorCode?: string;
+  databaseError?: {
+    sqlstate: string;
+    message: string;
+    severity?: string;
+  };
+} {
+  const candidateName = error instanceof Error ? error.name : typeof error;
+  const errorName = SAFE_LIFECYCLE_ERROR_NAME.test(candidateName)
+    ? candidateName
+    : error instanceof Error ? "Error" : typeof error;
+  if (error instanceof PgError && error.code) {
+    return {
+      errorName,
+      errorCode: error.code,
+      databaseError: {
+        sqlstate: error.code,
+        message: error.message,
+        ...(error.severity ? { severity: error.severity } : {}),
+      },
+    };
+  }
+  const errorCode = lifecycleErrorCode(error);
+  return { errorName, ...(errorCode ? { errorCode } : {}) };
+}
+
+// Admission, transaction deadlines, and generation recycling mutate the same
+// operation record; keeping them together makes no-replay/outcome ordering reviewable.
 class ManagedPostgresRuntime implements RuntimeClient {
   readonly fileRoot: string;
   readonly reloadSqlFiles: boolean;
@@ -129,6 +179,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
   readonly transactionSettings?: readonly string[];
   private readonly onQueryStart?: CreateSqlClientOptions["onQueryStart"];
   private readonly onQueryTimeout?: CreateSqlClientOptions["onQueryTimeout"];
+  private readonly onQueryError?: CreateSqlClientOptions["onQueryError"];
   private readonly onClientStateChange?: CreateSqlClientOptions["onClientStateChange"];
   private readonly onLifecycleHookError?: CreateSqlClientOptions["onLifecycleHookError"];
   private readonly operationTimeoutMs?: number;
@@ -150,16 +201,19 @@ class ManagedPostgresRuntime implements RuntimeClient {
   private lastTimeoutAt: number | null = null;
   private recycleCount = 0;
 
-  constructor(createPool: () => PostgresClient, options: CreateSqlClientOptions) {
+  constructor(
+    createPool: (temporal: TemporalPolicy) => PostgresClient,
+    options: CreateSqlClientOptions,
+  ) {
     const hasQueryDescriptors = Object.hasOwn(options, "queryDescriptors");
     if (options.execution === "adaptive" && hasQueryDescriptors) {
       throw new Error("sqlx-js: execution: \"adaptive\" cannot be combined with queryDescriptors");
     }
-    this.createPool = createPool;
     this.onQuery = options.onQuery;
     this.onQueryHookError = options.onQueryHookError;
     this.onQueryStart = options.onQueryStart;
     this.onQueryTimeout = options.onQueryTimeout;
+    this.onQueryError = options.onQueryError;
     this.onClientStateChange = options.onClientStateChange;
     this.onLifecycleHookError = options.onLifecycleHookError;
     this.operationTimeoutMs = validateOptionalTimeout(options.operationTimeoutMs, "operationTimeoutMs");
@@ -183,6 +237,22 @@ class ManagedPostgresRuntime implements RuntimeClient {
     this.descriptors = hasQueryDescriptors
       ? prepareRuntimeDescriptors(options.queryDescriptors!, this.profile)
       : undefined;
+    const configuredTemporal = options.temporal === undefined
+      ? undefined
+      : resolveTemporalPolicy(options.temporal);
+    if (
+      configuredTemporal
+      && this.descriptors
+      && configuredTemporal.infinity !== this.descriptors.temporal.infinity
+    ) {
+      throw new Error(
+        "sqlx-js: temporal.infinity does not match the generated query descriptor",
+      );
+    }
+    const temporal = this.descriptors?.temporal
+      ?? configuredTemporal
+      ?? resolveTemporalPolicy(undefined);
+    this.createPool = () => createPool(temporal);
     this.current = this.createGeneration();
   }
 
@@ -229,6 +299,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
       return result;
     } catch (cause) {
       const error = operation.interrupted ?? toPgError(cause) ?? cause;
+      this.notifyOperationError(operation, error);
       if (this.onQuery) {
         this.notifyQuery({
           ...request.metadata,
@@ -326,7 +397,8 @@ class ManagedPostgresRuntime implements RuntimeClient {
       this.lastSuccessAt = Date.now();
       return result;
     } catch (cause) {
-      const error = operation.interrupted ?? cause;
+      const error = operation.interrupted ?? toPgError(cause) ?? cause;
+      this.notifyOperationError(operation, error);
       if (error === timeoutError) {
         const rolledBack = await settlesWith(begin, timeoutError, this.cancelGraceMs);
         if (rolledBack) throw new TransactionTimeoutError(timeoutMs!, "rolled_back", generation.id);
@@ -343,7 +415,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
         if (!cleaned) this.poisonGeneration(generation, operation, error);
         throw error;
       }
-      throw toPgError(error) ?? error;
+      throw error;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       state.expire = undefined;
@@ -369,6 +441,10 @@ class ManagedPostgresRuntime implements RuntimeClient {
     const work = this.bootstrap(generation, operation);
     try {
       await Promise.race([work, operation.interruption.promise]);
+    } catch (cause) {
+      const error = operation.interrupted ?? toPgError(cause) ?? cause;
+      this.notifyOperationError(operation, error);
+      throw error;
     } finally {
       this.finishOperation(operation);
     }
@@ -679,6 +755,14 @@ class ManagedPostgresRuntime implements RuntimeClient {
       if (error instanceof ConnectionLostError) {
         error = this.failTransaction(state, error);
       }
+      this.notifyQueryFailure(
+        request.metadata,
+        generation.id,
+        startedAt,
+        "execution",
+        sent,
+        error,
+      );
       if (this.onQuery) {
         this.notifyQuery({
           ...request.metadata,
@@ -962,6 +1046,35 @@ class ManagedPostgresRuntime implements RuntimeClient {
     });
   }
 
+  private notifyOperationError(operation: OperationRecord, error: unknown): void {
+    this.notifyQueryFailure(
+      operation.metadata,
+      operation.generation.id,
+      operation.startedAt,
+      operation.phase,
+      operation.sent,
+      error,
+    );
+  }
+
+  private notifyQueryFailure(
+    metadata: QueryExecutionMetadata,
+    generation: number,
+    startedAt: number,
+    phase: "bootstrap" | "execution",
+    sent: boolean,
+    error: unknown,
+  ): void {
+    this.notifyLifecycle(this.onQueryError, {
+      ...metadata,
+      generation,
+      durationMs: performance.now() - startedAt,
+      phase,
+      outcome: sent ? "unknown" : "not_sent",
+      ...lifecycleErrorDetails(error),
+    });
+  }
+
   private notifyQuery(event: Parameters<OnQueryHook>[0]): void {
     const profiled = this.profileEvent(event);
     try {
@@ -1149,7 +1262,10 @@ export function createClient(url = process.env.DATABASE_URL, options: CreateClie
 function createManagedClient(url: string | undefined, options: CreateSqlClientOptions): ManagedPostgresRuntime {
   if (!url) throw new Error("sqlx-js: DATABASE_URL is not set");
   const clientOptions = profileClientOptions(url, options);
-  return new ManagedPostgresRuntime(() => createClient(url, clientOptions), options);
+  return new ManagedPostgresRuntime(
+    (temporal) => createClient(url, { ...clientOptions, temporal }),
+    options,
+  );
 }
 
 function createDefaultClient(): ManagedPostgresRuntime {
@@ -1196,7 +1312,10 @@ export function createSqlClient(url = process.env.DATABASE_URL, options: CreateS
 }
 
 export const _internal = {
-  createManagedClient(createPool: () => PostgresClient, options: CreateSqlClientOptions = {}) {
+  createManagedClient(
+    createPool: (temporal: TemporalPolicy) => PostgresClient,
+    options: CreateSqlClientOptions = {},
+  ) {
     return managedClientApi(new ManagedPostgresRuntime(createPool, options));
   },
 };

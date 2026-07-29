@@ -9,6 +9,7 @@ import {
 } from "./artifact-versions";
 import { fingerprint, type CacheEntry } from "./cache";
 import type { DatabaseProfiles } from "./config";
+import { resolveTemporalPolicy, type TemporalPolicy } from "./temporal";
 import type {
   RuntimeDescriptorProfile,
   RuntimeDescriptorType,
@@ -28,6 +29,7 @@ export function renderRuntimeDescriptors(
   entries: readonly CacheEntry[],
   configHash: string,
   profiles: DatabaseProfiles = {},
+  temporal?: TemporalPolicy,
 ): string {
   const types = new Map<string, RuntimeDescriptorType>();
   const queries = new Map<string, RuntimeQueryDescriptor>();
@@ -72,6 +74,7 @@ export function renderRuntimeDescriptors(
     cacheFormat: CACHE_FORMAT_VERSION,
     generatorRevision: GENERATOR_REVISION,
     configHash,
+    temporal: resolveTemporalPolicy(temporal),
     types: sortedRecord(types),
     queries: sortedRecord(queries),
     profiles: sortedRecord(renderedProfiles),
@@ -88,10 +91,11 @@ export function writeRuntimeDescriptors(
   entries: readonly CacheEntry[],
   configHash: string,
   profiles: DatabaseProfiles = {},
+  temporal?: TemporalPolicy,
 ): void {
   const path = runtimeDescriptorPath(cacheDir);
   const tmp = `${path}.tmp-${randomBytes(4).toString("hex")}`;
-  writeFileSync(tmp, renderRuntimeDescriptors(entries, configHash, profiles));
+  writeFileSync(tmp, renderRuntimeDescriptors(entries, configHash, profiles, temporal));
   try {
     renameSync(tmp, path);
   } catch (error) {

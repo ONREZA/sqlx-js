@@ -5,6 +5,7 @@ import {
   GENERATOR_REVISION,
   RUNTIME_DESCRIPTOR_FORMAT_VERSION,
 } from "../artifact-versions";
+import { DEFAULT_TEMPORAL_POLICY } from "../temporal";
 
 const CONFIG_TEMPLATE = `import { defineConfig } from "@onreza/sqlx-js";
 
@@ -71,6 +72,7 @@ export interface SqlxJsGeneratedRegistry {
   functions: SqlxJsGeneratedFunctions;
   runtimeTypes: SqlxJsGeneratedRuntimeTypes;
   runtimeDescriptors: true;
+  temporalInfinity: "preserve";
 }
 
 declare module "@onreza/sqlx-js" {
@@ -97,6 +99,7 @@ const RUNTIME_DESCRIPTOR_TEMPLATE = `${JSON.stringify({
   cacheFormat: CACHE_FORMAT_VERSION,
   generatorRevision: GENERATOR_REVISION,
   configHash: "unprepared",
+  temporal: DEFAULT_TEMPORAL_POLICY,
   types: {},
   queries: {},
   profiles: {},

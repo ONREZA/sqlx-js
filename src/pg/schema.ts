@@ -1,5 +1,6 @@
 import { PgClient, decodeText } from "./wire";
 import { arrayElementOid, arrayTsType, isBuiltinOid, oidToTs, type ArrayElementNullability } from "./oids";
+import type { TemporalPolicy } from "../temporal";
 
 export type ColumnInfo = {
   attrelid: number;
@@ -46,7 +47,10 @@ export class SchemaCache {
   private typeRegistry: Record<string, string> = {};
   private userTypeRegistry: Record<string, string> = {};
 
-  constructor(private client: PgClient) {}
+  constructor(
+    private client: PgClient,
+    private temporal?: TemporalPolicy,
+  ) {}
 
   setTypeRegistry(
     registry: Record<string, string>,
@@ -335,7 +339,7 @@ export class SchemaCache {
 
   private resolveBaseTs(baseOid: number): string | undefined {
     if (baseOid === 0) return undefined;
-    if (isBuiltinOid(baseOid)) return oidToTs(baseOid).ts;
+    if (isBuiltinOid(baseOid)) return oidToTs(baseOid, this.temporal).ts;
     const info = this.customTypes.get(baseOid);
     if (!info) return undefined;
     if (info.kind === "scalar") return info.tsType;

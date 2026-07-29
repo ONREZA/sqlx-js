@@ -17,9 +17,16 @@ function collectMarkdownFiles(directory) {
 collectMarkdownFiles(process.cwd());
 
 const missing = [];
+const mutableUpgradeStatuses = [];
 
 for (const file of markdownFiles) {
   const source = readFileSync(file, "utf8");
+  if (
+    file.startsWith(resolve(process.cwd(), "docs/upgrades"))
+    && /^Status:/m.test(source)
+  ) {
+    mutableUpgradeStatuses.push(`${file}: remove mutable Status metadata from the upgrade guide`);
+  }
 
   for (const match of source.matchAll(/\[[^\]]*]\(([^)]+)\)/g)) {
     let target = match[1].trim();
@@ -45,11 +52,12 @@ for (const file of markdownFiles) {
   }
 }
 
-if (missing.length > 0) {
-  process.stderr.write(`${missing.join("\n")}\n`);
+const failures = [...missing, ...mutableUpgradeStatuses];
+if (failures.length > 0) {
+  process.stderr.write(`${failures.join("\n")}\n`);
   process.exitCode = 1;
 } else {
   process.stdout.write(
-    `Checked ${markdownFiles.length} Markdown files: all relative targets exist\n`,
+    `Checked ${markdownFiles.length} Markdown files: links and upgrade metadata are valid\n`,
   );
 }

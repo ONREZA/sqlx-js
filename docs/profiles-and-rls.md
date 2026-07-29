@@ -132,6 +132,16 @@ parameters include `sslmode`, `sslrootcert`, `sslcert`, `sslkey`,
 `application_name`, `options`, `role`, `connect_timeout`, and
 `statement_timeout`.
 
+`require`, `verify-ca`, and `verify-full` are fail-closed. A connection sends
+only PostgreSQL's SSLRequest before TLS succeeds; rejection, malformed or
+stalled negotiation, connection close, certificate-chain failure, and
+hostname/IP mismatch never fall back to plaintext or dispatch startup,
+authentication, codec discovery, or application SQL. `verify-ca` validates
+the certificate chain, while `verify-full` additionally validates the DNS
+name or IP address. Only `prefer` may continue without TLS when PostgreSQL
+explicitly replies that TLS is unavailable. The same policy applies to every
+pool slot and every replacement generation.
+
 ```ts
 const db = createSqlClient(process.env.DATABASE_URL, {
   queryDescriptors,
@@ -175,6 +185,29 @@ const db = createSqlClient(process.env.DATABASE_URL, {
   onQueryTimeout: ({ queryId, queryName, generation, durationMs, phase, outcome }) => {
     logger.error({ queryId, queryName, generation, durationMs, phase, outcome });
   },
+  onQueryError: ({
+    queryId,
+    queryName,
+    generation,
+    durationMs,
+    phase,
+    outcome,
+    errorName,
+    errorCode,
+    databaseError,
+  }) => {
+    logger.error({
+      queryId,
+      queryName,
+      generation,
+      durationMs,
+      phase,
+      outcome,
+      errorName,
+      errorCode,
+      databaseError,
+    });
+  },
   onClientStateChange: ({ from, to, generation }) => {
     logger.info({ from, to, generation }, "database client state changed");
   },
@@ -183,9 +216,18 @@ const db = createSqlClient(process.env.DATABASE_URL, {
 });
 ```
 
-The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. `queryId` is the stable prepare/cache fingerprint and is suitable for metric labels; `queryName` is present for named `defineQuery` calls. For parameterized queries, managed PostgreSQL clients add `executionPath` as `descriptor` for a prepared-descriptor hit or `adaptive` when parameter types are described at runtime. Parameterless queries already use one write and leave the field undefined. It is produced only for observers and does not enable hot-path counters. Profiled managed clients also attach the stable `profile` name and PostgreSQL `role` to query, query-start/timeout, client-state, and lifecycle-hook-error events, including events emitted by replacement pool generations. The hook is a non-blocking observer: synchronous throws and asynchronous rejections preserve the database result/error and are passed to `onQueryHookError` when configured. The event preserves source-level parameters for direct queries (including the named-parameter object); mapped definitions report the mapper output rather than their application input. Parameters may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
+The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. `queryId` is the stable prepare/cache fingerprint and is suitable for metric labels; `queryName` is present for named `defineQuery` calls. For parameterized queries, managed PostgreSQL clients add `executionPath` as `descriptor` for a prepared-descriptor hit or `adaptive` when parameter types are described at runtime. Parameterless queries already use one write and leave the field undefined. It is produced only for observers and does not enable hot-path counters. Profiled managed clients also attach the stable `profile` name and PostgreSQL `role` to query, query-start/error/timeout, client-state, and lifecycle-hook-error events, including events emitted by replacement pool generations. The hook is a non-blocking observer: synchronous throws and asynchronous rejections preserve the database result/error and are passed to `onQueryHookError` when configured. The event preserves source-level parameters for direct queries (including the named-parameter object); mapped definitions report the mapper output rather than their application input. Parameters may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
 
-Lifecycle events intentionally omit SQL text and parameters. `onQueryStart` fires before codec bootstrap. `onQueryTimeout` reports the stable ID, generation, phase, and outcome while the managed runtime cancels the query and retires the poisoned generation. `onClientStateChange` reports `healthy`, `poisoned`, `recycling`, `failed`, `closing`, and `closed` transitions.
+Query lifecycle events intentionally omit SQL text and parameters.
+`onQueryStart` fires before codec bootstrap. `onQueryError` reports admitted
+queries, readiness checks, and transactions that fail after lifecycle start,
+with `phase` and `outcome`; transport/TLS failures expose only a safe error name
+and code, while PostgreSQL errors additionally preserve SQLSTATE, severity, and
+the server message. It never includes a connection URL, credentials, SQL
+parameters, or certificate objects. `onQueryTimeout` reports the stable ID,
+generation, phase, and outcome while the managed runtime cancels the query and
+retires the poisoned generation. `onClientStateChange` reports `healthy`,
+`poisoned`, `recycling`, `failed`, `closing`, and `closed` transitions.
 
 `db.snapshot()` synchronously returns `{ generation, state, activeOperations, lastSuccessAt, lastTimeoutAt, recycleCount }`. `db.ready({ timeoutMs })` bounds codec discovery. `db.ping({ timeoutMs })` performs `SELECT 1` through the same bootstrap, deadline, pool, and observer path as application SQL.
 
