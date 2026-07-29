@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/ONREZA/sqlx-js/compare/v0.23.1...v0.24.0) (2026-07-29)
+
+
+### Features
+
+* **runtime:** harden temporal and tls dx ([#53](https://github.com/ONREZA/sqlx-js/issues/53)) ([51f2f22](https://github.com/ONREZA/sqlx-js/commit/51f2f22cac9fd37d4e0b5ecf708c8480f88ba624)), closes [#52](https://github.com/ONREZA/sqlx-js/issues/52)
+
 ## [0.23.1](https://github.com/ONREZA/sqlx-js/compare/v0.23.0...v0.23.1) (2026-07-26)
 
 
