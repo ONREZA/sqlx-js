@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.1](https://github.com/ONREZA/sqlx-js/compare/v0.24.0...v0.24.1) (2026-07-29)
+
+
+### Bug Fixes
+
+* **ci:** accept restart ssl rejection ([#55](https://github.com/ONREZA/sqlx-js/issues/55)) ([6282b23](https://github.com/ONREZA/sqlx-js/commit/6282b23d0c47c982c3d57adc21d8c21c618a2f3a)), closes [#52](https://github.com/ONREZA/sqlx-js/issues/52)
+
 ## [0.24.0](https://github.com/ONREZA/sqlx-js/compare/v0.23.1...v0.24.0) (2026-07-29)
 
 
