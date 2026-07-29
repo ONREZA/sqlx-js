@@ -168,6 +168,10 @@ function isExpectedFault(error) {
     expectedFaultNames.has(item.name)
     || expectedPgCodes.has(item.code)
     || expectedNetworkCodes.has(item.code)
+    || (
+      (phase === "restart" || phase === "restart-recovery")
+      && item.message === "sqlx-js: unexpected SSL handshake reply byte 0x45"
+    )
   ));
 }
 
