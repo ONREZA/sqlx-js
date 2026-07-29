@@ -233,7 +233,7 @@ if (!haveIntegrationDatabase) {
       "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT id, name FROM tmp_users WHERE id = $1\", 1);\n",
     );
-    const r = prepare();
+    const r = prepare(["--verbose"]);
     expect(r.code).toBe(0);
     expect(r.stdout).toMatch(/a\.ts:2:11/);
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
@@ -421,7 +421,7 @@ if (!haveIntegrationDatabase) {
       "const db = createSqlClient();\n" +
       "await db.sql.one(\"SELECT id, name FROM tmp_users WHERE id = $1\", 1);\n",
     );
-    const r = prepare();
+    const r = prepare(["--verbose"]);
     expect(r.code).toBe(0);
     expect(r.stdout).toMatch(/a\.ts:3:18/);
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
@@ -1011,9 +1011,9 @@ export default {
 
       const generatedBeforeDisable = readFileSync(outputPath, "utf8");
       writeRootFile(root, "sqlx-js.config.ts", "export default { functionCatalog: false };\n");
-      const disabled = prepareRoot(root);
+      const disabled = prepareRoot(root, ["--warnings"]);
       expect(disabled.code, disabled.stderr).toBe(0);
-      expect(disabled.stdout).toContain("enum catalog disabled: removed its cache");
+      expect(disabled.stderr).toContain("enum catalog disabled: removed its cache");
       expect(existsSync(cachePath)).toBe(false);
       expect(readFileSync(outputPath, "utf8")).toBe(generatedBeforeDisable);
       expect(prepareRoot(root, ["--check"]).code).toBe(0);
@@ -1269,6 +1269,80 @@ export default {
     expect(payload.diagnostics[0]!.queryId).toMatch(/^[0-9a-f]{16}$/);
   });
 
+  test("prepare defaults to summary and exposes explicit detail levels", () => {
+    const root = isolatedRoot("prepare-summary");
+    writeRootFile(root, "sqlx-js.config.mjs", "export default { functionCatalog: false };\n");
+    writeRootFile(root, "queries.ts", `
+      import { sql } from "@onreza/sqlx-js";
+      await sql.execute("SELECT $1::int4", 1);
+    `);
+
+    for (const args of [
+      [],
+      ["--check"],
+      ["--offline"],
+      ["--verify"],
+    ]) {
+      const result = prepareRoot(root, args);
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).not.toContain("✓");
+      expect(result.stdout).not.toContain("scanned: found");
+      expect(result.stdout).toContain("1 unique query, 1 source site");
+      expect(result.stdout).toContain("1 warning (intent: 1), 0 errors");
+      expect(result.stdout).toContain("use --warnings to show warning details");
+      expect(result.stdout).toContain("use --verbose for per-query progress");
+      expect(result.stderr).not.toMatch(
+        /intent warning: queries\.ts:3:\d+ \[query:[0-9a-f]{16}\] — sql\.execute\(\) is discarding rows/,
+      );
+    }
+
+    const warnings = prepareRoot(root, ["--warnings"]);
+    expect(warnings.code, warnings.stderr).toBe(0);
+    expect(warnings.stdout).not.toContain("scanned: found");
+    expect(warnings.stdout).not.toContain("use --warnings to show warning details");
+    expect(warnings.stderr).toMatch(
+      /intent warning: queries\.ts:3:\d+ \[query:[0-9a-f]{16}\] — sql\.execute\(\) is discarding rows/,
+    );
+
+    const verbose = prepareRoot(root, ["--verbose"]);
+    expect(verbose.code, verbose.stderr).toBe(0);
+    expect(verbose.stdout).toContain("scanned: found");
+    expect(verbose.stdout).toContain("✓");
+    expect(verbose.stderr).toMatch(
+      /intent warning: queries\.ts:3:\d+ \[query:[0-9a-f]{16}\] — sql\.execute\(\) is discarding rows/,
+    );
+
+    writeRootFile(root, "sqlx-js-env.d.ts", "export {};\n");
+    const stale = prepareRoot(root, ["--verify"]);
+    expect(stale.code).toBe(1);
+    expect(stale.stderr).toContain("sqlx-js prepare --verify: generated artifacts are stale:");
+    expect(stale.stderr).toContain("sqlx-js-env.d.ts");
+    expect(stale.stderr).toContain("verify failed — prepared 1 unique query");
+    expect(stale.stderr).not.toContain("verified 1 unique query");
+
+    writeRootFile(root, "queries.ts", `
+      import { sql } from "@onreza/sqlx-js";
+      await sql.execute("SELECT $1::text", "new");
+    `);
+    const missing = prepareRoot(root, ["--check"]);
+    expect(missing.code).toBe(1);
+    expect(missing.stderr).toMatch(
+      /cache failed: queries\.ts:3:\d+ \[query:[0-9a-f]{16}\] — query is not in the offline cache/,
+    );
+    expect(missing.stderr).toContain("check failed — 0 unique queries");
+
+    writeRootFile(root, "queries.ts", `
+      import { sql } from "@onreza/sqlx-js";
+      await sql("SELECT * FROM tmp_summary_missing_relation");
+    `);
+    const failed = prepareRoot(root);
+    expect(failed.code).toBe(1);
+    expect(failed.stderr).toMatch(
+      /describe failed: queries\.ts:3:\d+ \[query:[0-9a-f]{16}\] — relation "tmp_summary_missing_relation" does not exist/,
+    );
+    expect(failed.stderr).toContain("prepare failed — 0 unique queries");
+  });
+
   test("prepare emits KnownFunctions from pg_proc and keeps them in --check", async () => {
     const setup = new PgClient(parseDatabaseUrl(dbUrl));
     await setup.connect();
@@ -1399,7 +1473,7 @@ export default {
       }));
 
       writeRootFile(root, "sqlx-js-env.d.ts", "export {};\n");
-      result = prepareRoot(root, ["--check"]);
+      result = prepareRoot(root, ["--check", "--warnings"]);
       expect(result.code).toBe(1);
       expect(result.stderr).toContain(
         "function-contract warning: public.tmp_contract_unsafe() — SECURITY DEFINER has no function-local search_path",
@@ -1644,7 +1718,7 @@ export default {
       "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"SELECT name FROM tmp_users\");\n",
     );
-    r = prepare();
+    r = prepare(["--verbose"]);
     expect(r.code).toBe(0);
     expect(r.stdout).toMatch(/pruned 1 orphaned/);
     const second = queryCacheFiles();
@@ -2517,7 +2591,7 @@ export default {
       "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql(\"UPDATE tmp_users SET name = name WHERE id < 0\");\n",
     );
-    const warning = prepareRoot(root);
+    const warning = prepareRoot(root, ["--warnings"]);
     expect(warning.code, warning.stderr).toBe(0);
     expect(warning.stderr).toContain("intent warning");
     expect(warning.stderr).toContain("Use sql.execute()");
@@ -2530,7 +2604,7 @@ export default {
       "import { sql } from \"@onreza/sqlx-js\";\n" +
       "await sql.execute(\"UPDATE tmp_users SET name = name WHERE id < 0 RETURNING id\");\n",
     );
-    const discardedRows = prepareRoot(root);
+    const discardedRows = prepareRoot(root, ["--warnings"]);
     expect(discardedRows.code, discardedRows.stderr).toBe(0);
     expect(discardedRows.stderr).toContain("sql.execute() is discarding rows");
 
@@ -3936,7 +4010,7 @@ export default {
       "  await tx(\"SELECT id FROM tmp_users WHERE id = $1\", 1);\n" +
       "});\n",
     );
-    const r = prepare();
+    const r = prepare(["--verbose"]);
     expect(r.code).toBe(0);
     expect(r.stdout).toMatch(/a\.ts:3:12/);
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");

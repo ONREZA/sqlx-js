@@ -371,6 +371,7 @@ test("doctor reports parameterized descriptor coverage by runtime call site", as
     const prepared = createSqlClient(undefined, { queryDescriptors });
     const adaptive = createSqlClient(undefined, { execution: "adaptive" });
     const reusable = defineQuery("SELECT $1::bigint");
+    const duplicateReusable = defineQuery("SELECT $1::bigint");
     prepared.sql("SELECT $1::int4", 1);
     adaptive.sql("SELECT $1::text", "x");
   `);
@@ -382,16 +383,30 @@ test("doctor reports parameterized descriptor coverage by runtime call site", as
   });
   expect(checks.find((check) => check.name === "descriptorCoverage")).toMatchObject({
     status: "warning",
+    message: expect.stringContaining(
+      "discovered 4 parameterized source sites (2 definition sites, 2 execution sites)",
+    ),
     details: {
-      parameterized: 3,
+      parameterized: 4,
       queryContracts: 3,
       descriptor: 3,
       descriptorConfigured: 1,
       missing: 0,
       adaptive: 1,
       unknown: 0,
-      definitions: 1,
+      definitions: 2,
       executionSites: 2,
+      countSemantics: {
+        parameterized: "parameterized source sites before query/profile deduplication",
+        queryContracts: "unique SQL fingerprint and connection-profile contracts",
+        descriptor: "unique query/profile contracts present in the runtime descriptor",
+        descriptorConfigured: "direct execution source sites statically configured for descriptors",
+        missing: "unique query/profile contracts absent from the runtime descriptor",
+        definitions: "reusable parameterized definition source sites",
+        executionSites: "direct parameterized execution source sites",
+        adaptive: "direct execution source sites explicitly configured for adaptive execution",
+        unknown: "direct execution source sites whose execution mode cannot be classified statically",
+      },
     },
   });
 });
@@ -467,12 +482,75 @@ test("doctor counts one reusable query once per profile contract", async () => {
   });
   expect(checks.find((check) => check.name === "descriptorCoverage")).toMatchObject({
     status: "ok",
+    message: expect.stringContaining(
+      "1 parameterized source site (1 definition site, 0 execution sites)",
+    ),
     details: {
       parameterized: 1,
       queryContracts: 2,
       descriptor: 2,
       definitions: 1,
       executionSites: 0,
+    },
+  });
+});
+
+test("doctor does not infer DDL ownership when schema.provider is absent", async () => {
+  const absentRoot = root();
+  let checks = await inspectDoctor({
+    root: absentRoot,
+    databaseUrl: "",
+    cacheDir: join(absentRoot, ".sqlx-js"),
+    dtsPath: join(absentRoot, "sqlx-js-env.d.ts"),
+  });
+  expect(checks.find((check) => check.name === "pgschema")).toMatchObject({
+    status: "ok",
+    message: "schema.provider is not configured; DDL ownership is external or unspecified, while dev and verify default to built-in migrations",
+    details: {
+      configuredProvider: null,
+      ddlOwnership: "external-or-unspecified",
+      effectiveDevVerifyProvider: "builtin",
+    },
+  });
+
+  const builtinRoot = root();
+  writeFileSync(
+    join(builtinRoot, "sqlx-js.config.mjs"),
+    'export default { schema: { provider: "builtin" } };\n',
+  );
+  checks = await inspectDoctor({
+    root: builtinRoot,
+    databaseUrl: "",
+    cacheDir: join(builtinRoot, ".sqlx-js"),
+    dtsPath: join(builtinRoot, "sqlx-js-env.d.ts"),
+  });
+  expect(checks.find((check) => check.name === "pgschema")).toMatchObject({
+    status: "ok",
+    message: "schema.provider is explicitly builtin; sqlx-js owns the configured migration workflow",
+    details: {
+      configuredProvider: "builtin",
+      ddlOwnership: "sqlx-js-builtin-migration-workflow",
+      effectiveDevVerifyProvider: "builtin",
+    },
+  });
+
+  const pgschemaRoot = root();
+  writeFileSync(
+    join(pgschemaRoot, "sqlx-js.config.mjs"),
+    `export default { schema: { provider: "pgschema", command: ${JSON.stringify(process.execPath)} } };\n`,
+  );
+  checks = await inspectDoctor({
+    root: pgschemaRoot,
+    databaseUrl: "",
+    cacheDir: join(pgschemaRoot, ".sqlx-js"),
+    dtsPath: join(pgschemaRoot, "sqlx-js-env.d.ts"),
+  });
+  expect(checks.find((check) => check.name === "pgschema")).toMatchObject({
+    status: "ok",
+    details: {
+      configuredProvider: "pgschema",
+      ddlOwnership: "sqlx-js-pgschema-workflow",
+      effectiveDevVerifyProvider: "pgschema",
     },
   });
 });

@@ -72,6 +72,74 @@ test("CLI command help is successful and command-specific", () => {
   }
 });
 
+test("prepare detail modes are human-only and exclude watch mode", () => {
+  const structured = spawnSync(
+    "bun",
+    [binPath, "prepare", "--warnings", "--json"],
+    { encoding: "utf8" },
+  );
+  expect(structured.status).toBe(2);
+  expect(JSON.parse(structured.stdout).diagnostics[0].message).toBe(
+    "--warnings, --verbose, --json, and --jsonl are mutually exclusive",
+  );
+
+  const duplicateDetail = spawnSync(
+    "bun",
+    [binPath, "prepare", "--warnings", "--verbose"],
+    { encoding: "utf8" },
+  );
+  expect(duplicateDetail.status).toBe(2);
+  expect(duplicateDetail.stderr).toContain(
+    "--warnings, --verbose, --json, and --jsonl are mutually exclusive",
+  );
+
+  const watch = spawnSync(
+    "bun",
+    [binPath, "prepare", "--verbose", "--watch"],
+    { encoding: "utf8" },
+  );
+  expect(watch.status).toBe(2);
+  expect(watch.stderr).toContain("--verbose is unnecessary with prepare --watch");
+
+  const warningWatch = spawnSync(
+    "bun",
+    [binPath, "prepare", "--warnings", "--watch"],
+    { encoding: "utf8" },
+  );
+  expect(warningWatch.status).toBe(2);
+  expect(warningWatch.stderr).toContain("--warnings is unnecessary with prepare --watch");
+});
+
+test("default prepare summary preserves fatal phases and source locations", () => {
+  const missingDatabase = spawnSync(
+    "bun",
+    [binPath, "prepare"],
+    { encoding: "utf8", env: { ...process.env, DATABASE_URL: "" } },
+  );
+  expect(missingDatabase.status).toBe(2);
+  expect(missingDatabase.stderr).toContain("connect failed: DATABASE_URL is required for prepare");
+  expect(missingDatabase.stderr).toContain("summary: 0 warnings, 1 error (connect: 1)");
+
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-summary-scan-"));
+  try {
+    writeFileSync(join(root, "a.ts"),
+      "import { sql } from \"@onreza/sqlx-js\";\n"
+      + "const query = \"SELECT 1\";\n"
+      + "await sql(query);\n",
+    );
+    const scan = spawnSync(
+      "bun",
+      [binPath, "prepare", "--check", "--root", root],
+      { encoding: "utf8", env: { ...process.env, DATABASE_URL: "" } },
+    );
+    expect(scan.status).toBe(1);
+    expect(scan.stderr).toContain("scan failed: a.ts:3:11 —");
+    expect(scan.stderr).toContain("summary: 0 warnings, 1 error (scan: 1)");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("diagnostics CLI renders versioned prepare JSON for editors and GitHub", () => {
   const input = JSON.stringify({
     formatVersion: 1,

@@ -81,16 +81,49 @@ export function addFunctionContractDiagnostics(
       message: warning.message,
     };
     diagnostics.push(diagnostic);
-    report(formatPrepareWarning(diagnostic));
+    report(formatPrepareDiagnostic(diagnostic));
   }
 }
 
-export function formatPrepareWarning(diagnostic: PrepareDiagnostic): string {
-  const subject = diagnostic.file
+export function formatPrepareDiagnostic(diagnostic: PrepareDiagnostic): string {
+  const location = diagnostic.file
     ? `${diagnostic.file}${diagnostic.line ? `:${diagnostic.line}:${diagnostic.column ?? 1}` : ""}`
     : diagnostic.functionSignature;
-  return `${diagnostic.phase} warning: ${subject ? `${subject} — ` : ""}${diagnostic.message}`
+  const qualifiers = [
+    diagnostic.queryName ? `[${diagnostic.queryName}]` : "",
+    diagnostic.profile ? `[profile:${diagnostic.profile}]` : "",
+    diagnostic.queryId ? `[query:${diagnostic.queryId}]` : "",
+  ].filter(Boolean).join(" ");
+  const subject = [location, qualifiers].filter(Boolean).join(" ");
+  const label = diagnostic.severity === "warning"
+    ? `${diagnostic.phase} warning`
+    : `${diagnostic.phase} failed`;
+  return `${label}: ${subject ? `${subject} — ` : ""}${diagnostic.message}`
     + `${diagnostic.hint ? `. Hint: ${diagnostic.hint}` : ""}`;
+}
+
+export function formatPrepareDiagnosticCounts(
+  diagnostics: readonly PrepareDiagnostic[],
+): string {
+  const warnings = diagnostics.filter((diagnostic) => diagnostic.severity === "warning");
+  const errors = diagnostics.filter((diagnostic) => diagnostic.severity === "error");
+  return `${formatSeverityCount("warning", warnings)}, ${formatSeverityCount("error", errors)}`;
+}
+
+function formatSeverityCount(
+  severity: "warning" | "error",
+  diagnostics: readonly PrepareDiagnostic[],
+): string {
+  const byPhase = new Map<PrepareDiagnosticPhase, number>();
+  for (const diagnostic of diagnostics) {
+    byPhase.set(diagnostic.phase, (byPhase.get(diagnostic.phase) ?? 0) + 1);
+  }
+  const phases = [...byPhase.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([phase, count]) => `${phase}: ${count}`)
+    .join(", ");
+  const label = diagnostics.length === 1 ? severity : `${severity}s`;
+  return `${diagnostics.length} ${label}${phases ? ` (${phases})` : ""}`;
 }
 
 export function reportQueryDiagnostics(
@@ -108,7 +141,7 @@ export function reportQueryDiagnostics(
       && candidate.column === diagnostic.column
     ) ?? sites[0]!;
     report(
-      `  ${label}: ${formatSite(site)} — ${diagnostic.message}`
+      `  ${label}: ${formatSite(site)}${diagnostic.queryId ? ` [query:${diagnostic.queryId}]` : ""} — ${diagnostic.message}`
       + `${diagnostic.hint ? `. Hint: ${diagnostic.hint}` : ""}`,
     );
   }
