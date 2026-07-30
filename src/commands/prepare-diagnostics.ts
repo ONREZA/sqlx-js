@@ -81,16 +81,103 @@ export function addFunctionContractDiagnostics(
       message: warning.message,
     };
     diagnostics.push(diagnostic);
-    report(formatPrepareWarning(diagnostic));
+    report(formatPrepareDiagnostic(diagnostic));
   }
 }
 
-export function formatPrepareWarning(diagnostic: PrepareDiagnostic): string {
-  const subject = diagnostic.file
+export function formatPrepareDiagnostic(diagnostic: PrepareDiagnostic): string {
+  const location = diagnostic.file
     ? `${diagnostic.file}${diagnostic.line ? `:${diagnostic.line}:${diagnostic.column ?? 1}` : ""}`
     : diagnostic.functionSignature;
-  return `${diagnostic.phase} warning: ${subject ? `${subject} — ` : ""}${diagnostic.message}`
-    + `${diagnostic.hint ? `. Hint: ${diagnostic.hint}` : ""}`;
+  const qualifiers = [
+    diagnostic.queryName ? `[${diagnostic.queryName}]` : "",
+    diagnostic.profile ? `[profile:${diagnostic.profile}]` : "",
+    diagnostic.queryId ? `[query:${diagnostic.queryId}]` : "",
+  ].filter(Boolean).join(" ");
+  const subject = [location, qualifiers].filter(Boolean).join(" ");
+  const label = diagnostic.severity === "warning"
+    ? `${diagnostic.phase} warning`
+    : `${diagnostic.phase} failed`;
+  const metadata = [
+    diagnostic.position === undefined ? "" : `pos ${diagnostic.position}`,
+    diagnostic.code ? `code ${diagnostic.code}` : "",
+  ].filter(Boolean);
+  const query = diagnostic.severity === "error" && diagnostic.query
+    ? `\n  query: ${formatQuerySnippet(diagnostic.query)}`
+    : "";
+  return `${label}: ${subject ? `${subject} — ` : ""}${diagnostic.message}`
+    + `${metadata.length > 0 ? ` (${metadata.join(", ")})` : ""}`
+    + `${diagnostic.hint ? `. Hint: ${diagnostic.hint}` : ""}`
+    + query;
+}
+
+export function formatPrepareDiagnosticCounts(
+  diagnostics: readonly PrepareDiagnostic[],
+): string {
+  const warnings = diagnostics.filter((diagnostic) => diagnostic.severity === "warning");
+  const errors = diagnostics.filter((diagnostic) => diagnostic.severity === "error");
+  return `${formatSeverityCount("warning", warnings)}, ${formatSeverityCount("error", errors)}`;
+}
+
+function formatSeverityCount(
+  severity: "warning" | "error",
+  diagnostics: readonly PrepareDiagnostic[],
+): string {
+  const byPhase = new Map<PrepareDiagnosticPhase, number>();
+  for (const diagnostic of diagnostics) {
+    byPhase.set(diagnostic.phase, (byPhase.get(diagnostic.phase) ?? 0) + 1);
+  }
+  const phases = [...byPhase.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([phase, count]) => `${phase}: ${count}`)
+    .join(", ");
+  const label = diagnostics.length === 1 ? severity : `${severity}s`;
+  return `${diagnostics.length} ${label}${phases ? ` (${phases})` : ""}`;
+}
+
+export function reportPrepareDiagnostics(
+  diagnostics: readonly PrepareDiagnostic[],
+  showWarnings = false,
+  report: (message: string) => void = console.error,
+): void {
+  for (const diagnostic of diagnostics) {
+    if (diagnostic.severity === "warning" && !showWarnings) continue;
+    report(formatPrepareDiagnostic(diagnostic));
+  }
+}
+
+export function formatPrepareTotals(
+  result: { sites: number; entries: number; functions: number; enums: number },
+): string {
+  return `${formatQueryTotals(result.sites, result.entries)}, `
+    + `${result.functions} ${result.functions === 1 ? "function" : "functions"}, `
+    + `${result.enums} ${result.enums === 1 ? "enum" : "enums"}`;
+}
+
+export function formatQueryTotals(sites: number, entries: number): string {
+  return `${formatUniqueQueries(entries)}, ${sites} source ${sites === 1 ? "site" : "sites"}`;
+}
+
+function formatUniqueQueries(count: number): string {
+  return `${count} unique ${count === 1 ? "query" : "queries"}`;
+}
+
+export function withOutputHints(
+  message: string,
+  diagnostics: readonly PrepareDiagnostic[],
+  showWarnings = false,
+): string {
+  const hints = [];
+  if (!showWarnings && diagnostics.some((diagnostic) => diagnostic.severity === "warning")) {
+    hints.push("use --warnings to show warning details");
+  }
+  hints.push("use --verbose for per-query progress");
+  return `${message}; ${hints.length === 1 ? "hint" : "hints"}: ${hints.join("; ")}`;
+}
+
+export function formatQuerySnippet(query: string, max = 80): string {
+  const oneLine = query.replace(/\s+/g, " ").trim();
+  return oneLine.length > max ? oneLine.slice(0, max) + "…" : oneLine;
 }
 
 export function reportQueryDiagnostics(
@@ -108,7 +195,7 @@ export function reportQueryDiagnostics(
       && candidate.column === diagnostic.column
     ) ?? sites[0]!;
     report(
-      `  ${label}: ${formatSite(site)} — ${diagnostic.message}`
+      `  ${label}: ${formatSite(site)}${diagnostic.queryId ? ` [query:${diagnostic.queryId}]` : ""} — ${diagnostic.message}`
       + `${diagnostic.hint ? `. Hint: ${diagnostic.hint}` : ""}`,
     );
   }
@@ -164,10 +251,10 @@ export function inferenceDiagnostics(
 }
 
 export function planningDiagnostic(
-  entry: CacheEntry,
+  validation: CacheEntry["validation"],
   site: QueryCallSite,
 ): PrepareDiagnostic | undefined {
-  if (entry.validation !== "parse-only") return undefined;
+  if (validation !== "parse-only") return undefined;
   return {
     severity: "warning",
     phase: "plan",

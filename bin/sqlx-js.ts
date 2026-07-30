@@ -97,7 +97,7 @@ plan\` or \`migrate run --dry-run\` separately for target deployment drift.
 
 Manage the pinned pgschema tool and target-database deployment plans.
 Use provider-aware \`sqlx-js dev\` and \`sqlx-js verify\` for shadow validation.`,
-  prepare: `usage: sqlx-js prepare [--check | --offline | --verify | --watch] [--json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune]
+  prepare: `usage: sqlx-js prepare [--check | --offline | --verify | --watch] [--warnings | --verbose | --json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune]
 
 Query-artifact engine:
   prepare             regenerate artifacts against DATABASE_URL
@@ -105,6 +105,11 @@ Query-artifact engine:
   prepare --check     verify committed artifacts offline
   prepare --offline   restore generated files from committed cache
   prepare --verify    compare fresh artifacts against a supplied live database
+
+Output:
+  default             compact counts; errors remain expanded
+  --warnings          also show full warning details
+  --verbose           show warnings and per-query progress
 
 For schema-source validation prefer \`sqlx-js dev\` or \`sqlx-js verify\`.`,
   queries: `usage: sqlx-js queries [--json] [--embed <path>] [--root <dir>]
@@ -263,6 +268,8 @@ function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfi
       watch: { type: "boolean" },
       json: { type: "boolean" },
       jsonl: { type: "boolean" },
+      warnings: { type: "boolean" },
+      verbose: { type: "boolean" },
       "no-prune": { type: "boolean" },
       "strict-inference": { type: "boolean" },
     };
@@ -404,13 +411,59 @@ function validateInvocation(): void {
 validateInvocation();
 
 const root = resolve(arg("--root", process.cwd())!);
-function failCiPreflight(message: string): never {
+function prepareMode(): "prepare" | "check" | "offline" | "verify" {
+  return flag("--verify") ? "verify" : flag("--check") ? "check" : flag("--offline") ? "offline" : "prepare";
+}
+
+function printPrepareFailure(
+  message: string,
+  phase: PrepareDiagnosticPhase,
+  location: { file?: string; line?: number; column?: number } = {},
+): void {
+  if (flag("--jsonl")) {
+    console.log(JSON.stringify({
+      formatVersion: 1,
+      event: "error",
+      timestamp: new Date().toISOString(),
+      diagnostic: { severity: "error", phase, message, ...location },
+    }));
+  } else if (flag("--json")) {
+    console.log(JSON.stringify({
+      formatVersion: 1,
+      ok: false,
+      mode: prepareMode(),
+      sites: 0,
+      entries: 0,
+      failures: 1,
+      pruned: 0,
+      functions: 0,
+      enums: 0,
+      diagnostics: [{ severity: "error", phase, message, ...location }],
+    }, null, 2));
+  } else if (!flag("--verbose")) {
+    const locationText = location.file
+      ? `${location.file}${location.line ? `:${location.line}:${location.column ?? 1}` : ""}`
+      : "";
+    const embeddedLocation = locationText ? `sqlx-js: ${locationText} — ` : "";
+    const detail = embeddedLocation && message.startsWith(embeddedLocation)
+      ? message.slice(embeddedLocation.length)
+      : message;
+    console.error(`${phase} failed: ${locationText ? `${locationText} — ` : ""}${detail}`);
+    console.error(`summary: 0 warnings, 1 error (${phase}: 1)`);
+  } else {
+    console.error(message);
+  }
+}
+
+function failPreflight(message: string, phase: PrepareDiagnosticPhase = "config"): never {
   if (cmd === "ci" && flag("--json")) {
     console.log(JSON.stringify({
       formatVersion: 1,
       ok: false,
       results: [{ name: "preflight", ok: false, durationMs: 0, exitCode: 2, stderr: message }],
     }, null, 2));
+  } else if (cmd === "prepare") {
+    printPrepareFailure(message, phase);
   } else {
     console.error(message);
   }
@@ -420,7 +473,7 @@ if (cmd !== "doctor") {
   try {
     assertSupportedRuntime();
   } catch (e) {
-    failCiPreflight((e as Error).message);
+    failPreflight((e as Error).message);
   }
 }
 const needsTypeScript =
@@ -453,7 +506,7 @@ if (needsTypeScript) {
         checks: [{ name: "typescript", status: "error", message: typescriptError }],
       }, null, 2));
     } else {
-      if (cmd === "ci") failCiPreflight(typescriptError);
+      if (cmd === "ci") failPreflight(typescriptError);
       console.error(typescriptError);
     }
     process.exit(2);
@@ -475,7 +528,7 @@ if (needsEnvironment) {
   } catch (e) {
     envError = (e as Error).message;
     if (cmd !== "doctor") {
-      failCiPreflight(envError);
+      failPreflight(envError);
     }
   }
 }
@@ -643,36 +696,15 @@ if (cmd === "init") {
   const prepareWatch = flag("--watch");
   const prepareJson = flag("--json");
   const prepareJsonl = flag("--jsonl");
-  const prepareMode = prepareVerify ? "verify" : prepareCheck ? "check" : prepareOffline ? "offline" : "prepare";
+  const prepareWarnings = flag("--warnings");
+  const prepareVerbose = flag("--verbose");
   const failPrepare = (
     message: string,
     phase: PrepareDiagnosticPhase,
     exitCode = 2,
     location: { file?: string; line?: number; column?: number } = {},
   ): never => {
-    if (prepareJsonl) {
-      console.log(JSON.stringify({
-        formatVersion: 1,
-        event: "error",
-        timestamp: new Date().toISOString(),
-        diagnostic: { severity: "error", phase, message, ...location },
-      }));
-    } else if (prepareJson) {
-      console.log(JSON.stringify({
-        formatVersion: 1,
-        ok: false,
-        mode: prepareMode,
-        sites: 0,
-        entries: 0,
-        failures: 1,
-        pruned: 0,
-        functions: 0,
-        enums: 0,
-        diagnostics: [{ severity: "error", phase, message, ...location }],
-      }, null, 2));
-    } else {
-      console.error(message);
-    }
+    printPrepareFailure(message, phase, location);
     process.exit(exitCode);
   };
   if ([prepareCheck, prepareOffline, prepareVerify, prepareWatch].filter(Boolean).length > 1) {
@@ -683,6 +715,12 @@ if (cmd === "init") {
   }
   if (prepareJson && prepareJsonl) {
     failPrepare("--json and --jsonl are mutually exclusive", "config");
+  }
+  if ([prepareWarnings, prepareVerbose, prepareJson, prepareJsonl].filter(Boolean).length > 1) {
+    failPrepare("--warnings, --verbose, --json, and --jsonl are mutually exclusive", "config");
+  }
+  if ((prepareWarnings || prepareVerbose) && prepareWatch) {
+    failPrepare(`${prepareWarnings ? "--warnings" : "--verbose"} is unnecessary with prepare --watch`, "config");
   }
   if (prepareJsonl && !prepareWatch) {
     failPrepare("--jsonl is only supported by prepare --watch", "config");
@@ -702,6 +740,8 @@ if (cmd === "init") {
     offline: prepareOffline,
     verify: prepareVerify,
     json: prepareJson,
+    warnings: prepareWarnings,
+    verbose: prepareVerbose,
     prune: !flag("--no-prune"),
     strictInference: flag("--strict-inference"),
   };

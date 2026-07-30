@@ -1,3 +1,5 @@
+// Keep prepare modes together so live, offline, and verification paths share
+// one atomic artifact contract.
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -76,12 +78,18 @@ import {
   addFunctionContractDiagnostics,
   executionIntentDiagnostics,
   fatal,
-  formatPrepareWarning,
+  formatPrepareDiagnostic,
+  formatPrepareDiagnosticCounts,
+  formatPrepareTotals,
+  formatQuerySnippet,
+  formatQueryTotals,
   formatSite,
   inferenceDiagnostics,
   planningDiagnostic,
+  reportPrepareDiagnostics,
   reportQueryDiagnostics,
   siteDiagnostic,
+  withOutputHints,
   type PrepareDiagnostic,
 } from "./prepare-diagnostics";
 export {
@@ -100,6 +108,8 @@ export type PrepareOptions = {
   offline?: boolean;
   verify?: boolean;
   json?: boolean;
+  warnings?: boolean;
+  verbose?: boolean;
   prune?: boolean;
   strictInference?: boolean;
 };
@@ -128,11 +138,6 @@ function siteProfile(site: QueryCallSite): string | undefined {
 
 function siteCacheKey(site: QueryCallSite): string {
   return profileFingerprint(siteProfile(site), site.query);
-}
-
-function snippet(query: string, max = 80): string {
-  const oneLine = query.replace(/\s+/g, " ").trim();
-  return oneLine.length > max ? oneLine.slice(0, max) + "…" : oneLine;
 }
 
 function siteUsage(sites: QueryCallSite[]): Pick<CacheEntry, "hasInline" | "inlineQueries" | "filePaths"> {
@@ -407,8 +412,11 @@ export async function prepareOnce(
     diagnostics.push(...entryDiagnostics, ...intentDiagnostics);
     const queryDiagnostics = [...entryDiagnostics, ...intentDiagnostics];
     const queryFailed = reportQueryDiagnostics(queryDiagnostics, item.sites, err);
-    const planDiagnostic = planningDiagnostic(entry, item.sites[0]!);
-    if (planDiagnostic) diagnostics.push(planDiagnostic);
+    const planDiagnostic = planningDiagnostic(entry.validation, item.sites[0]!);
+    if (planDiagnostic) {
+      diagnostics.push(planDiagnostic);
+      err(formatPrepareDiagnostic(planDiagnostic));
+    }
     if (queryFailed) {
       failures++;
       continue;
@@ -452,15 +460,14 @@ export async function prepareOnce(
           ...siteDiagnostic(site),
         });
         err(`  ✗ ${formatSite(site)} — ${message}`);
-        err(`      query: ${snippet(site.query)}`);
+        err(`      query: ${formatQuerySnippet(site.query)}`);
         continue;
       }
-      if (outcome.validation === "parse-only") diagnostics.push({
-        severity: "warning",
-        phase: "plan",
-        message: "statement is outside PostgreSQL's generic planning surface; validation is parse-only",
-        ...siteDiagnostic(site),
-      });
+      const planDiagnostic = planningDiagnostic(outcome.validation, site);
+      if (planDiagnostic) {
+        diagnostics.push(planDiagnostic);
+        err(formatPrepareDiagnostic(planDiagnostic));
+      }
       raw.push({
         fp,
         profile,
@@ -493,7 +500,7 @@ export async function prepareOnce(
       const tail = extras.length > 0 ? ` (${extras.join(", ")})` : "";
       err(`  ✗ ${formatSite(site)} — ${outcome.phase} failed: ${e.message}${tail}`);
       if (e.hint) err(`      hint: ${e.hint}`);
-      err(`      query: ${snippet(site.query)}`);
+      err(`      query: ${formatQuerySnippet(site.query)}`);
     } else {
       diagnostics.push({
         severity: "error",
@@ -502,7 +509,7 @@ export async function prepareOnce(
         ...siteDiagnostic(site),
       });
       err(`  ✗ ${formatSite(site)} — ${outcome.phase} failed: ${(e as Error).message}`);
-      err(`      query: ${snippet(site.query)}`);
+      err(`      query: ${formatQuerySnippet(site.query)}`);
     }
   }
 
@@ -554,7 +561,7 @@ export async function prepareOnce(
         ...siteDiagnostic(site),
       });
       err(`  ✗ ${formatSite(site)} — analyze failed: ${(e as Error).message}`);
-      err(`      query: ${snippet(site.query)}`);
+      err(`      query: ${formatQuerySnippet(site.query)}`);
       continue;
     }
     try {
@@ -569,7 +576,7 @@ export async function prepareOnce(
         ...siteDiagnostic(site),
       });
       err(`  ✗ ${formatSite(site)} — paramMap failed: ${(e as Error).message}`);
-      err(`      query: ${snippet(site.query)}`);
+      err(`      query: ${formatQuerySnippet(site.query)}`);
     }
   }
 
@@ -638,7 +645,7 @@ export async function prepareOnce(
         ...siteDiagnostic(r.sites[0]!),
       });
       err(`  ✗ ${formatSite(r.sites[0]!)} — parameter inference failed: ${(e as Error).message}`);
-      err(`      query: ${snippet(r.sites[0]!.query)}`);
+      err(`      query: ${formatQuerySnippet(r.sites[0]!.query)}`);
       continue;
     }
     const columns: CacheEntry["columns"] = r.fields.map((f, i) => {
@@ -795,10 +802,11 @@ export async function prepareOnce(
 
 export async function runPrepare(opts: PrepareOptions): Promise<void> {
   if (opts.verify) {
+    const compact = opts.json || !opts.verbose;
     const verification = await verifyPrepareArtifacts(
       opts,
-      opts.json ? () => {} : console.log,
-      opts.json ? () => {} : console.error,
+      compact ? () => {} : console.log,
+      compact ? () => {} : console.error,
     );
     if (opts.json) {
       console.log(JSON.stringify({
@@ -808,6 +816,21 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         ...verification.result,
         changed: verification.changed,
       }, null, 2));
+    } else if (!opts.verbose) {
+      reportPrepareDiagnostics(verification.result.diagnostics, opts.warnings);
+      if (verification.changed.length > 0) {
+        console.error("sqlx-js prepare --verify: generated artifacts are stale:");
+        for (const file of verification.changed) console.error(`  ${file}`);
+        console.error("Run `sqlx-js prepare` and commit the regenerated artifacts.");
+      }
+      const message = verification.ok
+        ? `verified ${formatPrepareTotals(verification.result)}; `
+          + `${formatPrepareDiagnosticCounts(verification.result.diagnostics)}; generated artifacts are current`
+        : `verify failed — prepared ${formatPrepareTotals(verification.result)}; `
+          + formatPrepareDiagnosticCounts(verification.result.diagnostics);
+      (verification.ok ? console.log : console.error)(
+        withOutputHints(message, verification.result.diagnostics, opts.warnings),
+      );
     }
     if (!verification.ok) process.exitCode = 1;
     return;
@@ -831,7 +854,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
     } catch (error) {
       throw fatal("scan", error);
     }
-    if (!opts.json) console.log(`scanned: found ${sites.length} sql() call site(s)`);
+    if (!opts.json && opts.verbose) console.log(`scanned: found ${sites.length} sql() call site(s)`);
     const cache = new Cache(opts.cacheDir);
     try {
       assertCacheManifest(opts.cacheDir, prepareConfigHash(userCfg));
@@ -860,9 +883,9 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
           message: "query is not in the offline cache",
           ...siteDiagnostic(site),
         });
-        if (!opts.json) {
+        if (!opts.json && opts.verbose) {
           console.error(`stale: ${formatSite(site)} — query not in cache`);
-          console.error(`       query: ${snippet(query)}`);
+          console.error(`       query: ${formatQuerySnippet(query)}`);
         }
       }
     }
@@ -880,6 +903,15 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
           enums: 0,
           diagnostics,
         }, null, 2));
+      } else if (!opts.verbose) {
+        reportPrepareDiagnostics(diagnostics, opts.warnings);
+        console.error(
+          `${mode} failed — ${formatQueryTotals(
+            sites.length,
+            [...unique.keys()].filter((fp) => cache.has(fp)).length,
+          )}; `
+          + withOutputHints(formatPrepareDiagnosticCounts(diagnostics), diagnostics, opts.warnings),
+        );
       } else {
         console.error(`\nsqlx-js prepare --${mode}: ${diagnostics.length} stale/missing entries. Run \`sqlx-js prepare\` against a live DB.`);
       }
@@ -920,7 +952,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         const entryDiagnostics = inferenceDiagnostics(current, u.sites[0]!, opts.strictInference === true);
         const intentDiagnostics = executionIntentDiagnostics(current, u.sites, opts.strictInference === true);
         diagnostics.push(...entryDiagnostics, ...intentDiagnostics);
-        const planDiagnostic = planningDiagnostic(current, u.sites[0]!);
+        const planDiagnostic = planningDiagnostic(current.validation, u.sites[0]!);
         if (planDiagnostic) diagnostics.push(planDiagnostic);
         if (
           (opts.strictInference && entryDiagnostics.length > 0)
@@ -1028,10 +1060,16 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
             enums: enumCount,
             diagnostics,
           }, null, 2));
+        } else if (!opts.verbose) {
+          reportPrepareDiagnostics(diagnostics, opts.warnings);
+          console.error(
+            `${mode} failed — ${formatQueryTotals(sites.length, entries.length)}; `
+            + withOutputHints(formatPrepareDiagnosticCounts(diagnostics), diagnostics, opts.warnings),
+          );
         } else {
           for (const diagnostic of diagnostics) {
             if (diagnostic.severity === "warning") {
-              console.error(formatPrepareWarning(diagnostic));
+              console.error(formatPrepareDiagnostic(diagnostic));
               continue;
             }
             const location = diagnostic.file
@@ -1077,9 +1115,21 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         enums: enumCount,
         diagnostics,
       }, null, 2));
+    } else if (!opts.verbose) {
+      reportPrepareDiagnostics(diagnostics, opts.warnings);
+      const suffix = opts.offline ? "generated files regenerated" : "generated artifacts are current";
+      console.log(
+        `ok — ${formatPrepareTotals({
+          sites: sites.length,
+          entries: entries.length,
+          functions: functions.length,
+          enums: enumCount,
+        })}; `
+        + withOutputHints(`${formatPrepareDiagnosticCounts(diagnostics)}; ${suffix}`, diagnostics, opts.warnings),
+      );
     } else {
       for (const diagnostic of diagnostics) {
-        console.error(formatPrepareWarning(diagnostic));
+        console.error(formatPrepareDiagnostic(diagnostic));
       }
       const suffix = opts.offline ? ", generated files regenerated" : ", generated artifacts are current";
       console.log(`ok — ${entries.length} unique queries, ${functions.length} function(s), ${enumCount} enum(s)${suffix}`);
@@ -1089,21 +1139,45 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
 
   const session = await openSession(opts);
   try {
+    const compact = opts.json || !opts.verbose;
     const r = await prepareOnce(
       opts,
       session,
-      opts.json ? () => {} : console.log,
-      opts.json ? () => {} : console.error,
+      compact ? () => {} : console.log,
+      compact ? () => {} : console.error,
     );
     if (opts.json) {
       console.log(JSON.stringify({ formatVersion: 1, ok: r.failures === 0, mode: "prepare", ...r }, null, 2));
+    } else if (!opts.verbose) {
+      reportPrepareDiagnostics(r.diagnostics, opts.warnings);
     }
     if (r.failures > 0) {
-      if (!opts.json) console.error(`\n${r.failures} query/queries failed to prepare`);
+      if (!opts.json && !opts.verbose) {
+        console.error(
+          withOutputHints(
+            `prepare failed — ${formatPrepareTotals(r)}; ${formatPrepareDiagnosticCounts(r.diagnostics)}`,
+            r.diagnostics,
+            opts.warnings,
+          ),
+        );
+      } else if (!opts.json) {
+        console.error(`\n${r.failures} query/queries failed to prepare`);
+      }
       process.exitCode = 1;
       return;
     }
-    if (!opts.json) {
+    if (!opts.json && !opts.verbose) {
+      const enumOutput = enumCatalogOutputPath(opts.root, session.userCfg, opts.enumOutputPath);
+      console.log(
+        withOutputHints(
+          `prepared ${formatPrepareTotals(r)}; `
+          + `${formatPrepareDiagnosticCounts(r.diagnostics)} → ${opts.dtsPath}`
+          + `${enumOutput ? `, ${enumOutput}` : ""}`,
+          r.diagnostics,
+          opts.warnings,
+        ),
+      );
+    } else if (!opts.json) {
       const enumOutput = enumCatalogOutputPath(opts.root, session.userCfg, opts.enumOutputPath);
       console.log(
         `\nprepared ${r.entries} unique query/queries, ${r.functions} function(s), ${r.enums} enum(s) `

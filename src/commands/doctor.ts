@@ -446,26 +446,35 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
       const staticExecutionNote = definitions.length > 0 && executions.length === 0
         ? "; no direct execution sites were statically observable"
         : "";
+      const sourceSiteNote = `; discovered ${parameterized.length} parameterized source `
+        + `${parameterized.length === 1 ? "site" : "sites"} `
+        + `(${definitions.length} definition ${definitions.length === 1 ? "site" : "sites"}, `
+        + `${executions.length} execution ${executions.length === 1 ? "site" : "sites"})`;
       const status = artifactError || missing.length > 0
         ? "error"
         : fallbackLocations.length > 0
           ? "warning"
           : "ok";
+      let message: string;
+      if (artifactError) {
+        message = `cannot validate descriptor coverage: ${artifactError}`;
+      } else if (parameterized.length === 0) {
+        message = "no parameterized queries require runtime descriptors";
+      } else if (missing.length > 0) {
+        message = `${covered.length}/${queryTargets.size} unique query/profile contracts are present in the runtime descriptor; `
+          + `${missing.length} are absent${sourceSiteNote}`;
+      } else if (fallbackLocations.length > 0) {
+        message = `${covered.length}/${queryTargets.size} unique query/profile contracts are present in the runtime descriptor; `
+          + `${fallbackLocations.length} execution site(s) remain adaptive or cannot be classified`
+          + sourceSiteNote;
+      } else {
+        message = `${covered.length}/${queryTargets.size} unique query/profile contracts are present in the runtime descriptor`
+          + sourceSiteNote + staticExecutionNote;
+      }
       checks.push({
         name: "descriptorCoverage",
         status,
-        message: artifactError
-          ? `cannot validate descriptor coverage: ${artifactError}`
-          : parameterized.length === 0
-          ? "no parameterized queries require runtime descriptors"
-          : missing.length > 0
-            ? `${covered.length}/${queryTargets.size} parameterized query contracts are present in the runtime descriptor; `
-              + `${missing.length} are absent`
-          : fallbackLocations.length === 0
-            ? `${covered.length}/${queryTargets.size} parameterized query contracts are present in the runtime descriptor`
-              + staticExecutionNote
-            : `${covered.length}/${queryTargets.size} parameterized query contracts are present in the runtime descriptor; `
-              + `${fallbackLocations.length} execution site(s) remain adaptive or cannot be classified`,
+        message,
         details: {
           parameterized: parameterized.length,
           queryContracts: queryTargets.size,
@@ -478,6 +487,17 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
           unknown: unknown.length,
           locations: fallbackLocations,
           missingLocations,
+          countSemantics: {
+            parameterized: "parameterized source sites before query/profile deduplication",
+            queryContracts: "unique SQL fingerprint and connection-profile contracts",
+            descriptor: "unique query/profile contracts present in the runtime descriptor",
+            descriptorConfigured: "direct execution source sites statically configured for descriptors",
+            missing: "unique query/profile contracts absent from the runtime descriptor",
+            definitions: "reusable parameterized definition source sites",
+            executionSites: "direct parameterized execution source sites",
+            adaptive: "direct execution source sites explicitly configured for adaptive execution",
+            unknown: "direct execution source sites whose execution mode cannot be classified statically",
+          },
           ...(artifactError ? { artifactError } : {}),
         },
       });
@@ -650,9 +670,38 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
     checks.push({ name: "pgschema", status: "warning", message: "schema-provider check skipped because config failed to load" });
   } else if (config.schema?.provider === "pgschema") {
     const probe = probePgschema(opts.root, config);
-    checks.push({ name: "pgschema", status: probe.ok ? "ok" : "error", message: probe.message });
+    checks.push({
+      name: "pgschema",
+      status: probe.ok ? "ok" : "error",
+      message: probe.message,
+      details: {
+        configuredProvider: "pgschema",
+        ddlOwnership: "sqlx-js-pgschema-workflow",
+        effectiveDevVerifyProvider: "pgschema",
+      },
+    });
+  } else if (config.schema?.provider === "builtin") {
+    checks.push({
+      name: "pgschema",
+      status: "ok",
+      message: "schema.provider is explicitly builtin; sqlx-js owns the configured migration workflow",
+      details: {
+        configuredProvider: "builtin",
+        ddlOwnership: "sqlx-js-builtin-migration-workflow",
+        effectiveDevVerifyProvider: "builtin",
+      },
+    });
   } else {
-    checks.push({ name: "pgschema", status: "ok", message: "built-in migration provider is active" });
+    checks.push({
+      name: "pgschema",
+      status: "ok",
+      message: "schema.provider is not configured; DDL ownership is external or unspecified, while dev and verify default to built-in migrations",
+      details: {
+        configuredProvider: null,
+        ddlOwnership: "external-or-unspecified",
+        effectiveDevVerifyProvider: "builtin",
+      },
+    });
   }
 
   return checks;

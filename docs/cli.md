@@ -22,7 +22,7 @@ Common syntax:
 sqlx-js dev [--strict-inference] [--shadow-url <url>]
 sqlx-js verify [--strict-inference] [--shadow-url <url>]
 sqlx-js ci [--json]
-sqlx-js prepare [--watch | --check | --offline | --verify]
+sqlx-js prepare [--watch | --check | --offline | --verify] [--warnings | --verbose]
 sqlx-js migrate add|run|info|check|revert|squash|archive
 sqlx-js pgschema install|plan|apply
 sqlx-js snapshot dump|check
@@ -49,6 +49,8 @@ Regular `prepare` describes and plans queries across a small connection pool (de
 | `--migrations <dir>`  | Root-relative built-in migrations directory for `migrate`, `dev`, and `verify` (default: `<root>/migrations`). |
 | `--dry-run`           | For `migrate run` / `migrate revert`: validate without applying to the target DB.   |
 | `--json`              | Machine-readable prepare diagnostics, doctor output, migration inspection and dry-runs. |
+| `--warnings`          | Show full warning details while keeping compact prepare output. |
+| `--verbose`           | Show per-query prepare progress. Compact human output is the default for prepare/check/offline/verify. |
 | `--embed <path>`      | For `queries`: write a deterministic TypeScript map of referenced external SQL files. |
 | `--jsonl`             | Versioned streaming events for `prepare --watch`.                                     |
 | `--strict-inference`  | Fail prepare/dev/verify when nullability degrades, a generated query type contains unresolved `unknown`, or plain `sql()` discards a command result. Intentional `JsonParameter<unknown>` wrappers remain accepted. |
@@ -67,6 +69,20 @@ Flags that take a value accept both `--flag value` and `--flag=value` forms.
 
 Prepare and doctor JSON use `formatVersion: 1`. Prepare diagnostics include a stable phase plus root-relative file, 1-based line/column, query ID/name, connection profile, PostgreSQL code/position/hint when available, and the query text. Doctor's `rls` check contains per-profile role flags, accessible RLS tables, grants, applicable policies, owner-bypass state, missing permissive-policy commands, and structured issues. Degraded inference and generated `unknown` query types appear as warnings by default; `--strict-inference` promotes them to errors. This is intended for CI annotations and editor integrations; stdout contains one JSON document and human progress is suppressed. `prepare --watch --jsonl` emits one `start`, `diagnostic`, `prepared`, `error`, `watching`, or `stopping` event per line so an editor can consume diagnostics without waiting for the watch process to exit. Fatal `error` events include the same structured `diagnostic` object as CLI preflight failures, preserving the prepare phase and source location when available.
 
+Prepare uses compact human output by default. It omits per-query success/reuse
+lines and warning details, while errors remain expanded. Completed runs end
+with source-site and unique-query counts, counts grouped by diagnostic phase,
+and hints for the available detail levels. Add `--warnings` to print every
+warning while retaining compact progress, or `--verbose` to restore the full
+per-query stream including warnings. Query diagnostics include their source
+location, name/profile when available, and query ID; function and project
+diagnostics retain their function signature or artifact subject. Inspect a
+reported query with
+`sqlx-js queries explain <query-id>`. Compact output preserves normal exit
+codes and artifact behavior. `--warnings` and `--verbose` cannot be combined
+with each other or with `--json`/`--jsonl`; watch mode is already streaming and
+does not accept them.
+
 `queries --json` is database-free and read-only. It emits `formatVersion: 1` inventory entries with `queryId`, connection profiles, optional definition names, cardinalities, root-relative call sites, SQL file paths, `current`/`stale`/`missing` cache status, and `planned`/`parse-only` validation when cached, plus orphaned cache IDs. Config, scan, cache, and embed failures use versioned structured diagnostics with source location when available. Adding `--embed` writes the external-SQL module only after a successful scan.
 
 `queries explain <query-id>` reads committed cache artifacts and reports result
@@ -74,7 +90,23 @@ sources, source constraints, every DML and predicate target for parameters,
 nullability decisions, and actionable hints. It does not connect to PostgreSQL.
 `doctor` separately reports descriptor coverage for parameterized runtime call
 sites, lists adaptive or statically unclassified locations, and errors when a
-descriptor-configured query is missing from the artifact.
+descriptor-configured query is missing from the artifact. Its coverage
+denominator is the number of unique SQL-fingerprint/connection-profile
+contracts. `parameterized` counts source sites before that deduplication,
+`definitions` counts reusable definition sites, and `executionSites` counts
+direct execution sites, so those values need not equal `queryContracts`.
+`descriptor` and `missing` count unique contracts, while
+`descriptorConfigured`, `adaptive`, and `unknown` count direct execution
+sites. The JSON `countSemantics` object records these units alongside the
+values.
+
+Schema-provider diagnostics distinguish ownership from command availability.
+An explicit `schema.provider: "builtin"` or `"pgschema"` selects the
+sqlx-js-managed schema workflow. When the field is absent, doctor reports DDL
+ownership as external or unspecified. `dev` and `verify` still default to the
+built-in migration workflow, but that operational default is not presented as
+declared DDL ownership. Structured details expose the configured provider,
+declared ownership, and effective `dev`/`verify` provider separately.
 
 `DATABASE_URL` must be set for any command that touches the application database or auto-creates a shadow database. `SHADOW_ADMIN_DATABASE_URL` can point at a maintenance/admin database when the application user cannot `CREATE DATABASE`; `SHADOW_DATABASE_URL` can point at a pre-created disposable shadow database. The internal wire client understands `sslmode`, `sslrootcert`, `sslcert`, `sslkey`, `application_name`, `options` (PostgreSQL startup options such as `-c search_path=app,public`), `connect_timeout` (seconds), and `statement_timeout` (milliseconds). Unqualified relations are resolved using the prepare session's real `search_path`; they are not assumed to live in `public`.
 
