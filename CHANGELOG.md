@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.0](https://github.com/ONREZA/sqlx-js/compare/v0.24.1...v0.25.0) (2026-07-30)
+
+
+### Features
+
+* **cli:** clarify diagnostic output ([#57](https://github.com/ONREZA/sqlx-js/issues/57)) ([e43c911](https://github.com/ONREZA/sqlx-js/commit/e43c911145826e873d3b814845bf0e9effa3831b))
+
 ## [0.24.1](https://github.com/ONREZA/sqlx-js/compare/v0.24.0...v0.24.1) (2026-07-29)
 
 
