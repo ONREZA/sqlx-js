@@ -1165,6 +1165,12 @@ export default {
       phase: "plan",
       message: expect.stringContaining("parse-only"),
     }));
+    const verbose = prepareRoot(root, ["--verbose"]);
+    expect(verbose.code, verbose.stderr).toBe(0);
+    expect(verbose.stderr.match(/plan warning:/g)).toHaveLength(2);
+    expect(verbose.stderr).toContain(
+      "statement is outside PostgreSQL's generic planning surface; validation is parse-only",
+    );
     const entries = queryCacheFiles(root).map((cacheFile) =>
       JSON.parse(readFileSync(join(root, ".sqlx-js", cacheFile), "utf8")) as { validation?: string });
     expect(entries).toHaveLength(2);
@@ -1340,6 +1346,8 @@ export default {
     expect(failed.stderr).toMatch(
       /describe failed: queries\.ts:3:\d+ \[query:[0-9a-f]{16}\] — relation "tmp_summary_missing_relation" does not exist/,
     );
+    expect(failed.stderr).toContain("code 42P01");
+    expect(failed.stderr).toContain("query: SELECT * FROM tmp_summary_missing_relation");
     expect(failed.stderr).toContain("prepare failed — 0 unique queries");
   });
 

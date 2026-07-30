@@ -83,6 +83,21 @@ test("summary diagnostics expose query drill-down and aggregate phases", () => {
     "inference warning: queries.ts:4:3 [find-users] [profile:api] [query:0123456789abcdef] — "
       + "result column resolved to unknown",
   );
+  expect(formatPrepareDiagnostic({
+    severity: "error",
+    phase: "describe",
+    message: "relation does not exist",
+    file: "queries.ts",
+    line: 8,
+    column: 5,
+    query: "SELECT *\nFROM missing_relation",
+    queryId: "fedcba9876543210",
+    code: "42P01",
+    position: 15,
+  })).toBe(
+    "describe failed: queries.ts:8:5 [query:fedcba9876543210] — relation does not exist (pos 15, code 42P01)\n"
+      + "  query: SELECT * FROM missing_relation",
+  );
   expect(formatPrepareDiagnosticCounts(diagnostics)).toBe(
     "2 warnings (inference: 1, intent: 1), 1 error (cache: 1)",
   );

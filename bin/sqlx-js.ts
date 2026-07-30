@@ -441,10 +441,14 @@ function printPrepareFailure(
       diagnostics: [{ severity: "error", phase, message, ...location }],
     }, null, 2));
   } else if (!flag("--verbose")) {
-    const subject = location.file
-      ? `${location.file}${location.line ? `:${location.line}:${location.column ?? 1}` : ""} — `
+    const locationText = location.file
+      ? `${location.file}${location.line ? `:${location.line}:${location.column ?? 1}` : ""}`
       : "";
-    console.error(`${phase} failed: ${subject}${message}`);
+    const embeddedLocation = locationText ? `sqlx-js: ${locationText} — ` : "";
+    const detail = embeddedLocation && message.startsWith(embeddedLocation)
+      ? message.slice(embeddedLocation.length)
+      : message;
+    console.error(`${phase} failed: ${locationText ? `${locationText} — ` : ""}${detail}`);
     console.error(`summary: 0 warnings, 1 error (${phase}: 1)`);
   } else {
     console.error(message);

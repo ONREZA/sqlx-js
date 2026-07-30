@@ -134,6 +134,7 @@ test("default prepare summary preserves fatal phases and source locations", () =
     );
     expect(scan.status).toBe(1);
     expect(scan.stderr).toContain("scan failed: a.ts:3:11 —");
+    expect(scan.stderr).not.toContain("a.ts:3:11 — sqlx-js: a.ts:3:11");
     expect(scan.stderr).toContain("summary: 0 warnings, 1 error (scan: 1)");
   } finally {
     rmSync(root, { recursive: true, force: true });
