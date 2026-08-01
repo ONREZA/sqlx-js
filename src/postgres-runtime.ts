@@ -145,7 +145,6 @@ function lifecycleErrorDetails(error: unknown): {
   errorCode?: string;
   databaseError?: {
     sqlstate: string;
-    message: string;
     severity?: string;
   };
 } {
@@ -159,7 +158,6 @@ function lifecycleErrorDetails(error: unknown): {
       errorCode: error.code,
       databaseError: {
         sqlstate: error.code,
-        message: error.message,
         ...(error.severity ? { severity: error.severity } : {}),
       },
     };

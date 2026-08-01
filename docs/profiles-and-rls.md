@@ -222,9 +222,10 @@ Query lifecycle events intentionally omit SQL text and parameters.
 `onQueryStart` fires before codec bootstrap. `onQueryError` reports admitted
 queries, readiness checks, and transactions that fail after lifecycle start,
 with `phase` and `outcome`; transport/TLS failures expose only a safe error name
-and code, while PostgreSQL errors additionally preserve SQLSTATE, severity, and
-the server message. It never includes a connection URL, credentials, SQL
-parameters, or certificate objects. `onQueryTimeout` reports the stable ID,
+and code, while PostgreSQL errors additionally preserve SQLSTATE and severity.
+The server message is omitted because PostgreSQL may include parameter values in it.
+It never includes a connection URL, credentials, SQL parameters, or certificate
+objects. `onQueryTimeout` reports the stable ID,
 generation, phase, and outcome while the managed runtime cancels the query and
 retires the poisoned generation. `onClientStateChange` reports `healthy`,
 `poisoned`, `recycling`, `failed`, `closing`, and `closed` transitions.

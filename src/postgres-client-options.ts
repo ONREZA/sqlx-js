@@ -34,7 +34,6 @@ export type QueryErrorEvent = QueryStartEvent & {
   errorCode?: string;
   databaseError?: {
     sqlstate: string;
-    message: string;
     severity?: string;
   };
 };
