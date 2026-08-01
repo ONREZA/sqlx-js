@@ -863,10 +863,10 @@ test("lifecycle failures discard unsafe user-controlled names and codes", async 
   await db.close({ graceMs: 0, forceAfterMs: 0 });
 });
 
-test("database lifecycle failures preserve SQLSTATE and server message", async () => {
+test("database lifecycle failures preserve safe metadata without the server message", async () => {
   const databaseError = new PgError({
-    C: "42501",
-    M: "permission denied for table accounts",
+    C: "22P02",
+    M: "invalid input syntax for type integer: \"customer-token=secret\"",
     S: "ERROR",
   });
   const errors: unknown[] = [];
@@ -881,13 +881,13 @@ test("database lifecycle failures preserve SQLSTATE and server message", async (
     phase: "execution",
     outcome: "unknown",
     errorName: "PgError",
-    errorCode: "42501",
+    errorCode: "22P02",
     databaseError: {
-      sqlstate: "42501",
-      message: "permission denied for table accounts",
+      sqlstate: "22P02",
       severity: "ERROR",
     },
   })]);
+  expect(JSON.stringify(errors)).not.toContain("customer-token=secret");
   await db.close({ graceMs: 0, forceAfterMs: 0 });
 });
 
