@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.26.0](https://github.com/ONREZA/sqlx-js/compare/v0.25.0...v0.26.0) (2026-08-02)
+
+
+### Features
+
+* **cli:** mark generated artifacts ([3826c5e](https://github.com/ONREZA/sqlx-js/commit/3826c5ebf48cbf1543cb9a161a6efc8d0e5f702a))
+
+
+### Bug Fixes
+
+* **runtime:** redact database messages from lifecycle events ([5cab1fb](https://github.com/ONREZA/sqlx-js/commit/5cab1fb5dbb033d17fbb956a6cfacc1672ce2da8))
+
 ## [0.25.0](https://github.com/ONREZA/sqlx-js/compare/v0.24.1...v0.25.0) (2026-07-30)
 
 
