@@ -29,6 +29,8 @@ Read [the CI gate map](references/gates.md) before changing a pipeline.
 - `prepare --verify` compares against a specifically supplied live database and
   does not write the worktree.
 - Commit generated declarations, cache, and configured enum output.
+- Keep `doctor --json` read-only in CI; apply `doctor --fix` locally and commit
+  the resulting `.gitattributes` change.
 - Exclude generated artifacts from formatters while keeping TypeScript outputs
   in the type-check.
 - Do not expose database credentials in logs or command arguments.

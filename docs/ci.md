@@ -16,7 +16,27 @@ deployment drift. It never writes generated artifacts or changes the target
 database. `--json` returns a versioned per-step report.
 
 Commit the generated `sqlx-js-env.d.ts`, `.sqlx-js/` cache directory including
-`runtime-descriptors.json`, and configured enum catalog output to your repo. In CI:
+`runtime-descriptors.json`, and configured enum catalog output to your repo.
+
+```gitattributes
+.sqlx-js/** linguist-generated
+/sqlx-js-env.d.ts linguist-generated
+# Add the configured enumCatalog.output when enabled.
+src/database/db-enums.ts linguist-generated
+```
+
+The leading `/` anchors a root-level generated file instead of matching the
+same basename recursively in nested directories.
+
+`init` adds these GitHub-compatible generated-file markers for new projects.
+For an existing project, `doctor` reports missing rules as fixable and
+`doctor --fix` appends them to the nearest project or repository
+`.gitattributes` without replacing existing attributes. Doctor includes the
+configured enum catalog output and honors canonical rules in a containing
+monorepo. The files remain visible to local Git and can still be expanded
+during review.
+
+In CI:
 
 ```yaml
 - run: bun install

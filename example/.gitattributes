@@ -1,0 +1,4 @@
+# sqlx-js generated artifacts
+.sqlx-js/** linguist-generated
+/sqlx-js-env.d.ts linguist-generated
+/db-enums.ts linguist-generated

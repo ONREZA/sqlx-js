@@ -606,6 +606,16 @@ test("doctor checks the configured enum catalog output", async () => {
     status: "error",
     message: expect.stringContaining("generated enum catalog not found"),
   });
+  expect(checks.find((check) => check.name === "gitAttributes")).toMatchObject({
+    status: "warning",
+    details: {
+      missing: [
+        ".sqlx-js/** linguist-generated",
+        "/sqlx-js-env.d.ts linguist-generated",
+        "/db-enums.ts linguist-generated",
+      ],
+    },
+  });
 
   writeFileSync(join(dir, "db-enums.ts"), "export {};\n");
   checks = await inspectDoctor({

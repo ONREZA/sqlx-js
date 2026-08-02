@@ -1244,6 +1244,7 @@ export default {
       "config",
       "env",
       "cache",
+      "gitAttributes",
       "tsconfig",
       "descriptorCoverage",
       "database",
@@ -1255,6 +1256,27 @@ export default {
     expect(payload.checks.find((check) => check.name === "permissions")?.details).toMatchObject({
       schemaUsage: true,
       createDatabase: true,
+    });
+    expect(payload.checks.find((check) => check.name === "gitAttributes")).toMatchObject({
+      status: "warning",
+      fixable: true,
+    });
+
+    const fixed = doctor(["--json", "--fix"]);
+    expect(fixed.code).toBe(0);
+    const fixedPayload = JSON.parse(fixed.stdout) as {
+      ok: boolean;
+      checks: { name: string; status: string; details?: Record<string, unknown> }[];
+    };
+    expect(fixedPayload.ok).toBe(true);
+    expect(fixedPayload.checks.find((check) => check.name === "gitAttributes")).toMatchObject({
+      status: "ok",
+      details: {
+        fixed: [
+          ".sqlx-js/** linguist-generated",
+          "/sqlx-js-env.d.ts linguist-generated",
+        ],
+      },
     });
   });
 
@@ -3187,6 +3209,7 @@ export default {
       onClientStateChange: ({ from, to }) => transitions.push(`${from}->${to}`),
     });
     try {
+      await db.ready({ timeoutMs: 1_000 });
       let timeoutError: unknown;
       try {
         await db.sql("SELECT pg_sleep(1)");

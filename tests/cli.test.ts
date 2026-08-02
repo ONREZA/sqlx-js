@@ -42,7 +42,10 @@ test("CLI command help is successful and command-specific", () => {
     { args: ["init"], expected: ["usage: sqlx-js init", "without replacing"] },
     { args: ["dev"], expected: ["usage: sqlx-js dev", "Writes worktree: yes"] },
     { args: ["verify"], expected: ["usage: sqlx-js verify", "Writes worktree: no"] },
-    { args: ["doctor"], expected: ["usage: sqlx-js doctor", "shadow permissions"] },
+    {
+      args: ["doctor"],
+      expected: ["usage: sqlx-js doctor", "shadow permissions", "only with --fix"],
+    },
     { args: ["ci"], expected: ["usage: sqlx-js ci", "provider-aware"] },
     { args: ["prepare"], expected: ["usage: sqlx-js prepare", "Query-artifact engine"] },
     { args: ["queries"], expected: ["usage: sqlx-js queries", "without a database"] },
@@ -242,6 +245,11 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
     expect(existsSync(join(root, "db.ts"))).toBe(true);
     expect(readFileSync(join(root, "db.ts"), "utf8")).toContain("queryDescriptors");
     expect(existsSync(join(root, ".sqlx-js/runtime-descriptors.json"))).toBe(true);
+    expect(readFileSync(join(root, ".gitattributes"), "utf8")).toBe(
+      "# sqlx-js generated artifacts\n" +
+      ".sqlx-js/** linguist-generated\n" +
+      "/sqlx-js-env.d.ts linguist-generated\n",
+    );
     expect(readFileSync(join(root, "sqlx-js.config.ts"), "utf8")).toContain("defineConfig");
     const tsconfig = JSON.parse(readFileSync(join(root, "tsconfig.json"), "utf8"));
     expect(tsconfig.include).toContain("sqlx-js-env.d.ts");
@@ -269,6 +277,92 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
     });
     expect(r2.status).toBe(0);
     expect(r2.stdout).toContain("left unchanged");
+    expect(readFileSync(join(root, ".gitattributes"), "utf8").match(/linguist-generated/g)).toHaveLength(2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI doctor --fix adds generated Git attributes to an existing project", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-doctor-fix-"));
+  try {
+    writeFileSync(join(root, ".gitattributes"), "*.ts text\n");
+    writeFileSync(join(root, "sqlx-js.config.mjs"), `export default {
+      enumCatalog: { output: "db-enums.ts", schemas: ["public"] },
+    };\n`);
+    const diagnosis = spawnSync(
+      "bun",
+      [binPath, "doctor", "--root", root, "--json"],
+      { encoding: "utf8", env: { ...process.env, DATABASE_URL: "" } },
+    );
+    expect(diagnosis.status).toBe(1);
+    const diagnosisPayload = JSON.parse(diagnosis.stdout) as {
+      checks: Array<{ name: string; status: string; fixable?: boolean }>;
+    };
+    expect(diagnosisPayload.checks.find((check) => check.name === "gitAttributes")).toMatchObject({
+      status: "warning",
+      fixable: true,
+    });
+    expect(readFileSync(join(root, ".gitattributes"), "utf8")).toBe("*.ts text\n");
+
+    const result = spawnSync(
+      "bun",
+      [binPath, "doctor", "--root", root, "--json", "--fix"],
+      { encoding: "utf8", env: { ...process.env, DATABASE_URL: "" } },
+    );
+    expect(result.status).toBe(1);
+    const payload = JSON.parse(result.stdout) as {
+      checks: Array<{
+        name: string;
+        status: string;
+        fixable?: boolean;
+        details?: { fixed?: string[] };
+      }>;
+    };
+    expect(payload.checks.find((check) => check.name === "gitAttributes")).toMatchObject({
+      status: "ok",
+      details: {
+        fixed: [
+          ".sqlx-js/** linguist-generated",
+          "/sqlx-js-env.d.ts linguist-generated",
+          "/db-enums.ts linguist-generated",
+        ],
+      },
+    });
+    expect(readFileSync(join(root, ".gitattributes"), "utf8")).toBe(
+      "*.ts text\n\n" +
+      "# sqlx-js generated artifacts\n" +
+      ".sqlx-js/** linguist-generated\n" +
+      "/sqlx-js-env.d.ts linguist-generated\n" +
+      "/db-enums.ts linguist-generated\n",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI doctor keeps Git attribute failures machine-readable", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-doctor-attributes-error-"));
+  try {
+    mkdirSync(join(root, ".gitattributes"));
+    for (const args of [[], ["--fix"]]) {
+      const result = spawnSync(
+        "bun",
+        [binPath, "doctor", "--root", root, "--json", ...args],
+        { encoding: "utf8", env: { ...process.env, DATABASE_URL: "" } },
+      );
+      expect(result.status).toBe(1);
+      expect(result.stderr).toBe("");
+      const payload = JSON.parse(result.stdout) as {
+        ok: boolean;
+        checks: Array<{ name: string; status: string; message: string }>;
+      };
+      expect(payload.ok).toBe(false);
+      expect(payload.checks.find((check) => check.name === "gitAttributes")).toMatchObject({
+        status: "error",
+        message: expect.stringContaining(args.length ? "cannot update" : "cannot inspect"),
+      });
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

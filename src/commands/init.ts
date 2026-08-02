@@ -1,10 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import {
   CACHE_FORMAT_VERSION,
   GENERATOR_REVISION,
   RUNTIME_DESCRIPTOR_FORMAT_VERSION,
 } from "../artifact-versions";
+import { ensureGeneratedGitAttributes } from "../generated-git-attributes";
 import { DEFAULT_TEMPORAL_POLICY } from "../temporal";
 
 const CONFIG_TEMPLATE = `import { defineConfig } from "@onreza/sqlx-js";
@@ -147,6 +148,14 @@ export function runInit(opts: InitOptions): void {
   ensureFile("sqlx-js-env.d.ts", DTS_TEMPLATE);
   ensureFile("db.ts", DATABASE_TEMPLATE);
   ensureFile(".sqlx-js/runtime-descriptors.json", RUNTIME_DESCRIPTOR_TEMPLATE);
+  const gitAttributes = ensureGeneratedGitAttributes(opts.root);
+  const gitAttributesLabel = relative(opts.root, gitAttributes.path).replaceAll("\\", "/")
+    || ".gitattributes";
+  if (gitAttributes.changed) {
+    (gitAttributes.created ? created : updated).push(gitAttributesLabel);
+  } else {
+    skipped.push(gitAttributesLabel);
+  }
 
   const updateJson = (rel: string, mutate: (value: Record<string, unknown>) => boolean) => {
     const full = join(opts.root, rel);

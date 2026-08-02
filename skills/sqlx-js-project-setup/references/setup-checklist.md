@@ -31,7 +31,9 @@ Use Bun equivalents where appropriate.
 4. Run `sqlx-js dev --strict-inference` for provider-owned schema development,
    or live `prepare --strict-inference` for query-only setup.
 5. Run TypeScript.
-6. Inspect and commit generated artifacts.
+6. Run `sqlx-js doctor --fix` locally when generated-file attributes are
+   missing.
+7. Inspect and commit generated artifacts together with `.gitattributes`.
 
 ## Root alignment
 

@@ -32,5 +32,7 @@ existing project.
   source.
 - Keep `.env` out of version control; commit `.env.example` without secrets.
 - Commit `sqlx-js-env.d.ts`, `.sqlx-js/`, and configured generated enum output.
+- Keep the generated-file markers added by `init`; for an existing project,
+  apply missing markers locally with `sqlx-js doctor --fix` before committing.
 - Use `sqlx-js-query-api` after setup and `sqlx-js-schema-workflows` for
   ongoing DDL changes.

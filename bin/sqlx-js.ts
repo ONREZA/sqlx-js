@@ -47,7 +47,7 @@ schema ownership:
   sqlx-js pgschema install|plan|apply
 
 inspection and generated artifacts:
-  sqlx-js doctor [--root <dir>] [--dts <path>] [--json]
+  sqlx-js doctor [--root <dir>] [--dts <path>] [--json] [--fix]
   sqlx-js queries [--json] [--embed <path>] [--root <dir>]
   sqlx-js queries explain <query-id> [--json] [--root <dir>]
   sqlx-js snapshot dump|check
@@ -81,10 +81,15 @@ snapshot exists, verify it against the same shadow database.
 
 Writes worktree: no
 Changes target database: no`,
-  doctor: `usage: sqlx-js doctor [--root <dir>] [--dts <path>] [--json]
+  doctor: `usage: sqlx-js doctor [--root <dir>] [--dts <path>] [--json] [--fix]
 
 Inspect runtime, config, environment, generated artifacts, PostgreSQL
-connectivity and shadow permissions, runtime types, and pgschema availability.`,
+connectivity and shadow permissions, runtime types, and pgschema availability.
+
+--fix adds missing linguist-generated rules to .gitattributes.
+
+Writes worktree: only with --fix
+Changes target database: no`,
   ci: `usage: sqlx-js ci [--root <dir>] [--dts <path>] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--migrations <dir>]
 
 Run provider-aware \`verify\`, including the default schema snapshot when
@@ -248,7 +253,14 @@ function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfi
       ...(command === "dev" ? { "no-prune": { type: "boolean" } } : {}),
     };
   }
-  if (command === "doctor") return { ...ROOT_OPTIONS, dts: { type: "string" }, json: { type: "boolean" } };
+  if (command === "doctor") {
+    return {
+      ...ROOT_OPTIONS,
+      dts: { type: "string" },
+      json: { type: "boolean" },
+      fix: { type: "boolean" },
+    };
+  }
   if (command === "ci") return {
     ...ROOT_OPTIONS,
     json: { type: "boolean" },
@@ -643,7 +655,15 @@ if (cmd === "init") {
 } else if (cmd === "doctor") {
   const { runDoctor } = await import("../src/commands/doctor");
   try {
-    await runDoctor({ root, databaseUrl, cacheDir, dtsPath, json: flag("--json"), envError });
+    await runDoctor({
+      root,
+      databaseUrl,
+      cacheDir,
+      dtsPath,
+      json: flag("--json"),
+      fix: flag("--fix"),
+      envError,
+    });
   } catch (error) {
     failCommand(error);
   }

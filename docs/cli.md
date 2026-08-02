@@ -14,7 +14,7 @@ The command hierarchy follows ownership rather than implementation details:
 | `pgschema` | Managed pgschema tool and target plan/apply | Install cache only | `apply` |
 | `snapshot` | Runtime identifier snapshot and LLM manifest | `dump` | No |
 | `queries` | Database-free query inventory, inference explanation, and SQL embedding | With `--embed` | No |
-| `doctor` | Runtime, descriptor coverage, config, provider, database, RLS, and artifact diagnostics | No | No |
+| `doctor` | Runtime, descriptor coverage, config, provider, database, RLS, and artifact diagnostics | With `--fix` | No |
 
 Common syntax:
 
@@ -26,7 +26,7 @@ sqlx-js prepare [--watch | --check | --offline | --verify] [--warnings | --verbo
 sqlx-js migrate add|run|info|check|revert|squash|archive
 sqlx-js pgschema install|plan|apply
 sqlx-js snapshot dump|check
-sqlx-js doctor
+sqlx-js doctor [--fix]
 sqlx-js queries [--json] [--embed <path>]
 sqlx-js queries explain <query-id> [--json]
 ```
@@ -64,6 +64,7 @@ Regular `prepare` describes and plans queries across a small connection pool (de
 | `--manifest <path>`   | Root-relative LLM schema manifest path (default: `<root>/.sqlx-js/schema/schema.md`). |
 | `--no-manifest`       | Skip writing the LLM schema manifest during `snapshot dump`.                         |
 | `--schema-provider <name>` | For `init`: `builtin` (default) or `pgschema`.                                |
+| `--fix`                | For `doctor`: add missing `linguist-generated` rules to `.gitattributes`.    |
 
 Flags that take a value accept both `--flag value` and `--flag=value` forms.
 
@@ -99,6 +100,14 @@ direct execution sites, so those values need not equal `queryContracts`.
 `descriptorConfigured`, `adaptive`, and `unknown` count direct execution
 sites. The JSON `countSemantics` object records these units alongside the
 values.
+
+Doctor also checks that `.sqlx-js/**`, the effective declaration output, and
+an enabled enum catalog output are marked as `linguist-generated` in the
+nearest project or repository `.gitattributes`. Missing rules are warnings
+with `fixable: true`; `doctor --fix` appends only the missing entries,
+preserves existing attributes and honors canonical rules inherited from a
+containing monorepo. This lets GitHub collapse generated diffs by default
+without hiding them from local Git diffs.
 
 Schema-provider diagnostics distinguish ownership from command availability.
 An explicit `schema.provider: "builtin"` or `"pgschema"` selects the

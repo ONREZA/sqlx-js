@@ -21,12 +21,15 @@ import {
   prepareRuntimeDescriptors,
   type RuntimeQueryDescriptors,
 } from "../runtime-descriptors";
+import { ensureGeneratedGitAttributes } from "../generated-git-attributes";
+import { inspectGitAttributesDoctorCheck } from "./doctor-git-attributes";
 import { probePgschema } from "./pgschema";
 
 export type DoctorCheck = {
   name: string;
   status: "ok" | "warning" | "error";
   message: string;
+  fixable?: boolean;
   details?: Record<string, unknown>;
 };
 
@@ -36,8 +39,17 @@ export type DoctorOptions = {
   cacheDir: string;
   dtsPath: string;
   json?: boolean;
+  fix?: boolean;
   envError?: string;
 };
+
+function configuredGeneratedPaths(
+  root: string,
+  config: Awaited<ReturnType<typeof loadConfigInfo>>["config"],
+): string[] {
+  const enumOutput = enumCatalogOutputPath(root, config);
+  return enumOutput ? [enumOutput] : [];
+}
 
 function decodeBoolean(value: Uint8Array | null | undefined): boolean {
   const text = decodeText(value ?? null);
@@ -365,6 +377,12 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
       checks.push({ name: "cache", status: "error", message: (e as Error).message });
     }
   }
+
+  checks.push(inspectGitAttributesDoctorCheck(
+    opts.root,
+    opts.dtsPath,
+    configLoaded ? configuredGeneratedPaths(opts.root, config) : [],
+  ));
 
   const tsconfig = tsconfigIncludes(opts.root, opts.dtsPath);
   checks.push({
@@ -708,7 +726,32 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
 }
 
 export async function runDoctor(opts: DoctorOptions): Promise<void> {
+  let fixed: ReturnType<typeof ensureGeneratedGitAttributes> | undefined;
+  let fixError: Error | undefined;
+  if (opts.fix) {
+    let generatedPaths: string[] = [];
+    try {
+      const info = await loadConfigInfo(opts.root);
+      generatedPaths = configuredGeneratedPaths(opts.root, info.config);
+    } catch {}
+    try {
+      fixed = ensureGeneratedGitAttributes(opts.root, opts.dtsPath, generatedPaths);
+    } catch (error) {
+      fixError = error as Error;
+    }
+  }
   const checks = await inspectDoctor(opts);
+  const check = checks.find((candidate) => candidate.name === "gitAttributes");
+  if (check) {
+    if (fixError) {
+      check.status = "error";
+      check.message = `cannot update generated Git attributes: ${fixError.message}`;
+      check.details = { ...check.details, fixError: fixError.message };
+    } else if (fixed?.changed) {
+      check.message += `; added ${fixed.added.length} ${fixed.added.length === 1 ? "rule" : "rules"}`;
+      check.details = { ...check.details, fixed: fixed.added };
+    }
+  }
   const ok = checks.every((check) => check.status !== "error");
   if (opts.json) {
     console.log(JSON.stringify({ formatVersion: 1, ok, checks }, null, 2));

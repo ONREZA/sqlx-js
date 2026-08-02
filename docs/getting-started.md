@@ -41,7 +41,8 @@ they do not apply DDL to the target database. `dev` regenerates committed query
 artifacts; `verify` compares fresh artifacts without writing.
 
 `init` creates `sqlx-js.config.ts`, `sqlx-js-env.d.ts`, a user-owned `db.ts`,
-an initial `.sqlx-js/runtime-descriptors.json`, `.env.example`, and either
+an initial `.sqlx-js/runtime-descriptors.json`, `.env.example`, generated-file
+rules in `.gitattributes`, and either
 `migrations/` or `schema.sql`. For strict JSON it also adds the
 provider-independent `sqlx:dev`, `sqlx:verify`, `sqlx:check`, and `sqlx:ci`
 scripts to `package.json` and includes the declaration and client files in `tsconfig.json`.
