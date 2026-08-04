@@ -9,6 +9,7 @@ import {
   type ClientBinding,
   type ClientExecution,
 } from "./client-bindings";
+import { parseQueryDefinitionOptions } from "./query-options";
 
 export type QueryCallSite = {
   file: string;
@@ -23,6 +24,8 @@ export type QueryCallSite = {
   sqlFilePath?: string;
   profiles?: string[];
   execution?: ClientExecution;
+  nullableParams?: number[];
+  expectedValidation?: "parse-only";
 };
 
 export class ScanError extends Error {
@@ -421,12 +424,21 @@ export function scanFile(
     cardinality: Cardinality,
     profileArgs?: ts.NodeArray<ts.Expression>,
   ): boolean => {
-    if (args.length < 1 || args.length > 2) {
+    if (args.length < 1 || args.length > 3) {
       const pos = here(callee);
-      throw new ScanError(fileRel, pos.line, pos.column, "defineQuery() requires a SQL literal and optional name");
+      throw new ScanError(
+        fileRel,
+        pos.line,
+        pos.column,
+        "defineQuery() requires a SQL literal, optional name, and optional options object",
+      );
     }
-    const queryNode = args.length === 2 ? args[1]! : args[0]!;
-    const nameNode = args.length === 2 ? args[0]! : undefined;
+    const named = args.length === 3 || (args.length === 2 && ts.isStringLiteralLike(args[1]!));
+    const optionsNode = args.length === 3 || (args.length === 2 && !named)
+      ? args[args.length - 1]
+      : undefined;
+    const queryNode = named ? args[1]! : args[0]!;
+    const nameNode = named ? args[0]! : undefined;
     if (!ts.isStringLiteralLike(queryNode) || (nameNode && !ts.isStringLiteralLike(nameNode))) {
       const pos = here(queryNode);
       throw new ScanError(fileRel, pos.line, pos.column, "defineQuery() requires string literals for its name and SQL");
@@ -463,6 +475,15 @@ export function scanFile(
     } catch (error) {
       throw new ScanError(fileRel, pos.line, pos.column, (error as Error).message.replace(/^sqlx-js: /, ""));
     }
+    const options = parseQueryDefinitionOptions(
+      optionsNode,
+      rewritten.names,
+      rewritten.positionalCount,
+      (node, message) => {
+        const optionPos = here(node);
+        throw new ScanError(fileRel, optionPos.line, optionPos.column, message);
+      },
+    );
     out.push({
       file: fileRel,
       line: pos.line,
@@ -474,6 +495,8 @@ export function scanFile(
       cardinality,
       ...(nameNode ? { queryName: nameNode.text } : {}),
       ...(profiles ? { profiles } : {}),
+      ...(options.nullableParams ? { nullableParams: options.nullableParams } : {}),
+      ...(options.expectedValidation ? { expectedValidation: options.expectedValidation } : {}),
     });
     return true;
   };

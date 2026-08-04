@@ -18,22 +18,25 @@ export type FunctionEntry = {
   name: string;
   signature: string;
   kind: FunctionKind;
+  language: string;
   params: FunctionParamEntry[];
   returns: string;
   returnsSet: boolean;
   volatility: FunctionVolatility;
+  strict: boolean;
   securityDefiner: boolean;
   leakproof: boolean;
   parallelSafety: FunctionParallelSafety;
   owner: string;
   ownerSuperuser: boolean;
   publicExecute: boolean;
+  settings: string[];
   searchPath: string | null;
   extensionOwned: boolean;
 };
 
 type FunctionCacheFile = {
-  version: 2;
+  version: 3;
   functions: FunctionEntry[];
 };
 
@@ -62,7 +65,7 @@ function parseFunctionCache(raw: unknown, path: string): FunctionEntry[] {
     throw new Error(`sqlx-js: function catalog cache is malformed: ${path}`);
   }
   const obj = raw as { version?: unknown; functions?: unknown };
-  if (obj.version !== 2) {
+  if (obj.version !== 3) {
     throw new Error(`sqlx-js: function catalog cache is stale: ${path}. Run \`sqlx-js prepare\`.`);
   }
   if (!Array.isArray(obj.functions) || !obj.functions.every(isFunctionEntry)) {
@@ -85,8 +88,11 @@ export function readFunctionCache(cacheDir: string): FunctionEntry[] {
 
 export function writeFunctionCache(cacheDir: string, functions: FunctionEntry[]): void {
   const path = functionCachePath(cacheDir);
+  if (!functions.every(isFunctionEntry)) {
+    throw new Error(`sqlx-js: refusing to write malformed function catalog cache: ${path}`);
+  }
   mkdirSync(dirname(path), { recursive: true });
-  const payload: FunctionCacheFile = { version: 2, functions };
+  const payload: FunctionCacheFile = { version: 3, functions };
   const tmp = `${path}.tmp-${randomBytes(4).toString("hex")}`;
   writeFileSync(tmp, JSON.stringify(payload, null, 2));
   try {
@@ -155,6 +161,27 @@ function searchPathEndsWithPgTemp(searchPath: string): boolean {
   return last === '"pg_temp"' || (!last.startsWith('"') && last.toLowerCase() === "pg_temp");
 }
 
+export function normalizeFunctionSettings(settings: readonly string[]): string[] {
+  return [...settings].sort((a, b) => {
+    const leftName = functionSettingName(a).toLowerCase();
+    const rightName = functionSettingName(b).toLowerCase();
+    const byName = leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
+    return byName || (a < b ? -1 : a > b ? 1 : 0);
+  });
+}
+
+export function functionSettingValue(settings: readonly string[], name: string): string | null {
+  const expected = name.toLowerCase();
+  const setting = settings.find((value) => functionSettingName(value).toLowerCase() === expected);
+  if (!setting) return null;
+  return setting.slice(setting.indexOf("=") + 1);
+}
+
+function functionSettingName(setting: string): string {
+  const separator = setting.indexOf("=");
+  return separator < 0 ? setting : setting.slice(0, separator);
+}
+
 function isFunctionEntry(value: unknown): value is FunctionEntry {
   if (!value || typeof value !== "object") return false;
   const entry = value as Partial<FunctionEntry>;
@@ -164,11 +191,14 @@ function isFunctionEntry(value: unknown): value is FunctionEntry {
     && entry.name.length > 0
     && typeof entry.signature === "string"
     && isFunctionKind(entry.kind)
+    && typeof entry.language === "string"
+    && entry.language.length > 0
     && Array.isArray(entry.params)
     && entry.params.every(isFunctionParamEntry)
     && typeof entry.returns === "string"
     && typeof entry.returnsSet === "boolean"
     && isFunctionVolatility(entry.volatility)
+    && typeof entry.strict === "boolean"
     && typeof entry.securityDefiner === "boolean"
     && typeof entry.leakproof === "boolean"
     && isFunctionParallelSafety(entry.parallelSafety)
@@ -176,7 +206,12 @@ function isFunctionEntry(value: unknown): value is FunctionEntry {
     && entry.owner.length > 0
     && typeof entry.ownerSuperuser === "boolean"
     && typeof entry.publicExecute === "boolean"
+    && Array.isArray(entry.settings)
+    && entry.settings.every((setting) => typeof setting === "string" && setting.indexOf("=") > 0)
+    && new Set(entry.settings.map((setting) => functionSettingName(setting).toLowerCase())).size === entry.settings.length
+    && entry.settings.every((setting, index) => normalizeFunctionSettings(entry.settings!)[index] === setting)
     && (entry.searchPath === null || typeof entry.searchPath === "string")
+    && entry.searchPath === functionSettingValue(entry.settings, "search_path")
     && typeof entry.extensionOwned === "boolean";
 }
 

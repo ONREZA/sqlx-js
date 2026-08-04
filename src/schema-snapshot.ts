@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { functionSettingValue, normalizeFunctionSettings } from "./function-cache";
 import { decodeText, parseDatabaseUrl, PgClient, type PgRowResult } from "./pg/wire";
 
 export type SchemaRelationKind = "table" | "partitioned_table" | "view" | "materialized_view" | "foreign_table";
@@ -99,13 +100,14 @@ export type SchemaFunctionSnapshot = {
   owner: string;
   ownerSuperuser: boolean;
   publicExecute: boolean;
+  settings: string[];
   searchPath: string | null;
   extensionOwned: boolean;
   language: string;
 };
 
 export type SchemaSnapshot = {
-  version: 2;
+  version: 3;
   schemas: string[];
   relations: SchemaRelationSnapshot[];
   types: SchemaTypeSnapshot[];
@@ -390,12 +392,7 @@ export async function introspectConnected(client: PgClient): Promise<SchemaSnaps
         WHERE privilege.grantee = 0
           AND privilege.privilege_type = 'EXECUTE'
       ) AS public_execute,
-      (
-        SELECT substring(setting FROM length('search_path=') + 1)
-        FROM unnest(p.proconfig) setting
-        WHERE setting LIKE 'search_path=%'
-        LIMIT 1
-      ) AS search_path,
+      to_json(COALESCE(p.proconfig, ARRAY[]::text[]))::text AS settings,
       extension_dependency.objid IS NOT NULL AS extension_owned,
       l.lanname AS language
     FROM pg_proc p
@@ -513,26 +510,30 @@ export async function introspectConnected(client: PgClient): Promise<SchemaSnaps
     }),
   }));
 
-  const functions: SchemaFunctionSnapshot[] = functionRows.map((r) => ({
-    schema: r.schema!,
-    name: r.name!,
-    kind: functionKind(r.kind),
-    identityArguments: r.identity_arguments ?? "",
-    arguments: r.arguments ?? "",
-    returnType: r.return_type ?? "void",
-    returnsSet: bool(r.returns_set),
-    volatility: volatility(r.volatility),
-    strict: bool(r.strict),
-    securityDefiner: bool(r.security_definer),
-    leakproof: bool(r.leakproof),
-    parallelSafety: parallelSafety(r.parallel_safety),
-    owner: r.owner!,
-    ownerSuperuser: bool(r.owner_superuser),
-    publicExecute: bool(r.public_execute),
-    searchPath: r.search_path ?? null,
-    extensionOwned: bool(r.extension_owned),
-    language: r.language!,
-  }));
+  const functions: SchemaFunctionSnapshot[] = functionRows.map((r) => {
+    const settings = normalizeFunctionSettings(parseJsonArray(r.settings));
+    return {
+      schema: r.schema!,
+      name: r.name!,
+      kind: functionKind(r.kind),
+      identityArguments: r.identity_arguments ?? "",
+      arguments: r.arguments ?? "",
+      returnType: r.return_type ?? "void",
+      returnsSet: bool(r.returns_set),
+      volatility: volatility(r.volatility),
+      strict: bool(r.strict),
+      securityDefiner: bool(r.security_definer),
+      leakproof: bool(r.leakproof),
+      parallelSafety: parallelSafety(r.parallel_safety),
+      owner: r.owner!,
+      ownerSuperuser: bool(r.owner_superuser),
+      publicExecute: bool(r.public_execute),
+      settings,
+      searchPath: functionSettingValue(settings, "search_path"),
+      extensionOwned: bool(r.extension_owned),
+      language: r.language!,
+    };
+  });
 
   const schemas = [...new Set([
     ...relations.map((r) => r.schema),
@@ -543,7 +544,7 @@ export async function introspectConnected(client: PgClient): Promise<SchemaSnaps
   ])].sort();
 
   return {
-    version: 2,
+    version: 3,
     schemas,
     relations,
     types: [...Array.from(enumMap.values()), ...domains, ...composites],
@@ -561,11 +562,58 @@ export function writeSchemaSnapshot(path: string, snapshot: SchemaSnapshot): voi
 }
 
 export function readSchemaSnapshot(path: string): SchemaSnapshot {
-  const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
-  if (!raw || typeof raw !== "object" || (raw as { version?: unknown }).version !== 2) {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  } catch (error) {
+    throw new Error(`sqlx-js: schema snapshot is malformed: ${path}: ${(error as Error).message}`);
+  }
+  if (!raw || typeof raw !== "object" || (raw as { version?: unknown }).version !== 3) {
     throw new Error(`sqlx-js: schema snapshot format is stale: ${path}. Run \`sqlx-js snapshot dump\`.`);
   }
+  const snapshot = raw as Partial<SchemaSnapshot>;
+  if (
+    !Array.isArray(snapshot.schemas)
+    || !Array.isArray(snapshot.relations)
+    || !Array.isArray(snapshot.types)
+    || !Array.isArray(snapshot.functions)
+    || !snapshot.functions.every(isSchemaFunctionSnapshot)
+  ) {
+    throw new Error(`sqlx-js: schema snapshot is malformed: ${path}. Run \`sqlx-js snapshot dump\`.`);
+  }
   return raw as SchemaSnapshot;
+}
+
+function isSchemaFunctionSnapshot(value: unknown): value is SchemaFunctionSnapshot {
+  if (!value || typeof value !== "object") return false;
+  const fn = value as Partial<SchemaFunctionSnapshot>;
+  if (
+    typeof fn.schema !== "string"
+    || typeof fn.name !== "string"
+    || !["function", "procedure", "aggregate", "window"].includes(fn.kind ?? "")
+    || typeof fn.identityArguments !== "string"
+    || typeof fn.arguments !== "string"
+    || typeof fn.returnType !== "string"
+    || typeof fn.returnsSet !== "boolean"
+    || !["immutable", "stable", "volatile"].includes(fn.volatility ?? "")
+    || typeof fn.strict !== "boolean"
+    || typeof fn.securityDefiner !== "boolean"
+    || typeof fn.leakproof !== "boolean"
+    || !["unsafe", "restricted", "safe"].includes(fn.parallelSafety ?? "")
+    || typeof fn.owner !== "string"
+    || typeof fn.ownerSuperuser !== "boolean"
+    || typeof fn.publicExecute !== "boolean"
+    || !Array.isArray(fn.settings)
+    || !fn.settings.every((setting) => typeof setting === "string" && setting.indexOf("=") > 0)
+    || fn.settings.some((setting, index) => normalizeFunctionSettings(fn.settings!)[index] !== setting)
+    || (fn.searchPath !== null && typeof fn.searchPath !== "string")
+    || fn.searchPath !== functionSettingValue(fn.settings, "search_path")
+    || typeof fn.extensionOwned !== "boolean"
+    || typeof fn.language !== "string"
+    || fn.language.length === 0
+  ) return false;
+  const settingNames = fn.settings.map((setting) => setting.slice(0, setting.indexOf("=")).toLowerCase());
+  return new Set(settingNames).size === settingNames.length;
 }
 
 export function schemaSnapshotEqual(a: SchemaSnapshot, b: SchemaSnapshot): boolean {
@@ -642,6 +690,7 @@ export function renderSchemaManifest(snapshot: SchemaSnapshot): string {
   for (const fn of snapshot.functions) {
     const attrs = [
       fn.kind,
+      `language ${fn.language}`,
       fn.volatility,
       fn.strict ? "strict" : "",
       fn.securityDefiner ? "security definer" : "",
@@ -649,7 +698,7 @@ export function renderSchemaManifest(snapshot: SchemaSnapshot): string {
       `parallel ${fn.parallelSafety}`,
       `owner ${fn.owner}${fn.ownerSuperuser ? " (superuser)" : ""}`,
       fn.publicExecute ? "public execute" : "",
-      fn.searchPath === null ? "" : `search_path ${JSON.stringify(fn.searchPath)}`,
+      fn.settings.length === 0 ? "" : `settings ${JSON.stringify(fn.settings)}`,
       fn.extensionOwned ? "extension owned" : "",
       fn.returnsSet ? "returns set" : "",
     ].filter(Boolean).join(", ");

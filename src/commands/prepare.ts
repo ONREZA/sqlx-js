@@ -60,6 +60,10 @@ import {
 } from "../enum-catalog";
 import { originalPosition, rewriteNamedParameters } from "../sql-params";
 import {
+  nullableParamOverrides as collectNullableParamOverrides,
+  sameNullableParamOverrides,
+} from "../query-source-intent";
+import {
   renderRuntimeDescriptors,
   runtimeDescriptorPath,
   writeRuntimeDescriptors,
@@ -85,7 +89,8 @@ import {
   formatQueryTotals,
   formatSite,
   inferenceDiagnostics,
-  planningDiagnostic,
+  planningDiagnostics,
+  planningValidationTag,
   reportPrepareDiagnostics,
   reportQueryDiagnostics,
   siteDiagnostic,
@@ -393,6 +398,7 @@ export async function prepareOnce(
     paramNames: string[];
     hasResultSet: boolean;
     validation: PlanValidation;
+    nullableParamOverrides: number[];
   };
   const raw: Raw[] = [];
   const reusedEntries: CacheEntry[] = [];
@@ -402,7 +408,12 @@ export async function prepareOnce(
   const toPrepare: typeof unique = new Map();
   for (const [fp, item] of unique) {
     const cached = input.reuseCacheFps?.has(fp) ? cache.read(fp) : null;
-    if (!cached?.validation || cached.profile !== item.profile) {
+    const nullableParamOverrides = collectNullableParamOverrides(item.sites);
+    if (
+      !cached?.validation
+      || cached.profile !== item.profile
+      || !sameNullableParamOverrides(cached.nullableParamOverrides, nullableParamOverrides)
+    ) {
       toPrepare.set(fp, item);
       continue;
     }
@@ -412,18 +423,18 @@ export async function prepareOnce(
     diagnostics.push(...entryDiagnostics, ...intentDiagnostics);
     const queryDiagnostics = [...entryDiagnostics, ...intentDiagnostics];
     const queryFailed = reportQueryDiagnostics(queryDiagnostics, item.sites, err);
-    const planDiagnostic = planningDiagnostic(entry.validation, item.sites[0]!);
-    if (planDiagnostic) {
-      diagnostics.push(planDiagnostic);
-      err(formatPrepareDiagnostic(planDiagnostic));
+    const planIssues = planningDiagnostics(entry.validation, item.sites, opts.strictInference === true);
+    for (const diagnostic of planIssues) {
+      diagnostics.push(diagnostic);
+      err(formatPrepareDiagnostic(diagnostic));
     }
-    if (queryFailed) {
+    if (queryFailed || planIssues.some((diagnostic) => diagnostic.severity === "error")) {
       failures++;
       continue;
     }
     reusedEntries.push(entry);
     reusedGenerated.push({ fp, entry });
-    const validationTag = entry.validation === "parse-only" ? " [parse-only]" : "";
+    const validationTag = planningValidationTag(entry.validation, item.sites);
     log(`  ↺ ${formatSite(item.sites[0]!)} → reused ${entry.paramOids.length} param(s), ${entry.columns.length} col(s)${validationTag}`);
   }
 
@@ -463,10 +474,14 @@ export async function prepareOnce(
         err(`      query: ${formatQuerySnippet(site.query)}`);
         continue;
       }
-      const planDiagnostic = planningDiagnostic(outcome.validation, site);
-      if (planDiagnostic) {
-        diagnostics.push(planDiagnostic);
-        err(formatPrepareDiagnostic(planDiagnostic));
+      const planIssues = planningDiagnostics(outcome.validation, ss, opts.strictInference === true);
+      for (const diagnostic of planIssues) {
+        diagnostics.push(diagnostic);
+        err(formatPrepareDiagnostic(diagnostic));
+      }
+      if (planIssues.some((diagnostic) => diagnostic.severity === "error")) {
+        failures++;
+        continue;
       }
       raw.push({
         fp,
@@ -478,6 +493,7 @@ export async function prepareOnce(
         paramNames: toPrepare.get(fp)!.paramNames,
         hasResultSet: outcome.hasResultSet,
         validation: outcome.validation,
+        nullableParamOverrides: collectNullableParamOverrides(ss),
       });
       continue;
     }
@@ -634,7 +650,10 @@ export async function prepareOnce(
         schema,
         userCfg,
       ));
-      paramNullable = r.paramOids.map((_oid, idx) => resolveParamNullable(idx + 1, pm, schema));
+      const explicitNullable = new Set(r.nullableParamOverrides);
+      paramNullable = r.paramOids.map((_oid, idx) =>
+        resolveParamNullable(idx + 1, pm, schema, explicitNullable.has(idx + 1))
+      );
     } catch (e) {
       failures++;
       failedFps.add(r.fp);
@@ -681,6 +700,7 @@ export async function prepareOnce(
       }),
       paramTsTypes,
       paramNullable,
+      nullableParamOverrides: r.nullableParamOverrides,
       ...(r.paramNames.length > 0 ? { paramNames: r.paramNames } : {}),
       columns,
       hasResultSet: r.hasResultSet,
@@ -696,7 +716,7 @@ export async function prepareOnce(
           )
         ),
         params: paramNullable.map((nullable, index) =>
-          paramInference(index + 1, nullable, pm)
+          paramInference(index + 1, nullable, pm, r.nullableParamOverrides.includes(index + 1))
         ),
       },
     };
@@ -714,7 +734,7 @@ export async function prepareOnce(
     generated.push({ fp: r.fp, entry });
     const nn = entry.columns.filter((c) => !effectiveNullable(c)).length;
     const inferenceTag = entry.degraded ? ` [degraded: ${entry.degraded.reason}]` : "";
-    const validationTag = entry.validation === "parse-only" ? " [parse-only]" : "";
+    const validationTag = planningValidationTag(entry.validation, r.sites);
     log(`  ✓ ${formatSite(r.sites[0]!)} → ${r.paramOids.length} param(s), ${r.fields.length} col(s) [${nn} non-null]${inferenceTag}${validationTag}`);
   }
 
@@ -948,15 +968,27 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
           inferenceFailures++;
           continue;
         }
+        const nullableParamOverrides = collectNullableParamOverrides(u.sites);
+        if (!sameNullableParamOverrides(entry.nullableParamOverrides, nullableParamOverrides)) {
+          diagnostics.push({
+            severity: "error",
+            phase: "cache",
+            message: "source nullable parameter contract changed; run live `sqlx-js prepare`",
+            ...siteDiagnostic(u.sites[0]!),
+          });
+          inferenceFailures++;
+          continue;
+        }
         const current = { ...entry, ...siteUsage(u.sites) };
         const entryDiagnostics = inferenceDiagnostics(current, u.sites[0]!, opts.strictInference === true);
         const intentDiagnostics = executionIntentDiagnostics(current, u.sites, opts.strictInference === true);
         diagnostics.push(...entryDiagnostics, ...intentDiagnostics);
-        const planDiagnostic = planningDiagnostic(current.validation, u.sites[0]!);
-        if (planDiagnostic) diagnostics.push(planDiagnostic);
+        const planIssues = planningDiagnostics(current.validation, u.sites, opts.strictInference === true);
+        diagnostics.push(...planIssues);
         if (
           (opts.strictInference && entryDiagnostics.length > 0)
           || intentDiagnostics.some((diagnostic) => diagnostic.severity === "error")
+          || planIssues.some((diagnostic) => diagnostic.severity === "error")
         ) {
           inferenceFailures++;
           continue;

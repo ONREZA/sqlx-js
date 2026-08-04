@@ -1148,9 +1148,11 @@ export default {
     }
     const root = isolatedRoot("parse-only-validation");
     writeRootFile(root, "a.ts",
-      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "import { defineQuery, sql } from \"@onreza/sqlx-js\";\n" +
       "await sql.execute(\"SET statement_timeout = '1s'\");\n" +
-      "await sql.execute(\"CALL tmp_parse_only_procedure()\");\n",
+      "await sql.execute(\"CALL tmp_parse_only_procedure()\");\n" +
+      "export const analyze = defineQuery.execute(\"maintenance.analyze\", \"ANALYZE\", " +
+      "{ expectedValidation: \"parse-only\" });\n",
     );
     const result = prepareRoot(root, ["--json"]);
     expect(result.code, result.stderr).toBe(0);
@@ -1171,10 +1173,19 @@ export default {
     expect(verbose.stderr).toContain(
       "statement is outside PostgreSQL's generic planning surface; validation is parse-only",
     );
+    expect(verbose.stdout).toContain("[parse-only acknowledged]");
     const entries = queryCacheFiles(root).map((cacheFile) =>
       JSON.parse(readFileSync(join(root, ".sqlx-js", cacheFile), "utf8")) as { validation?: string });
-    expect(entries).toHaveLength(2);
+    expect(entries).toHaveLength(3);
     expect(entries.every((entry) => entry.validation === "parse-only")).toBe(true);
+    const strict = prepareRoot(root, ["--check", "--strict-inference", "--json"]);
+    expect(strict.code).toBe(1);
+    const strictPayload = JSON.parse(strict.stdout) as {
+      diagnostics: { severity: string; phase: string; message: string }[];
+    };
+    expect(strictPayload.diagnostics.filter((diagnostic) =>
+      diagnostic.severity === "error" && diagnostic.phase === "plan"
+    )).toHaveLength(2);
     rmSync(root, { recursive: true, force: true });
     const cleanup = new PgClient(parseDatabaseUrl(dbUrl));
     await cleanup.connect();
@@ -1241,6 +1252,7 @@ export default {
     expect(payload.ok).toBe(true);
     expect(payload.checks.map((check) => check.name)).toEqual([
       "runtime",
+      "packageIdentity",
       "config",
       "env",
       "cache",
@@ -1253,6 +1265,10 @@ export default {
       "pgschema",
     ]);
     expect(payload.checks.every((check) => check.status !== "error")).toBe(true);
+    expect(payload.checks.find((check) => check.name === "packageIdentity")).toMatchObject({
+      status: "warning",
+      details: { runningVersion: expect.any(String), targetVersion: null },
+    });
     expect(payload.checks.find((check) => check.name === "permissions")?.details).toMatchObject({
       schemaUsage: true,
       createDatabase: true,
@@ -1386,7 +1402,8 @@ export default {
         DROP FUNCTION IF EXISTS tmp_catalog_json_inout(jsonb);
         DROP FUNCTION IF EXISTS tmp_catalog_json_array(jsonb[]);
         CREATE FUNCTION tmp_catalog_slug(value text) RETURNS text
-        LANGUAGE sql IMMUTABLE AS $$ SELECT lower(value) $$;
+        LANGUAGE sql IMMUTABLE STRICT SET TimeZone = 'UTC'
+        AS $$ SELECT lower(value) $$;
         CREATE FUNCTION tmp_catalog_pair(value text) RETURNS TABLE(slug text, score integer)
         LANGUAGE sql STABLE AS $$ SELECT lower(value), length(value)::int $$;
         CREATE FUNCTION tmp_catalog_json_table(value jsonb) RETURNS TABLE(payload jsonb)
@@ -1410,14 +1427,20 @@ export default {
     expect(r.code).toBe(0);
     let dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain("interface KnownFunctions");
-    expect(dts).toContain('"public.tmp_catalog_slug(value text)": { kind: "function"; params: [string]; returns: string | null; returnsSet: false;');
-    expect(dts).toContain('"public.tmp_catalog_pair(value text)": { kind: "function"; params: [string]; returns: { slug: string | null; score: number | null }; returnsSet: true;');
-    expect(dts).toContain('"public.tmp_catalog_json_table(value jsonb)": { kind: "function"; params: [import("@onreza/sqlx-js").JsonInput]; returns: { payload: import("@onreza/sqlx-js").JsonValue | null }; returnsSet: true;');
-    expect(dts).toContain('"public.tmp_catalog_json_out(value text, OUT payload jsonb)": { kind: "function"; params: [string]; returns: { payload: import("@onreza/sqlx-js").JsonValue | null }; returnsSet: false;');
-    expect(dts).toMatch(/"public\.tmp_catalog_json_inout\([^"]*jsonb\)": \{ kind: "function"; params: \[import\("@onreza\/sqlx-js"\)\.JsonInput\]; returns: \{ payload: import\("@onreza\/sqlx-js"\)\.JsonValue \| null \}; returnsSet: false;/);
-    expect(dts).toContain('"public.tmp_catalog_json_array(value jsonb[])": { kind: "function"; params: [(import("@onreza/sqlx-js").JsonInput | null)[]]; returns: (import("@onreza/sqlx-js").JsonValue | null)[] | null; returnsSet: false;');
-    expect(dts).toMatch(/"public\.tmp_catalog_slug\(value text\)".*volatility: "immutable"; securityDefiner: false; leakproof: false; parallelSafety: "unsafe"; owner: "[^"]+"; ownerSuperuser: (?:true|false); publicExecute: true; searchPath: null; extensionOwned: false/);
-    expect(JSON.parse(readFileSync(join(tmp, ".sqlx-js/functions/functions.json"), "utf8")).version).toBe(2);
+    expect(dts).toContain('"public.tmp_catalog_slug(value text)": { kind: "function"; language: "sql"; params: [string | null]; returns: string | null; returnsSet: false;');
+    expect(dts).toContain('"public.tmp_catalog_pair(value text)": { kind: "function"; language: "sql"; params: [string | null]; returns: { slug: string | null; score: number | null }; returnsSet: true;');
+    expect(dts).toContain('"public.tmp_catalog_json_table(value jsonb)": { kind: "function"; language: "sql"; params: [import("@onreza/sqlx-js").JsonInput | null]; returns: { payload: import("@onreza/sqlx-js").JsonValue | null }; returnsSet: true;');
+    expect(dts).toContain('"public.tmp_catalog_json_out(value text, OUT payload jsonb)": { kind: "function"; language: "sql"; params: [string | null]; returns: { payload: import("@onreza/sqlx-js").JsonValue | null }; returnsSet: false;');
+    expect(dts).toMatch(/"public\.tmp_catalog_json_inout\([^"]*jsonb\)": \{ kind: "function"; language: "sql"; params: \[import\("@onreza\/sqlx-js"\)\.JsonInput \| null\]; returns: \{ payload: import\("@onreza\/sqlx-js"\)\.JsonValue \| null \}; returnsSet: false;/);
+    expect(dts).toContain('"public.tmp_catalog_json_array(value jsonb[])": { kind: "function"; language: "sql"; params: [(import("@onreza/sqlx-js").JsonInput | null)[] | null]; returns: (import("@onreza/sqlx-js").JsonValue | null)[] | null; returnsSet: false;');
+    expect(dts).toMatch(/"public\.tmp_catalog_slug\(value text\)".*volatility: "immutable"; strict: true; securityDefiner: false; leakproof: false; parallelSafety: "unsafe"; owner: "[^"]+"; ownerSuperuser: (?:true|false); publicExecute: true; settings: readonly \["TimeZone=UTC"\]; searchPath: null; extensionOwned: false/);
+    const functionCache = JSON.parse(readFileSync(join(tmp, ".sqlx-js/functions/functions.json"), "utf8")) as {
+      version: number;
+      functions: Array<{ signature: string; strict: boolean; settings: string[] }>;
+    };
+    expect(functionCache.version).toBe(3);
+    expect(functionCache.functions.find((fn) => fn.signature === "public.tmp_catalog_slug(value text)"))
+      .toMatchObject({ strict: true, settings: ["TimeZone=UTC"] });
     expect(dts).not.toContain('"public.hstore(');
 
     r = prepare(["--check"]);
@@ -1468,6 +1491,7 @@ export default {
         CREATE OR REPLACE FUNCTION tmp_contract_safe() RETURNS boolean
         LANGUAGE sql STABLE SECURITY DEFINER
         SET search_path = public, pg_temp
+        SET TimeZone = 'UTC'
         AS $$ SELECT true $$;
         REVOKE ALL ON FUNCTION tmp_contract_safe() FROM PUBLIC;
       `);
@@ -1488,7 +1512,7 @@ export default {
         functionSignature: "public.tmp_contract_unsafe()",
       }));
       expect(readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8")).toMatch(
-        /"public\.tmp_contract_safe\(\)".*securityDefiner: true;.*publicExecute: false; searchPath: "public, pg_temp"/,
+        /"public\.tmp_contract_safe\(\)".*securityDefiner: true;.*publicExecute: false; settings: readonly \["search_path=public, pg_temp", "TimeZone=UTC"\]; searchPath: "public, pg_temp"/,
       );
 
       result = prepareRoot(root, ["--check", "--json"]);
@@ -1898,7 +1922,7 @@ export default {
       ");\n" +
       "CREATE INDEX IF NOT EXISTS tmp_contract_posts_user_id_idx ON tmp_contract_posts(user_id);\n" +
       "CREATE OR REPLACE FUNCTION tmp_contract_slug(value text) RETURNS text\n" +
-      "LANGUAGE sql IMMUTABLE STRICT AS $$ SELECT lower(value) $$;\n" +
+      "LANGUAGE sql IMMUTABLE STRICT SET TimeZone = 'UTC' AS $$ SELECT lower(value) $$;\n" +
       "CREATE SCHEMA IF NOT EXISTS pgx;\n" +
       "CREATE TABLE IF NOT EXISTS pgx.keep_me (id INT PRIMARY KEY);\n",
     );
@@ -1915,7 +1939,15 @@ export default {
     const raw = readFileSync(join(tmp, ".sqlx-js/schema/schema.json"), "utf8");
     const schemaSnapshot = JSON.parse(raw) as {
       relations: { schema: string; name: string; constraints: { kind: string; references?: { table: string } }[]; indexes: { name: string }[] }[];
-      functions: { name: string; volatility: string; strict: boolean; publicExecute: boolean }[];
+      functions: {
+        name: string;
+        language: string;
+        volatility: string;
+        strict: boolean;
+        publicExecute: boolean;
+        settings: string[];
+        searchPath: string | null;
+      }[];
     };
     const rel = schemaSnapshot.relations.find((r) => r.name === "tmp_contract_posts");
     expect(rel).toBeTruthy();
@@ -1923,12 +1955,20 @@ export default {
     expect(rel!.constraints.some((c) => c.kind === "foreign_key" && c.references?.table === "tmp_users")).toBe(true);
     expect(rel!.constraints.some((c) => c.kind === "check")).toBe(true);
     expect(rel!.indexes.some((i) => i.name === "tmp_contract_posts_user_id_idx")).toBe(true);
-    expect(schemaSnapshot.functions.some((f) => f.name === "tmp_contract_slug" && f.volatility === "immutable" && f.strict)).toBe(true);
-    expect(schemaSnapshot.functions.find((f) => f.name === "tmp_contract_slug")?.publicExecute).toBe(true);
+    expect(schemaSnapshot.functions.find((f) => f.name === "tmp_contract_slug")).toMatchObject({
+      language: "sql",
+      volatility: "immutable",
+      strict: true,
+      publicExecute: true,
+      settings: ["TimeZone=UTC"],
+      searchPath: null,
+    });
 
     const manifest = readFileSync(join(tmp, ".sqlx-js/schema/schema.md"), "utf8");
     expect(manifest).toContain("tmp_contract_posts");
     expect(manifest).toContain("tmp_contract_slug(value text) -> text");
+    expect(manifest).toContain("language sql");
+    expect(manifest).toContain('settings ["TimeZone=UTC"]');
 
     const check = snapshot(["check"]);
     expect(check.code).toBe(0);
@@ -2387,6 +2427,71 @@ export default {
     expect(r.code).toBe(0);
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toMatch(/COALESCE\(\$1, name\).*params: \[string \| null, bigint\]/);
+  });
+
+  test("defineQuery nullableParams widens direct PostgreSQL function inputs", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        CREATE OR REPLACE FUNCTION tmp_nullable_input(at timestamptz, operation_id text)
+        RETURNS text
+        LANGUAGE SQL
+        AS $$ SELECT COALESCE(operation_id, at::text, 'none') $$
+      `);
+      writeFile("a.ts",
+        "import { defineQuery } from \"@onreza/sqlx-js\";\n" +
+        "export const call = defineQuery.one(\n" +
+        "  \"tmp.nullableInput\",\n" +
+        "  \"SELECT tmp_nullable_input($at::timestamptz, $operationId::text) AS value\",\n" +
+        "  { nullableParams: [\"at\", \"operationId\"] },\n" +
+        ");\n",
+      );
+      const result = prepare();
+      expect(result.code, result.stderr).toBe(0);
+      const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
+      expect(dts).toMatch(/"at": import\("@onreza\/sqlx-js"\)\.PgTemporal \| null; "operationId": string \| null/);
+      const entry = queryCacheFiles().map((file) =>
+        JSON.parse(readFileSync(join(tmp, ".sqlx-js", file), "utf8")) as {
+          nullableParamOverrides: number[];
+          inference: { params: { reason: string }[] };
+        }
+      ).find((candidate) => candidate.nullableParamOverrides.length === 2);
+      expect(entry?.nullableParamOverrides).toEqual([1, 2]);
+      expect(entry?.inference.params[0]?.reason).toContain("defineQuery source contract");
+
+      writeFile("a.ts",
+        "import { defineQuery } from \"@onreza/sqlx-js\";\n" +
+        "export const call = defineQuery.one(\n" +
+        "  \"tmp.nullableInput\",\n" +
+        "  \"SELECT tmp_nullable_input($at::timestamptz, $operationId::text) AS value\",\n" +
+        ");\n",
+      );
+      const stale = prepareRoot(tmp, ["--check", "--json"]);
+      expect(stale.code).toBe(1);
+      expect(JSON.parse(stale.stdout).diagnostics).toContainEqual(expect.objectContaining({
+        phase: "cache",
+        message: expect.stringContaining("source nullable parameter contract changed"),
+      }));
+
+      writeFile("a.ts",
+        "import { defineQuery } from \"@onreza/sqlx-js\";\n" +
+        "export const insert = defineQuery.execute(\n" +
+        "  \"tmp.invalidNullableInsert\",\n" +
+        "  \"INSERT INTO tmp_users (name, email) VALUES ($name, $email)\",\n" +
+        "  { nullableParams: [\"name\"] },\n" +
+        ");\n",
+      );
+      const invalid = prepareRoot(tmp, ["--json"]);
+      expect(invalid.code).toBe(1);
+      expect(JSON.parse(invalid.stdout).diagnostics).toContainEqual(expect.objectContaining({
+        phase: "param-map",
+        message: expect.stringContaining("maps to a NOT NULL stored target"),
+      }));
+    } finally {
+      await setup.simpleQuery("DROP FUNCTION IF EXISTS tmp_nullable_input(timestamptz, text)");
+      await setup.end();
+    }
   });
 
   test("INSERT into nullable column emits nullable param type", () => {

@@ -21,6 +21,7 @@
     true,
     false
   ],
+  "nullableParamOverrides": [],
   "columns": [
     {
       "name": "user_id",

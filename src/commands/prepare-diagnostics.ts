@@ -250,17 +250,41 @@ export function inferenceDiagnostics(
   }));
 }
 
-export function planningDiagnostic(
+export function planningDiagnostics(
   validation: CacheEntry["validation"],
-  site: QueryCallSite,
-): PrepareDiagnostic | undefined {
-  if (validation !== "parse-only") return undefined;
-  return {
-    severity: "warning",
-    phase: "plan",
-    message: "statement is outside PostgreSQL's generic planning surface; validation is parse-only",
-    ...siteDiagnostic(site),
-  };
+  sites: readonly QueryCallSite[],
+  strict = false,
+): PrepareDiagnostic[] {
+  if (validation === "parse-only") {
+    const site = sites.find((candidate) => candidate.expectedValidation !== "parse-only");
+    return site
+      ? [{
+        severity: strict ? "error" : "warning",
+        phase: "plan",
+        message: "statement is outside PostgreSQL's generic planning surface; validation is parse-only",
+        ...siteDiagnostic(site),
+      }]
+      : [];
+  }
+  const stale = sites.find((candidate) => candidate.expectedValidation === "parse-only");
+  return stale
+    ? [{
+      severity: "warning",
+      phase: "plan",
+      message: "statement is now planned; remove the stale expectedValidation: \"parse-only\" source contract",
+      ...siteDiagnostic(stale),
+    }]
+    : [];
+}
+
+export function planningValidationTag(
+  validation: CacheEntry["validation"],
+  sites: readonly QueryCallSite[],
+): string {
+  if (validation !== "parse-only") return "";
+  return sites.every((site) => site.expectedValidation === "parse-only")
+    ? " [parse-only acknowledged]"
+    : " [parse-only]";
 }
 
 export function executionIntentDiagnostics(

@@ -16,6 +16,7 @@ import { SchemaCache } from "../pg/schema";
 import { scanProject, type QueryCallSite } from "../scan/scanner";
 import { assertDistinctEnumCatalogOutput, enumCatalogOutputPath } from "../enum-catalog";
 import { queryId } from "../query-id";
+import type { PackageIdentityCheck } from "../package-identity";
 import { runtimeDescriptorPath } from "../runtime-descriptor-artifact";
 import {
   prepareRuntimeDescriptors,
@@ -41,6 +42,7 @@ export type DoctorOptions = {
   json?: boolean;
   fix?: boolean;
   envError?: string;
+  packageIdentityCheck?: PackageIdentityCheck;
 };
 
 function configuredGeneratedPaths(
@@ -334,6 +336,25 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
     });
   } catch (e) {
     checks.push({ name: "runtime", status: "error", message: (e as Error).message });
+  }
+  if (opts.packageIdentityCheck) {
+    const identity = opts.packageIdentityCheck;
+    checks.push({
+      name: "packageIdentity",
+      status: identity.status === "match"
+        ? "ok"
+        : identity.status === "unresolved"
+          ? "warning"
+          : "error",
+      message: identity.message,
+      details: {
+        root: identity.root,
+        runningVersion: identity.running.version,
+        runningPackageJson: identity.running.packageJsonPath,
+        targetVersion: identity.target?.version ?? null,
+        targetPackageJson: identity.target?.packageJsonPath ?? null,
+      },
+    });
   }
 
   let config: Awaited<ReturnType<typeof loadConfigInfo>>["config"] = {};
@@ -729,15 +750,19 @@ export async function runDoctor(opts: DoctorOptions): Promise<void> {
   let fixed: ReturnType<typeof ensureGeneratedGitAttributes> | undefined;
   let fixError: Error | undefined;
   if (opts.fix) {
-    let generatedPaths: string[] = [];
-    try {
-      const info = await loadConfigInfo(opts.root);
-      generatedPaths = configuredGeneratedPaths(opts.root, info.config);
-    } catch {}
-    try {
-      fixed = ensureGeneratedGitAttributes(opts.root, opts.dtsPath, generatedPaths);
-    } catch (error) {
-      fixError = error as Error;
+    if (opts.packageIdentityCheck?.status === "mismatch" || opts.packageIdentityCheck?.status === "invalid") {
+      fixError = new Error("package identity must be valid and match before doctor --fix can write the worktree");
+    } else {
+      let generatedPaths: string[] = [];
+      try {
+        const info = await loadConfigInfo(opts.root);
+        generatedPaths = configuredGeneratedPaths(opts.root, info.config);
+      } catch {}
+      try {
+        fixed = ensureGeneratedGitAttributes(opts.root, opts.dtsPath, generatedPaths);
+      } catch (error) {
+        fixError = error as Error;
+      }
     }
   }
   const checks = await inspectDoctor(opts);

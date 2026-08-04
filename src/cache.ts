@@ -72,6 +72,7 @@ export type CacheEntry = {
   paramTypeIdentities: (number | { schema: string; name: string })[];
   paramTsTypes: string[];
   paramNullable: boolean[];
+  nullableParamOverrides: number[];
   paramNames?: string[];
   columns: CacheColumn[];
   hasResultSet: boolean;
@@ -236,6 +237,19 @@ function assertEntryShape(fp: string, raw: unknown): CacheEntry {
     || entry.paramNullable.some((nullable) => typeof nullable !== "boolean")
   ) {
     throw new Error(`sqlx-js: cache entry ${fp}.json has invalid parameter nullability. Run \`sqlx-js prepare\`.`);
+  }
+  if (
+    !Array.isArray(entry.nullableParamOverrides)
+    || entry.nullableParamOverrides.some((index) =>
+      !Number.isSafeInteger(index)
+      || (index as number) < 1
+      || (index as number) > paramTsTypes.length
+    )
+    || entry.nullableParamOverrides.some((index, position) =>
+      position > 0 && (entry.nullableParamOverrides as number[])[position - 1]! >= (index as number)
+    )
+  ) {
+    throw new Error(`sqlx-js: cache entry ${fp}.json has invalid nullable parameter overrides. Run \`sqlx-js prepare\`.`);
   }
   const inference = entry.inference;
   const validOptionalString = (value: unknown) =>

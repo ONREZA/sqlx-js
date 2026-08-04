@@ -12,6 +12,10 @@ import {
 import { loadConfig, prepareConfigHash } from "../config";
 import { queryId } from "../query-id";
 import type { QueryExecutionMode } from "../query";
+import {
+  nullableParamOverrides as collectNullableParamOverrides,
+  sameNullableParamOverrides,
+} from "../query-source-intent";
 import { ScanError, scanProject } from "../scan/scanner";
 
 export type QueriesPhase = "config" | "scan" | "cache" | "embed" | "explain";
@@ -52,7 +56,16 @@ export type QueryInventoryItem = {
   profiles: string[];
   cardinalities: QueryExecutionMode[];
   sqlFilePaths: string[];
-  callSites: { file: string; line: number; column: number; profiles: string[] }[];
+  callSites: {
+    file: string;
+    line: number;
+    column: number;
+    profiles: string[];
+    nullableParams?: number[];
+    expectedValidation?: "parse-only";
+  }[];
+  nullableParamOverrides: number[];
+  expectedValidation: "parse-only" | "mixed" | null;
   cacheStatus: "current" | "stale" | "missing";
   validation: "planned" | "parse-only" | null;
 };
@@ -130,12 +143,25 @@ export async function buildQueryInventory(root: string, cacheDir: string): Promi
   }
   const queries = [...grouped.entries()].map(([id, group]): QueryInventoryItem => {
     const profiles = [...new Set(group.flatMap((site) => site.profiles ?? []))].sort();
-    const cacheProfiles = profiles.length > 0 ? profiles : [undefined];
-    const cachedEntries = cacheProfiles.map((profile) => cached.get(profileFingerprint(profile, group[0]!.query)));
-    const presentEntries = cachedEntries.filter((entry) => entry !== undefined);
+    const cacheProfiles: (string | undefined)[] = [
+      ...(group.some((site) => !site.profiles || site.profiles.length === 0) ? [undefined] : []),
+      ...profiles,
+    ];
+    const cachedEntries = cacheProfiles.map((profile) => ({
+      profile,
+      entry: cached.get(profileFingerprint(profile, group[0]!.query)),
+      sites: group.filter((site) => profile === undefined
+        ? !site.profiles || site.profiles.length === 0
+        : site.profiles?.includes(profile)),
+    }));
+    const presentEntries = cachedEntries.flatMap(({ entry }) => entry ? [entry] : []);
+    const nullableParamOverrides = collectNullableParamOverrides(group);
     const cacheStatus = presentEntries.length !== cacheProfiles.length
       ? "missing"
-      : manifestCurrent && presentEntries.every((entry) => entry.validation)
+      : manifestCurrent && cachedEntries.every(({ entry, sites: profileSites }) =>
+        entry?.validation
+        && sameNullableParamOverrides(entry.nullableParamOverrides, collectNullableParamOverrides(profileSites))
+      )
         ? "current"
         : "stale";
     const validation = presentEntries.length === 0 || presentEntries.some((entry) => !entry.validation)
@@ -151,13 +177,19 @@ export async function buildQueryInventory(root: string, cacheDir: string): Promi
       cardinalities: [...new Set(group.map((site) => site.cardinality ?? "many"))].sort(),
       sqlFilePaths: [...new Set(group.flatMap((site) => site.sqlFilePath ? [site.sqlFilePath] : []))].sort(),
       callSites: group
-        .map(({ file, line, column, profiles: siteProfiles }) => ({
-          file,
-          line,
-          column,
-          profiles: siteProfiles ?? [],
+        .map((site) => ({
+          file: site.file,
+          line: site.line,
+          column: site.column,
+          profiles: site.profiles ?? [],
+          ...(site.nullableParams ? { nullableParams: site.nullableParams } : {}),
+          ...(site.expectedValidation ? { expectedValidation: site.expectedValidation } : {}),
         }))
         .sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column),
+      nullableParamOverrides,
+      expectedValidation: group.some((site) => site.expectedValidation === "parse-only")
+        ? group.every((site) => site.expectedValidation === "parse-only") ? "parse-only" : "mixed"
+        : null,
       cacheStatus,
       validation,
     };
@@ -189,7 +221,10 @@ export async function buildQueryExplanation(
     );
   }
   const cache = new Cache(cacheDir);
-  const profiles = query.profiles.length > 0 ? query.profiles : [undefined];
+  const profiles: (string | undefined)[] = [
+    ...(query.callSites.some((site) => site.profiles.length === 0) ? [undefined] : []),
+    ...query.profiles,
+  ];
   const contracts = profiles.map((profile) => {
     const entry = cache.read(profileFingerprint(profile, query.query));
     if (!entry) {
@@ -302,8 +337,15 @@ export async function runQueries(options: {
   for (const query of inventory.queries) {
     const names = query.queryNames.length > 0 ? ` ${query.queryNames.join(",")}` : "";
     const validation = query.validation ? ` ${query.validation}` : "";
+    const expectedValidation = query.expectedValidation ? ` expected=${query.expectedValidation}` : "";
+    const nullableParams = query.nullableParamOverrides.length > 0
+      ? ` nullableParams=${query.nullableParamOverrides.join(",")}`
+      : "";
     const profiles = query.profiles.length > 0 ? ` profiles=${query.profiles.join(",")}` : "";
-    console.log(`${query.queryId}${names} ${query.cardinalities.join(",")} ${query.cacheStatus}${validation}${profiles}`);
+    console.log(
+      `${query.queryId}${names} ${query.cardinalities.join(",")} ${query.cacheStatus}${validation}`
+      + `${expectedValidation}${nullableParams}${profiles}`,
+    );
     for (const site of query.callSites) console.log(`  ${site.file}:${site.line}:${site.column}`);
   }
   if (inventory.queries.length === 0) console.log("no sqlx-js queries found");

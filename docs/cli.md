@@ -35,7 +35,7 @@ Run `sqlx-js <command> --help` or
 `sqlx-js <command> <subcommand> --help` for exact flags, side effects, and
 behavior. Subcommand help is intentionally narrower than the root overview.
 
-Regular `prepare` describes and plans queries across a small connection pool (default 8, override with `SQLX_JS_PREPARE_CONCURRENCY`) for faster cold runs on large projects. After `Describe` establishes the server-side parameter contract, `SELECT`, `INSERT`, `UPDATE`, `DELETE`, and `MERGE` are SQL-prepared on the same session and planned through `EXPLAIN EXECUTE` under `plan_cache_mode = force_generic_plan`. The resulting plan is independent of placeholder values. `ANALYZE` is never used, so DML is not executed. Statements outside PostgreSQL's generic SQL `PREPARE` surface, such as `SET` and `CALL`, remain valid but are reported and cached as `parse-only`. Watch mode keeps one session warm, rescans only affected source files, and reuses cached metadata for unchanged fingerprints. Config and tsconfig changes invalidate the incremental state and perform a full prepare.
+Regular `prepare` describes and plans queries across a small connection pool (default 8, override with `SQLX_JS_PREPARE_CONCURRENCY`) for faster cold runs on large projects. After `Describe` establishes the server-side parameter contract, `SELECT`, `INSERT`, `UPDATE`, `DELETE`, and `MERGE` are SQL-prepared on the same session and planned through `EXPLAIN EXECUTE` under `plan_cache_mode = force_generic_plan`. The resulting plan is independent of placeholder values. `ANALYZE` is never used, so DML is not executed. Statements outside PostgreSQL's generic SQL `PREPARE` surface, such as `SET` and `CALL`, remain valid but are reported and cached as `parse-only`. A reusable definition can record `{ expectedValidation: "parse-only" }`; acknowledged entries stay visible in verbose output and query inventory without producing a permanent warning. Watch mode keeps one session warm, rescans only affected source files, and reuses cached metadata for unchanged fingerprints. Config and tsconfig changes invalidate the incremental state and perform a full prepare.
 
 | Flag                  | Meaning                                                                              |
 |-----------------------|--------------------------------------------------------------------------------------|
@@ -53,7 +53,7 @@ Regular `prepare` describes and plans queries across a small connection pool (de
 | `--verbose`           | Show per-query prepare progress. Compact human output is the default for prepare/check/offline/verify. |
 | `--embed <path>`      | For `queries`: write a deterministic TypeScript map of referenced external SQL files. |
 | `--jsonl`             | Versioned streaming events for `prepare --watch`.                                     |
-| `--strict-inference`  | Fail prepare/dev/verify when nullability degrades, a generated query type contains unresolved `unknown`, or plain `sql()` discards a command result. Intentional `JsonParameter<unknown>` wrappers remain accepted. |
+| `--strict-inference`  | Fail prepare/dev/verify when nullability degrades, a generated query type contains unresolved `unknown`, plain `sql()` discards a command result, or a `parse-only` statement is not explicitly acknowledged. Intentional `JsonParameter<unknown>` wrappers remain accepted. |
 | `--force`             | For `migrate archive restore`: allow overwriting existing migration files.           |
 | `--lock-timeout <ms>` | Advisory-lock acquisition timeout for built-in `dev` / `verify` and applicable `migrate` operations. |
 | `--shadow-url <url>`  | Use an existing disposable shadow DB instead of auto-creating one.                   |
@@ -84,7 +84,14 @@ codes and artifact behavior. `--warnings` and `--verbose` cannot be combined
 with each other or with `--json`/`--jsonl`; watch mode is already streaming and
 does not accept them.
 
-`queries --json` is database-free and read-only. It emits `formatVersion: 1` inventory entries with `queryId`, connection profiles, optional definition names, cardinalities, root-relative call sites, SQL file paths, `current`/`stale`/`missing` cache status, and `planned`/`parse-only` validation when cached, plus orphaned cache IDs. Config, scan, cache, and embed failures use versioned structured diagnostics with source location when available. Adding `--embed` writes the external-SQL module only after a successful scan.
+`queries --json` is database-free and read-only. It emits `formatVersion: 1` inventory entries with `queryId`, connection profiles, optional definition names, cardinalities, root-relative call sites, SQL file paths, source-owned nullable parameter and expected-validation contracts, `current`/`stale`/`missing` cache status, and `planned`/`parse-only` validation when cached, plus orphaned cache IDs. Config, scan, cache, and embed failures use versioned structured diagnostics with source location when available. Adding `--embed` writes the external-SQL module only after a successful scan.
+
+After adding a new `defineQuery`, run live `sqlx-js prepare` before the ordinary
+TypeScript build. Until then, the generated registry cannot contain that SQL
+literal and TypeScript reports an overload/registry mismatch. `sqlx-js queries --json`
+distinguishes `missing` from `stale` cache state and points to the exact
+source site without connecting to PostgreSQL; `prepare --check` remains the
+read-only artifact gate and tells you when a live prepare is required.
 
 `queries explain <query-id>` reads committed cache artifacts and reports result
 sources, source constraints, every DML and predicate target for parameters,
@@ -108,6 +115,16 @@ with `fixable: true`; `doctor --fix` appends only the missing entries,
 preserves existing attributes and honors canonical rules inherited from a
 containing monorepo. This lets GitHub collapse generated diffs by default
 without hiding them from local Git diffs.
+
+Every project-scoped command compares the running CLI package version and real
+package path with `@onreza/sqlx-js` resolved from `--root`. A version mismatch
+or malformed nearest installation fails before scanning, artifact writes, or
+database changes, including `init`. Read-only `doctor` remains available and
+reports both identities; `doctor --fix` refuses to write until the identity is
+not known to mismatch or be malformed. `doctor` reports an unresolved target
+installation as a warning; other commands can continue so `init` and
+dependency-free project setup remain usable. Different real paths with the
+same version are accepted, which keeps hoisted and linked workspaces usable.
 
 Schema-provider diagnostics distinguish ownership from command availability.
 An explicit `schema.provider: "builtin"` or `"pgschema"` selects the
@@ -147,7 +164,11 @@ configured; otherwise they prefer the managed binary under
 Arguments after `--` are forwarded only by `plan` and `apply`.
 `pgschema apply -- --plan plan.json` applies a reviewed plan without requiring
 the local `schema.sql`. The pinned pgschema 1.12.0 CLI accepts one `--schema`
-value, so multi-schema configurations fail explicitly.
+value, so multi-schema configurations fail explicitly. It also has a known
+upstream defect that omits function-local `SET` entries other than
+`search_path`; see [pgplex/pgschema#526](https://github.com/pgplex/pgschema/issues/526).
+Use another DDL workflow for routines that depend on settings such as
+`TimeZone` until a fixed provider version is pinned.
 
 Use provider-aware `dev` while developing built-in migrations and SQL:
 

@@ -27,6 +27,12 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_example
       SQLX_JS_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      PGSCHEMA_PLAN_HOST: localhost
+      PGSCHEMA_PLAN_PORT: "5432"
+      PGSCHEMA_PLAN_DB: sqlx_js_pgschema_plan
+      PGSCHEMA_PLAN_USER: postgres
+      PGSCHEMA_PLAN_PASSWORD: postgres
+      PGSCHEMA_PLAN_SSLMODE: disable
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -104,14 +110,16 @@ jobs:
       - name: Verify npm package contents
         run: npm pack --dry-run
 
-      - name: Create pgschema end-to-end database
+      - name: Create pgschema target and plan databases
         env:
           ADMIN_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
         run: >-
           bun -e 'import { createClient } from "@onreza/sqlx-js";
           const sql = createClient(process.env.ADMIN_DATABASE_URL, { max: 1 });
           await sql.unsafe("DROP DATABASE IF EXISTS sqlx_js_pgschema");
+          await sql.unsafe("DROP DATABASE IF EXISTS sqlx_js_pgschema_plan");
           await sql.unsafe("CREATE DATABASE sqlx_js_pgschema");
+          await sql.unsafe("CREATE DATABASE sqlx_js_pgschema_plan");
           await sql.end();'
 
       - name: Install and verify pinned pgschema

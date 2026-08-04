@@ -226,6 +226,27 @@ test("defineQuery definitions are scanned with names and cardinality", () => {
   expect(sites[2]).toMatchObject({ cardinality: "execute" });
 });
 
+test("defineQuery source options preserve nullable parameters and expected validation", () => {
+  setup({
+    "queries.ts": `
+      import { defineQuery } from "@onreza/sqlx-js";
+      export const call = defineQuery.one(
+        "billing.retire",
+        "SELECT retire($retireAt::timestamptz, $operationId::text)",
+        { nullableParams: ["retireAt", "operationId"], expectedValidation: "parse-only" },
+      );
+      export const positional = defineQuery("SELECT $1::text", { nullableParams: [1] });
+    `,
+  });
+  const sites = scanProject(tmp).slice().sort((a, b) => a.line - b.line);
+  expect(sites[0]).toMatchObject({
+    queryName: "billing.retire",
+    nullableParams: [1, 2],
+    expectedValidation: "parse-only",
+  });
+  expect(sites[1]).toMatchObject({ nullableParams: [1] });
+});
+
 test("defineQuery.for assigns reusable queries to explicit profiles", () => {
   setup({
     "a.ts": `

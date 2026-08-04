@@ -240,7 +240,14 @@ export type QueryRow<Definition, Registry extends QueryRegistry = DefaultQueryRe
   QueryRowFor<Definition, Registry>;
 export type QueryResult<Definition, Registry extends QueryRegistry = DefaultQueryRegistry> =
   QueryResultFor<Definition, Registry>;
-export type { MappedQueryDefinition, QueryDefinition, QueryExecutionMode, QueryParameterHelpers } from "./query";
+export type {
+  DefineQueryOptions,
+  MappedQueryDefinition,
+  QueryDefinition,
+  QueryExecutionMode,
+  QueryParameterHelpers,
+  QueryValidationExpectation,
+} from "./query";
 export type { RuntimeQueryDescriptors } from "./runtime-descriptors";
 export { defineQuery } from "./query";
 export { queryId } from "./query-id";

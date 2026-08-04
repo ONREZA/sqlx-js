@@ -35,6 +35,67 @@ test("CLI help lists the init command", () => {
   expect(r.stdout).toContain("sqlx-js init");
 });
 
+test("CLI rejects project commands from a different sqlx-js version and doctor reports both identities", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-cli-identity-"));
+  try {
+    const packageDir = join(root, "node_modules/@onreza/sqlx-js");
+    mkdirSync(packageDir, { recursive: true });
+    writeFileSync(join(packageDir, "package.json"), JSON.stringify({
+      name: "@onreza/sqlx-js",
+      version: "9.9.9",
+    }));
+
+    const queries = spawnSync("bun", [binPath, "queries", "--root", root], { encoding: "utf8" });
+    expect(queries.status).toBe(2);
+    expect(queries.stderr).toContain(`running CLI ${pkg.version}`);
+    expect(queries.stderr).toContain("@onreza/sqlx-js 9.9.9 resolved from --root");
+    expect(queries.stderr).toContain("Run the package-local sqlx-js script");
+
+    const structuredQueries = spawnSync("bun", [binPath, "queries", "--json", "--root", root], {
+      encoding: "utf8",
+    });
+    expect(structuredQueries.status).toBe(2);
+    expect(structuredQueries.stderr).toBe("");
+    expect(JSON.parse(structuredQueries.stdout)).toMatchObject({
+      formatVersion: 1,
+      ok: false,
+      diagnostics: [{ severity: "error", phase: "config" }],
+    });
+
+    const init = spawnSync("bun", [binPath, "init", "--root", root], { encoding: "utf8" });
+    expect(init.status).toBe(2);
+    expect(init.stderr).toContain("does not match");
+
+    writeFileSync(join(root, ".gitattributes"), "*.ts text\n");
+    const doctorFix = spawnSync("bun", [binPath, "doctor", "--root", root, "--json", "--fix"], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: "" },
+    });
+    expect(doctorFix.status).toBe(1);
+    expect(readFileSync(join(root, ".gitattributes"), "utf8")).toBe("*.ts text\n");
+    expect(JSON.parse(doctorFix.stdout).checks.find(
+      (check: { name: string }) => check.name === "gitAttributes",
+    )).toMatchObject({
+      status: "error",
+      details: { fixError: expect.stringContaining("package identity must be valid and match") },
+    });
+
+    const doctor = spawnSync("bun", [binPath, "doctor", "--root", root, "--json"], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: "" },
+    });
+    const payload = JSON.parse(doctor.stdout) as {
+      checks: Array<{ name: string; status: string; details?: Record<string, unknown> }>;
+    };
+    expect(payload.checks.find((check) => check.name === "packageIdentity")).toMatchObject({
+      status: "error",
+      details: { runningVersion: pkg.version, targetVersion: "9.9.9" },
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("CLI command help is successful and command-specific", () => {
   const parent = mkdtempSync(join(tmpdir(), "sqlx-js-help-"));
   const root = join(parent, "must-not-exist");
@@ -218,6 +279,7 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
     mkdirSync(packageDir, { recursive: true });
     writeFileSync(join(packageDir, "package.json"), JSON.stringify({
       name: "@onreza/sqlx-js",
+      version: pkg.version,
       type: "module",
       exports: { ".": { types: "./index.d.ts" } },
     }));

@@ -9,6 +9,7 @@
   "paramTypeIdentities": [],
   "paramTsTypes": [],
   "paramNullable": [],
+  "nullableParamOverrides": [],
   "columns": [
     {
       "name": "one",

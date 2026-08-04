@@ -229,10 +229,10 @@ export function resolveParamNullable(
   paramIndex: number,
   pm: ParamMapResult,
   schema: SchemaCache,
+  explicitNullable = false,
 ): boolean {
   const binding = pm.bindings.get(paramIndex);
   const dmlTargets = binding?.dmlTargets ?? [];
-  if (dmlTargets.length === 0) return pm.forceNullable.has(paramIndex);
   const propagated = dmlTargets.filter((candidate) => !candidate.nullSafe);
   const dmlAcceptsNull = propagated.length === 0 || propagated.every(({ target }) => {
     const oid = schema.resolveTable(target.schema, target.table);
@@ -242,6 +242,13 @@ export function resolveParamNullable(
     const col = schema.columnsOf(oid)?.get(column);
     return col ? !col.notNull : false;
   });
+  if (explicitNullable) {
+    if (!dmlAcceptsNull) {
+      throw new Error(`sqlx-js: parameter $${paramIndex} is explicitly nullable but maps to a NOT NULL stored target`);
+    }
+    return true;
+  }
+  if (dmlTargets.length === 0) return pm.forceNullable.has(paramIndex);
   if (!dmlAcceptsNull) return false;
   return binding?.referenceTargets.length === 0 || pm.forceNullable.has(paramIndex);
 }
@@ -315,6 +322,7 @@ export function paramInference(
   paramIndex: number,
   nullable: boolean,
   pm: ParamMapResult,
+  explicitNullable = false,
 ): CacheEntry["inference"]["params"][number] {
   const binding = pm.bindings.get(paramIndex);
   const targets = [
@@ -328,6 +336,12 @@ export function paramInference(
       ...target,
     })),
   ];
+  if (explicitNullable) {
+    return {
+      targets,
+      reason: "explicitly nullable in the defineQuery source contract",
+    };
+  }
   if (targets.length === 0) {
     return {
       targets,
