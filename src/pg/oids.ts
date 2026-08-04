@@ -9,7 +9,7 @@ export function arrayTsType(elementTs: string, nullability: ArrayElementNullabil
   return `(${elementTs}${nullability === "non-null" ? "" : " | null"})[]`;
 }
 
-const JSON_VALUE = 'import("@onreza/sqlx-js").JsonValue';
+const JSON_VALUE = 'import("@onreza/sqlx-js").SqlxJson<import("@onreza/sqlx-js").JsonValue>';
 const PG_DATE = 'import("@onreza/sqlx-js").PgDate';
 const PG_TIME = 'import("@onreza/sqlx-js").PgTime';
 const PG_TIMESTAMP = 'import("@onreza/sqlx-js").PgTimestamp';

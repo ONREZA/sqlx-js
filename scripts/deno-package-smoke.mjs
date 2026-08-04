@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { Temporal } from "npm:@js-temporal/polyfill@0.5.1";
 import {
   createSqlClient,
+  JsonNumber,
   queryId,
   QueryAbortedError,
+  SqlxJson,
 } from "@onreza/sqlx-js";
 import descriptorVersions from "../example/.sqlx-js/runtime-descriptors.json" with { type: "json" };
 
@@ -19,6 +21,7 @@ const db = createSqlClient(databaseUrl, {
     formatVersion: descriptorVersions.formatVersion,
     cacheFormat: descriptorVersions.cacheFormat,
     generatorRevision: descriptorVersions.generatorRevision,
+    jsonProtocol: descriptorVersions.jsonProtocol,
     configHash: "deno-package-smoke",
     temporal: descriptorVersions.temporal,
     types: {},
@@ -41,12 +44,24 @@ try {
        '[0:2]={-2,NULL,3}'::int2[] AS bounded,
        ARRAY[[-1,2],[3,-4]]::int4[][] AS matrix,
        ARRAY[0::oid, 4294967295::oid, NULL]::oid[] AS oids`,
-    db.sql.json({ ok: true }),
+    db.sql.json({
+      ok: true,
+      id: 9_007_199_254_740_993n,
+      exact: JsonNumber.from("12345678901234567890.125"),
+      at: Temporal.Instant.from("2026-08-04T10:15:30.123456789Z"),
+    }),
     db.sql.array([1, 2, 3]),
     bytes,
   );
-  assert.deepEqual(row, {
-    payload: { ok: true },
+  assert.ok(row.payload instanceof SqlxJson);
+  assert.deepEqual(row.payload.value, {
+    ok: true,
+    id: 9_007_199_254_740_993n,
+    exact: JsonNumber.from("12345678901234567890.125"),
+    at: Temporal.Instant.from("2026-08-04T10:15:30.123456789Z"),
+  });
+  assert.deepEqual({ ...row, payload: undefined }, {
+    payload: undefined,
     values: [1, 2, 3],
     bytes,
     bigint: 9007199254740993n,

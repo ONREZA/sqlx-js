@@ -1,13 +1,12 @@
 # sqlx-js Extended JSON protocol
 
-Status: design proposal. The current runtime still uses the strict vanilla JSON
-contract documented in the [Query API](./query-api.md#json-and-postgresql-array-parameters).
-The API names and tag spelling below are a prototype, not a compatibility
-promise.
+Status: implemented protocol version 1. This document is the compatibility
+contract for PostgreSQL `json`/`jsonb` values, exported text processing, and
+generated artifacts.
 
 ## Decision
 
-sqlx-js should own a versioned Extended JSON protocol for every PostgreSQL
+sqlx-js owns a versioned Extended JSON protocol for every PostgreSQL
 `json` and `jsonb` parameter and result. The public boundary is a branded,
 immutable `SqlxJson<T>` document. Applications enter it explicitly through
 `sql.json(...)`; once inside that boundary, supported extension values such as
@@ -34,10 +33,10 @@ changing persistence meaning merely because a nested value later becomes a
 `bigint` or Temporal object. Automatic extension handling begins only after the
 application has chosen the sqlx-js JSON protocol.
 
-## Prototype API
+## API
 
-The smallest useful surface reuses `sql.json(...)` as the constructor and
-exports the document and exact-number types:
+`sql.json(...)` is the document constructor. The package also exports the
+document and exact-number classes:
 
 ```ts
 import {
@@ -74,7 +73,8 @@ const event = row.payload.value;
 // event.occurredAt: Temporal.Instant
 ```
 
-`SqlxJson.parse(text)` returns a branded generic protocol tree, and
+`SqlxJson.parse(text, { temporalApi })` returns a branded generic protocol tree,
+using `globalThis.Temporal` when the explicit provider is omitted, and
 `SqlxJson.stringify(document)` accepts only a branded document. A generic
 `parse<T>(text)` overload must not claim domain validation from a type argument.
 An application that needs `T` from untrusted text must validate the decoded
@@ -96,15 +96,25 @@ extension values.
 | finite safe-integer `number` | `number` | Native JSONB number |
 | finite fractional `number` | `number` with JavaScript IEEE-754 semantics | Native JSONB number |
 | `bigint` | `bigint` through a versioned extension tag | Tagged JSONB object |
-| `JsonNumber` | `JsonNumber` from an unquoted JSON number token | Native JSONB number |
+| `JsonNumber` | Native token; decoded as `JsonNumber` when JavaScript `number` is unsafe | Native JSONB number |
 | supported Temporal object | Same Temporal class through a versioned extension tag | Tagged JSONB object |
 | plain object or dense array | Deeply immutable protocol tree | Native shape except reserved-tag escaping |
 
 `JsonNumber` represents an exact JSON number token rather than a JavaScript
 `number`. It is the explicit choice for quantities that must remain native
 JSONB numerics for comparison, arithmetic, containment, or numeric indexes.
-Construction validates JSON number grammar and stores a canonical decimal
-representation. PostgreSQL still owns its accepted `jsonb` numeric range.
+Construction validates JSON number grammar, normalizes exponent notation to a
+decimal representation, and enforces PostgreSQL `jsonb`'s 131072 integer-digit
+and 16383 fractional-digit limits. Trailing fractional zeroes remain
+significant in canonical text. PostgreSQL still owns any narrower server-side
+acceptance caused by a deployed version or expression context.
+
+The native JSON token carries no marker that distinguishes an explicit
+`JsonNumber` input from an ordinary number written by another producer. On
+read, unsafe integers, overflow, and underflow materialize as `JsonNumber`;
+ordinary fractions and safe integers follow JavaScript `number` semantics.
+This preserves native JSONB operators and indexes without pretending that a
+write-side wrapper can be recovered when the wire representation is identical.
 
 A `bigint` uses a tag and round-trips back to `bigint`. The decoder must not
 guess that an untagged large JSON integer is a `bigint`: existing databases and
@@ -136,22 +146,22 @@ unsupported Temporal objects fail closed. JSON `null` remains distinct from SQL
 `NULL`: `sql.json(null)` is a non-null protocol document whose value is JSON
 `null`, while a bare nullable query parameter represents SQL `NULL`.
 
-## Candidate wire representation
+## Version 1 wire representation
 
-The preferred prototype keeps ordinary object paths unchanged and uses sparse
-tagged nodes. Exact spelling remains open until conformance and collision tests
-are complete:
+Version 1 keeps ordinary object paths unchanged and uses sparse tagged nodes.
+Object keys are ordered by JavaScript UTF-16 code units in canonical output, so
+the control object is emitted as `{"type": ..., "v": 1}`:
 
 ```json
 {
-  "$sqlx": { "v": 1, "type": "bigint" },
+  "$sqlx": { "type": "bigint", "v": 1 },
   "value": "9007199254740993"
 }
 ```
 
 ```json
 {
-  "$sqlx": { "v": 1, "type": "temporal.Instant" },
+  "$sqlx": { "type": "temporal.Instant", "v": 1 },
   "value": "2026-08-04T10:15:30.123456789Z"
 }
 ```
@@ -161,7 +171,7 @@ encoder can escape it as an explicit object node:
 
 ```json
 {
-  "$sqlx": { "v": 1, "type": "object" },
+  "$sqlx": { "type": "object", "v": 1 },
   "value": {
     "$sqlx": "application-owned value",
     "other": true
@@ -174,12 +184,10 @@ Unknown versions, unknown types, extra control fields, malformed payloads, and
 legacy objects that collide with the reserved namespace fail closed. A rollout
 therefore needs a collision audit before writes are enabled.
 
-The alternative is a versioned root envelope around every document. It removes
-reserved-key ambiguity, but changes every JSONB path, containment expression,
-partial index, and external reader even for documents that use only vanilla
-JSON. Sparse tags are preferred because they preserve ordinary shapes; the
-escape format and exact reserved namespace are still pre-implementation
-decisions.
+A versioned root envelope was rejected because it would change every JSONB
+path, containment expression, partial index, and external reader even for
+documents that use only vanilla JSON. The `$sqlx` namespace, sparse tags, and
+`object` escape above are frozen for protocol version 1.
 
 ## Canonical and safe processing
 
@@ -188,7 +196,7 @@ because precision may already be lost before sqlx-js can inspect the value. The
 database decoder, exported parser, document constructor, and stringifier must
 share one exact tokenizer and one conformance suite.
 
-Version 1 must define:
+Version 1 defines:
 
 - deterministic object-key ordering for text output without Unicode key
   normalization;
@@ -197,8 +205,9 @@ Version 1 must define:
   them;
 - exact handling of exponent notation, very large numeric tokens, and negative
   zero;
-- maximum input bytes, nesting depth, node count, string length, and numeric
-  token length;
+- maximum 16 MiB UTF-8 document text, depth 128, 100000 nodes, 8 MiB UTF-8
+  strings/keys, 131072 decimal digits in a tagged `bigint`, and numeric tokens
+  bounded by the PostgreSQL-compatible decimal limits above;
 - safe own-property construction so `__proto__`, `prototype`, and
   `constructor` remain data rather than mutation paths;
 - deep immutability or an equivalent eager snapshot so a validated document
@@ -259,30 +268,28 @@ Deployment must be reader-first:
 The library should provide a read-only audit/inventory command before it offers
 any data rewrite. Database migrations and backfills remain application-owned.
 
-## Implementation slices
+## Frozen version 1 decisions
 
-1. Freeze the value model, tag namespace, collision escape, numeric rules, and
-   conformance corpus.
-2. Build one exact parser/encoder and immutable `SqlxJson<T>` document with
-   vanilla JSON, `bigint`, `JsonNumber`, and the initial Temporal types.
-3. Route PostgreSQL scalar and array JSON codecs through that implementation;
-   make all generated inputs and outputs branded.
-4. Bind the protocol version into cache/generator/runtime descriptors and add
-   Node, Bun, Deno, PostgreSQL `json`, and PostgreSQL `jsonb` round-trip tests.
-5. Add a read-only collision and JSONB-usage audit plus an upgrade guide before
-   enabling tagged writes for existing applications.
-
-## Open decisions
-
-- final `SqlxJson`/`JsonNumber` API names and whether `.value` returns a frozen
-  tree or a copy;
-- exact reserved namespace, sparse tag shape, and object-escape representation;
-- version-1 treatment of negative zero and numeric canonicalization;
-- the initial Temporal type set and cross-realm/provider brand checks;
-- default resource limits and whether applications may lower them;
-- audit scope for existing stored JSON and SQL/index dependencies;
-- staged coexistence with applications that intentionally exchange unbranded
-  JSON with external systems.
+- `SqlxJson<T>.value` is the eagerly snapshotted, deeply frozen tree; it is not
+  a mutable copy.
+- Negative zero is canonicalized to `0`. Object keys are sorted without Unicode
+  normalization, and duplicate decoded keys are rejected.
+- All eight reconstructable Temporal types listed above are supported. Input
+  values must round-trip through their own provider constructor; database and
+  text decoding use the client/global provider.
+- Resource limits are fixed protocol constants. Making them configurable would
+  let two version-1 readers disagree about whether the same persisted document
+  is valid.
+- `sqlx-js json audit` scans selectable ordinary/materialized user relation
+  columns in a read-only transaction. It reports `$sqlx` collisions at any
+  depth, duplicate object keys preserved by `json`, dependent indexes,
+  constraints, generated columns and views, plus source queries using JSON
+  operators or `json_*`/`jsonb_*` functions. Missing column privileges, active
+  row-level security for the audit role, or scan errors make the audit
+  incomplete and non-zero.
+- External producers may continue writing untagged JSON. Readers brand it and
+  materialize unsafe native numeric tokens as `JsonNumber`; only sqlx-js writers
+  require `SqlxJson` input.
 
 None of these decisions requires runtime SQL parsing, row-schema validation, or
 model generation. Keeping those boundaries explicit is what lets Extended JSON

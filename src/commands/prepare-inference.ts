@@ -6,6 +6,7 @@ import {
   type SqlxJsConfig,
 } from "../config";
 import type { ColumnSource } from "../pg/analyze";
+import { inputTsType, JSON_INPUT_TS } from "../pg/input-types";
 import { arrayTsType, oidToTs, type ArrayElementNullability } from "../pg/oids";
 import {
   effectiveParamTargets,
@@ -18,10 +19,9 @@ import type { FieldDescription } from "../pg/wire";
 
 const JSON_OIDS = new Set([114, 3802]);
 const JSON_ARRAY_OIDS = new Set([199, 3807]);
-const JSON_INPUT_VALUE = "unknown";
 
-function jsonParameter(type: string): string {
-  return `import("@onreza/sqlx-js").JsonParameter<${type}>`;
+function sqlxJson(type: string): string {
+  return `import("@onreza/sqlx-js").SqlxJson<${type}>`;
 }
 
 function arrayParameter(type: string, nonNullElements: boolean): string {
@@ -131,11 +131,12 @@ function configuredColumnTs(
   nonNullElements: boolean,
 ): string | undefined {
   if (JSON_OIDS.has(typeOid)) {
-    return lookupJsonbType(cfg, source.schema, source.table, source.column);
+    const declaration = lookupJsonbType(cfg, source.schema, source.table, source.column);
+    return declaration ? sqlxJson(declaration) : undefined;
   }
   if (JSON_ARRAY_OIDS.has(typeOid)) {
     const declaration = lookupJsonbType(cfg, source.schema, source.table, source.column);
-    return declaration ? arrayTsType(declaration, nonNullElements ? "non-null" : "unknown") : undefined;
+    return declaration ? arrayTsType(sqlxJson(declaration), nonNullElements ? "non-null" : "unknown") : undefined;
   }
   if (isScalarColumnType(typeOid, schema)) {
     return lookupColumnType(cfg, source.schema, source.table, source.column);
@@ -172,8 +173,8 @@ export function resolveParamTs(
       sources,
       (source) => lookupJsonbType(cfg, source.schema, source.table, source.column),
     );
-    if (decl) return jsonParameter(decl);
-    return jsonParameter(JSON_INPUT_VALUE);
+    if (decl) return sqlxJson(decl);
+    return JSON_INPUT_TS;
   }
   if (JSON_ARRAY_OIDS.has(paramOid)) {
     const decl = resolveConfiguredParamDeclaration(
@@ -182,16 +183,12 @@ export function resolveParamTs(
       sources,
       (source) => lookupJsonbType(cfg, source.schema, source.table, source.column),
     );
-    if (decl) return arrayParameter(jsonParameter(decl), nonNullElements);
-    return arrayParameter(jsonParameter(JSON_INPUT_VALUE), nonNullElements);
+    if (decl) return arrayParameter(sqlxJson(decl), nonNullElements);
+    return arrayParameter(JSON_INPUT_TS, nonNullElements);
   }
   const array = schema.arrayElement(paramOid);
-  if (array) return arrayParameter(array.tsType, nonNullElements);
-  const custom = schema.customType(paramOid);
-  if (custom) {
-    return resolveTs(paramOid, () => custom);
-  }
-  return resolveTs(paramOid, (oid) => schema.customType(oid));
+  if (array) return arrayParameter(inputTsType(array.typeOid, schema), nonNullElements);
+  return inputTsType(paramOid, schema);
 }
 
 function resolveParamSources(targets: ParamTarget[], schema: SchemaCache): ColumnSource[] {

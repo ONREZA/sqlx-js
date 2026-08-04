@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 import type { PrepareDiagnosticPhase } from "../src/commands/prepare";
 import type { PgschemaSubcommand } from "../src/commands/pgschema";
+import { JSON_PROTOCOL_VERSION } from "../src/artifact-versions";
 import { assertSupportedRuntime, loadConfig, loadRootEnv } from "../src/config";
 import { inspectPackageIdentity, runningPackageIdentity } from "../src/package-identity";
 
@@ -17,6 +18,7 @@ type HelpScope =
   | "verify"
   | "doctor"
   | "ci"
+  | "json"
   | "pgschema"
   | "prepare"
   | "queries"
@@ -41,6 +43,7 @@ inspection and generated artifacts:
   sqlx-js doctor [--root <dir>] [--dts <path>] [--json] [--fix]
   sqlx-js queries [--json] [--embed <path>] [--root <dir>]
   sqlx-js queries explain <query-id> [--json] [--root <dir>]
+  sqlx-js json audit [--json] [--root <dir>]
   sqlx-js snapshot dump|check
   sqlx-js --version
   sqlx-js-diagnostics github|unix < prepare-diagnostics.json
@@ -89,6 +92,14 @@ proposed schema source without changing the target database. Run \`pgschema
 plan\` or \`migrate run --dry-run\` separately for target deployment drift.
 
 --migrations applies only to the built-in provider.`,
+  json: `usage: sqlx-js json audit [--json] [--root <dir>]
+
+Read-only inventory for the Extended JSON reader-first rollout. Scans every
+selectable user-table json/jsonb column for reserved $sqlx keys and duplicate
+json object keys, then reports dependent schema objects and source query usage.
+
+Writes worktree: no
+Changes target database: no`,
   pgschema: `usage: sqlx-js pgschema install | plan | apply
 
 Manage the pinned pgschema tool and target-database deployment plans.
@@ -129,6 +140,10 @@ const SUBCOMMAND_HELP: Record<string, string> = {
 
 Explain result provenance, parameter targets, nullability decisions, and
 actionable inference hints from committed prepare artifacts.`,
+  "json:audit": `usage: sqlx-js json audit [--json] [--root <dir>]
+
+Audit stored json/jsonb documents and extension-sensitive schema/source usage
+before Extended JSON writers are enabled. Runs in a read-only transaction.`,
   "pgschema:install": `usage: sqlx-js pgschema install [--root <dir>]
 
 Download and checksum the pinned pgschema binary. \`sqlx-js doctor\` reports
@@ -187,12 +202,6 @@ function exitHelp(scope: HelpScope, args: string[] = []): never {
   process.exit(0);
 }
 
-function usageError(message: string, scope: HelpScope = "root", args: string[] = []): never {
-  console.error(`sqlx-js: ${message}`);
-  printHelp(scope, true, args);
-  process.exit(2);
-}
-
 const rawArgv = process.argv.slice(2);
 const passthroughIndex = rawArgv.indexOf("--");
 const cliArgv = passthroughIndex >= 0 ? rawArgv.slice(0, passthroughIndex) : rawArgv;
@@ -200,12 +209,23 @@ const passthroughArgs = passthroughIndex >= 0 ? rawArgv.slice(passthroughIndex +
 const cmd = cliArgv[0];
 const commandArgv = cliArgv.slice(1);
 
+function usageError(message: string, scope: HelpScope = "root", args: string[] = []): never {
+  if (cmd === "json" && cliArgv.includes("--json")) {
+    printJsonAuditFailure(`sqlx-js: ${message}`);
+    process.exit(2);
+  }
+  console.error(`sqlx-js: ${message}`);
+  printHelp(scope, true, args);
+  process.exit(2);
+}
+
 const scopes = new Set<HelpScope>([
   "init",
   "dev",
   "verify",
   "doctor",
   "ci",
+  "json",
   "pgschema",
   "prepare",
   "queries",
@@ -260,6 +280,7 @@ function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfi
     "shadow-url": { type: "string" },
     "shadow-admin-url": { type: "string" },
   };
+  if (command === "json") return { ...ROOT_OPTIONS, json: { type: "boolean" } };
   if (command === "pgschema") return ROOT_OPTIONS;
   if (command === "prepare") {
     return {
@@ -368,6 +389,13 @@ function validateInvocation(): void {
     requirePositionals(0, 0, cmd);
     return;
   }
+  if (cmd === "json") {
+    requirePositionals(1, 1, "json");
+    if (positionals[0] !== "audit") {
+      usageError(`unknown json command ${JSON.stringify(positionals[0])}`, "json", commandArgv);
+    }
+    return;
+  }
   if (cmd === "pgschema") {
     requirePositionals(1, 1, "pgschema");
     const sub = positionals[0];
@@ -458,6 +486,29 @@ function printPrepareFailure(
   }
 }
 
+function printJsonAuditFailure(message: string): void {
+  console.log(JSON.stringify({
+    formatVersion: 1,
+    protocolVersion: JSON_PROTOCOL_VERSION,
+    ok: false,
+    complete: false,
+    columns: [],
+    dependencies: [],
+    sourceUsages: [],
+    summary: {
+      columns: 0,
+      scannedColumns: 0,
+      collisionRows: 0,
+      duplicateKeyRows: 0,
+      errors: 1,
+      dependencies: 0,
+      sourceUsages: 0,
+      reviewRequired: true,
+    },
+    diagnostics: [{ severity: "error", message }],
+  }, null, 2));
+}
+
 function failPreflight(message: string, phase: PrepareDiagnosticPhase = "config"): never {
   if (cmd === "ci" && flag("--json")) {
     console.log(JSON.stringify({
@@ -471,6 +522,8 @@ function failPreflight(message: string, phase: PrepareDiagnosticPhase = "config"
       ok: false,
       diagnostics: [{ severity: "error", phase, message }],
     }, null, 2));
+  } else if (cmd === "json" && flag("--json")) {
+    printJsonAuditFailure(message);
   } else if (cmd === "prepare") {
     printPrepareFailure(message, phase);
   } else {
@@ -497,6 +550,7 @@ const needsTypeScript =
   cmd === "ci" ||
   cmd === "prepare" ||
   cmd === "queries" ||
+  cmd === "json" ||
   cmd === "dev" ||
   cmd === "verify";
 if (needsTypeScript) {
@@ -522,7 +576,7 @@ if (needsTypeScript) {
         checks: [{ name: "typescript", status: "error", message: typescriptError }],
       }, null, 2));
     } else {
-      if (cmd === "ci") failPreflight(typescriptError);
+      if (cmd === "ci" || cmd === "json") failPreflight(typescriptError);
       console.error(typescriptError);
     }
     process.exit(2);
@@ -533,6 +587,7 @@ const needsEnvironment =
   cmd === "doctor" ||
   cmd === "ci" ||
   cmd === "snapshot" ||
+  cmd === "json" ||
   cmd === "dev" ||
   cmd === "verify" ||
   (cmd === "pgschema" && (positionals[0] === "plan" || positionals[0] === "apply")) ||
@@ -578,6 +633,13 @@ function parseLockTimeout(): number | undefined {
 
 function failCommand(error: unknown, exitCode = 1): never {
   console.error(error instanceof Error ? error.message : String(error));
+  process.exit(exitCode);
+}
+
+function failJsonAudit(error: unknown, exitCode = 1): never {
+  const message = error instanceof Error ? error.message : String(error);
+  if (flag("--json")) printJsonAuditFailure(message);
+  else console.error(message);
   process.exit(exitCode);
 }
 
@@ -684,6 +746,21 @@ if (cmd === "init") {
     migrationsDir: arg("--migrations"),
     dtsPath: dtsArg ? dtsPath : undefined,
   });
+} else if (cmd === "json") {
+  if (!databaseUrl) {
+    failJsonAudit("DATABASE_URL is required for json audit", 2);
+  }
+  const { runJsonAudit } = await import("../src/commands/json-audit");
+  try {
+    await runJsonAudit({
+      root,
+      databaseUrl,
+      config: await loadConfig(root),
+      json: flag("--json"),
+    });
+  } catch (error) {
+    failJsonAudit(error);
+  }
 } else if (cmd === "pgschema") {
   const {
     PgschemaCommandError,

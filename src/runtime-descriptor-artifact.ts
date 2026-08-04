@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   CACHE_FORMAT_VERSION,
   GENERATOR_REVISION,
+  JSON_PROTOCOL_VERSION,
   RUNTIME_DESCRIPTOR_FILE,
   RUNTIME_DESCRIPTOR_FORMAT_VERSION,
 } from "./artifact-versions";
@@ -73,6 +74,7 @@ export function renderRuntimeDescriptors(
     formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
     cacheFormat: CACHE_FORMAT_VERSION,
     generatorRevision: GENERATOR_REVISION,
+    jsonProtocol: JSON_PROTOCOL_VERSION,
     configHash,
     temporal: resolveTemporalPolicy(temporal),
     types: sortedRecord(types),

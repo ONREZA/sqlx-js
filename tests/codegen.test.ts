@@ -895,18 +895,18 @@ test("query definitions, executor helpers, and structural JSON compile together"
     {
       query: jsonQuery,
       paramOids: [3802],
-      paramTsTypes: ['import("@onreza/sqlx-js").JsonParameter<unknown>'],
+      paramTsTypes: ['import("@onreza/sqlx-js").SqlxJson<unknown>'],
       paramNames: ["payload"],
       hasResultSet: true,
-      columns: [{ name: "payload", typeOid: 3802, tsType: 'import("@onreza/sqlx-js").JsonValue', nullable: false }],
+      columns: [{ name: "payload", typeOid: 3802, tsType: 'import("@onreza/sqlx-js").SqlxJson<import("@onreza/sqlx-js").JsonValue>', nullable: false }],
     },
     {
       query: jsonArrayQuery,
       paramOids: [3807],
-      paramTsTypes: ['import("@onreza/sqlx-js").PgArrayParameter<import("@onreza/sqlx-js").JsonParameter<unknown>, boolean>'],
+      paramTsTypes: ['import("@onreza/sqlx-js").PgArrayParameter<import("@onreza/sqlx-js").SqlxJson<unknown>, boolean>'],
       paramNames: ["items"],
       hasResultSet: true,
-      columns: [{ name: "items", typeOid: 3807, tsType: 'import("@onreza/sqlx-js").JsonValue[]', nullable: false }],
+      columns: [{ name: "items", typeOid: 3807, tsType: '(import("@onreza/sqlx-js").SqlxJson<import("@onreza/sqlx-js").JsonValue> | null)[]', nullable: false }],
     },
     {
       query: positionalQuery,
@@ -1232,9 +1232,7 @@ declare const tree: TreeNode;
 json(tree);
 // @ts-expect-error Date is not JSON-safe
 json({ createdAt: new Date() });
-// @ts-expect-error Temporal values require an explicit JSON string representation
 json({ createdAt: Temporal.Instant.from("2026-01-01T00:00:00Z") });
-// @ts-expect-error bigint is not JSON-safe
 json({ count: 1n });
 // @ts-expect-error functions are not JSON-safe
 json({ callback: () => "done" });

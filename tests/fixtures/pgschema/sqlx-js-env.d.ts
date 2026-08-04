@@ -30,6 +30,7 @@ export interface SqlxJsGeneratedRegistry {
   functions: SqlxJsGeneratedFunctions;
   runtimeTypes: SqlxJsGeneratedRuntimeTypes;
   runtimeDescriptors: true;
+  jsonProtocol: 1;
   temporal: { readonly infinity: "reject"; readonly timestampWithoutTimeZone: "reject"; readonly sessionTimeZone: "UTC" };
 }
 

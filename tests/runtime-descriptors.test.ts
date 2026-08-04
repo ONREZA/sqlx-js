@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   CACHE_FORMAT_VERSION,
   GENERATOR_REVISION,
+  JSON_PROTOCOL_VERSION,
   RUNTIME_DESCRIPTOR_FORMAT_VERSION,
 } from "../src/artifact-versions";
 import { fingerprint, type CacheEntry } from "../src/cache";
@@ -60,6 +61,7 @@ test("runtime descriptor rendering deduplicates database-local types and binds p
     formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
     cacheFormat: CACHE_FORMAT_VERSION,
     generatorRevision: GENERATOR_REVISION,
+    jsonProtocol: JSON_PROTOCOL_VERSION,
     configHash: "config-hash",
     temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
     types: { [key]: status },
@@ -128,7 +130,11 @@ test("runtime descriptor parsing fails closed on stale revisions and profile rol
   expect(() => prepareRuntimeDescriptors({
     ...artifact,
     generatorRevision: artifact.generatorRevision - 1,
-  })).toThrow(/incompatible format or generator revision/);
+  })).toThrow(/incompatible format, generator revision, or Extended JSON protocol/);
+  expect(() => prepareRuntimeDescriptors({
+    ...artifact,
+    jsonProtocol: artifact.jsonProtocol + 1,
+  })).toThrow(/incompatible format, generator revision, or Extended JSON protocol/);
   expect(() => prepareRuntimeDescriptors(
     artifact,
     { name: "api", role: "wrong_role" },

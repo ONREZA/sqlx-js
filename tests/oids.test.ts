@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { arrayElementOid, oidToTs, isBuiltinOid } from "../src/pg/oids";
 
-const JSON_VALUE = 'import("@onreza/sqlx-js").JsonValue';
+const JSON_VALUE = 'import("@onreza/sqlx-js").SqlxJson<import("@onreza/sqlx-js").JsonValue>';
 
 test("scalar OIDs map to expected TS types", () => {
   expect(oidToTs(16).ts).toBe("boolean");

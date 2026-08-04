@@ -16,10 +16,23 @@ export interface KnownFileQueries {}
 export interface KnownFunctions {}
 export interface KnownProfiles {}
 
-export type JsonPrimitive = import("./json-value").JsonPrimitive;
-export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
-export type JsonObject = { readonly [key: string]: JsonValue };
-export type JsonArray = readonly JsonValue[];
+export type {
+  ImmutableJson,
+  JsonArray,
+  JsonCompatible,
+  JsonInputArray,
+  JsonInputObject,
+  JsonInputValue,
+  JsonObject,
+  JsonPrimitive,
+  JsonValue,
+  SqlxJsonParseOptions,
+} from "./json-value";
+export {
+  EXTENDED_JSON_PROTOCOL_VERSION,
+  JsonNumber,
+  SqlxJson,
+} from "./json-value";
 export type {
   PgDate,
   PgTime,
@@ -27,10 +40,7 @@ export type {
   PgTimestamptz,
   TemporalApi,
 } from "./temporal-api";
-export type JsonInput = string | number | boolean | JsonInputObject | JsonInputArray;
-export type JsonInputValue = import("./json-value").JsonInputValue;
-export type JsonInputObject = import("./json-value").JsonInputObject;
-export type JsonInputArray = import("./json-value").JsonInputArray;
+export type JsonInput = import("./json-value").JsonInputValue;
 
 export { defineConfig, defineDatabaseProfiles } from "./config";
 export type {
@@ -65,7 +75,7 @@ export type {
   QueryOutcome,
   QueryTimeoutPhase,
 } from "./runtime";
-export type { ExecuteResult, JsonParameter, PgArrayParameter, JsonCompatible, KnownSqlState } from "./runtime";
+export type { ExecuteResult, JsonParameter, PgArrayParameter, KnownSqlState } from "./runtime";
 export type { RuntimeTypeCodec, RuntimeTypeCodecs } from "./postgres-codecs";
 export type {
   ClientLifecycleEvent,
@@ -94,6 +104,7 @@ export type QueryRegistry = {
   runtimeTypes?: object;
   profile?: import("./config").DatabaseProfile;
   runtimeDescriptors?: true;
+  jsonProtocol: typeof import("./json-value").EXTENDED_JSON_PROTOCOL_VERSION;
   temporal?: import("./temporal").TemporalPolicy;
 };
 
@@ -101,6 +112,7 @@ export interface DefaultQueryRegistry {
   queries: KnownQueries;
   fileQueries: KnownFileQueries;
   functions: KnownFunctions;
+  jsonProtocol: typeof import("./json-value").EXTENDED_JSON_PROTOCOL_VERSION;
 }
 
 type ProfileTransactionSetting<Profile> =

@@ -5,6 +5,7 @@ import { effectiveNullable, type CacheEntry } from "./cache";
 import type { FunctionEntry } from "./function-cache";
 import type { DatabaseProfiles } from "./config";
 import { resolveTemporalPolicy, type TemporalPolicy, type TemporalPolicyOptions } from "./temporal";
+import { JSON_PROTOCOL_VERSION } from "./artifact-versions";
 
 function entrySignature(e: CacheEntry): { params: string; row: string } {
   const paramTypes = e.paramTsTypes.map((t, i) => {
@@ -108,6 +109,7 @@ function emitRegistry(
   lines.push("  functions: SqlxJsGeneratedFunctions;");
   lines.push("  runtimeTypes: SqlxJsGeneratedRuntimeTypes;");
   lines.push("  runtimeDescriptors: true;");
+  lines.push(`  jsonProtocol: ${JSON_PROTOCOL_VERSION};`);
   lines.push(`  temporal: ${temporalTypeLiteral(temporal)};`);
   lines.push("}");
 }
@@ -154,6 +156,7 @@ function emitProfileRegistries(
     lines.push("    functions: SqlxJsGeneratedFunctions;");
     lines.push("    runtimeTypes: SqlxJsGeneratedRuntimeTypes;");
     lines.push("    runtimeDescriptors: true;");
+    lines.push(`    jsonProtocol: ${JSON_PROTOCOL_VERSION};`);
     lines.push(`    temporal: ${temporalTypeLiteral(temporal)};`);
     const transactionSettings = profile.transactionSettings
       ? ` readonly transactionSettings: readonly [${profile.transactionSettings.map((setting) => JSON.stringify(setting)).join(", ")}];`

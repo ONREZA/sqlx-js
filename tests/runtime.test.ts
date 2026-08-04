@@ -89,43 +89,43 @@ describe("encodeParam", () => {
     expect(encodePgArrayLiteral([1, null, 2])).toBe("{1,NULL,2}");
   });
 
-  test("Date and unsafe JSON integers fail before dispatch", () => {
+  test("Extended JSON validates and encodes before dispatch", () => {
     expect(() => _internal.encodeParam(new Date())).toThrow("JavaScript Date is not supported");
     expect(() => _internal.encodeParam(json({ id: Number.MAX_SAFE_INTEGER + 1 })))
-      .toThrow("JSON integers must be within JavaScript's safe integer range");
+      .toThrow("Extended JSON integer numbers must be within JavaScript's safe integer range");
     expect(() => _internal.encodeParam(json({ ratio: Number.POSITIVE_INFINITY })))
-      .toThrow("JSON numbers must be finite");
+      .toThrow("Extended JSON numbers must be finite");
     expect(() => _internal.encodeParam(json([undefined] as never)))
-      .toThrow("JSON arrays cannot contain holes, accessors, or undefined elements");
-    expect(() => _internal.encodeParam(json({ at: Temporal.Instant.from("2026-01-01T00:00:00Z") })))
-      .toThrow("Temporal values are not supported in JSON");
-    expect(() => _internal.encodeParam(json({ ttl: Temporal.Duration.from("PT1H") })))
-      .toThrow("Temporal values are not supported in JSON");
-    expect(() => parseJsonResult('{"id":9007199254740993}'))
-      .toThrow("JSON integers must be within JavaScript's safe integer range");
-    expect(() => parseJsonResult('{"ratio":1e400}'))
-      .toThrow("JSON numbers must be finite");
-    expect(_internal.encodeParam(json({ optional: undefined, value: 1 }))).toBe('{"value":1}');
+      .toThrow("Extended JSON arrays cannot contain holes, accessors, or undefined elements");
+    expect(_internal.encodeParam(json({ at: Temporal.Instant.from("2026-01-01T00:00:00Z") })))
+      .toContain('"type":"temporal.Instant"');
+    expect(_internal.encodeParam(json({ ttl: Temporal.Duration.from("PT1H") })))
+      .toContain('"type":"temporal.Duration"');
+    expect(String((parseJsonResult('{"id":9007199254740993}').value as { id: unknown }).id))
+      .toBe("9007199254740993");
+    expect(String((parseJsonResult('{"ratio":1e400}').value as { ratio: unknown }).ratio))
+      .toBe(`1${"0".repeat(400)}`);
+    expect(() => json({ optional: undefined, value: 1 } as never)).toThrow("undefined values");
     expect(_internal.encodeParam(json(runInNewContext("({ value: 1 })") as never))).toBe('{"value":1}');
     expect(() => _internal.encodeParam(json(new Map() as never)))
-      .toThrow("JSON objects must be plain records");
+      .toThrow("Extended JSON objects must be plain records");
     expect(() => _internal.encodeParam(json(new Uint8Array([1]) as never)))
-      .toThrow("binary views are not supported in JSON");
+      .toThrow("binary views are not supported in Extended JSON");
     expect(() => _internal.encodeParam(json({ [Symbol("hidden")]: 1 } as never)))
-      .toThrow("JSON objects cannot contain symbol-keyed properties");
+      .toThrow("Extended JSON objects cannot contain symbol-keyed properties");
     expect(() => _internal.encodeParam(json({ toJSON: () => ({ safe: true }) } as never)))
-      .toThrow("custom toJSON methods are not supported");
+      .toThrow("custom toJSON methods are not supported in Extended JSON");
     const arrayWithToJson = [1];
     Object.setPrototypeOf(arrayWithToJson, {
       __proto__: Array.prototype,
       toJSON: () => [2],
     });
     expect(() => _internal.encodeParam(json(arrayWithToJson as never)))
-      .toThrow("custom toJSON methods are not supported");
+      .toThrow("custom toJSON methods are not supported in Extended JSON");
     expect(() => _internal.encodeParam(json(Object.defineProperty({}, "value", {
       enumerable: true,
       get: () => 1,
-    }) as never))).toThrow("JSON objects cannot contain accessor properties");
+    }) as never))).toThrow("Extended JSON objects cannot contain accessor properties");
   });
 });
 

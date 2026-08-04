@@ -57,7 +57,8 @@ runtime, generate an ORM layer, or support MySQL and SQLite.
 | Schema workflows | Built-in linear migrations or declarative pgschema, disposable shadow databases, snapshots, squash baselines | [CLI and workflows](./docs/cli.md) |
 | Reproducible artifacts | Versioned offline cache, `prepare --check`, live `prepare --verify`, generated declarations, enum and function catalogs | [CI and deployment checks](./docs/ci.md) |
 | PostgreSQL types | Built-ins, arrays, ranges, domains, composites, pgvector, hstore, citext, ltree, application codecs | [Configuration and custom types](./docs/configuration.md) |
-| Tooling | Incremental watch mode, project doctor, JSON diagnostics, query inventory, embedded SQL generation | [CLI and workflows](./docs/cli.md) |
+| Extended JSON | Branded immutable documents, exact native numbers, bigint/Temporal round-trips, reader-first collision audit | [Extended JSON protocol](./docs/extended-json-protocol.md) |
+| Tooling | Incremental watch mode, project doctor, JSON diagnostics, query inventory, Extended JSON audit, embedded SQL generation | [CLI and workflows](./docs/cli.md) |
 | Agent workflows | Installable skills for CLI, schema, queries, inference, runtime, RLS, types, upgrades, and releases | [Agent skills](./docs/agent-skills.md) |
 
 See the [documentation index](./docs/README.md) for the complete guide set.
@@ -196,6 +197,14 @@ sub-microsecond inputs are rejected; and the codec preserves microseconds
 returned by PostgreSQL. Attempts to change
 `TimeZone` away from UTC or `DateStyle` away from ISO fail closed and discard
 the affected connection.
+
+PostgreSQL `json` and `jsonb` values cross the runtime boundary only as
+`SqlxJson<T>` documents created by `sql.json(...)`. The document owns a deeply
+frozen snapshot and protocol version. Nested `bigint` and supported Temporal
+values round-trip automatically; `JsonNumber` preserves exact native JSON
+numeric tokens without changing their JSONB operator/index shape. Existing
+untagged JSON remains readable. Run `sqlx-js json audit` before enabling tagged
+writes in an existing database; see the [Extended JSON protocol](./docs/extended-json-protocol.md).
 
 `createClient(...)` is the lower-level wire client for callers that explicitly
 own pool access and lifecycle. The two APIs are separate reliability

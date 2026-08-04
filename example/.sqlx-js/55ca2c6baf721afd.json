@@ -35,13 +35,13 @@
     {
       "name": "meta",
       "typeOid": 3802,
-      "tsType": "SqlxJsJson.PostMeta",
+      "tsType": "import(\"@onreza/sqlx-js\").SqlxJson<SqlxJsJson.PostMeta>",
       "nullable": true
     },
     {
       "name": "attachments",
       "typeOid": 3807,
-      "tsType": "(SqlxJsJson.Attachment | null)[]",
+      "tsType": "(import(\"@onreza/sqlx-js\").SqlxJson<SqlxJsJson.Attachment> | null)[]",
       "nullable": false
     }
   ],

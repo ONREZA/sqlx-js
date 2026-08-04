@@ -10,12 +10,15 @@ import {
   createClient,
   createSqlClient,
   GenerationRecycledError,
+  JsonNumber,
   PgError,
   QueryAbortedError,
   QueryTimeoutError,
+  SqlxJson,
   TransactionTimeoutError,
   type CreateSqlClientOptions,
   type PostgresClient,
+  json,
 } from "../src/index";
 import { _internal, normalizeRuntimeDatabaseUrl } from "../src/postgres-runtime";
 import { EXECUTE_KNOWN_PARAMS } from "../src/pg/driver";
@@ -23,6 +26,7 @@ import { defineQuery } from "../src/query";
 import {
   CACHE_FORMAT_VERSION,
   GENERATOR_REVISION,
+  JSON_PROTOCOL_VERSION,
   RUNTIME_DESCRIPTOR_FORMAT_VERSION,
 } from "../src/artifact-versions";
 import { queryId } from "../src/query-id";
@@ -125,7 +129,7 @@ test("raw temporal reject policy fails closed for scalar and array infinity", as
   await raw.end();
 });
 
-test("raw numeric codecs cannot override Temporal or JSON safety contracts", async () => {
+test("raw numeric codecs cannot override Temporal or Extended JSON contracts", async () => {
   const raw = createClient("postgres://app:secret@127.0.0.1:1/app", {
     types: {
       unsafeJson: {
@@ -149,10 +153,15 @@ test("raw numeric codecs cannot override Temporal or JSON safety contracts", asy
     };
   }).options;
 
-  expect(() => options.parsers[3802]!("{\"id\":9007199254740993}"))
-    .toThrow("JSON integers must be within JavaScript's safe integer range");
+  const decoded = options.parsers[3802]!("{\"id\":9007199254740993}") as SqlxJson<{
+    id: JsonNumber;
+  }>;
+  expect(decoded).toBeInstanceOf(SqlxJson);
+  expect(decoded.value.id).toEqual(JsonNumber.from("9007199254740993"));
   expect(() => options.serializers[3802]!({ id: Number.MAX_SAFE_INTEGER + 1 }))
-    .toThrow("JSON integers must be within JavaScript's safe integer range");
+    .toThrow("PostgreSQL JSON values require a SqlxJson document");
+  expect(options.serializers[3802]!(json({ id: 9_007_199_254_740_993n })))
+    .toContain('"type":"bigint"');
   expect(options.parsers[1184]!("2000-01-01 00:00:00+00")).toBeInstanceOf(Temporal.Instant);
   expect(() => options.serializers[1184]!(new Date())).toThrow("does not accept JavaScript Date");
   await raw.end();
@@ -204,10 +213,8 @@ test("raw client requires an explicit Temporal provider when the runtime has non
 
 test("raw client validates the complete Temporal provider boundary eagerly", () => {
   const invalid = {
+    ...Temporal,
     Instant: { prototype: Temporal.Instant.prototype, from: Temporal.Instant.from },
-    PlainDate: Temporal.PlainDate,
-    PlainDateTime: Temporal.PlainDateTime,
-    PlainTime: Temporal.PlainTime,
   };
   expect(() => createClient(
     "postgres://app:secret@127.0.0.1:1/app",
@@ -405,6 +412,7 @@ test("managed client dispatches matching runtime descriptors and keeps adaptive 
       formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
       cacheFormat: CACHE_FORMAT_VERSION,
       generatorRevision: GENERATOR_REVISION,
+      jsonProtocol: JSON_PROTOCOL_VERSION,
       configHash: "test",
       temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
       types: {},
@@ -442,6 +450,7 @@ test("managed client adopts and enforces the descriptor temporal policy", async 
         formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
         cacheFormat: CACHE_FORMAT_VERSION,
         generatorRevision: GENERATOR_REVISION,
+        jsonProtocol: JSON_PROTOCOL_VERSION,
         configHash: "test",
         temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
         types: {},
@@ -463,6 +472,7 @@ test("managed client adopts and enforces the descriptor temporal policy", async 
       formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
       cacheFormat: CACHE_FORMAT_VERSION,
       generatorRevision: GENERATOR_REVISION,
+      jsonProtocol: JSON_PROTOCOL_VERSION,
       configHash: "test",
       temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
       types: {},
@@ -479,6 +489,7 @@ test("managed client rejects conflicting descriptor and adaptive execution modes
       formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
       cacheFormat: CACHE_FORMAT_VERSION,
       generatorRevision: GENERATOR_REVISION,
+      jsonProtocol: JSON_PROTOCOL_VERSION,
       configHash: "test",
       temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
       types: {},
@@ -526,6 +537,7 @@ test("query hooks are preserved inside transactions", async () => {
       formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
       cacheFormat: CACHE_FORMAT_VERSION,
       generatorRevision: GENERATOR_REVISION,
+      jsonProtocol: JSON_PROTOCOL_VERSION,
       configHash: "test",
       temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
       types: {},
@@ -844,11 +856,13 @@ test("the internal runtime receives explicit JSON and array parameters", async (
   } as unknown as PostgresClient;
 
   const db = managed(fake);
-  const jsonArray = db.sql.array([db.sql.json({ kind: "object" }), null]);
+  const jsonDocument = db.sql.json([1, 2]);
+  const arrayDocument = db.sql.json({ kind: "object" });
+  const jsonArray = db.sql.array([arrayDocument, null]);
   const instant = Temporal.Instant.from("2026-01-02T03:04:05Z");
   await db.unsafe(
     "SELECT $1::jsonb, $2::text[], $3::bytea[], $4::jsonb[], $5::timestamptz[], $6::text[], $7::int4[]",
-    db.sql.json([1, 2]),
+    jsonDocument,
     db.sql.array(["a", "b"]),
     db.sql.array([new Uint8Array([1, 2])]),
     jsonArray,
@@ -858,7 +872,7 @@ test("the internal runtime receives explicit JSON and array parameters", async (
   );
 
   expect(calls[0]).toEqual([
-    { kind: "json", value: [1, 2] },
+    { kind: "json", value: jsonDocument },
     { kind: "typed", value: ["a", "b"], oid: 0 },
     { kind: "typed", value: [new Uint8Array([1, 2])], oid: 0 },
     {

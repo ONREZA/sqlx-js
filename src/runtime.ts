@@ -14,7 +14,10 @@ import {
   loadSqlFile,
 } from "./runtime-files";
 import {
+  createSqlxJson,
+  isSqlxJson,
   parseJsonResult,
+  type SqlxJson,
   stringifyJsonParameter,
   type JsonCompatible,
 } from "./json-value";
@@ -24,7 +27,7 @@ import { isTemporalValue } from "./temporal-api";
 export { clearSqlFileCache, id } from "./runtime-files";
 export { migrate, type MigrateOptions } from "./runtime-migrate";
 export { parseJsonResult, stringifyJsonParameter } from "./json-value";
-export type { JsonCompatible } from "./json-value";
+export type { JsonCompatible, SqlxJson } from "./json-value";
 export { assertNoDateSqlValue, isDateValue } from "./sql-value";
 
 export type OnQueryEvent = {
@@ -92,10 +95,8 @@ type IdentifierFn = (...parts: string[]) => string;
 
 const PARAMETER_KIND = Symbol("sqlx-js.parameter");
 
-export type JsonParameter<T = unknown> = {
-  readonly [PARAMETER_KIND]: "json";
-  readonly value: T;
-};
+/** @deprecated Use SqlxJson<T>. */
+export type JsonParameter<T = unknown> = SqlxJson<T>;
 
 type PgArrayScalar<T, NullableElements extends boolean> =
   T | (NullableElements extends true ? null : never);
@@ -113,8 +114,8 @@ export type ExecuteResult = {
   command: string;
 };
 
-export function json<T>(value: T & JsonCompatible<T>): JsonParameter<T> {
-  return { [PARAMETER_KIND]: "json", value };
+export function json<T>(value: T & JsonCompatible<T>): SqlxJson<T> {
+  return createSqlxJson(value);
 }
 
 export function array<const Values extends readonly unknown[]>(
@@ -125,6 +126,7 @@ export function array(value: readonly unknown[]): PgArrayParameter {
 }
 
 export function parameterKind(value: unknown): "json" | "array" | undefined {
+  if (isSqlxJson(value)) return "json";
   if (!value || typeof value !== "object") return undefined;
   return (value as { [PARAMETER_KIND]?: "json" | "array" })[PARAMETER_KIND];
 }
@@ -204,7 +206,7 @@ function encodePgArrayLiteralInternal(
       continue;
     }
     if (parameterKind(v) === "json") {
-      parts.push(quoteArrayElement(stringifyJsonParameter((v as JsonParameter).value)));
+      parts.push(quoteArrayElement(stringifyJsonParameter(v as JsonParameter)));
       continue;
     }
     if (isDateValue(v)) {
@@ -304,7 +306,7 @@ export function parsePgArrayLiteral<T = string>(
 export function encodeParam(p: unknown): unknown {
   assertNoDateSqlValue(p, "PostgreSQL parameter");
   const kind = parameterKind(p);
-  if (kind === "json") return stringifyJsonParameter((p as JsonParameter).value);
+  if (kind === "json") return stringifyJsonParameter(p as JsonParameter);
   if (kind === "array") return encodePgArrayLiteral([...(p as PgArrayParameter).value]);
   return p;
 }

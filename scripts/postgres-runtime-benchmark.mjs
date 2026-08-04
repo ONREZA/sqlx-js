@@ -186,7 +186,7 @@ function mixedRowsSummary(rows) {
   return {
     rows: rows.length,
     textLength: first.text_value.length,
-    jsonKind: first.json_value.kind,
+    jsonKind: first.json_value.value.kind,
     bytesLength: first.bytes_value.length,
     arrayLength: first.array_value.length,
     bigint: String(first.bigint_value),

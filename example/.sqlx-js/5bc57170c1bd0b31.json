@@ -35,7 +35,7 @@
     {
       "name": "settings",
       "typeOid": 3802,
-      "tsType": "SqlxJsJson.UserSettings",
+      "tsType": "import(\"@onreza/sqlx-js\").SqlxJson<SqlxJsJson.UserSettings>",
       "nullable": false
     }
   ],

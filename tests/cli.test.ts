@@ -27,6 +27,7 @@ test("CLI help prints package metadata version", () => {
   expect(r.stdout).toContain("sqlx-js doctor");
   expect(r.stdout).toContain("--schema-provider");
   expect(r.stdout).toContain("sqlx-js queries");
+  expect(r.stdout).toContain("sqlx-js json audit");
   expect(r.stdout).toContain("<subcommand> --help");
 });
 
@@ -60,6 +61,22 @@ test("CLI rejects project commands from a different sqlx-js version and doctor r
       formatVersion: 1,
       ok: false,
       diagnostics: [{ severity: "error", phase: "config" }],
+    });
+
+    const structuredJsonAudit = spawnSync(
+      "bun",
+      [binPath, "json", "audit", "--json", "--root", root],
+      { encoding: "utf8" },
+    );
+    expect(structuredJsonAudit.status).toBe(2);
+    expect(structuredJsonAudit.stderr).toBe("");
+    expect(JSON.parse(structuredJsonAudit.stdout)).toMatchObject({
+      formatVersion: 1,
+      protocolVersion: 1,
+      ok: false,
+      complete: false,
+      summary: { errors: 1, reviewRequired: true },
+      diagnostics: [{ severity: "error" }],
     });
 
     const init = spawnSync("bun", [binPath, "init", "--root", root], { encoding: "utf8" });
@@ -110,6 +127,7 @@ test("CLI command help is successful and command-specific", () => {
     { args: ["ci"], expected: ["usage: sqlx-js ci", "provider-aware"] },
     { args: ["prepare"], expected: ["usage: sqlx-js prepare", "Query-artifact engine"] },
     { args: ["queries"], expected: ["usage: sqlx-js queries", "without a database"] },
+    { args: ["json", "audit"], expected: ["usage: sqlx-js json audit", "read-only transaction"] },
     { args: ["pgschema", "install"], expected: ["usage: sqlx-js pgschema install", "checksum"] },
     { args: ["pgschema", "plan"], expected: ["usage: sqlx-js pgschema plan", "without applying"] },
     { args: ["pgschema", "apply"], expected: ["usage: sqlx-js pgschema apply", "reviewed --plan"] },
@@ -133,6 +151,45 @@ test("CLI command help is successful and command-specific", () => {
     expect(existsSync(root)).toBe(false);
   } finally {
     rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("json audit --json reports missing DATABASE_URL as one structured document", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-json-audit-"));
+  try {
+    const result = spawnSync(
+      "bun",
+      [binPath, "json", "audit", "--json", "--root", root],
+      { encoding: "utf8", env: { ...process.env, DATABASE_URL: "" } },
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      formatVersion: 1,
+      protocolVersion: 1,
+      ok: false,
+      complete: false,
+      columns: [],
+      dependencies: [],
+      sourceUsages: [],
+      summary: { errors: 1, reviewRequired: true },
+      diagnostics: [{ severity: "error", message: "DATABASE_URL is required for json audit" }],
+    });
+
+    const invalid = spawnSync(
+      "bun",
+      [binPath, "json", "unknown", "--json", "--root", root],
+      { encoding: "utf8", env: { ...process.env, DATABASE_URL: "" } },
+    );
+    expect(invalid.status).toBe(2);
+    expect(invalid.stderr).toBe("");
+    expect(JSON.parse(invalid.stdout)).toMatchObject({
+      ok: false,
+      complete: false,
+      diagnostics: [{ message: 'sqlx-js: unknown json command "unknown"' }],
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
