@@ -38,6 +38,7 @@ Status values are intentionally explicit:
 | Connect timeout covering password, TCP, TLS, and auth | Yes | Yes | One deadline covers the complete startup path. |
 | TCP keepalive and initial probe delay | Yes | Yes | `keepAliveMs` explicitly enables keepalive on every pooled PostgreSQL connection; `0` uses the platform default delay. Managed operation deadlines remain the correctness boundary for active work. |
 | Server-side statement timeout | Yes | Yes | Supported through URL or `statementTimeoutMs`. |
+| Public `ParameterStatus` callback | Yes | No | The wire client consumes server parameters needed for its own protocol contract but does not expose a mutable global callback surface. |
 
 ## Query and protocol surface
 
@@ -84,6 +85,7 @@ Status values are intentionally explicit:
 | Concurrent calls inside one transaction | Partial | Yes | sqlx-js serializes them on the reserved connection in call order. |
 | Isolation, read-only, and deferrable options | Yes | Yes | Applied immediately after `BEGIN`. |
 | Nested savepoint callback | Yes | Yes | Typed callbacks recover ordinary PostgreSQL errors with `ROLLBACK TO`; timeout, abort, and connection loss remain terminal for the outer transaction. |
+| Caller-defined savepoint names | Yes | No | sqlx-js generates collision-free transaction-local names; exposing names adds diagnostic convenience but no stronger transaction contract. |
 | Two-phase `PREPARE TRANSACTION` helper | Yes | No | Raw SQL remains possible; no dedicated high-level API is planned today. |
 | Transaction-local RLS settings contract | No | Yes | Generated profiles require and apply the exact setting allowlist. |
 | End-to-end operation and transaction deadlines | No | Yes | Includes pool wait, codec bootstrap, execution, and transaction cleanup. |
@@ -105,8 +107,10 @@ Status values are intentionally explicit:
 | Enum, domain, composite, and extension codecs | Partial | Yes | Generated registry and runtime bootstrap share the same type contract. |
 | Global key/value transforms | Yes | No, permanent non-goal | Application/domain mapping should remain explicit and outside the wire driver. |
 | `undefined` transformation policy | Yes | No, permanent non-goal | `undefined` is not a database value policy; callers must choose SQL `NULL` or omit data before query execution. |
-| `LISTEN` / `NOTIFY` | Yes | No | Useful but requires a dedicated long-lived connection lifecycle; tracked on the roadmap. |
+| Send `NOTIFY` | Yes | Partial | Literal SQL can send notifications; there is no dynamic channel helper because channel identity is outside the generated query contract. |
+| `LISTEN` notification lifecycle | Yes | No | Receiving notifications requires a dedicated long-lived connection and reconnect contract; tracked on the roadmap. |
 | Logical replication subscribe API | Yes | No | Outside the compile-time query contract unless a concrete consumer establishes ownership requirements. |
+| PostgreSQL large objects | Yes | No | Large-object descriptors and streams are outside the typed query contract; object storage or ordinary `bytea` values are preferable without a concrete consumer. |
 | CJS/Deno source duplication | Partial | No, permanent non-goal | sqlx-js ships one ESM source and relies on supported runtime compatibility. |
 
 ## Replacement gate

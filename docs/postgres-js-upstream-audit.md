@@ -53,10 +53,12 @@ non-goal:
 | Automatic named statement caching | [#960](https://github.com/porsager/postgres/issues/960), [#943](https://github.com/porsager/postgres/issues/943) | Use unnamed statements permanently. |
 | CJS and generated runtime copies | Deno/CJS duplication visible across many open PRs, including [#771](https://github.com/porsager/postgres/pull/771), [#1034](https://github.com/porsager/postgres/pull/1034), and [#1138](https://github.com/porsager/postgres/pull/1138) | Ship one ESM source for supported runtimes. |
 
-Cursor, COPY, `LISTEN`/`NOTIFY`, and logical replication bugs were reviewed but
-do not affect the current driver because those public surfaces do not exist.
-They remain explicit `Нет` items in the feature matrix rather than accidental
-omissions. Their representative reliability fixes include
+Cursor, COPY, `LISTEN`, logical replication, and PostgreSQL large-object bugs
+were reviewed but do not affect the current driver because those public
+surfaces do not exist. Sending a literal `NOTIFY` remains ordinary SQL; there is
+no dynamic channel helper. The absent surfaces remain explicit `No` items in
+the feature matrix rather than accidental omissions. Their representative
+reliability fixes include
 [#1016](https://github.com/porsager/postgres/pull/1016),
 [#1167](https://github.com/porsager/postgres/pull/1167), and
 [#1183](https://github.com/porsager/postgres/pull/1183).
