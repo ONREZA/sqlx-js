@@ -110,24 +110,29 @@ does not connect to PostgreSQL.
 
 `json audit` is the reader-first gate before an existing application writes
 Extended JSON tags. It opens `DATABASE_URL` in a read-only transaction and
-inspects every selectable `json`/`jsonb` column on ordinary or materialized
-user relations. It counts rows containing `$sqlx` at any nesting depth and, for
-the text-preserving `json` type, rows containing duplicate object keys. It also
-inventories indexes, constraints, generated columns and views that depend on a
-JSON column, then scans application query sites for JSON operators and
-`json_*`/`jsonb_*` functions. Dependencies and source usages require review but
-do not by themselves fail; collisions, duplicate keys, missing privileges,
-active row-level security for the audit role, or column scan errors make the
-audit non-zero and `complete: false` where applicable. The command never
-rewrites stored data or application SQL.
+inspects every physical column on ordinary or materialized user relations whose
+type contains a `json`/`jsonb` leaf. Type discovery recursively follows arrays,
+domains, and composite fields. It counts physical rows containing `$sqlx` at
+any JSON-leaf nesting depth and, for text-preserving `json` leaves, rows
+containing duplicate object keys. It also inventories indexes, constraints,
+generated columns and views that depend on a containing column, then scans
+application query sites for JSON operators and `json_*`/`jsonb_*` functions.
+Dependencies and source usages require review but do not by themselves fail;
+collisions, duplicate keys, missing privileges, active row-level security for
+the audit role, or column scan errors make the audit non-zero and
+`complete: false` where applicable. The command never rewrites stored data or
+application SQL.
 
 Machine-readable output uses `formatVersion: 1` and includes
-`protocolVersion`, per-column counts/errors, dependency definitions, source
-locations/query IDs, and summary counters. Preflight and fatal failures keep
-the same top-level shape with `complete: false` and add a `diagnostics` array,
-so `--json` never falls back to human stderr. A full audit can scan each JSON
-column, so run it against a representative read replica or within the
-application's normal database workload controls when tables are large.
+`protocolVersion`, the physical PostgreSQL column type, `jsonLeaves` paths and
+leaf types, per-column counts/errors, dependency definitions, source
+locations/query IDs, and summary counters. Counts are deduplicated by physical
+row when one containing column has multiple JSON leaves. Preflight and fatal
+failures keep the same top-level shape with `complete: false` and add a
+`diagnostics` array, so `--json` never falls back to human stderr. A full audit
+can scan each containing column, so run it against a representative read
+replica or within the application's normal database workload controls when
+tables are large.
 
 `doctor` separately reports descriptor coverage for parameterized runtime call
 sites, lists adaptive or statically unclassified locations, and errors when a

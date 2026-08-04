@@ -42,9 +42,7 @@ const descriptorQuery = "SELECT $1::int4 AS value";
 const descriptorParameterOids = Object.freeze([23]);
 const runtimeDescriptors = descriptorMvp
   ? {
-    formatVersion: artifactVersions.RUNTIME_DESCRIPTOR_FORMAT_VERSION,
-    cacheFormat: artifactVersions.CACHE_FORMAT_VERSION,
-    generatorRevision: artifactVersions.GENERATOR_REVISION,
+    ...artifactVersions.RUNTIME_DESCRIPTOR_VERSION_FENCE,
     configHash: "benchmark",
     temporal: {
       infinity: "reject",

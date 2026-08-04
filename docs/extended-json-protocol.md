@@ -281,12 +281,14 @@ any data rewrite. Database migrations and backfills remain application-owned.
   let two version-1 readers disagree about whether the same persisted document
   is valid.
 - `sqlx-js json audit` scans selectable ordinary/materialized user relation
-  columns in a read-only transaction. It reports `$sqlx` collisions at any
-  depth, duplicate object keys preserved by `json`, dependent indexes,
-  constraints, generated columns and views, plus source queries using JSON
-  operators or `json_*`/`jsonb_*` functions. Missing column privileges, active
-  row-level security for the audit role, or scan errors make the audit
-  incomplete and non-zero.
+  columns in a read-only transaction. It recursively follows arrays, domains,
+  and composite fields so every runtime-decoded `json`/`jsonb` leaf is in the
+  inventory. It reports each leaf path, `$sqlx` collisions at any depth,
+  duplicate object keys preserved by `json`, dependent indexes, constraints,
+  generated columns and views, plus source queries using JSON operators or
+  `json_*`/`jsonb_*` functions. Missing column privileges, active row-level
+  security for the audit role, or scan errors make the audit incomplete and
+  non-zero.
 - External producers may continue writing untagged JSON. Readers brand it and
   materialize unsafe native numeric tokens as `JsonNumber`; only sqlx-js writers
   require `SqlxJson` input.

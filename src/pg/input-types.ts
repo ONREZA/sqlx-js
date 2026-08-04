@@ -5,6 +5,20 @@ const JSON_OIDS = new Set([114, 3802]);
 
 export const JSON_INPUT_TS = 'import("@onreza/sqlx-js").SqlxJson<unknown>';
 
+export function jsonScalarOid(
+  oid: number,
+  schema: SchemaCache,
+  seen = new Set<number>(),
+): 114 | 3802 | undefined {
+  if (oid === 114 || oid === 3802) return oid;
+  if (seen.has(oid)) return undefined;
+  seen.add(oid);
+  const custom = schema.customType(oid);
+  return custom?.kind === "scalar" && custom.baseOid
+    ? jsonScalarOid(custom.baseOid, schema, seen)
+    : undefined;
+}
+
 export function inputTsType(
   oid: number,
   schema: SchemaCache,

@@ -345,7 +345,13 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
       export interface KnownFileQueries {}
       export interface KnownFunctions {}
       export interface KnownProfiles {}
-      export declare function createSqlClient<Registry>(
+      export interface QueryRegistry {
+        queries: object;
+        fileQueries: object;
+        runtimeDescriptors?: true;
+        jsonProtocol: 1;
+      }
+      export declare function createSqlClient<Registry extends QueryRegistry>(
         url?: string,
         options?: { queryDescriptors: unknown; temporalApi?: unknown },
       ): { sql: unknown };
@@ -370,6 +376,7 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
     expect(existsSync(join(root, "migrations"))).toBe(true);
     expect(existsSync(join(root, ".env.example"))).toBe(true);
     expect(existsSync(join(root, "sqlx-js-env.d.ts"))).toBe(true);
+    expect(readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8")).toContain("jsonProtocol: 1;");
     expect(existsSync(join(root, "db.ts"))).toBe(true);
     expect(readFileSync(join(root, "db.ts"), "utf8")).toContain("queryDescriptors");
     expect(existsSync(join(root, ".sqlx-js/runtime-descriptors.json"))).toBe(true);

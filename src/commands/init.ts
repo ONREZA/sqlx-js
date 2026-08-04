@@ -1,10 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import {
-  CACHE_FORMAT_VERSION,
-  GENERATOR_REVISION,
   JSON_PROTOCOL_VERSION,
-  RUNTIME_DESCRIPTOR_FORMAT_VERSION,
+  RUNTIME_DESCRIPTOR_VERSION_FENCE,
 } from "../artifact-versions";
 import { ensureGeneratedGitAttributes } from "../generated-git-attributes";
 import { DEFAULT_TEMPORAL_POLICY } from "../temporal";
@@ -74,6 +72,7 @@ export interface SqlxJsGeneratedRegistry {
   functions: SqlxJsGeneratedFunctions;
   runtimeTypes: SqlxJsGeneratedRuntimeTypes;
   runtimeDescriptors: true;
+  jsonProtocol: ${JSON_PROTOCOL_VERSION};
   temporal: {
     readonly infinity: "reject";
     readonly timestampWithoutTimeZone: "reject";
@@ -103,10 +102,7 @@ export const db = createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
 `;
 
 const RUNTIME_DESCRIPTOR_TEMPLATE = `${JSON.stringify({
-  formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
-  cacheFormat: CACHE_FORMAT_VERSION,
-  generatorRevision: GENERATOR_REVISION,
-  jsonProtocol: JSON_PROTOCOL_VERSION,
+  ...RUNTIME_DESCRIPTOR_VERSION_FENCE,
   configHash: "unprepared",
   temporal: DEFAULT_TEMPORAL_POLICY,
   types: {},

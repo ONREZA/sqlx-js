@@ -440,18 +440,46 @@ if (!haveIntegrationDatabase) {
       await client.simpleQuery(`
         DROP VIEW IF EXISTS tmp_extended_json_audit_view;
         DROP TABLE IF EXISTS tmp_extended_json_audit;
+        DROP TYPE IF EXISTS tmp_extended_json_audit_record CASCADE;
+        DROP DOMAIN IF EXISTS tmp_extended_json_audit_domain CASCADE;
+        CREATE DOMAIN tmp_extended_json_audit_domain AS jsonb;
+        CREATE TYPE tmp_extended_json_audit_record AS (
+          payload tmp_extended_json_audit_domain,
+          raw_items json[]
+        );
         CREATE TABLE tmp_extended_json_audit (
           id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
           raw json NOT NULL,
           document jsonb NOT NULL,
+          domain_document tmp_extended_json_audit_domain,
+          documents jsonb[],
+          records tmp_extended_json_audit_record[],
           kind text GENERATED ALWAYS AS (document ->> 'kind') STORED
         );
         CREATE INDEX tmp_extended_json_audit_kind_idx
           ON tmp_extended_json_audit ((document ->> 'kind'));
+        CREATE INDEX tmp_extended_json_audit_domain_kind_idx
+          ON tmp_extended_json_audit (((domain_document::jsonb) ->> 'kind'));
         CREATE VIEW tmp_extended_json_audit_view AS
           SELECT document ->> 'kind' AS kind FROM tmp_extended_json_audit;
-        INSERT INTO tmp_extended_json_audit (raw, document)
-        VALUES ('{"duplicate":1,"duplicate":2}'::json, '{"nested":{"$sqlx":"legacy"}}'::jsonb);
+        INSERT INTO tmp_extended_json_audit (
+          raw,
+          document,
+          domain_document,
+          documents,
+          records
+        ) VALUES (
+          '{"duplicate":1,"duplicate":2}'::json,
+          '{"nested":{"$sqlx":"legacy"}}'::jsonb,
+          '{"nested":{"$sqlx":"domain"}}'::tmp_extended_json_audit_domain,
+          ARRAY['{"nested":{"$sqlx":"array"}}'::jsonb],
+          ARRAY[
+            ROW(
+              '{"nested":{"$sqlx":"composite"}}'::tmp_extended_json_audit_domain,
+              ARRAY['{"duplicate":1,"duplicate":2,"$sqlx":"raw"}'::json]
+            )::tmp_extended_json_audit_record
+          ]
+        );
       `);
 
       const report = await inspectJsonAudit({
@@ -463,11 +491,31 @@ if (!haveIntegrationDatabase) {
         column.relation === "tmp_extended_json_audit" && column.column === "raw");
       const document = report.columns.find((column) =>
         column.relation === "tmp_extended_json_audit" && column.column === "document");
+      const domainDocument = report.columns.find((column) =>
+        column.relation === "tmp_extended_json_audit" && column.column === "domain_document");
+      const documents = report.columns.find((column) =>
+        column.relation === "tmp_extended_json_audit" && column.column === "documents");
+      const records = report.columns.find((column) =>
+        column.relation === "tmp_extended_json_audit" && column.column === "records");
 
       expect(raw?.duplicateKeyRows).toBe(1);
       expect(document?.collisionRows).toBe(1);
+      expect(domainDocument).toMatchObject({
+        collisionRows: 1,
+        jsonLeaves: [{ path: "$", type: "jsonb" }],
+      });
+      expect(documents).toMatchObject({
+        collisionRows: 1,
+        jsonLeaves: [{ path: "$[]", type: "jsonb" }],
+      });
+      expect(records).toMatchObject({ collisionRows: 1, duplicateKeyRows: 1 });
+      expect(records?.jsonLeaves).toEqual([
+        { path: "$[].payload", type: "jsonb" },
+        { path: "$[].raw_items[]", type: "json" },
+      ]);
       expect(report.dependencies).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: "index", name: "tmp_extended_json_audit_kind_idx" }),
+        expect.objectContaining({ kind: "index", name: "tmp_extended_json_audit_domain_kind_idx" }),
         expect.objectContaining({ kind: "generated", name: "kind" }),
         expect.objectContaining({ kind: "view", name: "tmp_extended_json_audit_view" }),
       ]));
@@ -479,6 +527,8 @@ if (!haveIntegrationDatabase) {
       await client.simpleQuery(`
         DROP VIEW IF EXISTS tmp_extended_json_audit_view;
         DROP TABLE IF EXISTS tmp_extended_json_audit;
+        DROP TYPE IF EXISTS tmp_extended_json_audit_record CASCADE;
+        DROP DOMAIN IF EXISTS tmp_extended_json_audit_domain CASCADE;
       `).catch(() => {});
       await client.end();
       rmSync(root, { recursive: true, force: true });
@@ -1787,6 +1837,41 @@ export default {
     expect(dts).toMatch(
       /UPDATE tmp_column_types SET action = GREATEST.*"minimumAction": "created" \| "deleted"; "id": bigint/,
     );
+  });
+
+  test("JSON-backed domain assertions preserve the SqlxJson boundary", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        DROP TABLE IF EXISTS tmp_json_domain_columns;
+        DROP DOMAIN IF EXISTS tmp_json_domain_payload;
+        CREATE DOMAIN tmp_json_domain_payload AS jsonb;
+        CREATE TABLE tmp_json_domain_columns (
+          id bigint PRIMARY KEY,
+          payload tmp_json_domain_payload NOT NULL
+        )
+      `);
+    } finally {
+      await setup.end();
+    }
+    const root = isolatedRoot("json-domain-column-types");
+    writeRootFile(root, "types.ts", "export type DomainPayload = { kind: string };\n");
+    writeRootFile(root, "sqlx-js.config.ts", `export default {
+      columnTypes: {
+        "public.tmp_json_domain_columns.payload": 'import("./types").DomainPayload',
+      },
+    };\n`);
+    writeRootFile(root, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"INSERT INTO tmp_json_domain_columns (id, payload) VALUES ($id, $payload) RETURNING payload\", { id: 1n, payload: sql.json({ kind: \"created\" }) });\n",
+    );
+    const result = prepareRoot(root);
+    expect(result.code, result.stderr).toBe(0);
+    const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
+    const asserted = 'import("@onreza/sqlx-js").SqlxJson<import("./types").DomainPayload>';
+    expect(dts).toContain(`"payload": ${asserted}`);
+    expect(dts).toContain(`"payload": ${asserted} }`);
   });
 
   test("set operations preserve compatible application-owned column types", async () => {
