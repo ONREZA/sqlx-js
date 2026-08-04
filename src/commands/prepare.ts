@@ -61,7 +61,9 @@ import {
 import { originalPosition, rewriteNamedParameters } from "../sql-params";
 import {
   nullableParamOverrides as collectNullableParamOverrides,
+  resultElementNonNullOverrides as collectResultElementNonNullOverrides,
   sameNullableParamOverrides,
+  sameResultElementNonNullOverrides,
 } from "../query-source-intent";
 import {
   renderRuntimeDescriptors,
@@ -77,6 +79,7 @@ import {
   resolveColumnTs,
   resolveParamNullable,
   resolveParamTs,
+  resolveResultArrayElementNullability,
 } from "./prepare-inference";
 import {
   addFunctionContractDiagnostics,
@@ -399,6 +402,7 @@ export async function prepareOnce(
     hasResultSet: boolean;
     validation: PlanValidation;
     nullableParamOverrides: number[];
+    resultElementNonNullOverrides: string[];
   };
   const raw: Raw[] = [];
   const reusedEntries: CacheEntry[] = [];
@@ -409,10 +413,15 @@ export async function prepareOnce(
   for (const [fp, item] of unique) {
     const cached = input.reuseCacheFps?.has(fp) ? cache.read(fp) : null;
     const nullableParamOverrides = collectNullableParamOverrides(item.sites);
+    const resultElementNonNullOverrides = collectResultElementNonNullOverrides(item.sites);
     if (
       !cached?.validation
       || cached.profile !== item.profile
       || !sameNullableParamOverrides(cached.nullableParamOverrides, nullableParamOverrides)
+      || !sameResultElementNonNullOverrides(
+        cached.resultElementNonNullOverrides,
+        resultElementNonNullOverrides,
+      )
     ) {
       toPrepare.set(fp, item);
       continue;
@@ -494,6 +503,7 @@ export async function prepareOnce(
         hasResultSet: outcome.hasResultSet,
         validation: outcome.validation,
         nullableParamOverrides: collectNullableParamOverrides(ss),
+        resultElementNonNullOverrides: collectResultElementNonNullOverrides(ss),
       });
       continue;
     }
@@ -667,6 +677,27 @@ export async function prepareOnce(
       err(`      query: ${formatQuerySnippet(r.sites[0]!.query)}`);
       continue;
     }
+    let resultArrayElementNullability: ReturnType<typeof resolveResultArrayElementNullability>;
+    try {
+      resultArrayElementNullability = resolveResultArrayElementNullability(
+        r.fields,
+        schema,
+        analysis.perColumnArrayElementNullability,
+        r.resultElementNonNullOverrides,
+      );
+    } catch (error) {
+      failures++;
+      failedFps.add(r.fp);
+      diagnostics.push({
+        severity: "error",
+        phase: "result-shape",
+        message: (error as Error).message,
+        ...siteDiagnostic(r.sites[0]!),
+      });
+      err(`  ✗ ${formatSite(r.sites[0]!)} — ${(error as Error).message}`);
+      err(`      query: ${formatQuerySnippet(r.sites[0]!.query)}`);
+      continue;
+    }
     const columns: CacheEntry["columns"] = r.fields.map((f, i) => {
       const parsed = parseColumnOverride(f.name);
       const treatAsOverride = parsed.override !== undefined && isAliasOrExpression(f, schema);
@@ -678,7 +709,7 @@ export async function prepareOnce(
           schema,
           userCfg,
           analysis.perColumnSources[i] ?? null,
-          analysis.perColumnArrayElementNullability[i] ?? "unknown",
+          resultArrayElementNullability[i] ?? "unknown",
         ),
         nullable: analysis.perColumnNullable[i] ?? true,
         ...(treatAsOverride ? { override: parsed.override } : {}),
@@ -701,6 +732,7 @@ export async function prepareOnce(
       paramTsTypes,
       paramNullable,
       nullableParamOverrides: r.nullableParamOverrides,
+      resultElementNonNullOverrides: r.resultElementNonNullOverrides,
       ...(r.paramNames.length > 0 ? { paramNames: r.paramNames } : {}),
       columns,
       hasResultSet: r.hasResultSet,
@@ -974,6 +1006,20 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
             severity: "error",
             phase: "cache",
             message: "source nullable parameter contract changed; run live `sqlx-js prepare`",
+            ...siteDiagnostic(u.sites[0]!),
+          });
+          inferenceFailures++;
+          continue;
+        }
+        const resultElementNonNullOverrides = collectResultElementNonNullOverrides(u.sites);
+        if (!sameResultElementNonNullOverrides(
+          entry.resultElementNonNullOverrides,
+          resultElementNonNullOverrides,
+        )) {
+          diagnostics.push({
+            severity: "error",
+            phase: "cache",
+            message: "source result assertion contract changed; run live `sqlx-js prepare`",
             ...siteDiagnostic(u.sites[0]!),
           });
           inferenceFailures++;

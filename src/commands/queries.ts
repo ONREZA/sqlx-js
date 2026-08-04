@@ -14,8 +14,11 @@ import { queryId } from "../query-id";
 import type { QueryExecutionMode } from "../query";
 import {
   nullableParamOverrides as collectNullableParamOverrides,
+  resultElementNonNullOverrides as collectResultElementNonNullOverrides,
   sameNullableParamOverrides,
+  sameResultElementNonNullOverrides,
 } from "../query-source-intent";
+import type { QueryResultAssertions } from "../query";
 import { ScanError, scanProject } from "../scan/scanner";
 
 export type QueriesPhase = "config" | "scan" | "cache" | "embed" | "explain";
@@ -63,8 +66,10 @@ export type QueryInventoryItem = {
     profiles: string[];
     nullableParams?: number[];
     expectedValidation?: "parse-only";
+    resultAssertions?: QueryResultAssertions;
   }[];
   nullableParamOverrides: number[];
+  resultAssertions: QueryResultAssertions;
   expectedValidation: "parse-only" | "mixed" | null;
   cacheStatus: "current" | "stale" | "missing";
   validation: "planned" | "parse-only" | null;
@@ -83,6 +88,7 @@ export type QueryExplanation = {
   query: QueryInventoryItem;
   contracts: {
     profile: string | null;
+    resultAssertions: QueryResultAssertions;
     params: {
       name: string;
       type: string;
@@ -101,6 +107,10 @@ export type QueryExplanation = {
     }[];
   }[];
 };
+
+function resultAssertionsForColumns(columns: readonly string[]): QueryResultAssertions {
+  return Object.fromEntries(columns.map((column) => [column, { elements: "non-null" as const }]));
+}
 
 export async function buildQueryInventory(root: string, cacheDir: string): Promise<QueryInventory> {
   let config: Awaited<ReturnType<typeof loadConfig>>;
@@ -156,11 +166,16 @@ export async function buildQueryInventory(root: string, cacheDir: string): Promi
     }));
     const presentEntries = cachedEntries.flatMap(({ entry }) => entry ? [entry] : []);
     const nullableParamOverrides = collectNullableParamOverrides(group);
+    const resultAssertions = resultAssertionsForColumns(collectResultElementNonNullOverrides(group));
     const cacheStatus = presentEntries.length !== cacheProfiles.length
       ? "missing"
       : manifestCurrent && cachedEntries.every(({ entry, sites: profileSites }) =>
         entry?.validation
         && sameNullableParamOverrides(entry.nullableParamOverrides, collectNullableParamOverrides(profileSites))
+        && sameResultElementNonNullOverrides(
+          entry.resultElementNonNullOverrides,
+          collectResultElementNonNullOverrides(profileSites),
+        )
       )
         ? "current"
         : "stale";
@@ -184,9 +199,11 @@ export async function buildQueryInventory(root: string, cacheDir: string): Promi
           profiles: site.profiles ?? [],
           ...(site.nullableParams ? { nullableParams: site.nullableParams } : {}),
           ...(site.expectedValidation ? { expectedValidation: site.expectedValidation } : {}),
+          ...(site.resultAssertions ? { resultAssertions: site.resultAssertions } : {}),
         }))
         .sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column),
       nullableParamOverrides,
+      resultAssertions,
       expectedValidation: group.some((site) => site.expectedValidation === "parse-only")
         ? group.every((site) => site.expectedValidation === "parse-only") ? "parse-only" : "mixed"
         : null,
@@ -236,6 +253,7 @@ export async function buildQueryExplanation(
     const inference = entry.inference;
     return {
       profile: profile ?? null,
+      resultAssertions: resultAssertionsForColumns(entry.resultElementNonNullOverrides),
       params: entry.paramTsTypes.map((type, index) => ({
         name: entry.paramNames?.[index] ?? `$${index + 1}`,
         type,
@@ -309,6 +327,10 @@ export async function runQueries(options: {
       }
       for (const column of contract.columns) {
         console.log(`    result ${column.name}: ${column.type}${column.nullable ? " | null" : ""}`);
+        const resultAssertion = Object.hasOwn(contract.resultAssertions, column.name)
+          ? contract.resultAssertions[column.name]
+          : undefined;
+        if (resultAssertion) console.log(`      assertion: elements ${resultAssertion.elements}`);
         for (const source of column.sources ?? []) {
           const constraint = source.notNull === undefined ? "" : source.notNull ? " NOT NULL" : " nullable";
           console.log(`      source: ${source.schema}.${source.table}.${source.column}${constraint}`);
@@ -341,10 +363,15 @@ export async function runQueries(options: {
     const nullableParams = query.nullableParamOverrides.length > 0
       ? ` nullableParams=${query.nullableParamOverrides.join(",")}`
       : "";
+    const resultAssertions = Object.keys(query.resultAssertions).length > 0
+      ? ` resultAssertions=${Object.keys(query.resultAssertions)
+        .map((column) => `${column}.elements:non-null`)
+        .join(",")}`
+      : "";
     const profiles = query.profiles.length > 0 ? ` profiles=${query.profiles.join(",")}` : "";
     console.log(
       `${query.queryId}${names} ${query.cardinalities.join(",")} ${query.cacheStatus}${validation}`
-      + `${expectedValidation}${nullableParams}${profiles}`,
+      + `${expectedValidation}${nullableParams}${resultAssertions}${profiles}`,
     );
     for (const site of query.callSites) console.log(`  ${site.file}:${site.line}:${site.column}`);
   }

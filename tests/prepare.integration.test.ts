@@ -2494,6 +2494,127 @@ export default {
     }
   });
 
+  test("defineQuery resultAssertions narrows array elements across function outputs", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        DROP FUNCTION IF EXISTS tmp_result_assertion();
+        DROP TYPE IF EXISTS tmp_result_assertion_role;
+        CREATE TYPE tmp_result_assertion_role AS ENUM ('admin', 'member');
+        CREATE FUNCTION tmp_result_assertion()
+        RETURNS TABLE(capabilities tmp_result_assertion_role[])
+        LANGUAGE SQL
+        STABLE
+        AS $$ SELECT ARRAY['admin'::tmp_result_assertion_role] $$
+      `);
+      const root = isolatedRoot("result-assertions");
+      const query = 'SELECT capabilities AS "capabilities!" FROM tmp_result_assertion()';
+      const nullableValueQuery = "SELECT capabilities FROM tmp_result_assertion()";
+      const filteredAggregateQuery = 'SELECT array_agg(value) FILTER (WHERE value IS NOT NULL) AS "values!" FROM (VALUES (1), (NULL)) AS source(value)';
+      writeRootFile(root, "a.ts",
+        "import { defineQuery } from \"@onreza/sqlx-js\";\n" +
+        "export const claim = defineQuery.one(\n" +
+        "  \"delivery.claim\",\n" +
+        `  ${JSON.stringify(query)},\n` +
+        "  { resultAssertions: { capabilities: { elements: \"non-null\" } } },\n" +
+        ");\n" +
+        "export const nullableValue = defineQuery.one(\n" +
+        `  "delivery.nullableValue", ${JSON.stringify(nullableValueQuery)},\n` +
+        "  { resultAssertions: { capabilities: { elements: \"non-null\" } } },\n" +
+        ");\n" +
+        "export const filteredAggregate = defineQuery.one(\n" +
+        `  "delivery.filteredAggregate", ${JSON.stringify(filteredAggregateQuery)},\n` +
+        "  { resultAssertions: { values: { elements: \"non-null\" } } },\n" +
+        ");\n",
+      );
+      const result = prepareRoot(root, ["--strict-inference"]);
+      expect(result.code, result.stderr).toBe(0);
+      const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
+      expect(dts).toContain('"capabilities": ("admin" | "member")[]');
+      const entry = JSON.parse(
+        readFileSync(join(root, ".sqlx-js", `${fingerprint(query)}.json`), "utf8"),
+      ) as { resultElementNonNullOverrides: string[] };
+      expect(entry.resultElementNonNullOverrides).toEqual(["capabilities"]);
+      const nullableValueEntry = JSON.parse(
+        readFileSync(join(root, ".sqlx-js", `${fingerprint(nullableValueQuery)}.json`), "utf8"),
+      ) as { columns: { name: string; tsType: string; nullable: boolean; override?: string }[] };
+      expect(nullableValueEntry.columns[0]).toMatchObject({
+        name: "capabilities",
+        tsType: '("admin" | "member")[]',
+        nullable: true,
+      });
+      expect(nullableValueEntry.columns[0]?.override).toBeUndefined();
+      const filteredAggregateEntry = JSON.parse(
+        readFileSync(join(root, ".sqlx-js", `${fingerprint(filteredAggregateQuery)}.json`), "utf8"),
+      ) as { columns: { name: string; tsType: string; nullable: boolean; override?: string }[] };
+      expect(filteredAggregateEntry.columns[0]).toMatchObject({
+        name: "values",
+        tsType: "(number)[]",
+        nullable: true,
+        override: "non-null",
+      });
+      const verified = prepareRoot(root, ["--verify", "--strict-inference"]);
+      expect(verified.code, verified.stderr).toBe(0);
+      const checked = prepareRoot(root, ["--check", "--strict-inference"]);
+      expect(checked.code, checked.stderr).toBe(0);
+      const offline = prepareRoot(root, ["--offline", "--strict-inference"]);
+      expect(offline.code, offline.stderr).toBe(0);
+
+      writeRootFile(root, "a.ts",
+        "import { defineQuery } from \"@onreza/sqlx-js\";\n" +
+        `export const claim = defineQuery.one("delivery.claim", ${JSON.stringify(query)});\n`,
+      );
+      const stale = prepareRoot(root, ["--check", "--json"]);
+      expect(stale.code).toBe(1);
+      expect(JSON.parse(stale.stdout).diagnostics).toContainEqual(expect.objectContaining({
+        phase: "cache",
+        message: expect.stringContaining("source result assertion contract changed"),
+      }));
+      const staleOffline = prepareRoot(root, ["--offline", "--json"]);
+      expect(staleOffline.code).toBe(1);
+      expect(JSON.parse(staleOffline.stdout).diagnostics).toContainEqual(expect.objectContaining({
+        phase: "cache",
+        message: expect.stringContaining("source result assertion contract changed"),
+      }));
+
+      writeRootFile(root, "a.ts",
+        "import { defineQuery } from \"@onreza/sqlx-js\";\n" +
+        "export const claim = defineQuery.one(\n" +
+        `  "delivery.claim", ${JSON.stringify(query)},\n` +
+        "  { resultAssertions: { missing: { elements: \"non-null\" } } },\n" +
+        ");\n",
+      );
+      const missing = prepareRoot(root, ["--json"]);
+      expect(missing.code).toBe(1);
+      expect(JSON.parse(missing.stdout).diagnostics).toContainEqual(expect.objectContaining({
+        phase: "result-shape",
+        message: expect.stringContaining('references unknown result column "missing"'),
+      }));
+
+      writeRootFile(root, "a.ts",
+        "import { defineQuery } from \"@onreza/sqlx-js\";\n" +
+        "export const scalar = defineQuery.one(\n" +
+        "  \"delivery.scalar\", \"SELECT 1 AS count\",\n" +
+        "  { resultAssertions: { count: { elements: \"non-null\" } } },\n" +
+        ");\n",
+      );
+      const scalar = prepareRoot(root, ["--json"]);
+      expect(scalar.code).toBe(1);
+      expect(JSON.parse(scalar.stdout).diagnostics).toContainEqual(expect.objectContaining({
+        phase: "result-shape",
+        message: expect.stringContaining('column "count" must have a PostgreSQL array type'),
+      }));
+
+      expect(readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8")).toBe(dts);
+    } finally {
+      await setup.simpleQuery(
+        "DROP FUNCTION IF EXISTS tmp_result_assertion(); DROP TYPE IF EXISTS tmp_result_assertion_role",
+      );
+      await setup.end();
+    }
+  });
+
   test("INSERT into nullable column emits nullable param type", () => {
     writeFile("migrations/0004_bio.up.sql",
       "ALTER TABLE tmp_users ADD COLUMN IF NOT EXISTS bio TEXT;\n",

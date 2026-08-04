@@ -6,9 +6,12 @@ import type { TypedSqlForRegistry } from "./typed";
 export type QueryExecutionMode = "many" | "one" | "optional" | "execute";
 export type QueryExecutionMetadata = { queryId: string; queryName?: string };
 export type QueryValidationExpectation = "parse-only";
+export type QueryResultElementAssertion = { readonly elements: "non-null" };
+export type QueryResultAssertions = Readonly<Record<string, QueryResultElementAssertion>>;
 export type DefineQueryOptions = {
   nullableParams?: readonly (string | number)[];
   expectedValidation?: QueryValidationExpectation;
+  resultAssertions?: QueryResultAssertions;
 };
 export const QUERY_EXECUTOR: unique symbol = Symbol.for("@onreza/sqlx-js.query-executor") as never;
 
@@ -166,26 +169,50 @@ function validateDefinitionOptions(query: string, options: DefineQueryOptions | 
   if (options.expectedValidation !== undefined && options.expectedValidation !== "parse-only") {
     throw new Error("sqlx-js.defineQuery: expectedValidation must be \"parse-only\"");
   }
-  if (options.nullableParams === undefined) return;
-  if (!Array.isArray(options.nullableParams)) {
-    throw new Error("sqlx-js.defineQuery: nullableParams must be an array");
-  }
-  const rewritten = rewriteNamedParameters(query);
-  const named = rewritten.names.length > 0;
-  const seen = new Set<string | number>();
-  for (const param of options.nullableParams) {
-    const valid = named
-      ? typeof param === "string" && rewritten.names.includes(param)
-      : typeof param === "number" && Number.isSafeInteger(param) && param >= 1 && param <= rewritten.positionalCount;
-    if (!valid) {
-      throw new Error(
-        named
-          ? `sqlx-js.defineQuery: nullableParams must reference named query parameters (${rewritten.names.join(", ")})`
-          : `sqlx-js.defineQuery: nullableParams must contain 1-based indexes up to ${rewritten.positionalCount}`,
-      );
+  if (options.nullableParams !== undefined) {
+    if (!Array.isArray(options.nullableParams)) {
+      throw new Error("sqlx-js.defineQuery: nullableParams must be an array");
     }
-    if (seen.has(param)) throw new Error("sqlx-js.defineQuery: nullableParams must be unique");
-    seen.add(param);
+    const rewritten = rewriteNamedParameters(query);
+    const named = rewritten.names.length > 0;
+    const seen = new Set<string | number>();
+    for (const param of options.nullableParams) {
+      const valid = named
+        ? typeof param === "string" && rewritten.names.includes(param)
+        : typeof param === "number" && Number.isSafeInteger(param) && param >= 1 && param <= rewritten.positionalCount;
+      if (!valid) {
+        throw new Error(
+          named
+            ? `sqlx-js.defineQuery: nullableParams must reference named query parameters (${rewritten.names.join(", ")})`
+            : `sqlx-js.defineQuery: nullableParams must contain 1-based indexes up to ${rewritten.positionalCount}`,
+        );
+      }
+      if (seen.has(param)) throw new Error("sqlx-js.defineQuery: nullableParams must be unique");
+      seen.add(param);
+    }
+  }
+  if (options.resultAssertions !== undefined) {
+    if (
+      !options.resultAssertions
+      || typeof options.resultAssertions !== "object"
+      || Array.isArray(options.resultAssertions)
+    ) {
+      throw new Error("sqlx-js.defineQuery: resultAssertions must be an object");
+    }
+    for (const [column, assertion] of Object.entries(options.resultAssertions)) {
+      if (!column) throw new Error("sqlx-js.defineQuery: resultAssertions column names must not be empty");
+      if (
+        !assertion
+        || typeof assertion !== "object"
+        || Array.isArray(assertion)
+        || Object.keys(assertion).length !== 1
+        || assertion.elements !== "non-null"
+      ) {
+        throw new Error(
+          `sqlx-js.defineQuery: resultAssertions.${column} must be { elements: \"non-null\" }`,
+        );
+      }
+    }
   }
 }
 

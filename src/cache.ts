@@ -6,7 +6,7 @@ import {
   GENERATOR_REVISION,
   RUNTIME_DESCRIPTOR_FILE,
 } from "./artifact-versions";
-import { isBuiltinOid } from "./pg/oids";
+import { arrayElementOid, isBuiltinOid } from "./pg/oids";
 import { queryId } from "./query-id";
 import { rewriteNamedParameters } from "./sql-params";
 
@@ -73,6 +73,7 @@ export type CacheEntry = {
   paramTsTypes: string[];
   paramNullable: boolean[];
   nullableParamOverrides: number[];
+  resultElementNonNullOverrides: string[];
   paramNames?: string[];
   columns: CacheColumn[];
   hasResultSet: boolean;
@@ -250,6 +251,29 @@ function assertEntryShape(fp: string, raw: unknown): CacheEntry {
     )
   ) {
     throw new Error(`sqlx-js: cache entry ${fp}.json has invalid nullable parameter overrides. Run \`sqlx-js prepare\`.`);
+  }
+  const columnsByName = new Map(cols.map((column) => {
+    const value = column as Record<string, unknown>;
+    return [value.name as string, value] as const;
+  }));
+  if (
+    !Array.isArray(entry.resultElementNonNullOverrides)
+    || entry.resultElementNonNullOverrides.some((column) =>
+      typeof column !== "string" || column.length === 0
+    )
+    || entry.resultElementNonNullOverrides.some((column, position) =>
+      position > 0
+      && (entry.resultElementNonNullOverrides as string[])[position - 1]! >= (column as string)
+    )
+    || entry.resultElementNonNullOverrides.some((column) =>
+      !columnsByName.has(column as string)
+    )
+    || entry.resultElementNonNullOverrides.some((column) => {
+      const oid = columnsByName.get(column as string)!.typeOid as number;
+      return oid !== 0 && arrayElementOid(oid) === undefined;
+    })
+  ) {
+    throw new Error(`sqlx-js: cache entry ${fp}.json has invalid result assertion metadata. Run \`sqlx-js prepare\`.`);
   }
   const inference = entry.inference;
   const validOptionalString = (value: unknown) =>

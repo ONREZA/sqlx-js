@@ -84,7 +84,7 @@ codes and artifact behavior. `--warnings` and `--verbose` cannot be combined
 with each other or with `--json`/`--jsonl`; watch mode is already streaming and
 does not accept them.
 
-`queries --json` is database-free and read-only. It emits `formatVersion: 1` inventory entries with `queryId`, connection profiles, optional definition names, cardinalities, root-relative call sites, SQL file paths, source-owned nullable parameter and expected-validation contracts, `current`/`stale`/`missing` cache status, and `planned`/`parse-only` validation when cached, plus orphaned cache IDs. Config, scan, cache, and embed failures use versioned structured diagnostics with source location when available. Adding `--embed` writes the external-SQL module only after a successful scan.
+`queries --json` is database-free and read-only. It emits `formatVersion: 1` inventory entries with `queryId`, connection profiles, optional definition names, cardinalities, root-relative call sites, SQL file paths, source-owned nullable-parameter, result-assertion, and expected-validation contracts, `current`/`stale`/`missing` cache status, and `planned`/`parse-only` validation when cached, plus orphaned cache IDs. Config, scan, cache, and embed failures use versioned structured diagnostics with source location when available. Adding `--embed` writes the external-SQL module only after a successful scan.
 
 After adding a new `defineQuery`, run live `sqlx-js prepare` before the ordinary
 TypeScript build. Until then, the generated registry cannot contain that SQL
@@ -95,7 +95,8 @@ read-only artifact gate and tells you when a live prepare is required.
 
 `queries explain <query-id>` reads committed cache artifacts and reports result
 sources, source constraints, every DML and predicate target for parameters,
-nullability decisions, and actionable hints. It does not connect to PostgreSQL.
+nullability decisions, per-profile result assertions, and actionable hints. It
+does not connect to PostgreSQL.
 `doctor` separately reports descriptor coverage for parameterized runtime call
 sites, lists adaptive or statically unclassified locations, and errors when a
 descriptor-configured query is missing from the artifact. Its coverage

@@ -246,6 +246,8 @@ export type {
   QueryDefinition,
   QueryExecutionMode,
   QueryParameterHelpers,
+  QueryResultAssertions,
+  QueryResultElementAssertion,
   QueryValidationExpectation,
 } from "./query";
 export type { RuntimeQueryDescriptors } from "./runtime-descriptors";

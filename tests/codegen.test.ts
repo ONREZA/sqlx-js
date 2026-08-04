@@ -16,11 +16,16 @@ afterAll(() => {
 
 type CacheEntryFixture = Omit<
   CacheEntry,
-  "paramTypeIdentities" | "paramNullable" | "nullableParamOverrides" | "inference"
+  | "paramTypeIdentities"
+  | "paramNullable"
+  | "nullableParamOverrides"
+  | "resultElementNonNullOverrides"
+  | "inference"
 > & {
   paramTypeIdentities?: CacheEntry["paramTypeIdentities"];
   paramNullable?: CacheEntry["paramNullable"];
   nullableParamOverrides?: CacheEntry["nullableParamOverrides"];
+  resultElementNonNullOverrides?: CacheEntry["resultElementNonNullOverrides"];
   inference?: CacheEntry["inference"];
 };
 
@@ -30,6 +35,7 @@ function completeEntries(entries: CacheEntryFixture[]): CacheEntry[] {
     paramTypeIdentities: entry.paramTypeIdentities ?? entry.paramOids,
     paramNullable: entry.paramNullable ?? entry.paramTsTypes.map(() => false),
     nullableParamOverrides: entry.nullableParamOverrides ?? [],
+    resultElementNonNullOverrides: entry.resultElementNonNullOverrides ?? [],
     inference: entry.inference ?? {
       columns: entry.columns.map(() => ({ sources: null, reason: "test fixture" })),
       params: entry.paramTsTypes.map(() => ({ targets: [], reason: "test fixture" })),
@@ -950,6 +956,7 @@ import {
   type QueryParams,
   type QueryRegistry,
   type QueryResult,
+  type QueryResultAssertions,
   type QueryRow,
   type QueryWireParams,
   type PgArrayParameter,
@@ -960,6 +967,12 @@ import {
 import type { SqlxJsGeneratedRegistry } from "./generated";
 
 const findUser = defineQuery.optional("users.findById", ${JSON.stringify(query)});
+const resultAssertionsShape: QueryResultAssertions = { items: { elements: "non-null" } };
+const assertedItems = defineQuery.one(${JSON.stringify(jsonArrayQuery)}, {
+  resultAssertions: { items: { elements: "non-null" } },
+});
+void resultAssertionsShape;
+void assertedItems;
 type Params = QueryParams<typeof findUser, SqlxJsGeneratedRegistry>;
 type AmbientParams = QueryParams<typeof findUser>;
 type Row = QueryRow<typeof findUser, SqlxJsGeneratedRegistry>;

@@ -178,7 +178,24 @@ Elements become non-null only when proven by:
 
 - a SQL constructor or expression whose inputs are all non-null;
 - a PostgreSQL element domain declared `NOT NULL`;
-- an `arrayElementNullability` assertion for a direct column.
+- an `arrayElementNullability` assertion for a direct column;
+- an exact reusable-query `resultAssertions` contract for an opaque array
+  result such as a `RETURNS TABLE` / `OUT` field.
+
+```ts
+export const claimDelivery = defineQuery.one(
+  "delivery.claim",
+  `SELECT capabilities AS "capabilities!" FROM claim_delivery()`,
+  { resultAssertions: { capabilities: { elements: "non-null" } } },
+);
+```
+
+The `!` alias above controls nullability of the array value. The
+`resultAssertions` entry independently controls nullability of its elements.
+Prepare checks the output name and PostgreSQL array shape against the live
+database, then persists the source contract in the cache. It cannot prove the
+semantic claim by inspecting function bodies, so the application must keep the
+assertion aligned with writes and returned data.
 
 Array value nullability and element nullability remain separate throughout
 CTEs, subqueries, aggregates, and set operations. Declared dimensions are not
@@ -204,8 +221,9 @@ When strict inference fails, prefer in this order:
 1. make the invariant explicit in PostgreSQL;
 2. project the relevant columns or simplify an ambiguous query shape;
 3. use a configuration mapping for an application-owned representation;
-4. use an explicit `!` or `?` result assertion when the database cannot expose
-   the guarantee.
+4. use an explicit `!` or `?` alias for result-value nullability, or an exact
+   `resultAssertions` contract for array-element nullability, when the database
+   cannot expose the guarantee.
 
 ## Explain and corpus policy
 

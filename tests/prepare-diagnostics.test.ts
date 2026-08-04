@@ -19,6 +19,7 @@ const entry: CacheEntry = {
   paramTsTypes: [],
   paramNullable: [],
   nullableParamOverrides: [],
+  resultElementNonNullOverrides: [],
   columns: [],
   hasResultSet: false,
   inference: { columns: [], params: [] },

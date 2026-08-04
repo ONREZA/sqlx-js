@@ -1,9 +1,10 @@
 import ts from "typescript";
-import type { QueryValidationExpectation } from "../query";
+import type { QueryResultAssertions, QueryValidationExpectation } from "../query";
 
 export type ScannedQueryOptions = {
   nullableParams?: number[];
   expectedValidation?: QueryValidationExpectation;
+  resultAssertions?: QueryResultAssertions;
 };
 
 type Fail = (node: ts.Node, message: string) => never;
@@ -38,9 +39,47 @@ export function parseQueryDefinitionOptions(
       result.expectedValidation = "parse-only";
       continue;
     }
+    if (name === "resultAssertions") {
+      result.resultAssertions = parseResultAssertions(property.initializer, fail);
+      continue;
+    }
     fail(property.name, `defineQuery() has unknown option ${JSON.stringify(name)}`);
   }
   return result;
+}
+
+function parseResultAssertions(node: ts.Expression, fail: Fail): QueryResultAssertions {
+  if (!ts.isObjectLiteralExpression(node)) {
+    fail(node, "defineQuery() resultAssertions must be an object literal");
+  }
+  const assertions = new Map<string, { elements: "non-null" }>();
+  for (const property of node.properties) {
+    if (!ts.isPropertyAssignment(property)) {
+      fail(property, "defineQuery() resultAssertions must use property assignments");
+    }
+    const column = propertyName(property.name, fail);
+    if (!column) fail(property.name, "defineQuery() resultAssertions column names must not be empty");
+    if (assertions.has(column)) {
+      fail(property.name, `defineQuery() resultAssertions column ${JSON.stringify(column)} is duplicated`);
+    }
+    if (!ts.isObjectLiteralExpression(property.initializer)) {
+      fail(property.initializer, `defineQuery() resultAssertions.${column} must be an object literal`);
+    }
+    const entries = property.initializer.properties;
+    if (entries.length !== 1 || !ts.isPropertyAssignment(entries[0]!)) {
+      fail(property.initializer, `defineQuery() resultAssertions.${column} must be { elements: \"non-null\" }`);
+    }
+    const assertionName = propertyName(entries[0].name, fail);
+    if (
+      assertionName !== "elements"
+      || !ts.isStringLiteralLike(entries[0].initializer)
+      || entries[0].initializer.text !== "non-null"
+    ) {
+      fail(entries[0], `defineQuery() resultAssertions.${column} must be { elements: \"non-null\" }`);
+    }
+    assertions.set(column, { elements: "non-null" });
+  }
+  return Object.fromEntries([...assertions].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
 }
 
 function parseNullableParams(

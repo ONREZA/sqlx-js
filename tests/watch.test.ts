@@ -96,8 +96,19 @@ test("watch reuses unchanged fingerprints and scans only the changed source", as
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-watch-"));
   const closed: string[] = [];
   const state: WatchState = { session: null };
-  const oldA = { file: "a.ts", line: 1, column: 1, query: "SELECT $1", paramCount: 1, kind: "inline" as const };
-  const newA = { ...oldA, nullableParams: [1] };
+  const oldA = {
+    file: "a.ts",
+    line: 1,
+    column: 1,
+    query: "SELECT ARRAY[COALESCE($1::text, 'x')] AS values",
+    paramCount: 1,
+    kind: "inline" as const,
+  };
+  const newA = {
+    ...oldA,
+    nullableParams: [1],
+    resultAssertions: { values: { elements: "non-null" as const } },
+  };
   const stableB = {
     file: "b.ts",
     line: 1,
@@ -128,6 +139,9 @@ test("watch reuses unchanged fingerprints and scans only the changed source", as
     await prepareWatchedOnce(currentOpts, state, () => {}, () => {}, deps, ["a.ts"]);
 
     expect(inputs[1]!.sites?.find((site) => site.file === "a.ts")?.nullableParams).toEqual([1]);
+    expect(inputs[1]!.sites?.find((site) => site.file === "a.ts")?.resultAssertions).toEqual({
+      values: { elements: "non-null" },
+    });
     expect(inputs[1]!.reuseCacheFps).toEqual(new Set([
       profileFingerprint("api", "SELECT 3"),
       profileFingerprint("worker", "SELECT 3"),
