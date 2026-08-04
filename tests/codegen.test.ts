@@ -606,6 +606,7 @@ const preparedApi = createSqlClient(undefined, {
   profile: { name: "api", role: "app_api" },
 });
 void preparedApi.sql("SELECT api");
+void preparedApi.sql.with({ timeoutMs: 1_000 })("SELECT api");
 // @ts-expect-error descriptor and adaptive execution modes are mutually exclusive
 createSqlClient(undefined, { queryDescriptors, execution: "adaptive" });
 
@@ -691,6 +692,7 @@ void api.sql.transaction({
   },
 }, async (tx) => {
   await tx("SELECT api");
+  await tx.with({ timeoutMs: 1_000 })("SELECT api");
   await tx.savepoint(async (sp) => {
     await sp("SELECT api");
   });

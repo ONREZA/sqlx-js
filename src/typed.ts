@@ -7,6 +7,7 @@ type ParamsOf<T> = T extends { params: infer P }
   : never[];
 type RowOf<T> = T extends { row: infer R } ? R : never;
 type ExecuteResult = import("./runtime").ExecuteResult;
+type QueryExecutionOptions = import("./runtime").QueryExecutionOptions;
 type JsonCompatible<T> = import("./runtime").JsonCompatible<T>;
 type JsonParameter<T> = import("./runtime").JsonParameter<T>;
 type PgArrayParameter<T, NullableElements extends boolean = boolean> = import("./runtime").PgArrayParameter<T, NullableElements>;
@@ -42,6 +43,7 @@ export type TypedSqlForRegistry<Registry extends { queries: object; fileQueries:
     query: Q,
     ...params: ParamsOf<Registry["queries"][Q]>
   ) => Promise<ExecuteResult>;
+  with: (options: QueryExecutionOptions) => TypedSqlForRegistry<Registry>;
   file: TypedFile<Registry["fileQueries"]>;
   id: (...parts: string[]) => string;
   json: JsonFn;

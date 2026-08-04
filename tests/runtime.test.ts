@@ -185,6 +185,33 @@ test("query definitions pass execution options outside SQL parameters", async ()
   });
 });
 
+test("sql.with binds execution options across root and transaction queries", async () => {
+  const controller = new AbortController();
+  const requests: import("../src/runtime").RuntimeQueryRequest[] = [];
+  const client: RuntimeClient = {
+    query: async () => [],
+    execute: async (request) => {
+      requests.push(request);
+      return request.query.startsWith("SELECT") ? [{ id: 7 }] : [];
+    },
+    transaction: async (fn) => fn(client),
+    close: async () => {},
+  };
+  const runtime = createSqlRuntime(() => client);
+
+  await runtime.sql.with({ signal: controller.signal })("SELECT $1", 7);
+  await runtime.sql.with({ timeoutMs: 100 }).one("SELECT $1", 7);
+  await runtime.sql.transaction(async (tx) => {
+    await tx.with({ signal: controller.signal, timeoutMs: 200 }).execute("DELETE FROM jobs");
+  });
+
+  expect(requests.map((request) => request.options)).toEqual([
+    { signal: controller.signal },
+    { timeoutMs: 100 },
+    { signal: controller.signal, timeoutMs: 200 },
+  ]);
+});
+
 test("query definitions fail closed when an executor cannot honor execution options", async () => {
   let calls = 0;
   const executor = Object.assign(async () => {

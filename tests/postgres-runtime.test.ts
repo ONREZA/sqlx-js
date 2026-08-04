@@ -85,6 +85,17 @@ test("statementTimeoutMs configures only the PostgreSQL session parameter", asyn
   await raw.end();
 });
 
+test("keepAliveMs configures the TCP keepalive initial delay", async () => {
+  const raw = createClient("postgres://app:secret@127.0.0.1:1/app", {
+    keepAliveMs: 0,
+  });
+  const parsed = (raw as unknown as {
+    options: { keepAliveMs?: number };
+  }).options;
+  expect(parsed.keepAliveMs).toBe(0);
+  await raw.end();
+});
+
 test("raw temporal reject policy fails closed for scalar and array infinity", async () => {
   const raw = createClient("postgres://app:secret@127.0.0.1:1/app", {
     temporal: { infinity: "reject" },
@@ -115,6 +126,7 @@ test("raw temporal reject policy fails closed for scalar and array infinity", as
 test("raw client rejects timeout values outside the runtime timer range", () => {
   const url = "postgres://app:secret@127.0.0.1:1/app";
   expect(() => createClient(url, { connectTimeoutMs: 0 })).toThrow("connectTimeoutMs must be an integer");
+  expect(() => createClient(url, { keepAliveMs: -1 })).toThrow("keepAliveMs must be an integer");
   expect(() => createClient(url, { idleTimeoutMs: -1 })).toThrow("idleTimeoutMs must be an integer");
   expect(() => createClient(url, { maxLifetimeMs: 2_147_483_648 })).toThrow(
     "maxLifetimeMs must be an integer",

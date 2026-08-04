@@ -114,12 +114,16 @@ RLS can make a physically existing row invisible, so use `.optional()` unless vi
 The audit is read-only and intentionally does not interpret arbitrary policy expressions. Role membership follows PostgreSQL's effective `INHERIT`/`USAGE` semantics, so membership through `NOINHERIT` neither applies a group policy nor grants owner bypass. Keep runtime roles separate from schema owners and migration/admin roles; do not grant runtime roles `BYPASSRLS`.
 
 `createSqlClient(url, options)` accepts the integrated pool options `max`,
-`password`, `connectTimeoutMs`, `idleTimeoutMs`, `maxLifetimeMs`,
+`password`, `connectTimeoutMs`, `keepAliveMs`, `idleTimeoutMs`, `maxLifetimeMs`,
 `statementTimeoutMs`, `applicationName`, `startupOptions`, `onNotice`, and
 numeric `types`, plus the managed runtime options below. `password` may be a
 string or an async provider resolved separately for every new connection.
 `connectTimeoutMs` is one deadline for password resolution, TCP, TLS, and
 PostgreSQL authentication.
+When `keepAliveMs` is present, every new TCP connection enables keepalive with
+that initial probe delay in milliseconds; `0` uses the platform default delay.
+It helps detect idle half-open connections but does not replace managed
+operation deadlines.
 `onNotice` receives structured PostgreSQL notices and isolates observer
 failures from protocol state. `operationTimeoutMs` is opt-in because the
 library cannot choose one correct wall-clock limit for both interactive
@@ -148,6 +152,7 @@ const db = createSqlClient(process.env.DATABASE_URL, {
   // Server-side per-connection statement timeout (ms). Also settable via
   // ?statement_timeout=5000 in DATABASE_URL.
   statementTimeoutMs: 5000,
+  keepAliveMs: 30_000,
   // Retire unused connections and bound the age of backend sessions.
   idleTimeoutMs: 60_000,
   maxLifetimeMs: 30 * 60_000,

@@ -205,6 +205,31 @@ test("sql.one, sql.optional, and sql.execute are scanned as inline queries", () 
   expect(sites[2]!.query).toBe("UPDATE users SET active = false WHERE id = $1");
 });
 
+test("sql.with options preserve inline, file, and transaction query classification", () => {
+  setup({
+    "a.ts":
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "const signal = new AbortController().signal;\n" +
+      "await sql.with({ signal })(\"SELECT 1\");\n" +
+      "await sql.with({ timeoutMs: 100 }).one(\"SELECT id FROM users WHERE id = $1\", 1);\n" +
+      "await sql.with({ signal }).file.optional(\"./q/by_id.sql\", 1);\n" +
+      "await sql.transaction(async (tx) => {\n" +
+      "  await tx.with({ timeoutMs: 100 }).execute(\"DELETE FROM jobs WHERE id = $1\", 1);\n" +
+      "});\n",
+    "q/by_id.sql": "SELECT id FROM users WHERE id = $1\n",
+  });
+  expect(scanProject(tmp).map((site) => ({
+    query: site.query,
+    kind: site.kind,
+    cardinality: site.cardinality,
+  }))).toEqual([
+    { query: "SELECT 1", kind: "inline", cardinality: "many" },
+    { query: "SELECT id FROM users WHERE id = $1", kind: "inline", cardinality: "one" },
+    { query: "SELECT id FROM users WHERE id = $1\n", kind: "file", cardinality: "optional" },
+    { query: "DELETE FROM jobs WHERE id = $1", kind: "inline", cardinality: "execute" },
+  ]);
+});
+
 test("defineQuery definitions are scanned with names and cardinality", () => {
   setup({
     "queries.ts": `

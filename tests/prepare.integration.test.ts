@@ -3019,11 +3019,11 @@ export default {
     ]);
   });
 
-  test("sql.one and sql.optional reach KnownQueries via the scanner", () => {
+  test("sql.with queries reach KnownQueries via the scanner", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
-      "await sql.one(\"SELECT id FROM tmp_users WHERE id = $1\", 1);\n" +
-      "await sql.optional(\"SELECT id FROM tmp_users WHERE email = $1\", \"x\");\n",
+      "await sql.with({ timeoutMs: 100 }).one(\"SELECT id FROM tmp_users WHERE id = $1\", 1);\n" +
+      "await sql.with({ signal: new AbortController().signal }).optional(\"SELECT id FROM tmp_users WHERE email = $1\", \"x\");\n",
     );
     const r = prepare();
     expect(r.code).toBe(0);
@@ -3350,15 +3350,12 @@ export default {
   });
 
   test("AbortSignal cancels a dispatched query without recycling a clean pool", async () => {
-    const { createSqlClient, defineQuery, QueryAbortedError } = await import("../src/index");
+    const { createSqlClient, QueryAbortedError } = await import("../src/index");
     const db = createSqlClient(dbUrl, { cancelGraceMs: 1_000 });
     const controller = new AbortController();
     try {
       await db.ready({ timeoutMs: 1_000 });
-      const pending = defineQuery("SELECT pg_sleep(1)").runWith(
-        { signal: controller.signal },
-        db.sql as never,
-      );
+      const pending = db.sql.with({ signal: controller.signal })("SELECT pg_sleep(1)" as never);
       setTimeout(() => controller.abort("request closed"), 50);
 
       let abortError: unknown;
@@ -3583,7 +3580,7 @@ export default {
 
   test("internal pool cancels an active query and remains usable", async () => {
     const { createClient } = await import("../src/index");
-    const client = createClient(dbUrl, { max: 1 });
+    const client = createClient(dbUrl, { max: 1, keepAliveMs: 0 });
     try {
       await client.unsafe("SELECT 1");
       const pending = client.unsafe("SELECT pg_sleep(10)").execute();
@@ -4071,6 +4068,17 @@ export default {
         "SELECT pg_backend_pid()::int AS pid",
       );
       expect(secondPid).not.toBe(firstPid);
+    } finally {
+      await client.end();
+    }
+  });
+
+  test("internal pool enables TCP keepalive on new connections", async () => {
+    const { createClient } = await import("../src/index");
+    const client = createClient(dbUrl, { max: 1, keepAliveMs: 0 });
+    try {
+      const [{ value }] = await client.unsafe<{ value: number }>("SELECT 1::int AS value");
+      expect(value).toBe(1);
     } finally {
       await client.end();
     }
