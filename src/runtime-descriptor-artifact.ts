@@ -2,11 +2,8 @@ import { randomBytes } from "node:crypto";
 import { renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  CACHE_FORMAT_VERSION,
-  GENERATOR_REVISION,
-  JSON_PROTOCOL_VERSION,
   RUNTIME_DESCRIPTOR_FILE,
-  RUNTIME_DESCRIPTOR_FORMAT_VERSION,
+  RUNTIME_DESCRIPTOR_VERSION_FENCE,
 } from "./artifact-versions";
 import { fingerprint, type CacheEntry } from "./cache";
 import type { DatabaseProfiles } from "./config";
@@ -71,10 +68,7 @@ export function renderRuntimeDescriptors(
     });
   }
   const artifact: RuntimeQueryDescriptors = {
-    formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
-    cacheFormat: CACHE_FORMAT_VERSION,
-    generatorRevision: GENERATOR_REVISION,
-    jsonProtocol: JSON_PROTOCOL_VERSION,
+    ...RUNTIME_DESCRIPTOR_VERSION_FENCE,
     configHash,
     temporal: resolveTemporalPolicy(temporal),
     types: sortedRecord(types),

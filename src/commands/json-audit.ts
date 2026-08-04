@@ -4,13 +4,32 @@ import { queryId } from "../query-id";
 import type { SqlxJsConfig } from "../config";
 import { EXTENDED_JSON_PROTOCOL_VERSION } from "../json-value";
 
+type JsonLeafStep =
+  | { kind: "domain"; schema: string; name: string }
+  | { kind: "array" }
+  | { kind: "field"; name: string };
+
+export type JsonAuditLeaf = {
+  path: string;
+  type: "json" | "jsonb";
+};
+
+type JsonLeafInventory = JsonAuditLeaf & {
+  steps: JsonLeafStep[];
+};
+
 type JsonColumn = {
   schema: string;
   relation: string;
   column: string;
-  type: "json" | "jsonb";
+  type: string;
+  jsonLeaves: JsonAuditLeaf[];
   selectable: boolean;
   rowSecurityActive: boolean;
+};
+
+type JsonColumnInventory = JsonColumn & {
+  leafInventory: JsonLeafInventory[];
 };
 
 export type JsonAuditColumn = JsonColumn & {
@@ -64,49 +83,151 @@ export type JsonAuditOptions = {
   json?: boolean;
 };
 
-const JSON_COLUMNS_QUERY = `
-SELECT
-  namespace.nspname,
-  relation.relname,
-  attribute.attname,
-  type.typname,
-  pg_catalog.has_column_privilege(relation.oid, attribute.attnum, 'SELECT'),
-  pg_catalog.row_security_active(relation.oid)
-FROM pg_catalog.pg_attribute AS attribute
-JOIN pg_catalog.pg_class AS relation ON relation.oid = attribute.attrelid
-JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
-JOIN pg_catalog.pg_type AS type ON type.oid = attribute.atttypid
-WHERE relation.relkind IN ('r', 'm')
-  AND attribute.attnum > 0
-  AND NOT attribute.attisdropped
-  AND type.typname IN ('json', 'jsonb')
-  AND namespace.nspname <> 'pg_catalog'
-  AND namespace.nspname <> 'information_schema'
-  AND namespace.nspname NOT LIKE 'pg_toast%'
-  AND namespace.nspname NOT LIKE 'pg_temp_%'
-ORDER BY namespace.nspname, relation.relname, attribute.attnum
-`;
-
-const JSON_DEPENDENCIES_QUERY = `
-WITH json_columns AS (
+const JSON_COLUMN_GRAPH_CTES = `
+user_columns AS (
   SELECT
     relation.oid AS relation_oid,
     namespace.nspname AS source_schema,
     relation.relname AS source_relation,
     attribute.attnum,
-    attribute.attname AS source_column
+    attribute.attname AS source_column,
+    attribute.atttypid AS root_type_oid,
+    pg_catalog.format_type(attribute.atttypid, NULL) AS root_type,
+    pg_catalog.has_column_privilege(relation.oid, attribute.attnum, 'SELECT') AS selectable,
+    pg_catalog.row_security_active(relation.oid) AS row_security_active
   FROM pg_catalog.pg_attribute AS attribute
   JOIN pg_catalog.pg_class AS relation ON relation.oid = attribute.attrelid
   JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = relation.relnamespace
-  JOIN pg_catalog.pg_type AS type ON type.oid = attribute.atttypid
   WHERE relation.relkind IN ('r', 'm')
     AND attribute.attnum > 0
     AND NOT attribute.attisdropped
-    AND type.typname IN ('json', 'jsonb')
     AND namespace.nspname <> 'pg_catalog'
     AND namespace.nspname <> 'information_schema'
     AND namespace.nspname NOT LIKE 'pg_toast%'
     AND namespace.nspname NOT LIKE 'pg_temp_%'
+), type_edges AS (
+  SELECT
+    container_type.oid AS container_oid,
+    child_type.oid AS child_oid,
+    'domain'::text AS edge_kind,
+    NULL::text AS field_name,
+    child_namespace.nspname AS child_schema,
+    child_type.typname AS child_name
+  FROM pg_catalog.pg_type AS container_type
+  JOIN pg_catalog.pg_type AS child_type ON child_type.oid = container_type.typbasetype
+  JOIN pg_catalog.pg_namespace AS child_namespace ON child_namespace.oid = child_type.typnamespace
+  WHERE container_type.typtype = 'd'
+    AND container_type.typbasetype <> 0
+
+  UNION ALL
+
+  SELECT
+    container_type.oid,
+    child_type.oid,
+    'array'::text,
+    NULL::text,
+    child_namespace.nspname,
+    child_type.typname
+  FROM pg_catalog.pg_type AS container_type
+  JOIN pg_catalog.pg_type AS child_type ON child_type.oid = container_type.typelem
+  JOIN pg_catalog.pg_namespace AS child_namespace ON child_namespace.oid = child_type.typnamespace
+  WHERE container_type.typcategory = 'A'
+    AND container_type.typelem <> 0
+
+  UNION ALL
+
+  SELECT
+    container_type.oid,
+    child_type.oid,
+    'field'::text,
+    attribute.attname,
+    child_namespace.nspname,
+    child_type.typname
+  FROM pg_catalog.pg_type AS container_type
+  JOIN pg_catalog.pg_attribute AS attribute ON attribute.attrelid = container_type.typrelid
+  JOIN pg_catalog.pg_type AS child_type ON child_type.oid = attribute.atttypid
+  JOIN pg_catalog.pg_namespace AS child_namespace ON child_namespace.oid = child_type.typnamespace
+  WHERE container_type.typtype = 'c'
+    AND attribute.attnum > 0
+    AND NOT attribute.attisdropped
+), type_walk AS (
+  SELECT
+    user_column.*,
+    user_column.root_type_oid AS current_type_oid,
+    '[]'::pg_catalog.jsonb AS steps,
+    ARRAY[user_column.root_type_oid]::pg_catalog.oid[] AS seen_oids
+  FROM user_columns AS user_column
+
+  UNION ALL
+
+  SELECT
+    type_walk.relation_oid,
+    type_walk.source_schema,
+    type_walk.source_relation,
+    type_walk.attnum,
+    type_walk.source_column,
+    type_walk.root_type_oid,
+    type_walk.root_type,
+    type_walk.selectable,
+    type_walk.row_security_active,
+    type_edge.child_oid,
+    type_walk.steps || pg_catalog.jsonb_build_array(
+      CASE type_edge.edge_kind
+        WHEN 'domain' THEN pg_catalog.jsonb_build_object(
+          'kind', 'domain',
+          'schema', type_edge.child_schema,
+          'name', type_edge.child_name
+        )
+        WHEN 'array' THEN pg_catalog.jsonb_build_object('kind', 'array')
+        ELSE pg_catalog.jsonb_build_object('kind', 'field', 'name', type_edge.field_name)
+      END
+    ),
+    type_walk.seen_oids || type_edge.child_oid
+  FROM type_walk
+  JOIN type_edges AS type_edge ON type_edge.container_oid = type_walk.current_type_oid
+  WHERE NOT type_edge.child_oid = ANY(type_walk.seen_oids)
+), json_leaf_columns AS (
+  SELECT *
+  FROM type_walk
+  WHERE current_type_oid IN (114, 3802)
+)
+`;
+
+const JSON_COLUMNS_QUERY = `
+WITH RECURSIVE ${JSON_COLUMN_GRAPH_CTES}
+SELECT
+  source_schema,
+  source_relation,
+  source_column,
+  root_type,
+  selectable,
+  row_security_active,
+  pg_catalog.jsonb_agg(DISTINCT pg_catalog.jsonb_build_object(
+    'type', CASE current_type_oid WHEN 114 THEN 'json' ELSE 'jsonb' END,
+    'steps', steps
+  ))::text
+FROM json_leaf_columns
+GROUP BY
+  relation_oid,
+  source_schema,
+  source_relation,
+  attnum,
+  source_column,
+  root_type,
+  selectable,
+  row_security_active
+ORDER BY source_schema, source_relation, attnum
+`;
+
+const JSON_DEPENDENCIES_QUERY = `
+WITH RECURSIVE ${JSON_COLUMN_GRAPH_CTES}, json_columns AS (
+  SELECT DISTINCT
+    relation_oid,
+    source_schema,
+    source_relation,
+    attnum,
+    source_column
+  FROM json_leaf_columns
 ), dependencies AS (
   SELECT DISTINCT
     'index'::text AS kind,
@@ -241,15 +362,21 @@ export async function inspectJsonAudit(opts: JsonAuditOptions): Promise<JsonAudi
     await client.connect();
     await client.simpleQuery("BEGIN READ ONLY");
     const columnResult = await client.simpleQuery(JSON_COLUMNS_QUERY);
-    const inventory: JsonColumn[] = columnResult.rows.map((row) => ({
-      schema: requiredText(row[0]),
-      relation: requiredText(row[1]),
-      column: requiredText(row[2]),
-      type: requiredText(row[3]) as "json" | "jsonb",
-      selectable: parseBoolean(row[4]),
-      rowSecurityActive: parseBoolean(row[5]),
-    }));
-    for (const column of inventory) {
+    const inventory: JsonColumnInventory[] = columnResult.rows.map((row) => {
+      const leafInventory = parseJsonLeafInventory(row[6]);
+      return {
+        schema: requiredText(row[0]),
+        relation: requiredText(row[1]),
+        column: requiredText(row[2]),
+        type: requiredText(row[3]),
+        jsonLeaves: leafInventory.map(({ path, type }) => ({ path, type })),
+        selectable: parseBoolean(row[4]),
+        rowSecurityActive: parseBoolean(row[5]),
+        leafInventory,
+      };
+    });
+    for (const inventoryColumn of inventory) {
+      const { leafInventory, ...column } = inventoryColumn;
       if (!column.selectable) {
         columns.push({
           ...column,
@@ -272,7 +399,7 @@ export async function inspectJsonAudit(opts: JsonAuditOptions): Promise<JsonAudi
       }
       await client.simpleQuery("SAVEPOINT sqlx_js_json_audit_column");
       try {
-        const counts = await inspectColumn(client, column);
+        const counts = await inspectColumn(client, column, leafInventory);
         await client.simpleQuery("RELEASE SAVEPOINT sqlx_js_json_audit_column");
         columns.push({ ...column, ...counts });
       } catch (error) {
@@ -359,67 +486,196 @@ export async function runJsonAudit(opts: JsonAuditOptions): Promise<void> {
 async function inspectColumn(
   client: PgClient,
   column: JsonColumn,
+  leaves: JsonLeafInventory[],
 ): Promise<Pick<JsonAuditColumn, "collisionRows" | "duplicateKeyRows">> {
-  const each = column.type === "jsonb" ? "pg_catalog.jsonb_each" : "pg_catalog.json_each";
-  const arrayElements = column.type === "jsonb"
-    ? "pg_catalog.jsonb_array_elements"
-    : "pg_catalog.json_array_elements";
-  const typeOf = column.type === "jsonb" ? "pg_catalog.jsonb_typeof" : "pg_catalog.json_typeof";
-  const emptyObject = `'{}'::pg_catalog.${column.type}`;
-  const emptyArray = `'[]'::pg_catalog.${column.type}`;
+  const jsonLeaves = leaves.filter((leaf) => leaf.type === "json");
+  const jsonbLeaves = leaves.filter((leaf) => leaf.type === "jsonb");
+  const result = await client.simpleQuery(`
+WITH RECURSIVE
+${renderJsonRoots(column, "json", jsonLeaves)},
+${renderJsonRoots(column, "jsonb", jsonbLeaves)},
+${renderJsonWalk("json")},
+${renderJsonWalk("jsonb")},
+affected AS (
+  SELECT row_id, collision, duplicate_keys FROM json_affected
+  UNION ALL
+  SELECT row_id, collision, duplicate_keys FROM jsonb_affected
+), affected_rows AS (
+  SELECT
+    row_id,
+    pg_catalog.bool_or(collision) AS collision,
+    pg_catalog.bool_or(duplicate_keys) AS duplicate_keys
+  FROM affected
+  GROUP BY row_id
+)
+SELECT
+  count(*) FILTER (WHERE collision)::text,
+  count(*) FILTER (WHERE duplicate_keys)::text
+FROM affected_rows
+  `);
+  return {
+    collisionRows: parseCount(rowOrThrow(result.rows, 0)[0]),
+    duplicateKeyRows: parseCount(rowOrThrow(result.rows, 0)[1]),
+  };
+}
+
+function renderJsonRoots(
+  column: JsonColumn,
+  type: "json" | "jsonb",
+  leaves: JsonLeafInventory[],
+): string {
+  const selects = leaves.map((leaf, index) => renderJsonRootSelect(column, leaf, index));
+  const body = selects.length > 0
+    ? selects.join("\nUNION ALL\n")
+    : `SELECT NULL::text AS row_id, NULL::pg_catalog.${type} AS value WHERE false`;
+  return `${type}_roots(row_id, value) AS (\n${body}\n)`;
+}
+
+function renderJsonRootSelect(
+  column: JsonColumn,
+  leaf: JsonLeafInventory,
+  leafIndex: number,
+): string {
   const target = `${quoteIdentifier(column.schema)}.${quoteIdentifier(column.relation)}`;
-  const source = quoteIdentifier(column.column);
-  const duplicateExpression = column.type === "jsonb"
+  let expression = `source_row.${quoteIdentifier(column.column)}`;
+  const joins: string[] = [];
+  let arrayIndex = 0;
+  for (const step of leaf.steps) {
+    if (step.kind === "domain") {
+      expression = `(${expression})::${quoteIdentifier(step.schema)}.${quoteIdentifier(step.name)}`;
+    } else if (step.kind === "field") {
+      expression = `(${expression}).${quoteIdentifier(step.name)}`;
+    } else {
+      const alias = `array_${leafIndex}_${arrayIndex++}`;
+      const element = `${alias}_element`;
+      joins.push(`CROSS JOIN LATERAL (
+  SELECT ${element} AS value
+  FROM pg_catalog.unnest(${expression}) AS ${element}
+) AS ${alias}`);
+      expression = `${alias}.value`;
+    }
+  }
+  return `SELECT
+  source_row.tableoid::text || ':' || source_row.ctid::text AS row_id,
+  (${expression})::pg_catalog.${leaf.type} AS value
+FROM ${target} AS source_row
+${joins.join("\n")}
+WHERE ${expression} IS NOT NULL`;
+}
+
+function renderJsonWalk(type: "json" | "jsonb"): string {
+  const each = `pg_catalog.${type}_each`;
+  const arrayElements = `pg_catalog.${type}_array_elements`;
+  const typeOf = `pg_catalog.${type}_typeof`;
+  const emptyObject = `'{}'::pg_catalog.${type}`;
+  const emptyArray = `'[]'::pg_catalog.${type}`;
+  const duplicateExpression = type === "jsonb"
     ? "false"
     : `EXISTS (
-        SELECT 1
-        FROM ${each}(CASE WHEN ${typeOf}(walk.value) = 'object' THEN walk.value ELSE ${emptyObject} END) AS duplicate
-        GROUP BY duplicate.key
-        HAVING count(*) > 1
-      )`;
-  const result = await client.simpleQuery(`
-WITH RECURSIVE walk(row_id, value) AS (
-  SELECT tableoid::text || ':' || ctid::text, ${source}
-  FROM ${target}
-  WHERE ${source} IS NOT NULL
+      SELECT 1
+      FROM ${each}(
+        CASE WHEN ${typeOf}(${type}_walk.value) = 'object'
+          THEN ${type}_walk.value ELSE ${emptyObject} END
+      ) AS duplicate
+      GROUP BY duplicate.key
+      HAVING count(*) > 1
+    )`;
+  return `${type}_walk(row_id, value) AS (
+  SELECT row_id, value FROM ${type}_roots
 
   UNION ALL
 
-  SELECT walk.row_id, child.value
-  FROM walk
+  SELECT ${type}_walk.row_id, child.value
+  FROM ${type}_walk
   CROSS JOIN LATERAL (
     SELECT object_item.value
     FROM ${each}(
-      CASE WHEN ${typeOf}(walk.value) = 'object' THEN walk.value ELSE ${emptyObject} END
+      CASE WHEN ${typeOf}(${type}_walk.value) = 'object'
+        THEN ${type}_walk.value ELSE ${emptyObject} END
     ) AS object_item
 
     UNION ALL
 
     SELECT array_item.value
     FROM ${arrayElements}(
-      CASE WHEN ${typeOf}(walk.value) = 'array' THEN walk.value ELSE ${emptyArray} END
+      CASE WHEN ${typeOf}(${type}_walk.value) = 'array'
+        THEN ${type}_walk.value ELSE ${emptyArray} END
     ) AS array_item
   ) AS child
-), affected AS (
+), ${type}_affected AS (
   SELECT
     row_id,
     EXISTS (
       SELECT 1
-      FROM ${each}(CASE WHEN ${typeOf}(walk.value) = 'object' THEN walk.value ELSE ${emptyObject} END) AS member
+      FROM ${each}(
+        CASE WHEN ${typeOf}(${type}_walk.value) = 'object'
+          THEN ${type}_walk.value ELSE ${emptyObject} END
+      ) AS member
       WHERE member.key = '$sqlx'
     ) AS collision,
     ${duplicateExpression} AS duplicate_keys
-  FROM walk
-)
-SELECT
-  count(DISTINCT row_id) FILTER (WHERE collision)::text,
-  count(DISTINCT row_id) FILTER (WHERE duplicate_keys)::text
-FROM affected
-  `);
-  return {
-    collisionRows: parseCount(rowOrThrow(result.rows, 0)[0]),
-    duplicateKeyRows: parseCount(rowOrThrow(result.rows, 0)[1]),
-  };
+  FROM ${type}_walk
+)`;
+}
+
+function parseJsonLeafInventory(value: Uint8Array | null | undefined): JsonLeafInventory[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(requiredText(value));
+  } catch {
+    throw new Error("sqlx-js json audit: PostgreSQL returned malformed JSON leaf metadata");
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error("sqlx-js json audit: PostgreSQL returned invalid JSON leaf metadata");
+  }
+  const leaves = parsed.map((candidate): JsonLeafInventory => {
+    if (!isRecord(candidate) || (candidate.type !== "json" && candidate.type !== "jsonb")) {
+      throw new Error("sqlx-js json audit: PostgreSQL returned invalid JSON leaf metadata");
+    }
+    if (!Array.isArray(candidate.steps)) {
+      throw new Error("sqlx-js json audit: PostgreSQL returned invalid JSON leaf steps");
+    }
+    const steps = candidate.steps.map((step): JsonLeafStep => {
+      if (!isRecord(step) || typeof step.kind !== "string") {
+        throw new Error("sqlx-js json audit: PostgreSQL returned invalid JSON leaf steps");
+      }
+      if (step.kind === "array") return { kind: "array" };
+      if (step.kind === "field" && typeof step.name === "string") {
+        return { kind: "field", name: step.name };
+      }
+      if (
+        step.kind === "domain"
+        && typeof step.schema === "string"
+        && typeof step.name === "string"
+      ) {
+        return { kind: "domain", schema: step.schema, name: step.name };
+      }
+      throw new Error("sqlx-js json audit: PostgreSQL returned invalid JSON leaf steps");
+    });
+    return {
+      type: candidate.type,
+      path: renderJsonLeafPath(steps),
+      steps,
+    };
+  });
+  return leaves.sort((left, right) => left.path.localeCompare(right.path) || left.type.localeCompare(right.type));
+}
+
+function renderJsonLeafPath(steps: JsonLeafStep[]): string {
+  let path = "$";
+  for (const step of steps) {
+    if (step.kind === "array") path += "[]";
+    else if (step.kind === "field") {
+      path += /^[A-Za-z_][A-Za-z0-9_]*$/.test(step.name)
+        ? `.${step.name}`
+        : `[${JSON.stringify(step.name)}]`;
+    }
+  }
+  return path;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function quoteIdentifier(value: string): string {

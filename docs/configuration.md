@@ -185,6 +185,11 @@ that parameter accepts it; use `sql.json(null)` for JSON `null`.
 
 This assertion does not validate stored values at runtime. Prefer a PostgreSQL enum/domain when the database truly owns a closed value set; use `columnTypes` when the database deliberately stores a broader scalar such as `text` and the application accepts responsibility for the narrower TypeScript contract.
 
+For a direct column whose PostgreSQL type is a domain over `json` or `jsonb`,
+the asserted application type remains nested inside `SqlxJson<T>` for both
+generated parameters and attributed results. `columnTypes` narrows `T`; it
+never replaces the Extended JSON transport wrapper required by the runtime.
+
 ## Generated enum catalog
 
 Query parameters and rows use PostgreSQL enum labels as literal unions automatically. Enable `enumCatalog` when application code also needs reusable runtime values for forms, validators, tests, or business logic:
