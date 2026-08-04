@@ -5,6 +5,11 @@ import type { TypedSqlForRegistry } from "./typed";
 
 export type QueryExecutionMode = "many" | "one" | "optional" | "execute";
 export type QueryExecutionMetadata = { queryId: string; queryName?: string };
+export type QueryValidationExpectation = "parse-only";
+export type DefineQueryOptions = {
+  nullableParams?: readonly (string | number)[];
+  expectedValidation?: QueryValidationExpectation;
+};
 export const QUERY_EXECUTOR: unique symbol = Symbol.for("@onreza/sqlx-js.query-executor") as never;
 
 export type QueryExecutorMethod = (
@@ -148,20 +153,59 @@ export type QueryResultFor<Definition, Registry extends { queries: object }> = Q
 >;
 
 type DefineQueryMethod<Mode extends QueryExecutionMode, Profiles extends readonly string[] = readonly []> = {
-  <const Query extends string>(query: Query): QueryDefinition<Query, Mode, Profiles>;
-  <const Query extends string>(name: string, query: Query): QueryDefinition<Query, Mode, Profiles>;
+  <const Query extends string>(query: Query, options?: DefineQueryOptions): QueryDefinition<Query, Mode, Profiles>;
+  <const Query extends string>(
+    name: string,
+    query: Query,
+    options?: DefineQueryOptions,
+  ): QueryDefinition<Query, Mode, Profiles>;
 };
+
+function validateDefinitionOptions(query: string, options: DefineQueryOptions | undefined): void {
+  if (!options) return;
+  if (options.expectedValidation !== undefined && options.expectedValidation !== "parse-only") {
+    throw new Error("sqlx-js.defineQuery: expectedValidation must be \"parse-only\"");
+  }
+  if (options.nullableParams === undefined) return;
+  if (!Array.isArray(options.nullableParams)) {
+    throw new Error("sqlx-js.defineQuery: nullableParams must be an array");
+  }
+  const rewritten = rewriteNamedParameters(query);
+  const named = rewritten.names.length > 0;
+  const seen = new Set<string | number>();
+  for (const param of options.nullableParams) {
+    const valid = named
+      ? typeof param === "string" && rewritten.names.includes(param)
+      : typeof param === "number" && Number.isSafeInteger(param) && param >= 1 && param <= rewritten.positionalCount;
+    if (!valid) {
+      throw new Error(
+        named
+          ? `sqlx-js.defineQuery: nullableParams must reference named query parameters (${rewritten.names.join(", ")})`
+          : `sqlx-js.defineQuery: nullableParams must contain 1-based indexes up to ${rewritten.positionalCount}`,
+      );
+    }
+    if (seen.has(param)) throw new Error("sqlx-js.defineQuery: nullableParams must be unique");
+    seen.add(param);
+  }
+}
 
 function definitionMethod<Mode extends QueryExecutionMode, Profiles extends readonly string[] = readonly []>(
   mode: Mode,
   profiles: Profiles = [] as unknown as Profiles,
 ): DefineQueryMethod<Mode, Profiles> {
-  return ((nameOrQuery: string, maybeQuery?: string) => {
-    const query = maybeQuery ?? nameOrQuery;
-    const name = maybeQuery === undefined ? undefined : nameOrQuery;
+  return ((
+    nameOrQuery: string,
+    queryOrOptions?: string | DefineQueryOptions,
+    namedOptions?: DefineQueryOptions,
+  ) => {
+    const namedDefinition = typeof queryOrOptions === "string";
+    const query = namedDefinition ? queryOrOptions : nameOrQuery;
+    const name = namedDefinition ? nameOrQuery : undefined;
+    const options = namedDefinition ? namedOptions : queryOrOptions;
     if (name !== undefined && name.trim() === "") {
       throw new Error("sqlx-js.defineQuery: query name must not be empty");
     }
+    validateDefinitionOptions(query, options);
     const metadata: QueryExecutionMetadata = {
       queryId: queryId(query),
       ...(name ? { queryName: name } : {}),

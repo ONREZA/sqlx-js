@@ -24,6 +24,7 @@ function entry(
     paramTypeIdentities,
     paramTsTypes: paramTypeIdentities.map(() => "unknown"),
     paramNullable: paramTypeIdentities.map(() => false),
+    nullableParamOverrides: [],
     columns: [],
     hasResultSet: false,
     inference: {

@@ -79,13 +79,14 @@ function emitRegistry(
     functionSeen.add(fn.signature);
     const params = inputParams(fn);
     const searchPath = fn.searchPath === null ? "null" : JSON.stringify(fn.searchPath);
+    const settings = `readonly [${fn.settings.map((setting) => JSON.stringify(setting)).join(", ")}]`;
     lines.push(
-      `  ${JSON.stringify(fn.signature)}: { kind: ${JSON.stringify(fn.kind)}; params: ${params}; `
+      `  ${JSON.stringify(fn.signature)}: { kind: ${JSON.stringify(fn.kind)}; language: ${JSON.stringify(fn.language)}; params: ${params}; `
       + `returns: ${fn.returns}; returnsSet: ${fn.returnsSet}; volatility: ${JSON.stringify(fn.volatility)}; `
-      + `securityDefiner: ${fn.securityDefiner}; leakproof: ${fn.leakproof}; `
+      + `strict: ${fn.strict}; securityDefiner: ${fn.securityDefiner}; leakproof: ${fn.leakproof}; `
       + `parallelSafety: ${JSON.stringify(fn.parallelSafety)}; owner: ${JSON.stringify(fn.owner)}; `
       + `ownerSuperuser: ${fn.ownerSuperuser}; publicExecute: ${fn.publicExecute}; `
-      + `searchPath: ${searchPath}; extensionOwned: ${fn.extensionOwned} };`,
+      + `settings: ${settings}; searchPath: ${searchPath}; extensionOwned: ${fn.extensionOwned} };`,
     );
   }
 

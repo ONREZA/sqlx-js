@@ -1,30 +1,31 @@
 {
-  "version": 2,
+  "version": 3,
   "functions": [
     {
       "schema": "public",
       "name": "list_users",
       "signature": "public.list_users(filter_role user_role, search_text text, after_id bigint, result_limit integer)",
       "kind": "function",
+      "language": "sql",
       "params": [
         {
           "mode": "in",
-          "tsType": "\"admin\" | \"editor\" | \"viewer\"",
+          "tsType": "\"admin\" | \"editor\" | \"viewer\" | null",
           "name": "filter_role"
         },
         {
           "mode": "in",
-          "tsType": "string",
+          "tsType": "string | null",
           "name": "search_text"
         },
         {
           "mode": "in",
-          "tsType": "bigint",
+          "tsType": "bigint | null",
           "name": "after_id"
         },
         {
           "mode": "in",
-          "tsType": "number",
+          "tsType": "number | null",
           "name": "result_limit"
         },
         {
@@ -56,12 +57,14 @@
       "returns": "{ id: bigint | null; name: string | null; email: string | null; role: \"admin\" | \"editor\" | \"viewer\" | null; created_at: import(\"@onreza/sqlx-js\").PgTemporal | null }",
       "returnsSet": true,
       "volatility": "stable",
+      "strict": false,
       "securityDefiner": false,
       "leakproof": false,
       "parallelSafety": "unsafe",
       "owner": "postgres",
       "ownerSuperuser": true,
       "publicExecute": true,
+      "settings": [],
       "searchPath": null,
       "extensionOwned": false
     }

@@ -49,7 +49,7 @@ export interface SqlxJsGeneratedFileQueries {
 }
 
 export interface SqlxJsGeneratedFunctions {
-  "public.list_users(filter_role user_role, search_text text, after_id bigint, result_limit integer)": { kind: "function"; params: ["admin" | "editor" | "viewer", string, bigint, number]; returns: { id: bigint | null; name: string | null; email: string | null; role: "admin" | "editor" | "viewer" | null; created_at: import("@onreza/sqlx-js").PgTemporal | null }; returnsSet: true; volatility: "stable"; securityDefiner: false; leakproof: false; parallelSafety: "unsafe"; owner: "postgres"; ownerSuperuser: true; publicExecute: true; searchPath: null; extensionOwned: false };
+  "public.list_users(filter_role user_role, search_text text, after_id bigint, result_limit integer)": { kind: "function"; language: "sql"; params: ["admin" | "editor" | "viewer" | null, string | null, bigint | null, number | null]; returns: { id: bigint | null; name: string | null; email: string | null; role: "admin" | "editor" | "viewer" | null; created_at: import("@onreza/sqlx-js").PgTemporal | null }; returnsSet: true; volatility: "stable"; strict: false; securityDefiner: false; leakproof: false; parallelSafety: "unsafe"; owner: "postgres"; ownerSuperuser: true; publicExecute: true; settings: readonly []; searchPath: null; extensionOwned: false };
 }
 
 export interface SqlxJsGeneratedRuntimeTypes {

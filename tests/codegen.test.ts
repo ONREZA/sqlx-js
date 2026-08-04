@@ -14,9 +14,13 @@ afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-type CacheEntryFixture = Omit<CacheEntry, "paramTypeIdentities" | "paramNullable" | "inference"> & {
+type CacheEntryFixture = Omit<
+  CacheEntry,
+  "paramTypeIdentities" | "paramNullable" | "nullableParamOverrides" | "inference"
+> & {
   paramTypeIdentities?: CacheEntry["paramTypeIdentities"];
   paramNullable?: CacheEntry["paramNullable"];
+  nullableParamOverrides?: CacheEntry["nullableParamOverrides"];
   inference?: CacheEntry["inference"];
 };
 
@@ -25,6 +29,7 @@ function completeEntries(entries: CacheEntryFixture[]): CacheEntry[] {
     ...entry,
     paramTypeIdentities: entry.paramTypeIdentities ?? entry.paramOids,
     paramNullable: entry.paramNullable ?? entry.paramTsTypes.map(() => false),
+    nullableParamOverrides: entry.nullableParamOverrides ?? [],
     inference: entry.inference ?? {
       columns: entry.columns.map(() => ({ sources: null, reason: "test fixture" })),
       params: entry.paramTsTypes.map(() => ({ targets: [], reason: "test fixture" })),
@@ -463,16 +468,19 @@ test("KnownFunctions emits pg_proc catalog entries", () => {
       name: "slugify",
       signature: "public.slugify(value text)",
       kind: "function",
-      params: [{ mode: "in", name: "value", tsType: "string" }],
+      language: "sql",
+      params: [{ mode: "in", name: "value", tsType: "string | null" }],
       returns: "string | null",
       returnsSet: false,
       volatility: "immutable",
+      strict: false,
       securityDefiner: false,
       leakproof: false,
       parallelSafety: "safe",
       owner: "app_owner",
       ownerSuperuser: false,
       publicExecute: true,
+      settings: [],
       searchPath: null,
       extensionOwned: false,
     },
@@ -481,23 +489,26 @@ test("KnownFunctions emits pg_proc catalog entries", () => {
       name: "search_posts",
       signature: "public.search_posts(query text)",
       kind: "function",
-      params: [{ mode: "in", name: "query", tsType: "string" }],
+      language: "plpgsql",
+      params: [{ mode: "in", name: "query", tsType: "string | null" }],
       returns: "{ slug: string | null; score: number | null }",
       returnsSet: true,
       volatility: "stable",
+      strict: false,
       securityDefiner: true,
       leakproof: false,
       parallelSafety: "restricted",
       owner: "reporting_owner",
       ownerSuperuser: false,
       publicExecute: false,
+      settings: ["search_path=reporting, pg_temp", "TimeZone=UTC"],
       searchPath: "reporting, pg_temp",
       extensionOwned: false,
     },
   ]);
   expect(dts).toContain("interface KnownFunctions");
-  expect(dts).toContain('"public.slugify(value text)": { kind: "function"; params: [string]; returns: string | null; returnsSet: false; volatility: "immutable"; securityDefiner: false; leakproof: false; parallelSafety: "safe"; owner: "app_owner"; ownerSuperuser: false; publicExecute: true; searchPath: null; extensionOwned: false }');
-  expect(dts).toContain('"public.search_posts(query text)": { kind: "function"; params: [string]; returns: { slug: string | null; score: number | null }; returnsSet: true; volatility: "stable"; securityDefiner: true; leakproof: false; parallelSafety: "restricted"; owner: "reporting_owner"; ownerSuperuser: false; publicExecute: false; searchPath: "reporting, pg_temp"; extensionOwned: false }');
+  expect(dts).toContain('"public.slugify(value text)": { kind: "function"; language: "sql"; params: [string | null]; returns: string | null; returnsSet: false; volatility: "immutable"; strict: false; securityDefiner: false; leakproof: false; parallelSafety: "safe"; owner: "app_owner"; ownerSuperuser: false; publicExecute: true; settings: readonly []; searchPath: null; extensionOwned: false }');
+  expect(dts).toContain('"public.search_posts(query text)": { kind: "function"; language: "plpgsql"; params: [string | null]; returns: { slug: string | null; score: number | null }; returnsSet: true; volatility: "stable"; strict: false; securityDefiner: true; leakproof: false; parallelSafety: "restricted"; owner: "reporting_owner"; ownerSuperuser: false; publicExecute: false; settings: readonly ["search_path=reporting, pg_temp", "TimeZone=UTC"]; searchPath: "reporting, pg_temp"; extensionOwned: false }');
   expect(dts).toContain("export interface SqlxJsGeneratedRegistry");
   expect(dts).toContain("interface KnownQueries extends SqlxJsGeneratedQueries");
 });

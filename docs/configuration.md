@@ -83,7 +83,7 @@ runtime policy.
 
 By default the scanner uses the root `tsconfig.json` file list and follows TypeScript project references, so a referenced monorepo is scanned without walking unrelated folders. `scan.include` replaces that source-file universe with TypeScript glob patterns; `scan.exclude` is added to the built-in dependency/build exclusions. `scan.modules` replaces the default `@onreza/sqlx-js` import source list, which lets an application re-export `sql` through a shared database module without requiring arbitrary re-export graph analysis. Include `@onreza/sqlx-js` explicitly when direct imports and application-module imports are both used. If there is no root `tsconfig.json`, the fallback is a recursive TypeScript scan.
 
-The `schema` block is optional. Use `provider: "pgschema"` when sqlx-js should delegate schema planning/apply commands to pgschema. `command` can override the managed binary lookup and point at another executable. With the pinned pgschema 1.12.0 CLI, `schemas` must contain exactly one schema name.
+The `schema` block is optional. Use `provider: "pgschema"` when sqlx-js should delegate schema planning/apply commands to pgschema. `command` can override the managed binary lookup and point at another executable. With the pinned pgschema 1.12.0 CLI, `schemas` must contain exactly one schema name. That release drops function-local `SET` clauses other than `search_path`; the upstream defect is tracked in [pgplex/pgschema#526](https://github.com/pgplex/pgschema/issues/526). Do not use the managed provider as the DDL authority for functions that require additional settings until the upstream fix is available and pinned. sqlx-js preserves the complete live `pg_proc.proconfig` array in function caches and schema snapshots, so verification detects a lost setting when the expected artifact already contains it; it cannot reconstruct omitted desired state by parsing `schema.sql` as a second DDL authority.
 
 Point mappings directly at the application's canonical exported types. The strings are emitted as TypeScript type expressions, so `import("...").Type` keeps the generated declaration self-contained and avoids a duplicate ambient schema:
 
@@ -185,7 +185,7 @@ Arrays of that domain are inferred as `string[]` without config. Ordinary `text[
 
 ## Function catalog scope
 
-Application-owned functions and procedures from non-system schemas are generated into `KnownFunctions`. Each signature records approximate parameter/return types together with `volatility`, `securityDefiner`, `leakproof`, `parallelSafety`, `owner`, `ownerSuperuser`, `publicExecute`, `searchPath`, and `extensionOwned`. A `null` `searchPath` means the function has no function-local `SET search_path` clause and inherits the session setting. `publicExecute` reflects the effective PostgreSQL function ACL, including the default `EXECUTE TO PUBLIC` grant when `proacl` is null.
+Application-owned functions and procedures from non-system schemas are generated into `KnownFunctions`. Each signature records approximate parameter/return types together with `language`, `volatility`, `strict`, `securityDefiner`, `leakproof`, `parallelSafety`, `owner`, `ownerSuperuser`, `publicExecute`, the complete function-local `settings`, derived `searchPath`, and `extensionOwned`. Every input type includes SQL `null`: PostgreSQL accepts null for function arguments even when `strict` is true; strictness means the server returns null without invoking the function body. A `null` `searchPath` means the function has no function-local `SET search_path` clause and inherits the session setting. `publicExecute` reflects the effective PostgreSQL function ACL, including the default `EXECUTE TO PUBLIC` grant when `proacl` is null.
 
 The same metadata is committed in `.sqlx-js/functions/functions.json`, so `prepare --check` and `prepare --offline` reproduce the live diagnostics from cache, while `prepare --verify` detects database drift without modifying the worktree. Catalog and generator revisions fail closed with regeneration guidance after an incompatible upgrade; run one live `prepare`. Schema snapshots carry the same metadata and likewise require `snapshot dump` when their format changes.
 
@@ -203,6 +203,14 @@ Owner attributes and effective ACLs are intentionally environment-sensitive cont
 | `volatile-parallel-safe` | Confirm worker safety or mark the function `PARALLEL UNSAFE`. |
 
 These diagnostics validate declared metadata, not function bodies. In particular, sqlx-js cannot infer which application roles may create objects in an arbitrary schema, so an explicit path ending in `pg_temp` still requires a human review that every preceding schema is trusted. The `PUBLIC` check also cannot prove that the remaining role grants are the intended least-privilege set.
+
+`language: "plpgsql"` is inventory evidence, not body validation. PostgreSQL may
+parse SQL statements inside a PL/pgSQL body only when that path first executes;
+a successful function creation and a successful generic plan of its call site
+do not prove internal column names, assignments, or casts. Use execution smoke
+tests for changed functions, or run `plpgsql_check` in a separate explicitly
+configured database workflow when that extension is available. sqlx-js does
+not install extensions or execute application queries during prepare.
 
 Objects owned by installed extensions are excluded through `pg_depend`, preventing extension internals from dominating committed artifacts or warnings. Set `functionCatalog.includeExtensionOwned: true` only when those approximate signatures and metadata are needed; extension-owned entries remain exempt from application diagnostics. Set `functionCatalog: false` to disable catalog generation entirely.
 

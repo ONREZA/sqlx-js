@@ -1,7 +1,7 @@
 {
   "formatVersion": 2,
-  "cacheFormat": 5,
-  "generatorRevision": 22,
+  "cacheFormat": 6,
+  "generatorRevision": 23,
   "configHash": "611f4c56c07cffe9",
   "temporal": {
     "infinity": "preserve"

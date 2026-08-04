@@ -3,6 +3,8 @@ import {
   executionIntentDiagnostics,
   formatPrepareDiagnostic,
   formatPrepareDiagnosticCounts,
+  planningDiagnostics,
+  planningValidationTag,
   reportQueryDiagnostics,
 } from "../src/commands/prepare-diagnostics";
 import type { CacheEntry } from "../src/cache";
@@ -16,6 +18,7 @@ const entry: CacheEntry = {
   paramTypeIdentities: [],
   paramTsTypes: [],
   paramNullable: [],
+  nullableParamOverrides: [],
   columns: [],
   hasResultSet: false,
   inference: { columns: [], params: [] },
@@ -101,4 +104,37 @@ test("summary diagnostics expose query drill-down and aggregate phases", () => {
   expect(formatPrepareDiagnosticCounts(diagnostics)).toBe(
     "2 warnings (inference: 1, intent: 1), 1 error (cache: 1)",
   );
+});
+
+test("expected parse-only validation remains visible without a warning", () => {
+  const site: QueryCallSite = {
+    file: "maintenance.ts",
+    line: 4,
+    column: 3,
+    query: "ANALYZE users",
+    paramCount: 0,
+    kind: "inline",
+    origin: "definition",
+    cardinality: "execute",
+    expectedValidation: "parse-only",
+  };
+  expect(planningDiagnostics("parse-only", [site])).toEqual([]);
+  expect(planningValidationTag("parse-only", [site])).toBe(" [parse-only acknowledged]");
+
+  expect(planningDiagnostics("planned", [site])).toEqual([
+    expect.objectContaining({
+      severity: "warning",
+      phase: "plan",
+      message: 'statement is now planned; remove the stale expectedValidation: "parse-only" source contract',
+    }),
+  ]);
+
+  const unacknowledged = { ...site, file: "runner.ts", expectedValidation: undefined };
+  expect(planningDiagnostics("parse-only", [site, unacknowledged])).toEqual([
+    expect.objectContaining({ file: "runner.ts", phase: "plan" }),
+  ]);
+  expect(planningDiagnostics("parse-only", [site, unacknowledged], true)).toEqual([
+    expect.objectContaining({ file: "runner.ts", phase: "plan", severity: "error" }),
+  ]);
+  expect(planningValidationTag("parse-only", [site, unacknowledged])).toBe(" [parse-only]");
 });

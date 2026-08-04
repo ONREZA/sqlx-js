@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+  readSchemaSnapshot,
   renderSchemaManifest,
   schemaSnapshotEqual,
   stableSchemaJson,
@@ -7,7 +11,7 @@ import {
 } from "../src/schema-snapshot";
 
 const snapshot: SchemaSnapshot = {
-  version: 2,
+  version: 3,
   schemas: ["public"],
   relations: [{
     schema: "public",
@@ -53,6 +57,7 @@ const snapshot: SchemaSnapshot = {
       owner: "app_owner",
       ownerSuperuser: false,
       publicExecute: true,
+      settings: ["search_path=app, pg_temp", "TimeZone=UTC"],
       searchPath: "app, pg_temp",
       extensionOwned: false,
       language: "sql",
@@ -82,5 +87,25 @@ test("renderSchemaManifest includes constraints, indexes, types, and functions",
   expect(text).toContain("posts_user_id_idx: btree [user_id]");
   expect(text).toContain("enum public.role");
   expect(text).toContain("public.normalize_email(value text) -> text");
-  expect(text).toContain('parallel safe, owner app_owner, public execute, search_path "app, pg_temp"');
+  expect(text).toContain('function, language sql, immutable, strict, parallel safe, owner app_owner, public execute, settings ["search_path=app, pg_temp","TimeZone=UTC"]');
+});
+
+test("readSchemaSnapshot rejects incomplete function metadata", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-schema-snapshot-"));
+  const path = join(root, "schema.json");
+  try {
+    const malformed = structuredClone(snapshot) as unknown as {
+      functions: Array<Record<string, unknown>>;
+    };
+    delete malformed.functions[0]!.language;
+    writeFileSync(path, JSON.stringify(malformed));
+    expect(() => readSchemaSnapshot(path)).toThrow(/schema snapshot is malformed/);
+
+    const inconsistent = structuredClone(snapshot);
+    inconsistent.functions[0]!.searchPath = "public";
+    writeFileSync(path, JSON.stringify(inconsistent));
+    expect(() => readSchemaSnapshot(path)).toThrow(/schema snapshot is malformed/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

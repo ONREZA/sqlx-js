@@ -19,6 +19,7 @@ function emptyEntry(query: string, hasResultSet = false): CacheEntry {
     paramTypeIdentities: [],
     paramTsTypes: [],
     paramNullable: [],
+    nullableParamOverrides: [],
     columns: [],
     hasResultSet,
     inference: { columns: [], params: [] },

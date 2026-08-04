@@ -118,7 +118,10 @@ SELECT nullable_value AS "nullableValue?" FROM source
 The runtime strips the suffix, so the object keys above are `id` and
 `nullableValue`. Assertions should be rare and reviewed with the SQL invariant
 that makes them true. They are especially useful for stable database functions
-whose `RETURNS TABLE` fields have no PostgreSQL `NOT NULL` metadata.
+whose `RETURNS TABLE` / `OUT` fields have no PostgreSQL `NOT NULL` metadata.
+`queries explain` reports the conservative reason and the alias hint, but
+sqlx-js deliberately does not inspect a function body and infer a stronger
+contract from implementation details.
 
 ## Parameter inference
 
@@ -151,6 +154,14 @@ target accepts SQL `NULL`. Examples include:
 An ordinary predicate such as `WHERE col = $1` remains non-null even when
 `col` is nullable: `col = NULL` is never true. Use `IS NOT DISTINCT FROM` or an
 explicit nullable-filter pattern when passing `null` is intentional.
+
+For a PostgreSQL function call, `pg_proc` does not contain per-input nullability
+metadata. All SQL function inputs can receive SQL `NULL`; `proisstrict` only
+changes whether PostgreSQL executes the body. Use a `defineQuery` source
+contract such as `{ nullableParams: ["operationId"] }` when the application
+allows null but the call expression itself does not prove that fact. The
+generated `KnownFunctions` inventory therefore includes `null` in every input
+parameter type, independently of the stricter call-site query contract.
 
 Named parameters are rewritten to positional parameters in first-use order.
 Repeated names reuse one position. The rewriter understands quoted strings,

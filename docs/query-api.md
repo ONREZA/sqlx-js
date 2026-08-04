@@ -56,6 +56,38 @@ async function loadUser(executor: SqlExecutor, params: FindUserParams) {
 
 The optional definition name is included in query observer and inventory metadata. The stable `queryId` is derived from the same lexical SQL fingerprint used by prepare/cache. `defineQuery.one`, `.optional`, and `.execute` mirror the cardinality contracts of the corresponding `sql` helpers.
 
+The final options object records source-owned facts that PostgreSQL does not
+expose through `Describe`:
+
+```ts
+export const retire = defineQuery.one(
+  "billing.retire",
+  `SELECT retire_subscription($retireAt::timestamptz, $operationId::text) AS result`,
+  { nullableParams: ["retireAt", "operationId"] },
+);
+
+export const analyze = defineQuery.execute(
+  "maintenance.analyze",
+  `ANALYZE billing_event`,
+  { expectedValidation: "parse-only" },
+);
+```
+
+For named SQL, `nullableParams` contains parameter names; for positional SQL,
+it contains 1-based indexes. The assertion widens the generated input type to
+`T | null`. It cannot override a direct `NOT NULL` stored-value target: live
+prepare fails instead of generating a contract that PostgreSQL cannot satisfy.
+Changing this option makes the committed query cache stale and requires a live
+`prepare`.
+
+`expectedValidation: "parse-only"` acknowledges a reviewed statement outside
+PostgreSQL's generic `PREPARE`/`EXPLAIN EXECUTE` surface. Parse and Describe
+still run. If the statement later becomes plannable, prepare warns that the
+source expectation is stale; if any call site for the same query/profile has
+not acknowledged parse-only validation, the normal plan warning remains and
+`--strict-inference` promotes it to an error.
+`sqlx-js queries` exposes both source contracts in its database-free inventory.
+
 Use `mapParams` when the application input is intentionally narrower or more expressive than PostgreSQL's physical parameters:
 
 ```ts
@@ -228,5 +260,13 @@ JavaScript `Date` and is therefore milliseconds.
 - `$N` contributes a value to a nullable `INSERT`, `UPDATE`, or `ON CONFLICT DO UPDATE` target, directly or through value-preserving `CASE`, `COALESCE`, `GREATEST`/`LEAST`, or the stored side of `NULLIF`.
 
 `WHERE col = $N` stays non-null even if `col` is nullable: `col = NULL` is always false in SQL, so passing `null` from the caller would be a bug. Use `col IS NOT DISTINCT FROM $N` (or an `OR $N IS NULL` clause) when you want NULL semantics.
+
+PostgreSQL function arguments have types but no per-argument `NOT NULL`
+catalog flag. `STRICT` controls whether PostgreSQL calls the function when an
+input is null; it does not make null an invalid SQL argument. For a direct
+function call whose surrounding SQL has no null-aware expression, use the
+`defineQuery` `nullableParams` contract instead of a sentinel such as an empty
+string. Keep `CASE`, `COALESCE`, or `NULLIF` only when that expression is part
+of the real SQL behavior.
 
 [Documentation index](./README.md)

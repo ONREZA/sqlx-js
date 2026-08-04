@@ -1,23 +1,14 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 import type { PrepareDiagnosticPhase } from "../src/commands/prepare";
 import type { PgschemaSubcommand } from "../src/commands/pgschema";
 import { assertSupportedRuntime, loadConfig, loadRootEnv } from "../src/config";
+import { inspectPackageIdentity, runningPackageIdentity } from "../src/package-identity";
 
-function packageVersion(): string {
-  const here = dirname(fileURLToPath(import.meta.url));
-  for (const path of [join(here, "../package.json"), join(here, "../../package.json")]) {
-    if (!existsSync(path)) continue;
-    const pkg = JSON.parse(readFileSync(path, "utf8")) as { version?: unknown };
-    if (typeof pkg.version === "string") return pkg.version;
-  }
-  throw new Error("sqlx-js: cannot locate package.json for version");
-}
-
-const VERSION = packageVersion();
+const CLI_IDENTITY = runningPackageIdentity(import.meta.url);
+const VERSION = CLI_IDENTITY.version;
 
 type HelpScope =
   | "root"
@@ -474,12 +465,25 @@ function failPreflight(message: string, phase: PrepareDiagnosticPhase = "config"
       ok: false,
       results: [{ name: "preflight", ok: false, durationMs: 0, exitCode: 2, stderr: message }],
     }, null, 2));
+  } else if (cmd === "queries" && flag("--json")) {
+    console.log(JSON.stringify({
+      formatVersion: 1,
+      ok: false,
+      diagnostics: [{ severity: "error", phase, message }],
+    }, null, 2));
   } else if (cmd === "prepare") {
     printPrepareFailure(message, phase);
   } else {
     console.error(message);
   }
   process.exit(2);
+}
+const packageIdentityCheck = inspectPackageIdentity(root, CLI_IDENTITY);
+if (
+  (packageIdentityCheck.status === "mismatch" || packageIdentityCheck.status === "invalid")
+  && cmd !== "doctor"
+) {
+  failPreflight(packageIdentityCheck.message);
 }
 if (cmd !== "doctor") {
   try {
@@ -663,6 +667,7 @@ if (cmd === "init") {
       json: flag("--json"),
       fix: flag("--fix"),
       envError,
+      packageIdentityCheck,
     });
   } catch (error) {
     failCommand(error);

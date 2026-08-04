@@ -22,6 +22,7 @@ function cacheEntry(query: string, overrides: Partial<CacheEntry> = {}): CacheEn
     paramTypeIdentities: [],
     paramTsTypes,
     paramNullable: paramTsTypes.map(() => false),
+    nullableParamOverrides: [],
     columns,
     hasResultSet: columns.length > 0,
     inference: {
@@ -39,7 +40,11 @@ test("queries inventory and embedded module are deterministic and database-free"
     writeFileSync(join(root, "queries/user.sql"), "SELECT id FROM users WHERE id = $id\n");
     writeFileSync(join(root, "queries.ts"), `
       import { defineQuery, sql } from "@onreza/sqlx-js";
-      export const countUsers = defineQuery.one("users.count", "SELECT COUNT(*)::bigint AS count FROM users");
+      export const countUsers = defineQuery.one(
+        "users.count",
+        "SELECT $scope::text AS scope",
+        { nullableParams: ["scope"], expectedValidation: "parse-only" },
+      );
       export async function findUser(id: string) {
         return sql.file.optional("queries/user.sql", { id });
       }
@@ -62,6 +67,9 @@ test("queries inventory and embedded module are deterministic and database-free"
         queryNames: string[];
         cardinalities: string[];
         sqlFilePaths: string[];
+        nullableParamOverrides: number[];
+        expectedValidation: string | null;
+        callSites: Array<{ nullableParams?: number[]; expectedValidation?: string }>;
         cacheStatus: string;
         validation: string | null;
       }>;
@@ -72,6 +80,9 @@ test("queries inventory and embedded module are deterministic and database-free"
     expect(inventory.queries.find((query) => query.queryNames.includes("users.count"))).toMatchObject({
       cardinalities: ["one"],
       sqlFilePaths: [],
+      nullableParamOverrides: [1],
+      expectedValidation: "parse-only",
+      callSites: [expect.objectContaining({ nullableParams: [1], expectedValidation: "parse-only" })],
       cacheStatus: "missing",
       validation: null,
     });
@@ -212,7 +223,7 @@ test("queries explain reports committed provenance and parameter targets", async
 test("queries inventory aggregates profile-specific cache contracts", async () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-profile-queries-"));
   try {
-    const query = "SELECT value FROM profile_target";
+    const query = "SELECT $scope::text AS value";
     const profiles = {
       api: { name: "api", role: "app_api" },
       worker: { name: "worker", role: "app_worker" },
@@ -221,12 +232,9 @@ test("queries inventory aggregates profile-specific cache contracts", async () =
       profiles: ${JSON.stringify(profiles)},
     };\n`);
     writeFileSync(join(root, "query.ts"), `
-      import { createSqlClient } from "@onreza/sqlx-js";
-      const profiles = ${JSON.stringify(profiles)} as const;
-      const api = createSqlClient(undefined, { profile: profiles.api });
-      const worker = createSqlClient(undefined, { profile: profiles.worker });
-      api.sql(${JSON.stringify(query)});
-      worker.sql(${JSON.stringify(query)});
+      import { defineQuery } from "@onreza/sqlx-js";
+      defineQuery.for("api").one(${JSON.stringify(query)}, { nullableParams: ["scope"] });
+      defineQuery.for("worker").one(${JSON.stringify(query)});
     `);
     const cacheDir = join(root, ".sqlx-js");
     const cache = new Cache(cacheDir);
@@ -234,11 +242,17 @@ test("queries inventory aggregates profile-specific cache contracts", async () =
       cache.write(profileFingerprint(profile, query), cacheEntry(query, {
         profile,
         validation: "planned",
+        paramOids: [25],
+        paramTypeIdentities: [25],
+        paramTsTypes: ["string"],
+        paramNullable: [profile === "api"],
+        nullableParamOverrides: profile === "api" ? [1] : [],
+        paramNames: ["scope"],
         columns: [{ name: "value", typeOid: 23, tsType: "number", nullable: false }],
         hasResultSet: true,
         inference: {
           columns: [{ sources: null, reason: "test fixture" }],
-          params: [],
+          params: [{ targets: [], reason: "test fixture" }],
         },
       }));
     }
@@ -249,10 +263,11 @@ test("queries inventory aggregates profile-specific cache contracts", async () =
       expect.objectContaining({
         query,
         profiles: ["api", "worker"],
+        nullableParamOverrides: [1],
         cacheStatus: "current",
         validation: "planned",
         callSites: [
-          expect.objectContaining({ profiles: ["api"] }),
+          expect.objectContaining({ profiles: ["api"], nullableParams: [1] }),
           expect.objectContaining({ profiles: ["worker"] }),
         ],
       }),

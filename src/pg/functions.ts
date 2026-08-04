@@ -6,6 +6,7 @@ import type {
   FunctionParamMode,
   FunctionVolatility,
 } from "../function-cache";
+import { functionSettingValue, normalizeFunctionSettings } from "../function-cache";
 import { decodeText, type PgClient } from "./wire";
 import { SchemaCache } from "./schema";
 
@@ -18,6 +19,7 @@ type FunctionRow = {
   name: string;
   kind: FunctionKind;
   identityArguments: string;
+  language: string;
   inputArgOids: number[];
   allArgOids: number[] | null;
   argModes: string[] | null;
@@ -25,12 +27,14 @@ type FunctionRow = {
   returnOid: number;
   returnsSet: boolean;
   volatility: FunctionVolatility;
+  strict: boolean;
   securityDefiner: boolean;
   leakproof: boolean;
   parallelSafety: FunctionParallelSafety;
   owner: string;
   ownerSuperuser: boolean;
   publicExecute: boolean;
+  settings: string[];
   searchPath: string | null;
   extensionOwned: boolean;
 };
@@ -74,6 +78,7 @@ async function loadFunctionRows(client: PgClient, includeExtensionOwned: boolean
       p.prorettype::int8,
       p.proretset,
       p.provolatile::text,
+      p.proisstrict,
       p.prosecdef,
       p.proleakproof,
       p.proparallel::text,
@@ -85,15 +90,12 @@ async function loadFunctionRows(client: PgClient, includeExtensionOwned: boolean
         WHERE privilege.grantee = 0
           AND privilege.privilege_type = 'EXECUTE'
       ),
-      (
-        SELECT substring(setting FROM length('search_path=') + 1)
-        FROM unnest(p.proconfig) setting
-        WHERE setting LIKE 'search_path=%'
-        LIMIT 1
-      ),
-      extension_dependency.objid IS NOT NULL
+      to_json(COALESCE(p.proconfig, ARRAY[]::text[]))::text,
+      extension_dependency.objid IS NOT NULL,
+      l.lanname
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
+    JOIN pg_language l ON l.oid = p.prolang
     JOIN pg_roles owner ON owner.oid = p.proowner
     LEFT JOIN pg_depend extension_dependency
       ON extension_dependency.classid = 'pg_proc'::regclass
@@ -104,27 +106,33 @@ async function loadFunctionRows(client: PgClient, includeExtensionOwned: boolean
       ${includeExtensionOwned ? "" : "AND extension_dependency.objid IS NULL"}
     ORDER BY n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)
   `);
-  return result.rows.map((row) => ({
-    schema: decodeText(row[0]!)!,
-    name: decodeText(row[1]!)!,
-    kind: functionKind(decodeText(row[2]!)),
-    identityArguments: decodeText(row[3]!) ?? "",
-    inputArgOids: parseNumberJsonArray(decodeText(row[4]!)),
-    allArgOids: parseNullableNumberJsonArray(decodeText(row[5] ?? null)),
-    argModes: parseNullableStringJsonArray(decodeText(row[6] ?? null)),
-    argNames: parseNullableStringJsonArray(decodeText(row[7] ?? null)),
-    returnOid: Number(decodeText(row[8]!)!),
-    returnsSet: decodeText(row[9]!) === "t",
-    volatility: functionVolatility(decodeText(row[10]!)),
-    securityDefiner: decodeText(row[11]!) === "t",
-    leakproof: decodeText(row[12]!) === "t",
-    parallelSafety: functionParallelSafety(decodeText(row[13]!)),
-    owner: decodeText(row[14]!)!,
-    ownerSuperuser: decodeText(row[15]!) === "t",
-    publicExecute: decodeText(row[16]!) === "t",
-    searchPath: decodeText(row[17] ?? null),
-    extensionOwned: decodeText(row[18]!) === "t",
-  }));
+  return result.rows.map((row) => {
+    const settings = normalizeFunctionSettings(parseNullableStringJsonArray(decodeText(row[18] ?? null)) ?? []);
+    return {
+      schema: decodeText(row[0]!)!,
+      name: decodeText(row[1]!)!,
+      kind: functionKind(decodeText(row[2]!)),
+      identityArguments: decodeText(row[3]!) ?? "",
+      language: decodeText(row[20]!)!,
+      inputArgOids: parseNumberJsonArray(decodeText(row[4]!)),
+      allArgOids: parseNullableNumberJsonArray(decodeText(row[5] ?? null)),
+      argModes: parseNullableStringJsonArray(decodeText(row[6] ?? null)),
+      argNames: parseNullableStringJsonArray(decodeText(row[7] ?? null)),
+      returnOid: Number(decodeText(row[8]!)!),
+      returnsSet: decodeText(row[9]!) === "t",
+      volatility: functionVolatility(decodeText(row[10]!)),
+      strict: decodeText(row[11]!) === "t",
+      securityDefiner: decodeText(row[12]!) === "t",
+      leakproof: decodeText(row[13]!) === "t",
+      parallelSafety: functionParallelSafety(decodeText(row[14]!)),
+      owner: decodeText(row[15]!)!,
+      ownerSuperuser: decodeText(row[16]!) === "t",
+      publicExecute: decodeText(row[17]!) === "t",
+      settings,
+      searchPath: functionSettingValue(settings, "search_path"),
+      extensionOwned: decodeText(row[19]!) === "t",
+    };
+  });
 }
 
 function toEntry(row: FunctionRow, schema: SchemaCache): FunctionEntry {
@@ -135,7 +143,7 @@ function toEntry(row: FunctionRow, schema: SchemaCache): FunctionEntry {
     const resultTsType = outputTsType(oid, schema);
     return {
       mode,
-      tsType: mode === "out" || mode === "table" ? resultTsType : inputTsType(oid, schema),
+      tsType: mode === "out" || mode === "table" ? resultTsType : nullableInput(inputTsType(oid, schema)),
       ...(mode === "inout" ? { resultTsType } : {}),
       ...(row.argNames?.[i] ? { name: row.argNames[i] } : {}),
     };
@@ -146,19 +154,26 @@ function toEntry(row: FunctionRow, schema: SchemaCache): FunctionEntry {
     name: row.name,
     signature: `${row.schema}.${row.name}(${row.identityArguments})`,
     kind: row.kind,
+    language: row.language,
     params: params.map(persistedParam),
     returns: returnTsType(row, output, schema),
     returnsSet: row.returnsSet,
     volatility: row.volatility,
+    strict: row.strict,
     securityDefiner: row.securityDefiner,
     leakproof: row.leakproof,
     parallelSafety: row.parallelSafety,
     owner: row.owner,
     ownerSuperuser: row.ownerSuperuser,
     publicExecute: row.publicExecute,
+    settings: row.settings,
     searchPath: row.searchPath,
     extensionOwned: row.extensionOwned,
   };
+}
+
+function nullableInput(type: string): string {
+  return `${type} | null`;
 }
 
 function persistedParam(param: CatalogParamEntry): FunctionParamEntry {
