@@ -288,6 +288,10 @@ PostgreSQL column `NOT NULL` constrains the array value, not its elements. There
 `sql.json()` accepts ordinary structurally JSON-compatible interfaces and preserves their concrete type in `JsonParameter<T>`. Runtime values must be deterministic plain records or arrays; class instances, binary views, custom `toJSON`, accessors, symbol/named array properties, array holes, and ignored symbol-keyed object properties fail instead of relying on lossy `JSON.stringify` coercion. It also rejects known non-JSON values such as `Date`, Temporal objects, `bigint`, functions, non-finite numbers, unsafe integers, and `undefined` array elements. Result decoding applies the same safe-integer check so a large JSON integer cannot be silently rounded; represent exact integers outside JavaScript's safe range as strings. TypeScript is structurally typed, so it cannot identify every user-defined class solely because it was constructed with `new`; runtime validation remains authoritative.
 
 The built-in `json`/`jsonb` scalar and array codecs own this safety boundary.
+The planned [sqlx-js Extended JSON protocol](./extended-json-protocol.md) will
+replace this vanilla boundary with branded, versioned documents and automatic
+`bigint`/Temporal round-trips. That proposal is not implemented by the current
+`sql.json()` API.
 Low-level numeric `types` cannot replace them; application-owned custom types
 remain configurable through their ordinary codec contract.
 
