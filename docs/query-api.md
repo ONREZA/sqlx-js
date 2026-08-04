@@ -172,6 +172,35 @@ const db = createSqlClient<SqlxJsGeneratedRegistry>(databaseUrl, {
 
 Embedded entries take precedence over filesystem reads. The module contains only referenced external SQL files; inline SQL remains in application code.
 
+## `sql.with(options)(query, ...params)`
+
+Bind a request-scoped deadline or `AbortSignal` to an ordinary typed query
+without declaring a reusable `defineQuery`:
+
+```ts
+const requestSql = db.sql.with({
+  timeoutMs: 2_000,
+  signal: request.signal,
+});
+const user = await requestSql.one(
+  `SELECT id, name FROM users WHERE id = $1`,
+  userId,
+);
+```
+
+The returned typed executor also supports `.one`, `.optional`, `.execute`, and
+`.file`, and the same form works on transaction executors. Bound executors can
+be assigned to a local `const` and reused for one request; chained `.with(...)`
+calls merge their options, with the later call taking precedence for duplicate
+keys. Options are captured when the executor is created. Execution options
+passed by a `defineQuery` call on that bound executor are merged by the same
+rule.
+
+The options stay outside PostgreSQL parameters and do not change the query
+fingerprint or its generated registry entry. A query-level timeout or abort
+inside a transaction expires the whole transaction so the runtime can
+establish rollback before reusing its connection.
+
 ## `sql.one(query, ...params)` and `sql.optional(query, ...params)`
 
 Convenience wrappers for single-row queries. `one` throws if the row count is not exactly 1; `optional` returns `null` for 0 rows and throws on more than 1. They keep working under `noUncheckedIndexedAccess: true` without `rows[0]!` patterns.

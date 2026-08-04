@@ -547,7 +547,7 @@ async function runRawQuery(
     });
   }
   if (options) {
-    throw new Error("sqlx-js.defineQuery: execution options require a managed sqlx-js executor");
+    throw new Error("sqlx-js: query execution options require a managed sqlx-js executor");
   }
   const onQuery = client.onQuery;
   if (!onQuery) {
@@ -660,6 +660,7 @@ type SqlCallable = AnyFn & {
   one: AnyOneFn;
   optional: AnyOptionalFn;
   execute: AnyExecuteFn;
+  with: (options: QueryExecutionOptions) => SqlCallable;
   id: IdentifierFn;
   json: typeof json;
   array: typeof array;
@@ -684,38 +685,92 @@ function executeDefinedQuery(
   return runQuery(client, query, params, metadata, options);
 }
 
-function makeBoundCallable(client: RuntimeClient): SavepointSqlCallable {
+function mergeQueryExecutionOptions(
+  defaults: QueryExecutionOptions | undefined,
+  overrides: QueryExecutionOptions | undefined,
+): QueryExecutionOptions | undefined {
+  if (!defaults) return overrides ? { ...overrides } : undefined;
+  if (!overrides) return defaults;
+  return { ...defaults, ...overrides };
+}
+
+function makeSqlCallable(
+  getClient: () => RuntimeClient,
+  defaultOptions?: QueryExecutionOptions,
+): SqlCallable {
   const fn: AnyFn = (async (query: string, ...params: unknown[]) => {
-    return runQuery(client, query, params);
+    return runQuery(getClient(), query, params, undefined, defaultOptions);
   }) as AnyFn;
   const file: AnyFn = (async (path: string, ...params: unknown[]) => {
-    return runQuery(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
+    const client = getClient();
+    return runQuery(
+      client,
+      loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles),
+      params,
+      undefined,
+      defaultOptions,
+    );
   }) as AnyFn;
   (file as FileCallable).one = (async (path: string, ...params: unknown[]) => {
-    return runOne(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
+    const client = getClient();
+    return runOne(
+      client,
+      loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles),
+      params,
+      undefined,
+      defaultOptions,
+    );
   }) as AnyOneFn;
   (file as FileCallable).optional = (async (path: string, ...params: unknown[]) => {
-    return runOptional(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
+    const client = getClient();
+    return runOptional(
+      client,
+      loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles),
+      params,
+      undefined,
+      defaultOptions,
+    );
   }) as AnyOptionalFn;
   (file as FileCallable).execute = (async (path: string, ...params: unknown[]) => {
-    return runExecute(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
+    const client = getClient();
+    return runExecute(
+      client,
+      loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles),
+      params,
+      undefined,
+      defaultOptions,
+    );
   }) as AnyExecuteFn;
   (fn as SqlCallable).file = file as FileCallable;
   (fn as SqlCallable).one = (async (query: string, ...params: unknown[]) => {
-    return runOne(client, query, params);
+    return runOne(getClient(), query, params, undefined, defaultOptions);
   }) as AnyOneFn;
   (fn as SqlCallable).optional = (async (query: string, ...params: unknown[]) => {
-    return runOptional(client, query, params);
+    return runOptional(getClient(), query, params, undefined, defaultOptions);
   }) as AnyOptionalFn;
   (fn as SqlCallable).execute = (async (query: string, ...params: unknown[]) => {
-    return runExecute(client, query, params);
+    return runExecute(getClient(), query, params, undefined, defaultOptions);
   }) as AnyExecuteFn;
+  (fn as SqlCallable).with = (options) =>
+    makeSqlCallable(getClient, mergeQueryExecutionOptions(defaultOptions, options));
   (fn as SqlCallable).id = id;
   (fn as SqlCallable).json = json;
   (fn as SqlCallable).array = array;
   (fn as SqlCallable)[QUERY_EXECUTOR] = (mode, query, params, metadata, options) => {
-    return executeDefinedQuery(client, mode, query, params, metadata, options);
+    return executeDefinedQuery(
+      getClient(),
+      mode,
+      query,
+      params,
+      metadata,
+      mergeQueryExecutionOptions(defaultOptions, options),
+    );
   };
+  return fn as SqlCallable;
+}
+
+function makeBoundCallable(client: RuntimeClient): SavepointSqlCallable {
+  const fn = makeSqlCallable(() => client) as SavepointSqlCallable;
   (fn as SavepointSqlCallable).savepoint = async <R>(
     callback: (savepoint: SavepointSqlCallable) => Promise<R>,
   ): Promise<R> => {
@@ -841,43 +896,7 @@ export function createSqlRuntime(getClient: () => RuntimeClient): RuntimeApi {
     }
     return client;
   };
-  const root: SqlRoot = (async (query: string, ...params: unknown[]) => {
-    return runQuery(directClient(), query, params);
-  }) as SqlRoot;
-
-  const rootFile: AnyFn = (async (path: string, ...params: unknown[]) => {
-    const client = directClient();
-    return runQuery(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
-  }) as AnyFn;
-  (rootFile as FileCallable).one = (async (path: string, ...params: unknown[]) => {
-    const client = directClient();
-    return runOne(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
-  }) as AnyOneFn;
-  (rootFile as FileCallable).optional = (async (path: string, ...params: unknown[]) => {
-    const client = directClient();
-    return runOptional(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
-  }) as AnyOptionalFn;
-  (rootFile as FileCallable).execute = (async (path: string, ...params: unknown[]) => {
-    const client = directClient();
-    return runExecute(client, loadSqlFile(path, client.fileRoot, client.reloadSqlFiles, client.sqlFiles), params);
-  }) as AnyExecuteFn;
-  root.file = rootFile as FileCallable;
-
-  root.one = (async (query: string, ...params: unknown[]) => {
-    return runOne(directClient(), query, params);
-  }) as AnyOneFn;
-  root.optional = (async (query: string, ...params: unknown[]) => {
-    return runOptional(directClient(), query, params);
-  }) as AnyOptionalFn;
-  root.execute = (async (query: string, ...params: unknown[]) => {
-    return runExecute(directClient(), query, params);
-  }) as AnyExecuteFn;
-  root.id = id;
-  root.json = json;
-  root.array = array;
-  root[QUERY_EXECUTOR] = (mode, query, params, metadata, options) => {
-    return executeDefinedQuery(directClient(), mode, query, params, metadata, options);
-  };
+  const root = makeSqlCallable(directClient) as SqlRoot;
 
   root.transaction = (async <R>(
     fnOrOpts: RuntimeSqlTransactionOptions | ((tx: SqlCallable) => Promise<R>),

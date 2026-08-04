@@ -185,6 +185,48 @@ test("query definitions pass execution options outside SQL parameters", async ()
   });
 });
 
+test("sql.with binds execution options across root and transaction queries", async () => {
+  const controller = new AbortController();
+  const requests: import("../src/runtime").RuntimeQueryRequest[] = [];
+  const client: RuntimeClient = {
+    query: async () => [],
+    execute: async (request) => {
+      requests.push(request);
+      return request.query.startsWith("SELECT") ? [{ id: 7 }] : [];
+    },
+    transaction: async (fn) => fn(client),
+    close: async () => {},
+  };
+  const runtime = createSqlRuntime(() => client);
+
+  await runtime.sql.with({ signal: controller.signal })("SELECT $1", 7);
+  await runtime.sql.with({ timeoutMs: 100 }).one("SELECT $1", 7);
+  const mutableOptions = { timeoutMs: 125 };
+  const boundedSql = runtime.sql.with(mutableOptions);
+  mutableOptions.timeoutMs = 999;
+  await boundedSql("SELECT $1", 7);
+  await runtime.sql
+    .with({ signal: controller.signal })
+    .with({ timeoutMs: 150 })("SELECT $1", 7);
+  await defineQuery("SELECT $id").run(
+    runtime.sql.with({ signal: controller.signal }) as never,
+    { id: 7 },
+    { timeoutMs: 175 },
+  );
+  await runtime.sql.transaction(async (tx) => {
+    await tx.with({ signal: controller.signal, timeoutMs: 200 }).execute("DELETE FROM jobs");
+  });
+
+  expect(requests.map((request) => request.options)).toEqual([
+    { signal: controller.signal },
+    { timeoutMs: 100 },
+    { timeoutMs: 125 },
+    { signal: controller.signal, timeoutMs: 150 },
+    { signal: controller.signal, timeoutMs: 175 },
+    { signal: controller.signal, timeoutMs: 200 },
+  ]);
+});
+
 test("query definitions fail closed when an executor cannot honor execution options", async () => {
   let calls = 0;
   const executor = Object.assign(async () => {
@@ -204,7 +246,7 @@ test("query definitions fail closed when an executor cannot honor execution opti
   expect(calls).toBe(0);
 });
 
-test("query definitions fail closed through a runtime client without managed execution", async () => {
+test("query execution options fail closed through a runtime client without managed execution", async () => {
   const client: RuntimeClient = {
     query: async () => [],
     transaction: async (fn) => fn(client),
@@ -214,6 +256,9 @@ test("query definitions fail closed through a runtime client without managed exe
 
   await expect(defineQuery("SELECT 1").runWith({}, runtime.sql as never)).rejects.toThrow(
     "execution options require a managed sqlx-js executor",
+  );
+  await expect(runtime.sql.with({ timeoutMs: 100 })("SELECT 1")).rejects.toThrow(
+    "sqlx-js: query execution options require a managed sqlx-js executor",
   );
 });
 

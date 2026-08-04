@@ -6,6 +6,7 @@ import { rewriteNamedParameters } from "../sql-params";
 import {
   resolveClientInitializer,
   resolveLocalClientExports,
+  unwrapExpression,
   type ClientBinding,
   type ClientExecution,
 } from "./client-bindings";
@@ -108,17 +109,41 @@ type ScopeState = {
 
 type Cardinality = "many" | "one" | "optional" | "execute";
 type CalleeKind = "inline" | "file" | "transaction" | null;
-
-function classifyCallee(
-  callee: ts.LeftHandSideExpression,
-  scope: ScopeState,
-): {
+type CalleeClassification = {
   kind: Exclude<CalleeKind, null>;
   cardinality?: Cardinality;
   profiles?: string[];
   transactionScoped?: boolean;
   execution?: ClientExecution;
-} | null {
+};
+
+function classifyWithCall(
+  callee: ts.CallExpression,
+  scope: ScopeState,
+): CalleeClassification | null {
+  if (!ts.isPropertyAccessExpression(callee.expression)) return null;
+  if (callee.expression.name.text !== "with") return null;
+  const classified = classifyCallee(callee.expression.expression, scope);
+  return classified?.kind === "inline" ? classified : null;
+}
+
+function classifyWithMethod(
+  classified: CalleeClassification,
+  method: string,
+): CalleeClassification | null {
+  if (method === "one" || method === "optional" || method === "execute") {
+    return { ...classified, kind: "inline", cardinality: method };
+  }
+  if (method === "file") return { ...classified, kind: "file", cardinality: "many" };
+  return null;
+}
+
+function classifyCallee(
+  callee: ts.LeftHandSideExpression,
+  scope: ScopeState,
+): CalleeClassification | null {
+  if (ts.isCallExpression(callee)) return classifyWithCall(callee, scope);
+
   if (ts.isIdentifier(callee)) {
     const binding = scope.sqlAliases.get(callee.text);
     if (!binding) return null;
@@ -134,6 +159,11 @@ function classifyCallee(
   if (!ts.isPropertyAccessExpression(callee)) return null;
   if (!ts.isIdentifier(callee.name)) return null;
   const methodName = callee.name.text;
+
+  if (ts.isCallExpression(callee.expression)) {
+    const classified = classifyWithCall(callee.expression, scope);
+    return classified ? classifyWithMethod(classified, methodName) : null;
+  }
 
   if (ts.isIdentifier(callee.expression)) {
     const id = callee.expression.text;
@@ -173,6 +203,18 @@ function classifyCallee(
   if (ts.isPropertyAccessExpression(callee.expression)) {
     const mid = callee.expression;
     if (!ts.isIdentifier(mid.name)) return null;
+
+    if (ts.isCallExpression(mid.expression)) {
+      const classified = classifyWithCall(mid.expression, scope);
+      if (
+        classified &&
+        mid.name.text === "file" &&
+        (methodName === "one" || methodName === "optional" || methodName === "execute")
+      ) {
+        return { ...classified, kind: "file", cardinality: methodName };
+      }
+      return null;
+    }
 
     // ns.sql.X(...) and client.sql.X(...) chains
     if (
@@ -663,6 +705,39 @@ export function scanFile(
     return changed ? { ...scope, clients: nextClients } : scope;
   };
 
+  const scopeWithSqlOptionDeclarations = (
+    scope: ScopeState,
+    declarations: readonly ts.VariableDeclaration[],
+    constant: boolean,
+  ): ScopeState => {
+    const nextSql = new Map(scope.sqlAliases);
+    let changed = false;
+    for (const declaration of declarations) {
+      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
+      const initializer = unwrapExpression(declaration.initializer);
+      if (!ts.isCallExpression(initializer)) continue;
+      const classified = classifyWithCall(initializer, scope);
+      if (!classified) continue;
+      if (!constant) {
+        const pos = here(declaration.name);
+        throw new ScanError(
+          fileRel,
+          pos.line,
+          pos.column,
+          "sql.with() bindings must use const so their query ownership cannot change",
+        );
+      }
+      const profile = classified.profiles?.[0];
+      nextSql.set(declaration.name.text, {
+        ...(profile ? { profile } : {}),
+        ...(classified.transactionScoped ? { transactionScoped: true } : {}),
+        ...(classified.execution ? { execution: classified.execution } : {}),
+      });
+      changed = true;
+    }
+    return changed ? { ...scope, sqlAliases: nextSql } : scope;
+  };
+
   const visit = (node: ts.Node, scope: ScopeState) => {
     if (ts.isCallExpression(node)) {
       const definition = classifyDefinitionCallee(node.expression, scope);
@@ -738,13 +813,11 @@ export function scanFile(
       for (const stmt of stmts) {
         if (ts.isVariableStatement(stmt)) {
           const declarations = stmt.declarationList.declarations;
+          const constant = (stmt.declarationList.flags & ts.NodeFlags.Const) !== 0;
           current = scopeWithoutBindingShadows(current, declarations.map((d) => d.name));
           visit(stmt, current);
-          current = scopeWithClientDeclarations(
-            current,
-            declarations,
-            (stmt.declarationList.flags & ts.NodeFlags.Const) !== 0,
-          );
+          current = scopeWithClientDeclarations(current, declarations, constant);
+          current = scopeWithSqlOptionDeclarations(current, declarations, constant);
           continue;
         } else if (ts.isFunctionDeclaration(stmt) && stmt.name) {
           current = scopeWithoutBindingShadows(current, [stmt.name]);

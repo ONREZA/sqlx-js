@@ -35,6 +35,7 @@ export type PostgresOptions = {
   max?: number;
   password?: string | (() => string | Promise<string>);
   connectTimeoutMs?: number;
+  keepAliveMs?: number;
   idleTimeoutMs?: number;
   maxLifetimeMs?: number;
   statementTimeoutMs?: number;
@@ -49,6 +50,7 @@ export type PostgresOptions = {
 type ParsedPostgresOptions = {
   max: number;
   connectTimeoutMs?: number;
+  keepAliveMs?: number;
   idleTimeoutMs?: number;
   maxLifetimeMs?: number;
   statementTimeoutMs?: number;
@@ -120,7 +122,7 @@ type AcquireWaiter = {
 };
 
 const DEFAULT_MAX_CONNECTIONS = 10;
-const MAX_TIMEOUT_MS = 2_147_483_647;
+const MAX_MILLISECONDS = 2_147_483_647;
 
 function optionalMilliseconds(
   value: number | undefined,
@@ -129,9 +131,9 @@ function optionalMilliseconds(
 ): number | undefined {
   if (value === undefined) return undefined;
   const minimum = allowZero ? 0 : 1;
-  if (!Number.isSafeInteger(value) || value < minimum || value > MAX_TIMEOUT_MS) {
+  if (!Number.isSafeInteger(value) || value < minimum || value > MAX_MILLISECONDS) {
     throw new Error(
-      `sqlx-js: ${name} must be an integer from ${minimum} to ${MAX_TIMEOUT_MS}, got ${String(value)}`,
+      `sqlx-js: ${name} must be an integer from ${minimum} to ${MAX_MILLISECONDS}, got ${String(value)}`,
     );
   }
   return value;
@@ -158,6 +160,7 @@ class PostgresPool implements PostgresClient {
       throw new Error(`sqlx-js: max must be a positive integer, got ${String(max)}`);
     }
     const connectTimeoutMs = optionalMilliseconds(options.connectTimeoutMs, "connectTimeoutMs", false);
+    const keepAliveMs = optionalMilliseconds(options.keepAliveMs, "keepAliveMs", true);
     const idleTimeoutMs = optionalMilliseconds(options.idleTimeoutMs, "idleTimeoutMs", true);
     const maxLifetimeMs = optionalMilliseconds(options.maxLifetimeMs, "maxLifetimeMs", true);
     const statementTimeoutMs = optionalMilliseconds(options.statementTimeoutMs, "statementTimeoutMs", true);
@@ -165,6 +168,7 @@ class PostgresPool implements PostgresClient {
     if (typeof options.password === "string") config.password = options.password;
     this.passwordProvider = typeof options.password === "function" ? options.password : undefined;
     if (connectTimeoutMs !== undefined) config.connectTimeoutMs = connectTimeoutMs;
+    if (keepAliveMs !== undefined) config.keepAliveMs = keepAliveMs;
     if (options.applicationName !== undefined) config.applicationName = options.applicationName;
     if (options.startupOptions !== undefined) config.startupOptions = options.startupOptions;
     if (statementTimeoutMs !== undefined) config.statementTimeoutMs = statementTimeoutMs;
@@ -177,6 +181,7 @@ class PostgresPool implements PostgresClient {
     this.options = {
       max,
       ...(connectTimeoutMs === undefined ? {} : { connectTimeoutMs }),
+      ...(keepAliveMs === undefined ? {} : { keepAliveMs }),
       ...(idleTimeoutMs === undefined ? {} : { idleTimeoutMs }),
       ...(maxLifetimeMs === undefined ? {} : { maxLifetimeMs }),
       ...(statementTimeoutMs === undefined ? {} : { statementTimeoutMs }),

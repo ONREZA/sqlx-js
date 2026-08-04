@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import {
   createSqlClient,
-  defineQuery,
   queryId,
   QueryAbortedError,
 } from "@onreza/sqlx-js";
@@ -13,6 +12,7 @@ if (!databaseUrl) throw new Error("deno package smoke requires DATABASE_URL");
 const descriptorQuery = "SELECT $1::int4 AS descriptor_value";
 const db = createSqlClient(databaseUrl, {
   max: 1,
+  keepAliveMs: 0,
   queryDescriptors: {
     formatVersion: descriptorVersions.formatVersion,
     cacheFormat: descriptorVersions.cacheFormat,
@@ -59,20 +59,18 @@ try {
   );
 
   const values = await db.sql.transaction(async (tx) => {
-    await tx.execute("CREATE TEMP TABLE deno_values (value int NOT NULL)");
+    const requestTx = tx.with({ timeoutMs: 5_000 });
+    await requestTx.execute("CREATE TEMP TABLE deno_values (value int NOT NULL)");
     await Promise.all([
-      tx.execute("INSERT INTO deno_values (value) VALUES ($1)", 1),
-      tx.execute("INSERT INTO deno_values (value) VALUES ($1)", 2),
+      requestTx.execute("INSERT INTO deno_values (value) VALUES ($1)", 1),
+      requestTx.execute("INSERT INTO deno_values (value) VALUES ($1)", 2),
     ]);
-    return await tx("SELECT value FROM deno_values ORDER BY value");
+    return await requestTx("SELECT value FROM deno_values ORDER BY value");
   });
   assert.deepEqual(values, [{ value: 1 }, { value: 2 }]);
 
   const controller = new AbortController();
-  const pending = defineQuery("SELECT pg_sleep(10)").runWith(
-    { signal: controller.signal },
-    db.sql,
-  );
+  const pending = db.sql.with({ signal: controller.signal })("SELECT pg_sleep(10)");
   setTimeout(() => controller.abort("deno smoke"), 50);
   await assert.rejects(
     pending,

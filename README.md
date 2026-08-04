@@ -50,9 +50,9 @@ runtime, generate an ORM layer, or support MySQL and SQLite.
 
 | Area | What is included | Details |
 | --- | --- | --- |
-| Typed queries | Positional and named parameters, reusable `defineQuery`, external SQL files, one/optional/execute cardinality helpers | [Query API](./docs/query-api.md) |
+| Typed queries | Positional and named parameters, request-scoped query options, reusable `defineQuery`, external SQL files, one/optional/execute cardinality helpers | [Query API](./docs/query-api.md) |
 | Inference | PostgreSQL metadata, joins, CTEs, set operations, DML targets, expression nullability, WHERE narrowing, enums, arrays, JSON | [Type and nullability inference](./docs/type-inference.md) |
-| Runtime | Descriptor-backed managed clients, transactions and savepoints, deadlines, lifecycle recovery, observers, migrations, custom codecs | [Runtime and clients](./docs/runtime.md) |
+| Runtime | Descriptor-backed managed clients, transactions and savepoints, deadlines, TCP keepalive, lifecycle recovery, observers, migrations, custom codecs | [Runtime and clients](./docs/runtime.md) |
 | Roles and RLS | Profile-scoped query registries, planning under the effective role, required transaction-local settings, RLS diagnostics | [Connection profiles and RLS](./docs/profiles-and-rls.md) |
 | Schema workflows | Built-in linear migrations or declarative pgschema, disposable shadow databases, snapshots, squash baselines | [CLI and workflows](./docs/cli.md) |
 | Reproducible artifacts | Versioned offline cache, `prepare --check`, live `prepare --verify`, generated declarations, enum and function catalogs | [CI and deployment checks](./docs/ci.md) |

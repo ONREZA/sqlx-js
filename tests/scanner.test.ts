@@ -205,6 +205,42 @@ test("sql.one, sql.optional, and sql.execute are scanned as inline queries", () 
   expect(sites[2]!.query).toBe("UPDATE users SET active = false WHERE id = $1");
 });
 
+test("sql.with options preserve inline, file, and transaction query classification", () => {
+  setup({
+    "a.ts":
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "const signal = new AbortController().signal;\n" +
+      "const requestSql = sql.with({ signal }).with({ timeoutMs: 100 });\n" +
+      "await requestSql(\"SELECT 1\");\n" +
+      "await sql.with({ timeoutMs: 100 }).one(\"SELECT id FROM users WHERE id = $1\", 1);\n" +
+      "await requestSql.file.optional(\"./q/by_id.sql\", 1);\n" +
+      "await sql.transaction(async (tx) => {\n" +
+      "  await tx.with({ timeoutMs: 100 }).execute(\"DELETE FROM jobs WHERE id = $1\", 1);\n" +
+      "});\n",
+    "q/by_id.sql": "SELECT id FROM users WHERE id = $1\n",
+  });
+  expect(scanProject(tmp).map((site) => ({
+    query: site.query,
+    kind: site.kind,
+    cardinality: site.cardinality,
+  }))).toEqual([
+    { query: "SELECT 1", kind: "inline", cardinality: "many" },
+    { query: "SELECT id FROM users WHERE id = $1", kind: "inline", cardinality: "one" },
+    { query: "SELECT id FROM users WHERE id = $1\n", kind: "file", cardinality: "optional" },
+    { query: "DELETE FROM jobs WHERE id = $1", kind: "inline", cardinality: "execute" },
+  ]);
+});
+
+test("sql.with option bindings must remain immutable", () => {
+  setup({
+    "a.ts":
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "let requestSql = sql.with({ timeoutMs: 100 });\n" +
+      "await requestSql(\"SELECT 1\");\n",
+  });
+  expect(() => scanProject(tmp)).toThrow(/sql\.with\(\) bindings must use const/);
+});
+
 test("defineQuery definitions are scanned with names and cardinality", () => {
   setup({
     "queries.ts": `
@@ -385,7 +421,8 @@ test("scanner classifies generated client descriptor coverage", () => {
       import descriptors from "./descriptors.json";
       const prepared = createSqlClient(undefined, { queryDescriptors: descriptors });
       const adaptive = createSqlClient(undefined, { execution: "adaptive" });
-      await prepared.sql("SELECT $1::int4", 1);
+      const preparedSql = prepared.sql.with({ timeoutMs: 100 });
+      await preparedSql("SELECT $1::int4", 1);
       await adaptive.sql("SELECT $1::text", "x");
     `,
   });

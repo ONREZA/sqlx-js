@@ -51,6 +51,7 @@ export type ConnConfig = {
   applicationName?: string;
   startupOptions?: string;
   connectTimeoutMs?: number;
+  keepAliveMs?: number;
   statementTimeoutMs?: number;
   sslRootCert?: string;
   sslCert?: string;
@@ -249,9 +250,13 @@ async function openPlainSocket(
   host: string,
   port: number,
   timeoutMs: number,
-  signal?: AbortSignal,
-  claim?: (socket: Socket) => void,
+  options: {
+    signal?: AbortSignal;
+    claim?: (socket: Socket) => void;
+    keepAliveMs?: number;
+  } = {},
 ): Promise<Socket> {
+  const { signal, claim, keepAliveMs } = options;
   return new Promise<Socket>((resolve, reject) => {
     const sock = netConnect({ host, port });
     let settled = false;
@@ -271,6 +276,7 @@ async function openPlainSocket(
     }, timeoutMs);
     const onConnect = () => {
       sock.setNoDelay(true);
+      if (keepAliveMs !== undefined) sock.setKeepAlive(true, keepAliveMs);
       claim?.(sock);
       finish({ socket: sock });
     };
@@ -508,8 +514,7 @@ export class PgClient {
       this.cfg.host,
       this.cfg.port,
       timeoutMs,
-      signal,
-      claim,
+      { signal, claim, keepAliveMs: this.cfg.keepAliveMs },
     );
     if (signal.aborted || this.closed) return this.abortConnect();
     let socket: AnySocket = plain;

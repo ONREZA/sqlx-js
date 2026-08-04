@@ -7,6 +7,36 @@ The preferred application boundary is the user-owned `db.ts` created by
 parameterized prepared queries use the one-write path without runtime
 filesystem discovery.
 
+## Per-query options
+
+`sql.with({ timeoutMs, signal })` keeps request-scoped execution controls out
+of SQL parameters while preserving the generated query type:
+
+```ts
+const requestSql = db.sql.with({
+  timeoutMs: 2_000,
+  signal: request.signal,
+});
+const rows = await requestSql(
+  `SELECT id FROM jobs WHERE owner_id = $1`,
+  ownerId,
+);
+```
+
+The bound executor also exposes `.one`, `.optional`, `.execute`, and `.file`.
+It may be retained in a local `const` for one request. Chained `.with(...)`
+calls merge options and later values override earlier ones, so a query-specific
+timeout does not discard an already-bound request signal. Options are captured
+when the executor is created. Explicit execution options from `defineQuery`
+use the same merge rule. A bound `timeoutMs` overrides the client's
+`operationTimeoutMs` for that query; omitting it preserves the client default.
+
+The bound executor can be used inside a transaction as `tx.with(...)`;
+interruption then expires the whole transaction rather than allowing later
+statements to run on an uncertain connection state. The managed runtime is
+required because a structural third-party executor cannot honor these
+lifecycle guarantees.
+
 ## `sql.transaction(fn)`
 
 Wrap a function body in a database transaction. The callback receives a scoped `tx` that has the same typed `()` and `.file()` surface, but routes through the transaction's dedicated connection. The scanner recognises the callback parameter name and validates inner queries against `KnownQueries`.
