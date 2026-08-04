@@ -15,10 +15,13 @@ import {
   QueryAbortedError,
   QueryTimeoutError,
   SqlxJson,
+  ResultDecodeError,
   TransactionTimeoutError,
   type CreateSqlClientOptions,
+  type OnQueryEvent,
   type PostgresClient,
   json,
+  type QueryErrorEvent,
 } from "../src/index";
 import { _internal, normalizeRuntimeDatabaseUrl } from "../src/postgres-runtime";
 import { EXECUTE_KNOWN_PARAMS } from "../src/pg/driver";
@@ -382,6 +385,105 @@ test("managed client preserves result metadata", async () => {
     command: "UPDATE",
   });
   expect(calls).toEqual([{ query: "UPDATE users SET active = false", params: [] }]);
+});
+
+test("managed decode errors preserve driver context across observer paths", async () => {
+  const driverCause = new Error("custom codec rejected the result");
+  const positionalQuery = "SELECT $1::text AS value";
+  const driverError = new ResultDecodeError({
+    queryId: queryId(positionalQuery),
+    columnIndex: 0,
+    column: "value",
+    typeOid: 25,
+    hint: "normalize the result in SQL",
+  }, driverCause);
+  driverError.stack = `${driverError.name}: ${driverError.message}\n    at decodeDataRow (driver.ts:1:1)`;
+  const queryEvents: OnQueryEvent[] = [];
+  const lifecycleErrors: QueryErrorEvent[] = [];
+  const tx = fakePool(async () => {
+    throw driverError;
+  });
+  const pool = fakePool(async () => {
+    throw driverError;
+  }, {
+    begin: async (fn: (client: PostgresClient) => Promise<unknown>) => await fn(tx),
+  });
+  const db = managed(pool, {
+    onQuery: (event) => queryEvents.push(event),
+    onQueryError: (event) => lifecycleErrors.push(event),
+  });
+  const query = defineQuery.one(
+    "diagnostics.decodeValue",
+    "SELECT $value::text AS value",
+  );
+  const expectedDetails = {
+    queryId: query.queryId,
+    queryName: "diagnostics.decodeValue",
+    columnIndex: 0,
+    column: "value",
+    typeOid: 25,
+    hint: "normalize the result in SQL",
+    cause: driverCause,
+  };
+  const expectedMessage =
+    `sqlx-js: failed to decode query "diagnostics.decodeValue" (${query.queryId}) `
+    + "column[0] \"value\" (PostgreSQL type OID 25). normalize the result in SQL";
+
+  const rootError = await query.run(db.sql as never, { value: "root" }).catch((error) => error);
+  expect(rootError).toBeInstanceOf(ResultDecodeError);
+  expect(rootError).toMatchObject(expectedDetails);
+  expect((rootError as Error).message).toBe(expectedMessage);
+  expect((rootError as Error).stack).toContain("at decodeDataRow (driver.ts:1:1)");
+  expect(Object.getOwnPropertyDescriptor(rootError, "cause")).toEqual({
+    value: driverCause,
+    writable: true,
+    enumerable: false,
+    configurable: true,
+  });
+
+  const transactionError = await db.sql.transaction(async (transaction) =>
+    await query.run(transaction as never, { value: "transaction" })
+  ).catch((error) => error);
+  expect(transactionError).toBeInstanceOf(ResultDecodeError);
+  expect(transactionError).toMatchObject(expectedDetails);
+  expect((transactionError as Error).message).toBe(expectedMessage);
+  expect((transactionError as Error).stack).toContain("at decodeDataRow (driver.ts:1:1)");
+  expect(queryEvents).toEqual([
+    expect.objectContaining({
+      queryId: query.queryId,
+      queryName: "diagnostics.decodeValue",
+      error: rootError,
+    }),
+    expect.objectContaining({
+      queryId: query.queryId,
+      queryName: "diagnostics.decodeValue",
+      error: transactionError,
+    }),
+  ]);
+  expect(lifecycleErrors).toEqual([
+    expect.objectContaining({
+      queryId: query.queryId,
+      queryName: "diagnostics.decodeValue",
+      errorName: "ResultDecodeError",
+      phase: "execution",
+      outcome: "unknown",
+    }),
+    expect.objectContaining({
+      queryId: query.queryId,
+      queryName: "diagnostics.decodeValue",
+      errorName: "ResultDecodeError",
+      phase: "execution",
+      outcome: "unknown",
+    }),
+    expect.objectContaining({
+      queryId: queryId("sqlx-js.transaction"),
+      queryName: "sqlx-js.transaction",
+      errorName: "ResultDecodeError",
+      phase: "execution",
+      outcome: "unknown",
+    }),
+  ]);
+  await db.close();
 });
 
 test("managed client dispatches matching runtime descriptors and keeps adaptive fallback", async () => {
