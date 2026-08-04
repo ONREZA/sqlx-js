@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   ClientClosingError,
   ConnectionLostError,
@@ -231,6 +232,21 @@ test("raw client validates the complete Temporal provider boundary eagerly", () 
   expect(() => createClient("postgres://app:secret@127.0.0.1:1/app", {
     temporalApi: { ...Temporal, PlainTime: ThrowingPlainTime } as never,
   })).toThrow("temporalApi.PlainTime.from failed its compatibility check");
+});
+
+test("deprecated global client accepts an application-owned Temporal provider", () => {
+  const checked = spawnSync("bun", ["-e", `
+process.env.DATABASE_URL = "postgres://app:secret@127.0.0.1:1/app";
+const { Temporal } = await import("@js-temporal/polyfill");
+const { close, configureDefaultTemporalApi, snapshot } = await import("./src/index.ts");
+configureDefaultTemporalApi(Temporal);
+if (snapshot().state !== "healthy") throw new Error("default client did not initialize");
+await close();
+`], {
+    cwd: resolve(import.meta.dir, ".."),
+    encoding: "utf8",
+  });
+  expect(checked.status, checked.stdout + checked.stderr).toBe(0);
 });
 
 test("raw client rejects millisecond options outside the supported range", () => {

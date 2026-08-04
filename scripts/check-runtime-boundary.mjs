@@ -7,6 +7,7 @@ const entry = resolve(root, "dist/src/index.js");
 const allowedRuntimeFiles = new Set([
   "dist/src/index.js",
   "dist/src/config.js",
+  "dist/src/json-value.js",
   "dist/src/postgres-client-options.js",
   "dist/src/postgres-runtime.js",
   "dist/src/postgres-transaction-runtime.js",
@@ -18,6 +19,7 @@ const allowedRuntimeFiles = new Set([
   "dist/src/runtime-migrate.js",
   "dist/src/runtime-descriptors.js",
   "dist/src/artifact-versions.js",
+  "dist/src/sql-value.js",
   "dist/src/sql-params.js",
   "dist/src/sql-lex.js",
   "dist/src/temporal.js",
@@ -25,6 +27,7 @@ const allowedRuntimeFiles = new Set([
   "dist/src/migration-core.js",
   "dist/src/pg/driver.js",
   "dist/src/pg/oids.js",
+  "dist/src/pg/temporal-codecs.js",
   "dist/src/pg/wire.js",
   "dist/src/pg/wire-messages.js",
 ]);

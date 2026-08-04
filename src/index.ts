@@ -16,7 +16,7 @@ export interface KnownFileQueries {}
 export interface KnownFunctions {}
 export interface KnownProfiles {}
 
-export type JsonPrimitive = string | number | boolean | null;
+export type JsonPrimitive = import("./json-value").JsonPrimitive;
 export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
 export type JsonObject = { readonly [key: string]: JsonValue };
 export type JsonArray = readonly JsonValue[];
@@ -28,9 +28,9 @@ export type {
   TemporalApi,
 } from "./temporal-api";
 export type JsonInput = string | number | boolean | JsonInputObject | JsonInputArray;
-export type JsonInputValue = JsonPrimitive | JsonInputObject | JsonInputArray;
-export type JsonInputObject = { readonly [key: string]: JsonInputValue | undefined };
-export type JsonInputArray = readonly JsonInputValue[];
+export type JsonInputValue = import("./json-value").JsonInputValue;
+export type JsonInputObject = import("./json-value").JsonInputObject;
+export type JsonInputArray = import("./json-value").JsonInputArray;
 
 export { defineConfig, defineDatabaseProfiles } from "./config";
 export type {
@@ -286,6 +286,8 @@ export function createSqlClient(
   const [url, options] = args as [string | undefined, import("./postgres-runtime").CreateSqlClientOptions | undefined];
   return rt.createSqlClient(url, options) as unknown as SqlClient<QueryRegistry>;
 }
+/** @deprecated Prefer passing temporalApi to createSqlClient(). */
+export const configureDefaultTemporalApi = rt.configureDefaultTemporalApi;
 /** @deprecated Prefer createSqlClient().close(). */
 export const close = rt.close;
 /** @deprecated Prefer createSqlClient().ready(). */
