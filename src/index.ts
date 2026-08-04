@@ -20,7 +20,13 @@ export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
 export type JsonObject = { readonly [key: string]: JsonValue };
 export type JsonArray = readonly JsonValue[];
-export type { PgTemporal } from "./pg/driver";
+export type {
+  PgDate,
+  PgTime,
+  PgTimestamp,
+  PgTimestamptz,
+  TemporalApi,
+} from "./temporal-api";
 export type JsonInput = string | number | boolean | JsonInputObject | JsonInputArray;
 export type JsonInputValue = JsonPrimitive | JsonInputObject | JsonInputArray;
 export type JsonInputObject = { readonly [key: string]: JsonInputValue | undefined };
@@ -34,7 +40,7 @@ export type {
   ScanConfig,
   SqlxJsConfig,
 } from "./config";
-export type { TemporalInfinityMode, TemporalPolicy } from "./temporal";
+export type { TemporalPolicy, TemporalPolicyOptions, TimestampWithoutTimeZoneMode } from "./temporal";
 export type { SslMode, ConnConfig, PgNotice } from "./pg/wire";
 export { PgError, ConnectionLostError } from "./pg/wire";
 export {
@@ -88,7 +94,7 @@ export type QueryRegistry = {
   runtimeTypes?: object;
   profile?: import("./config").DatabaseProfile;
   runtimeDescriptors?: true;
-  temporalInfinity?: import("./temporal").TemporalInfinityMode;
+  temporal?: import("./temporal").TemporalPolicy;
 };
 
 export interface DefaultQueryRegistry {
@@ -135,22 +141,16 @@ export type RuntimePostgresTypesFor<Registry extends QueryRegistry> = {
 type GeneratedPostgresTypesFor<Registry extends QueryRegistry> =
   NonNullable<import("./postgres-runtime").CreateClientOptions["types"]> &
   RuntimePostgresTypesFor<Registry>;
-type RegistryTemporalInfinity<Registry extends QueryRegistry> =
-  Registry extends {
-    temporalInfinity: infer Mode extends import("./temporal").TemporalInfinityMode;
-  } ? Mode : undefined;
+type RegistryTemporalPolicy<Registry extends QueryRegistry> =
+  Registry extends { temporal: infer Policy extends import("./temporal").TemporalPolicy }
+    ? Policy
+    : import("./temporal").TemporalPolicy;
 type ExplicitTemporalOptionsFor<Registry extends QueryRegistry> =
-  RegistryTemporalInfinity<Registry> extends "reject"
-    ? { temporal: { infinity: "reject" } }
-    : RegistryTemporalInfinity<Registry> extends "preserve"
-      ? { temporal?: { infinity: "preserve" } }
-      : { temporal?: import("./temporal").TemporalPolicy };
+  RegistryTemporalPolicy<Registry>["timestampWithoutTimeZone"] extends "allow"
+    ? { temporal: RegistryTemporalPolicy<Registry> }
+    : { temporal?: RegistryTemporalPolicy<Registry> };
 type DescriptorTemporalOptionsFor<Registry extends QueryRegistry> =
-  RegistryTemporalInfinity<Registry> extends "reject"
-    ? { temporal?: { infinity: "reject" } }
-    : RegistryTemporalInfinity<Registry> extends "preserve"
-      ? { temporal?: { infinity: "preserve" } }
-      : { temporal?: import("./temporal").TemporalPolicy };
+  { temporal?: RegistryTemporalPolicy<Registry> };
 type ExecutionOptionsFor<Registry extends QueryRegistry> =
   Registry extends { runtimeDescriptors: true }
     ? (
@@ -211,18 +211,14 @@ type CreateClientArgs<Registry extends QueryRegistry> =
     : keyof RegistryRuntimeTypes<Registry> extends never
       ? Registry extends { runtimeDescriptors: true }
         ? [url: string | undefined, options: PlainClientOptionsFor<Registry>]
-        : RegistryTemporalInfinity<Registry> extends "reject"
-          ? [url: string | undefined, options: PlainClientOptionsFor<Registry>]
-          : [url?: string, options?: PlainClientOptionsFor<Registry>]
+        : [url?: string, options?: PlainClientOptionsFor<Registry>]
       : [url: string | undefined, options: GeneratedClientOptionsFor<Registry>];
 type RawClientOptionsFor<Registry extends QueryRegistry> =
   Omit<import("./postgres-runtime").CreateClientOptions, "temporal">
   & ExplicitTemporalOptionsFor<Registry>;
 type CreateRawClientArgs<Registry extends QueryRegistry> =
   keyof RegistryRuntimeTypes<Registry> extends never
-    ? RegistryTemporalInfinity<Registry> extends "reject"
-      ? [url: string | undefined, options: RawClientOptionsFor<Registry>]
-      : [url?: string, options?: RawClientOptionsFor<Registry>]
+    ? [url?: string, options?: RawClientOptionsFor<Registry>]
     : [
       url: string | undefined,
       options: Omit<RawClientOptionsFor<Registry>, "types"> & {

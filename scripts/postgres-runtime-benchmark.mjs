@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { Temporal } from "@js-temporal/polyfill";
 import postgres from "postgres";
 
 const execFileAsync = promisify(execFile);
@@ -45,7 +46,11 @@ const runtimeDescriptors = descriptorMvp
     cacheFormat: artifactVersions.CACHE_FORMAT_VERSION,
     generatorRevision: artifactVersions.GENERATOR_REVISION,
     configHash: "benchmark",
-    temporal: { infinity: "preserve" },
+    temporal: {
+      infinity: "reject",
+      timestampWithoutTimeZone: "reject",
+      sessionTimeZone: "UTC",
+    },
     types: {},
     queries: {
       [queryIds.queryId(descriptorQuery)]: {
@@ -221,6 +226,7 @@ async function runWindow(operation, concurrency, windowMs, collect) {
 async function internalAdapter(databaseUrl, max, name, options = {}) {
   const client = createSqlClient(databaseUrl, {
     max,
+    temporalApi: Temporal,
     applicationName: name,
     connectTimeoutMs: 5_000,
     ...options,
@@ -244,6 +250,7 @@ async function internalAdapter(databaseUrl, max, name, options = {}) {
 async function rawAdapter(databaseUrl, max, name) {
   const client = createClient(databaseUrl, {
     max,
+    temporalApi: Temporal,
     applicationName: name,
     connectTimeoutMs: 5_000,
   });

@@ -30,7 +30,7 @@ export interface SqlxJsGeneratedRegistry {
   functions: SqlxJsGeneratedFunctions;
   runtimeTypes: SqlxJsGeneratedRuntimeTypes;
   runtimeDescriptors: true;
-  temporalInfinity: "preserve";
+  temporal: { readonly infinity: "reject"; readonly timestampWithoutTimeZone: "reject"; readonly sessionTimeZone: "UTC" };
 }
 
 declare module "@onreza/sqlx-js" {

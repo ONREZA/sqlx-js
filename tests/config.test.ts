@@ -39,6 +39,7 @@ function descriptorEntry(query: string, oid = 23): CacheEntry {
     resultElementNonNullOverrides: [],
     columns: [],
     hasResultSet: false,
+    usesTimestampWithoutTimeZone: false,
     inference: {
       columns: [],
       params: [{ targets: [], reason: "test fixture" }],
@@ -181,7 +182,7 @@ test("prepare config hash includes column and function catalog contracts", () =>
     profiles: { api: { name: "api", role: "app_api" } },
   })).not.toBe(base);
   expect(prepareConfigHash({
-    temporal: { infinity: "reject" },
+    temporal: { timestampWithoutTimeZone: "allow" },
   })).not.toBe(base);
   expect(prepareConfigHash({
     profiles: {

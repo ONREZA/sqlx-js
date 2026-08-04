@@ -290,9 +290,18 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
       export interface KnownProfiles {}
       export declare function createSqlClient<Registry>(
         url?: string,
-        options?: { queryDescriptors: unknown },
+        options?: { queryDescriptors: unknown; temporalApi?: unknown },
       ): { sql: unknown };
     `);
+    const temporalDir = join(root, "node_modules/@js-temporal/polyfill");
+    mkdirSync(temporalDir, { recursive: true });
+    writeFileSync(join(temporalDir, "package.json"), JSON.stringify({
+      name: "@js-temporal/polyfill",
+      version: "0.5.1",
+      type: "module",
+      exports: { ".": { types: "./index.d.ts" } },
+    }));
+    writeFileSync(join(temporalDir, "index.d.ts"), "export declare const Temporal: object;\n");
     const r1 = spawnSync("bun", [binPath, "init", "--root", root], {
       encoding: "utf8",
       env: { ...process.env, DATABASE_URL: "" },

@@ -67,6 +67,8 @@ export type QueryInventoryItem = {
     nullableParams?: number[];
     expectedValidation?: "parse-only";
     resultAssertions?: QueryResultAssertions;
+    timestampWithoutTimeZone?: "allow" | "reject";
+    temporalReason?: string;
   }[];
   nullableParamOverrides: number[];
   resultAssertions: QueryResultAssertions;
@@ -200,6 +202,10 @@ export async function buildQueryInventory(root: string, cacheDir: string): Promi
           ...(site.nullableParams ? { nullableParams: site.nullableParams } : {}),
           ...(site.expectedValidation ? { expectedValidation: site.expectedValidation } : {}),
           ...(site.resultAssertions ? { resultAssertions: site.resultAssertions } : {}),
+          ...(site.timestampWithoutTimeZone
+            ? { timestampWithoutTimeZone: site.timestampWithoutTimeZone }
+            : {}),
+          ...(site.temporalReason ? { temporalReason: site.temporalReason } : {}),
         }))
         .sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column),
       nullableParamOverrides,

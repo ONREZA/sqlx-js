@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { readdirSync } from "node:fs";
 import process from "node:process";
 import { promisify } from "node:util";
+import { Temporal } from "@js-temporal/polyfill";
 import { createSqlClient } from "../dist/src/index.js";
 
 const execFileAsync = promisify(execFile);
@@ -281,6 +282,7 @@ async function main() {
   let fdPeak = fdStart;
   const client = createSqlClient(databaseUrl, {
     max: maxConnections,
+    temporalApi: Temporal,
     applicationName,
     connectTimeoutMs: operationTimeoutMs,
     operationTimeoutMs,

@@ -285,19 +285,20 @@ Generated parameter types require `PgArrayParameter<T, NullableElements>` or `Js
 
 PostgreSQL column `NOT NULL` constrains the array value, not its elements. Therefore an ordinary `text[] NOT NULL` result is `(string | null)[]`; `prepare` emits `string[]` only after proving non-null elements from the SQL expression, a `NOT NULL` element domain, or an explicit application assertion. Declared array dimensions are not treated as a fixed TypeScript shape because PostgreSQL does not enforce them.
 
-`sql.json()` accepts ordinary structurally JSON-compatible interfaces and preserves their concrete type in `JsonParameter<T>`. It rejects known non-JSON values such as `Date`, `bigint`, functions, and `undefined` array elements. TypeScript is structurally typed, so it cannot identify every user-defined class solely because it was constructed with `new`; runtime JSON semantics still belong to `JSON.stringify`.
+`sql.json()` accepts ordinary structurally JSON-compatible interfaces and preserves their concrete type in `JsonParameter<T>`. Runtime values must be deterministic plain records or arrays; class instances, binary views, custom `toJSON`, accessors, symbol/named array properties, array holes, and ignored symbol-keyed object properties fail instead of relying on lossy `JSON.stringify` coercion. It also rejects known non-JSON values such as `Date`, Temporal objects, `bigint`, functions, non-finite numbers, unsafe integers, and `undefined` array elements. Result decoding applies the same safe-integer check so a large JSON integer cannot be silently rounded; represent exact integers outside JavaScript's safe range as strings. TypeScript is structurally typed, so it cannot identify every user-defined class solely because it was constructed with `new`; runtime validation remains authoritative.
+
+The built-in `json`/`jsonb` scalar and array codecs own this safety boundary.
+Low-level numeric `types` cannot replace them; application-owned custom types
+remain configurable through their ordinary codec contract.
 
 Both helpers also work with `unsafe(...)`. `encodePgArrayLiteral(arr)` remains exported for code that explicitly needs a PostgreSQL array literal string.
 
-By default, PostgreSQL `date`, `timestamp`, and `timestamptz` values use the
-exported `PgTemporal` type: `Date | "infinity" | "-infinity"`. The literal
-values preserve PostgreSQL's supported infinities and avoid constructing an
-invalid JavaScript `Date`. Applications that prohibit infinity can configure
-`temporal.infinity: "reject"` to generate `Date` while making the matching
-runtime reject infinite results and parameters. Other PostgreSQL temporal
-values outside JavaScript's finite `Date` range fail decoding explicitly
-instead of returning an `Invalid Date`. Finite timestamp precision follows
-JavaScript `Date` and is therefore milliseconds.
+PostgreSQL `date`, `time`, `timestamp`, and `timestamptz` use
+`Temporal.PlainDate`, `Temporal.PlainTime`, `Temporal.PlainDateTime`, and
+`Temporal.Instant` respectively. JavaScript `Date`, infinity, PostgreSQL `time`
+24:00, and precision that PostgreSQL cannot preserve are rejected rather than coerced. See the
+[Temporal boundary](./configuration.md#temporal-boundary) for the UTC session
+guarantee and query-local `timestamp without time zone` exception contract.
 
 ## Parameter nullability
 

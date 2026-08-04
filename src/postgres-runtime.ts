@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import {
   ClientClosingError,
+  assertNoDateSqlValue,
   createSqlRuntime,
   encodePgArrayLiteral,
   GenerationRecycledError,
@@ -42,6 +43,7 @@ import {
   resolveTemporalPolicy,
   type TemporalPolicy,
 } from "./temporal";
+import type { TemporalApi } from "./temporal-api";
 import { ConnectionLostError, PgError } from "./pg/wire";
 import {
   createTransactionRuntimeClient,
@@ -77,7 +79,7 @@ export type {
 
 export type PostgresClient = InternalPostgresClient;
 export type PostgresOptions = InternalPostgresOptions;
-export type { PostgresType };
+export type { PostgresType, TemporalApi };
 type Deferred<T> = {
   promise: Promise<T>;
   reject(error: unknown): void;
@@ -241,10 +243,14 @@ class ManagedPostgresRuntime implements RuntimeClient {
     if (
       configuredTemporal
       && this.descriptors
-      && configuredTemporal.infinity !== this.descriptors.temporal.infinity
+      && (
+        configuredTemporal.infinity !== this.descriptors.temporal.infinity
+        || configuredTemporal.timestampWithoutTimeZone !== this.descriptors.temporal.timestampWithoutTimeZone
+        || configuredTemporal.sessionTimeZone !== this.descriptors.temporal.sessionTimeZone
+      )
     ) {
       throw new Error(
-        "sqlx-js: temporal.infinity does not match the generated query descriptor",
+        "sqlx-js: temporal policy does not match the generated query descriptor",
       );
     }
     const temporal = this.descriptors?.temporal
@@ -1020,6 +1026,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
   }
 
   private encodeParam(client: PostgresClient, param: unknown): unknown {
+    assertNoDateSqlValue(param, "PostgreSQL parameter");
     const kind = parameterKind(param);
     if (kind === "json") return client.json((param as JsonParameter).value as never);
     if (kind === "array") {

@@ -66,22 +66,25 @@ See the [documentation index](./docs/README.md) for the complete guide set.
 
 - PostgreSQL 16 or newer
 - Node.js 24 or newer, Bun 1.3 or newer, or Deno 2.9 or newer
-- TypeScript 5.4 through 6.x for source-scanning commands
+- TypeScript 5.4 through 5.9 for source-scanning commands
+- `@js-temporal/polyfill` 0.5.x as the canonical Temporal type/provider peer
 
 The package is ESM-only. TypeScript is an optional peer dependency so it does
-not have to be installed in production-only images.
+not have to be installed in production-only images. The Temporal polyfill is a
+peer rather than a runtime dependency: the application owns the provider and
+sqlx-js never mutates `globalThis`.
 
 ## Quick start
 
 Install the package and TypeScript:
 
 ```bash
-npm install @onreza/sqlx-js
-npm install --save-dev "typescript@>=5.4 <7"
+npm install @onreza/sqlx-js @js-temporal/polyfill
+npm install --save-dev "typescript@>=5.4 <6"
 
 # or
-bun add @onreza/sqlx-js
-bun add --dev "typescript@>=5.4 <7"
+bun add @onreza/sqlx-js @js-temporal/polyfill
+bun add --dev "typescript@>=5.4 <6"
 ```
 
 Scaffold a project using built-in migrations:
@@ -172,6 +175,25 @@ is never replayed after a connection loss because its outcome may be unknown.
 `init` creates a user-owned `db.ts` that binds the generated registry and
 runtime descriptor explicitly. The global `sql` export remains a deprecated
 convenience path for gradual migration.
+
+PostgreSQL temporal values never cross this boundary as JavaScript `Date`.
+`date`, `time`, `timestamp`, and `timestamptz` map to
+`Temporal.PlainDate`, `Temporal.PlainTime`, `Temporal.PlainDateTime`, and
+`Temporal.Instant`. Pass the application-owned provider once at client
+construction; `init` scaffolds this explicitly:
+
+```ts
+import { Temporal } from "@js-temporal/polyfill";
+
+const db = createSqlClient(databaseUrl, { temporalApi: Temporal });
+```
+
+If a compatible `globalThis.Temporal` exists, the option can be omitted.
+PostgreSQL sessions are pinned to UTC; infinity, `time` 24:00, and
+sub-microsecond inputs are rejected; and the codec preserves microseconds
+returned by PostgreSQL. Attempts to change
+`TimeZone` away from UTC or `DateStyle` away from ISO fail closed and discard
+the affected connection.
 
 `createClient(...)` is the lower-level wire client for callers that explicitly
 own pool access and lifecycle. The two APIs are separate reliability

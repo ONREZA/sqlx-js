@@ -9,7 +9,7 @@ import {
 } from "./artifact-versions";
 import { fingerprint, type CacheEntry } from "./cache";
 import type { DatabaseProfiles } from "./config";
-import { resolveTemporalPolicy, type TemporalPolicy } from "./temporal";
+import { resolveTemporalPolicy, type TemporalPolicyOptions } from "./temporal";
 import type {
   RuntimeDescriptorProfile,
   RuntimeDescriptorType,
@@ -29,7 +29,7 @@ export function renderRuntimeDescriptors(
   entries: readonly CacheEntry[],
   configHash: string,
   profiles: DatabaseProfiles = {},
-  temporal?: TemporalPolicy,
+  temporal?: TemporalPolicyOptions,
 ): string {
   const types = new Map<string, RuntimeDescriptorType>();
   const queries = new Map<string, RuntimeQueryDescriptor>();
@@ -91,7 +91,7 @@ export function writeRuntimeDescriptors(
   entries: readonly CacheEntry[],
   configHash: string,
   profiles: DatabaseProfiles = {},
-  temporal?: TemporalPolicy,
+  temporal?: TemporalPolicyOptions,
 ): void {
   const path = runtimeDescriptorPath(cacheDir);
   const tmp = `${path}.tmp-${randomBytes(4).toString("hex")}`;

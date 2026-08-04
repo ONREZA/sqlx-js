@@ -572,7 +572,23 @@ export class PgClient {
   }
 
   private deliver(msg: ServerMessage) {
+    if (this.closed) return;
     if (msg.type === "Z") this.readyStatus = msg.status;
+    if (msg.type === "S") {
+      const name = msg.name.toLowerCase();
+      if (name === "timezone" && msg.value !== "UTC") {
+        this.destroy(new Error(
+          `sqlx-js: PostgreSQL session TimeZone changed to ${JSON.stringify(msg.value)}; UTC is required`,
+        ));
+        return;
+      }
+      if (name === "datestyle" && !/^ISO(?:,|$)/i.test(msg.value)) {
+        this.destroy(new Error(
+          `sqlx-js: PostgreSQL session DateStyle changed to ${JSON.stringify(msg.value)}; ISO is required`,
+        ));
+        return;
+      }
+    }
     if (msg.type === "other" && msg.tag === "A") return;
     if (msg.type === "N") {
       try {
@@ -676,9 +692,11 @@ export class PgClient {
       pairs.push(cstr("statement_timeout"), cstr(String(this.cfg.statementTimeoutMs)));
     }
     for (const [name, value] of Object.entries(this.cfg.startupParameters ?? {})) {
+      if (name.toLowerCase() === "datestyle" || name.toLowerCase() === "timezone") continue;
       pairs.push(cstr(name), cstr(value));
     }
     pairs.push(cstr("DateStyle"), cstr("ISO"));
+    pairs.push(cstr("TimeZone"), cstr("UTC"));
     pairs.push(new Uint8Array([0]));
     const body = concat([writeInt32(196608), concat(pairs)]);
     this.write(frame(null, body));

@@ -1,3 +1,4 @@
+import "./temporal";
 import { sql, close } from "@onreza/sqlx-js";
 
 const admins = await sql.file("queries/get_users_by_role.sql", "admin", 5);

@@ -45,7 +45,7 @@ export default defineConfig({
     "analytics_event.tags": "non-null",
   },
   temporal: {
-    infinity: "reject",
+    timestampWithoutTimeZone: "reject",
   },
   functionCatalog: {
     // Extension-owned functions and their contract warnings are excluded by default.
@@ -64,22 +64,80 @@ export default defineConfig({
 });
 ```
 
-## Temporal infinity policy
+## Temporal boundary
 
-PostgreSQL `date`, `timestamp`, and `timestamptz` support `infinity` and
-`-infinity`, but JavaScript `Date` does not. The default
-`temporal.infinity: "preserve"` contract keeps those values lossless and
-generates `PgTemporal`, which is `Date | "infinity" | "-infinity"`.
+The PostgreSQL date/time/timestamp boundary is Temporal-only wherever a
+faithful Temporal representation exists. JavaScript `Date` is rejected
+recursively from PostgreSQL parameters and results, including arrays and custom
+codec values. The built-in mappings are:
 
-Set `temporal.infinity: "reject"` when the application invariant excludes
-infinite temporal values. Prepare then generates `Date` (and `Date` array
-elements), stores the policy in the runtime descriptor, and the runtime rejects
-infinity on both result decoding and parameter encoding. A descriptor-bound
-`createSqlClient` adopts the generated policy automatically. Adaptive managed
-clients and raw `createClient` calls using that generated registry must pass
-`temporal: { infinity: "reject" }` explicitly. The deprecated global `sql`
-surface is not generated in reject mode because it cannot bind a project-owned
-runtime policy.
+| PostgreSQL | TypeScript/runtime |
+| --- | --- |
+| `date` | `PgDate` / `Temporal.PlainDate` |
+| `time` | `PgTime` / `Temporal.PlainTime` |
+| `timestamp without time zone` | `PgTimestamp` / `Temporal.PlainDateTime` |
+| `timestamptz` | `PgTimestamptz` / `Temporal.Instant` |
+
+Every connection starts with `TimeZone=UTC` and ISO `DateStyle`. A later SQL or
+function attempt to change either contract fails closed from PostgreSQL's
+`ParameterStatus` response and discards that connection; this does not require
+runtime SQL parsing. The codec preserves microseconds returned by PostgreSQL; a
+column typmod such as `timestamp(3)` may still apply its declared server-owned
+precision. A Temporal value with non-zero nanoseconds below one microsecond is
+rejected instead of rounded.
+PostgreSQL temporal infinity is always rejected
+because the Temporal types have no lossless representation for it. Leap-second
+values and PostgreSQL `time` 24:00 are rejected because Temporal would either
+normalize the value or cannot represent it losslessly. `timetz` and `interval` remain lossless PostgreSQL
+strings: `timetz` has no date or IANA zone and a PostgreSQL interval is not
+always representable as a Temporal duration without changing its semantics.
+
+`timestamp without time zone` is rejected by `prepare` by default when it is a
+direct parameter/result or the physical column mapped to a parameter, including
+through arrays, domains, ranges, multiranges, and composites. Use `timestamptz`
+for instants. If the domain really stores a civil wall-clock value, make the
+exception local and auditable:
+
+```ts
+export const storeOpening = defineQuery.execute(
+  "schedule.storeOpening",
+  "INSERT INTO store_schedule (opens_at) VALUES ($1::timestamp)",
+  {
+    temporal: {
+      timestampWithoutTimeZone: {
+        allow: true,
+        reason: "Opening time is local civil time, not an instant",
+      },
+    },
+  },
+);
+```
+
+An allow exception requires a named `defineQuery`, a non-empty literal reason,
+and applies only to that source site. If the same SQL appears at another strict
+site, that site still fails. A project can instead set
+`temporal.timestampWithoutTimeZone: "allow"` globally and use a local
+`"reject"` override for stricter queries. The resolved policy is included in
+the config hash, generated registry, and runtime descriptor. `queries --json`
+also exposes each local mode and allow reason for policy review.
+
+Server-only expressions that neither consume an application parameter nor
+return a value are outside this I/O gate. Their column types remain schema/DDL
+policy owned by migrations or pgschema; sqlx-js does not turn query validation
+into a second schema authority.
+
+The current release uses `@js-temporal/polyfill` as its canonical type peer.
+The runtime uses a compatible `globalThis.Temporal` when present; on the
+currently supported runtimes, pass the installed polyfill namespace explicitly:
+
+```ts
+import { Temporal } from "@js-temporal/polyfill";
+
+const db = createSqlClient(process.env.DATABASE_URL, {
+  queryDescriptors,
+  temporalApi: Temporal,
+});
+```
 
 By default the scanner uses the root `tsconfig.json` file list and follows TypeScript project references, so a referenced monorepo is scanned without walking unrelated folders. `scan.include` replaces that source-file universe with TypeScript glob patterns; `scan.exclude` is added to the built-in dependency/build exclusions. `scan.modules` replaces the default `@onreza/sqlx-js` import source list, which lets an application re-export `sql` through a shared database module without requiring arbitrary re-export graph analysis. Include `@onreza/sqlx-js` explicitly when direct imports and application-module imports are both used. If there is no root `tsconfig.json`, the fallback is a recursive TypeScript scan.
 
@@ -98,7 +156,7 @@ export type PostMeta = { tags?: string[]; pinned?: boolean };
 export type Attachment = { url: string; kind: "image" | "video" | "file"; sizeBytes: number };
 ```
 
-After re-running `prepare`, every direct `jsonb` column or mapped parameter uses the corresponding application-owned TypeScript type. Set operations preserve that type through direct or CTE-backed branches when every contributing source resolves to the same configured declaration; incompatible or partially unmapped result branches fall back to the PostgreSQL type instead of guessing. Parameters retain every direct-column target across data-modifying CTEs; conflicting configured declarations for one parameter fail prepare with the affected columns instead of choosing one by traversal order. This is a compile-time assertion, not runtime JSON validation; the application schema remains the source of truth. Columns without a custom mapping use `JsonValue` for result rows and `JsonParameter<unknown>` for parameters: the existential parameter type accepts any wrapper already proven JSON-safe by `sql.json(value)` without requiring domain interfaces to declare a string index signature. `--strict-inference` accepts this intentional wrapper while continuing to reject unresolved `unknown` elsewhere in generated query contracts. Non-JSON inputs such as `Date`, functions, and `bigint` are rejected by TypeScript while plain JSON objects, arrays, strings, numbers, booleans, and nested JSON `null` values are accepted. A bare top-level `null` remains SQL `NULL` and is allowed only when every stored-value target for that parameter accepts it; use `sql.json(null)` for JSON `null`.
+After re-running `prepare`, every direct `jsonb` column or mapped parameter uses the corresponding application-owned TypeScript type. Set operations preserve that type through direct or CTE-backed branches when every contributing source resolves to the same configured declaration; incompatible or partially unmapped result branches fall back to the PostgreSQL type instead of guessing. Parameters retain every direct-column target across data-modifying CTEs; conflicting configured declarations for one parameter fail prepare with the affected columns instead of choosing one by traversal order. This is a compile-time assertion, not runtime validation against the application-owned JSON schema; that schema remains the source of truth. The runtime still enforces the generic deterministic JSON boundary described in the query API. Columns without a custom mapping use `JsonValue` for result rows and `JsonParameter<unknown>` for parameters: the existential parameter type accepts any wrapper already proven JSON-safe by `sql.json(value)` without requiring domain interfaces to declare a string index signature. `--strict-inference` accepts this intentional wrapper while continuing to reject unresolved `unknown` elsewhere in generated query contracts. Non-JSON inputs such as `Date`, functions, and `bigint` are rejected by TypeScript while plain JSON objects, arrays, strings, numbers, booleans, and nested JSON `null` values are accepted. A bare top-level `null` remains SQL `NULL` and is allowed only when every stored-value target for that parameter accepts it; use `sql.json(null)` for JSON `null`.
 
 ## Direct scalar `columnTypes`
 

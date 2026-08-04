@@ -1,10 +1,12 @@
 {
-  "formatVersion": 2,
-  "cacheFormat": 7,
-  "generatorRevision": 24,
-  "configHash": "611f4c56c07cffe9",
+  "formatVersion": 3,
+  "cacheFormat": 8,
+  "generatorRevision": 25,
+  "configHash": "97a8ce77a1bcbed9",
   "temporal": {
-    "infinity": "preserve"
+    "infinity": "reject",
+    "timestampWithoutTimeZone": "reject",
+    "sessionTimeZone": "UTC"
   },
   "types": {
     "[\"public\",\"user_role\"]": {

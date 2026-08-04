@@ -84,7 +84,15 @@ codes and artifact behavior. `--warnings` and `--verbose` cannot be combined
 with each other or with `--json`/`--jsonl`; watch mode is already streaming and
 does not accept them.
 
-`queries --json` is database-free and read-only. It emits `formatVersion: 1` inventory entries with `queryId`, connection profiles, optional definition names, cardinalities, root-relative call sites, SQL file paths, source-owned nullable-parameter, result-assertion, and expected-validation contracts, `current`/`stale`/`missing` cache status, and `planned`/`parse-only` validation when cached, plus orphaned cache IDs. Config, scan, cache, and embed failures use versioned structured diagnostics with source location when available. Adding `--embed` writes the external-SQL module only after a successful scan.
+`queries --json` is database-free and read-only. It emits `formatVersion: 1`
+inventory entries with `queryId`, connection profiles, optional definition
+names, cardinalities, root-relative call sites, SQL file paths, source-owned
+nullable-parameter, result-assertion, expected-validation, and timestamp-policy
+contracts (including local allow reasons), `current`/`stale`/`missing` cache
+status, and `planned`/`parse-only` validation when cached, plus orphaned cache
+IDs. Config, scan, cache, and embed failures use versioned structured
+diagnostics with source location when available. Adding `--embed` writes the
+external-SQL module only after a successful scan.
 
 After adding a new `defineQuery`, run live `sqlx-js prepare` before the ordinary
 TypeScript build. Until then, the generated registry cannot contain that SQL

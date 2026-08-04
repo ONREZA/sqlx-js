@@ -80,6 +80,7 @@ import {
   resolveParamNullable,
   resolveParamTs,
   resolveResultArrayElementNullability,
+  resolveTargetColumn,
 } from "./prepare-inference";
 import {
   addFunctionContractDiagnostics,
@@ -97,6 +98,7 @@ import {
   reportPrepareDiagnostics,
   reportQueryDiagnostics,
   siteDiagnostic,
+  temporalPolicyDiagnostics,
   withOutputHints,
   type PrepareDiagnostic,
 } from "./prepare-diagnostics";
@@ -131,6 +133,22 @@ export type PrepareResult = {
   enums: number;
   diagnostics: PrepareDiagnostic[];
 };
+
+function paramTargetsUseTimestampWithoutTimeZone(
+  paramMap: ParamMapResult,
+  schema: SchemaCache,
+): boolean {
+  return [...paramMap.bindings.values()].some((binding) =>
+    effectiveParamTargets(binding).some((target) => {
+      const tableOid = schema.resolveTable(target.schema, target.table);
+      const column = resolveTargetColumn(target, schema);
+      const typeOid = tableOid === undefined || column === undefined
+        ? undefined
+        : schema.columnsOf(tableOid)?.get(column)?.typeOid;
+      return typeOid !== undefined && schema.isTimestampWithoutTimeZone(typeOid);
+    })
+  );
+}
 
 function expandProfileSites(sites: QueryCallSite[]): QueryCallSite[] {
   return sites.flatMap((site) =>
@@ -204,7 +222,7 @@ export async function openSession(opts: PrepareOptions): Promise<PrepareSession>
     await client.end().catch(() => {});
     throw fatal("connect", error);
   }
-  const schema = new SchemaCache(client, userCfg.temporal);
+  const schema = new SchemaCache(client);
   schema.setTypeRegistry(mergeExtensionTypes(userCfg.customTypes), userCfg.customTypes);
   try {
     await schema.validateUserTypeRegistry();
@@ -223,7 +241,7 @@ export async function openSession(opts: PrepareOptions): Promise<PrepareSession>
       try {
         await profileClient.connect();
         await setRole(profileClient, profile.role);
-        const profileSchema = new SchemaCache(profileClient, userCfg.temporal);
+        const profileSchema = new SchemaCache(profileClient);
         profileSchema.setTypeRegistry(mergeExtensionTypes(userCfg.customTypes), userCfg.customTypes);
         await profileSchema.validateUserTypeRegistry();
         profiles.set(profile.name, { profile, client: profileClient, schema: profileSchema });
@@ -429,8 +447,9 @@ export async function prepareOnce(
     const entry = { ...cached, ...siteUsage(item.sites) };
     const entryDiagnostics = inferenceDiagnostics(entry, item.sites[0]!, opts.strictInference === true);
     const intentDiagnostics = executionIntentDiagnostics(entry, item.sites, opts.strictInference === true);
-    diagnostics.push(...entryDiagnostics, ...intentDiagnostics);
-    const queryDiagnostics = [...entryDiagnostics, ...intentDiagnostics];
+    const temporalDiagnostics = temporalPolicyDiagnostics(entry, item.sites, userCfg.temporal);
+    diagnostics.push(...entryDiagnostics, ...intentDiagnostics, ...temporalDiagnostics);
+    const queryDiagnostics = [...entryDiagnostics, ...intentDiagnostics, ...temporalDiagnostics];
     const queryFailed = reportQueryDiagnostics(queryDiagnostics, item.sites, err);
     const planIssues = planningDiagnostics(entry.validation, item.sites, opts.strictInference === true);
     for (const diagnostic of planIssues) {
@@ -634,6 +653,9 @@ export async function prepareOnce(
         if (oid !== undefined) oids.push(oid);
       }
       await schema.loadColumnsForTables(oids);
+      await schema.loadCustomTypes(oids.flatMap((oid) =>
+        [...(schema.columnsOf(oid)?.values() ?? [])].map((column) => column.typeOid)
+      ));
     }
   } catch (error) {
     throw fatal("introspect", error);
@@ -736,6 +758,9 @@ export async function prepareOnce(
       ...(r.paramNames.length > 0 ? { paramNames: r.paramNames } : {}),
       columns,
       hasResultSet: r.hasResultSet,
+      usesTimestampWithoutTimeZone: r.paramOids.some((oid) => schema.isTimestampWithoutTimeZone(oid))
+        || r.fields.some((field) => schema.isTimestampWithoutTimeZone(field.typeOid))
+        || paramTargetsUseTimestampWithoutTimeZone(pm, schema),
       ...(analysis.degraded ? { degraded: analysis.degraded } : {}),
       inference: {
         columns: columns.map((column, index) =>
@@ -754,8 +779,9 @@ export async function prepareOnce(
     };
     const entryDiagnostics = inferenceDiagnostics(entry, r.sites[0]!, opts.strictInference === true);
     const intentDiagnostics = executionIntentDiagnostics(entry, r.sites, opts.strictInference === true);
-    diagnostics.push(...entryDiagnostics, ...intentDiagnostics);
-    const queryDiagnostics = [...entryDiagnostics, ...intentDiagnostics];
+    const temporalDiagnostics = temporalPolicyDiagnostics(entry, r.sites, userCfg.temporal);
+    diagnostics.push(...entryDiagnostics, ...intentDiagnostics, ...temporalDiagnostics);
+    const queryDiagnostics = [...entryDiagnostics, ...intentDiagnostics, ...temporalDiagnostics];
     if (queryDiagnostics.length > 0) {
       if (reportQueryDiagnostics(queryDiagnostics, r.sites, err)) {
         failures++;
@@ -1028,12 +1054,14 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         const current = { ...entry, ...siteUsage(u.sites) };
         const entryDiagnostics = inferenceDiagnostics(current, u.sites[0]!, opts.strictInference === true);
         const intentDiagnostics = executionIntentDiagnostics(current, u.sites, opts.strictInference === true);
-        diagnostics.push(...entryDiagnostics, ...intentDiagnostics);
+        const temporalDiagnostics = temporalPolicyDiagnostics(current, u.sites, userCfg.temporal);
+        diagnostics.push(...entryDiagnostics, ...intentDiagnostics, ...temporalDiagnostics);
         const planIssues = planningDiagnostics(current.validation, u.sites, opts.strictInference === true);
         diagnostics.push(...planIssues);
         if (
           (opts.strictInference && entryDiagnostics.length > 0)
           || intentDiagnostics.some((diagnostic) => diagnostic.severity === "error")
+          || temporalDiagnostics.some((diagnostic) => diagnostic.severity === "error")
           || planIssues.some((diagnostic) => diagnostic.severity === "error")
         ) {
           inferenceFailures++;

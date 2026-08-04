@@ -6,6 +6,7 @@ import {
   planningDiagnostics,
   planningValidationTag,
   reportQueryDiagnostics,
+  temporalPolicyDiagnostics,
 } from "../src/commands/prepare-diagnostics";
 import type { CacheEntry } from "../src/cache";
 import type { QueryCallSite } from "../src/scan/scanner";
@@ -22,8 +23,42 @@ const entry: CacheEntry = {
   resultElementNonNullOverrides: [],
   columns: [],
   hasResultSet: false,
+  usesTimestampWithoutTimeZone: false,
   inference: { columns: [], params: [] },
 };
+
+test("timestamp without time zone policy is evaluated per source site", () => {
+  const temporalEntry = { ...entry, usesTimestampWithoutTimeZone: true };
+  const allowed: QueryCallSite = {
+    file: "wall-clock.ts",
+    line: 3,
+    column: 7,
+    query: temporalEntry.query,
+    paramCount: 0,
+    kind: "inline",
+    origin: "definition",
+    cardinality: "execute",
+    queryName: "schedule.storeWallClock",
+    timestampWithoutTimeZone: "allow",
+    temporalReason: "The value is a local store opening time",
+  };
+  const strict = { ...allowed, file: "strict.ts", timestampWithoutTimeZone: undefined };
+
+  expect(temporalPolicyDiagnostics(temporalEntry, [allowed], undefined)).toEqual([]);
+  expect(temporalPolicyDiagnostics(temporalEntry, [allowed, strict], undefined)).toEqual([
+    expect.objectContaining({
+      severity: "error",
+      phase: "temporal",
+      file: "strict.ts",
+      code: "SQLXJS_TIMESTAMP_WITHOUT_TIME_ZONE",
+    }),
+  ]);
+  expect(temporalPolicyDiagnostics(
+    temporalEntry,
+    [{ ...strict, timestampWithoutTimeZone: "reject" }],
+    { timestampWithoutTimeZone: "allow" },
+  )).toHaveLength(1);
+});
 
 test("query diagnostics report the exact reused call site", () => {
   const sites: QueryCallSite[] = [

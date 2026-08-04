@@ -26,6 +26,7 @@ function cacheEntry(query: string, overrides: Partial<CacheEntry> = {}): CacheEn
     resultElementNonNullOverrides: [],
     columns,
     hasResultSet: columns.length > 0,
+    usesTimestampWithoutTimeZone: false,
     inference: {
       columns: columns.map(() => ({ sources: null, reason: "test fixture" })),
       params: paramTsTypes.map(() => ({ targets: [], reason: "test fixture" })),
@@ -48,6 +49,12 @@ test("queries inventory and embedded module are deterministic and database-free"
           nullableParams: ["scope"],
           expectedValidation: "parse-only",
           resultAssertions: { capabilities: { elements: "non-null" } },
+          temporal: {
+            timestampWithoutTimeZone: {
+              allow: true,
+              reason: "The query intentionally uses civil time",
+            },
+          },
         },
       );
       export async function findUser(id: string) {
@@ -79,6 +86,8 @@ test("queries inventory and embedded module are deterministic and database-free"
           nullableParams?: number[];
           resultAssertions?: Record<string, { elements: "non-null" }>;
           expectedValidation?: string;
+          timestampWithoutTimeZone?: string;
+          temporalReason?: string;
         }>;
         cacheStatus: string;
         validation: string | null;
@@ -97,6 +106,8 @@ test("queries inventory and embedded module are deterministic and database-free"
         nullableParams: [1],
         resultAssertions: { capabilities: { elements: "non-null" } },
         expectedValidation: "parse-only",
+        timestampWithoutTimeZone: "allow",
+        temporalReason: "The query intentionally uses civil time",
       })],
       cacheStatus: "missing",
       validation: null,

@@ -5,6 +5,7 @@ import {
   type FunctionEntry,
 } from "../function-cache";
 import { ScanError, type QueryCallSite } from "../scan/scanner";
+import { resolveTemporalPolicy, type TemporalPolicyOptions } from "../temporal";
 
 export type PrepareDiagnosticPhase =
   | "config"
@@ -18,6 +19,7 @@ export type PrepareDiagnosticPhase =
   | "param-map"
   | "inference"
   | "intent"
+  | "temporal"
   | "function-contract"
   | "cache"
   | "verify";
@@ -220,6 +222,27 @@ export function siteDiagnostic(site: QueryCallSite): Pick<
     ...(site.queryName ? { queryName: site.queryName } : {}),
     ...(site.profiles?.[0] ? { profile: site.profiles[0] } : {}),
   };
+}
+
+export function temporalPolicyDiagnostics(
+  entry: CacheEntry,
+  sites: readonly QueryCallSite[],
+  policy: TemporalPolicyOptions | undefined,
+): PrepareDiagnostic[] {
+  if (!entry.usesTimestampWithoutTimeZone) return [];
+  const defaultMode = resolveTemporalPolicy(policy).timestampWithoutTimeZone;
+  return sites.flatMap((site) => {
+    const mode = site.timestampWithoutTimeZone ?? defaultMode;
+    if (mode === "allow") return [];
+    return [{
+      severity: "error" as const,
+      phase: "temporal" as const,
+      code: "SQLXJS_TIMESTAMP_WITHOUT_TIME_ZONE",
+      message: "query I/O uses PostgreSQL timestamp without time zone, including through a parameter-mapped column, array, domain, range, multirange, or composite",
+      hint: "Use timestamptz for instants. For intentional wall-clock data, use a named defineQuery() with temporal.timestampWithoutTimeZone: { allow: true, reason: \"...\" }.",
+      ...siteDiagnostic(site),
+    }];
+  });
 }
 
 function inferenceIssues(entry: CacheEntry): string[] {

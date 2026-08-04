@@ -8,10 +8,16 @@ export type QueryExecutionMetadata = { queryId: string; queryName?: string };
 export type QueryValidationExpectation = "parse-only";
 export type QueryResultElementAssertion = { readonly elements: "non-null" };
 export type QueryResultAssertions = Readonly<Record<string, QueryResultElementAssertion>>;
+export type QueryTimestampWithoutTimeZonePolicy =
+  | "reject"
+  | { readonly allow: true; readonly reason: string };
 export type DefineQueryOptions = {
   nullableParams?: readonly (string | number)[];
   expectedValidation?: QueryValidationExpectation;
   resultAssertions?: QueryResultAssertions;
+  temporal?: {
+    readonly timestampWithoutTimeZone: QueryTimestampWithoutTimeZonePolicy;
+  };
 };
 export const QUERY_EXECUTOR: unique symbol = Symbol.for("@onreza/sqlx-js.query-executor") as never;
 
@@ -164,10 +170,61 @@ type DefineQueryMethod<Mode extends QueryExecutionMode, Profiles extends readonl
   ): QueryDefinition<Query, Mode, Profiles>;
 };
 
-function validateDefinitionOptions(query: string, options: DefineQueryOptions | undefined): void {
+function validateDefinitionOptions(
+  query: string,
+  options: DefineQueryOptions | undefined,
+  queryName: string | undefined,
+): void {
   if (!options) return;
   if (options.expectedValidation !== undefined && options.expectedValidation !== "parse-only") {
     throw new Error("sqlx-js.defineQuery: expectedValidation must be \"parse-only\"");
+  }
+  if (options.temporal !== undefined) {
+    if (!options.temporal || typeof options.temporal !== "object" || Array.isArray(options.temporal)) {
+      throw new Error("sqlx-js.defineQuery: temporal must be an object");
+    }
+    const keys = Object.keys(options.temporal);
+    if (keys.length !== 1 || keys[0] !== "timestampWithoutTimeZone") {
+      throw new Error("sqlx-js.defineQuery: temporal must contain timestampWithoutTimeZone");
+    }
+  }
+  const timestampPolicy = options.temporal?.timestampWithoutTimeZone;
+  if (options.temporal !== undefined && timestampPolicy === undefined) {
+    throw new Error("sqlx-js.defineQuery: temporal must contain timestampWithoutTimeZone");
+  }
+  if (timestampPolicy !== undefined && timestampPolicy !== "reject") {
+    if (
+      !timestampPolicy
+      || typeof timestampPolicy !== "object"
+      || Array.isArray(timestampPolicy)
+    ) {
+      throw new Error(
+        "sqlx-js.defineQuery: temporal.timestampWithoutTimeZone allow requires a non-empty reason",
+      );
+    }
+    const unknown = Object.keys(timestampPolicy).find((key) => key !== "allow" && key !== "reason");
+    if (unknown) {
+      throw new Error(
+        `sqlx-js.defineQuery: temporal.timestampWithoutTimeZone allow has unknown option ${JSON.stringify(unknown)}`,
+      );
+    }
+    if (
+      Object.keys(timestampPolicy).length !== 2
+      || !Object.hasOwn(timestampPolicy, "allow")
+      || !Object.hasOwn(timestampPolicy, "reason")
+      || timestampPolicy.allow !== true
+      || typeof timestampPolicy.reason !== "string"
+      || timestampPolicy.reason.trim() === ""
+    ) {
+      throw new Error(
+        "sqlx-js.defineQuery: temporal.timestampWithoutTimeZone allow requires a non-empty reason",
+      );
+    }
+    if (!queryName) {
+      throw new Error(
+        "sqlx-js.defineQuery: temporal.timestampWithoutTimeZone allow requires a named query",
+      );
+    }
   }
   if (options.nullableParams !== undefined) {
     if (!Array.isArray(options.nullableParams)) {
@@ -232,7 +289,7 @@ function definitionMethod<Mode extends QueryExecutionMode, Profiles extends read
     if (name !== undefined && name.trim() === "") {
       throw new Error("sqlx-js.defineQuery: query name must not be empty");
     }
-    validateDefinitionOptions(query, options);
+    validateDefinitionOptions(query, options, name);
     const metadata: QueryExecutionMetadata = {
       queryId: queryId(query),
       ...(name ? { queryName: name } : {}),

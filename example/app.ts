@@ -1,3 +1,4 @@
+import "./temporal";
 import { sql, close } from "@onreza/sqlx-js";
 
 async function main() {

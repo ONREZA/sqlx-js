@@ -23,6 +23,7 @@ function emptyEntry(query: string, hasResultSet = false): CacheEntry {
     resultElementNonNullOverrides: [],
     columns: [],
     hasResultSet,
+    usesTimestampWithoutTimeZone: false,
     inference: { columns: [], params: [] },
   };
 }
@@ -78,6 +79,7 @@ test("Cache rejects malformed named parameter metadata", () => {
       paramNames: ["id", "extra"],
       columns: [],
       hasResultSet: true,
+      usesTimestampWithoutTimeZone: false,
     }));
     expect(() => new Cache(dir).read("bad")).toThrow(/malformed named parameter metadata/);
     writeFileSync(join(dir, "bad.json"), JSON.stringify({
@@ -88,6 +90,7 @@ test("Cache rejects malformed named parameter metadata", () => {
       paramNames: ["id"],
       columns: [],
       hasResultSet: true,
+      usesTimestampWithoutTimeZone: false,
     }));
     expect(() => new Cache(dir).read("bad")).toThrow(/malformed named parameter metadata/);
   } finally {
@@ -275,6 +278,7 @@ test("Cache.read rejects legacy schema (forceNonNull) with actionable message", 
       paramTsTypes: [],
       columns: [{ name: "id", typeOid: 20, tsType: "bigint", nullable: false, forceNonNull: true }],
       hasResultSet: true,
+      usesTimestampWithoutTimeZone: false,
     }),
   );
   const c = new Cache(dir);
@@ -296,6 +300,7 @@ test("Cache.list rejects legacy schema (forceNullable) with actionable message",
       paramTsTypes: [],
       columns: [{ name: "name", typeOid: 25, tsType: "string", nullable: true, forceNullable: true }],
       hasResultSet: true,
+      usesTimestampWithoutTimeZone: false,
     }),
   );
   const c = new Cache(dir);

@@ -77,6 +77,7 @@ export type CacheEntry = {
   paramNames?: string[];
   columns: CacheColumn[];
   hasResultSet: boolean;
+  usesTimestampWithoutTimeZone: boolean;
   hasInline?: boolean;
   filePaths?: string[];
   degraded?: { reason: string };
@@ -166,6 +167,9 @@ function assertEntryShape(fp: string, raw: unknown): CacheEntry {
   }
   if (entry.validation !== undefined && entry.validation !== "planned" && entry.validation !== "parse-only") {
     throw new Error(`sqlx-js: cache entry ${fp}.json has invalid validation metadata. Run \`sqlx-js prepare\`.`);
+  }
+  if (typeof entry.usesTimestampWithoutTimeZone !== "boolean") {
+    throw new Error(`sqlx-js: cache entry ${fp}.json is missing its temporal contract. Run \`sqlx-js prepare\`.`);
   }
   if (entry.profile !== undefined && (typeof entry.profile !== "string" || entry.profile.trim() === "")) {
     throw new Error(`sqlx-js: cache entry ${fp}.json has invalid profile metadata. Run \`sqlx-js prepare\`.`);

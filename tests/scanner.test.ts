@@ -288,6 +288,42 @@ test("defineQuery source options preserve parameter, validation, and result asse
   expect(sites[1]).toMatchObject({ nullableParams: [1] });
 });
 
+test("defineQuery scans an auditable timestamp without time zone exception", () => {
+  setup({
+    "queries.ts": `
+      import { defineQuery } from "@onreza/sqlx-js";
+      export const store = defineQuery.execute(
+        "schedule.storeWallClock",
+        "INSERT INTO schedule (starts_at) VALUES ($1::timestamp)",
+        { temporal: { timestampWithoutTimeZone: { allow: true, reason: "Local civil time is the domain value" } } },
+      );
+      export const strict = defineQuery("SELECT $1::timestamp", {
+        temporal: { timestampWithoutTimeZone: "reject" },
+      });
+    `,
+  });
+  const sites = scanProject(tmp).slice().sort((a, b) => a.line - b.line);
+  expect(sites[0]).toMatchObject({
+    queryName: "schedule.storeWallClock",
+    timestampWithoutTimeZone: "allow",
+    temporalReason: "Local civil time is the domain value",
+  });
+  expect(sites[1]).toMatchObject({ timestampWithoutTimeZone: "reject" });
+});
+
+test("defineQuery timestamp allow requires a name and literal reason", () => {
+  setup({
+    "queries.ts": `
+      import { defineQuery } from "@onreza/sqlx-js";
+      export const invalid = defineQuery(
+        "SELECT $1::timestamp",
+        { temporal: { timestampWithoutTimeZone: { allow: true, reason: "wall clock" } } },
+      );
+    `,
+  });
+  expect(() => scanProject(tmp)).toThrow("temporal allow requires a named query");
+});
+
 test("defineQuery.for assigns reusable queries to explicit profiles", () => {
   setup({
     "a.ts": `

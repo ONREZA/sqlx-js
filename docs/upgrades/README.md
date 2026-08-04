@@ -5,6 +5,8 @@ main README can stay focused on the current API.
 
 ## Guides
 
+- [0.30.0](./0.30.0.md) — Temporal-only SQL I/O, query-local timestamp
+  policy, safe JSON integers, provider setup, and artifact regeneration.
 - [0.29.0](./0.29.0.md) — exact-query array-element assertions and query
   cache regeneration.
 - [0.27.0](./0.27.0.md) — source-owned nullable/parse-only contracts, CLI

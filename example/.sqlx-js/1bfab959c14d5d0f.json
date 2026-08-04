@@ -20,6 +20,7 @@
     }
   ],
   "hasResultSet": true,
+  "usesTimestampWithoutTimeZone": false,
   "inference": {
     "columns": [
       {
