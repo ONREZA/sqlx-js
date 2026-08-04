@@ -120,10 +120,11 @@ numeric `types`, plus the managed runtime options below. `password` may be a
 string or an async provider resolved separately for every new connection.
 `connectTimeoutMs` is one deadline for password resolution, TCP, TLS, and
 PostgreSQL authentication.
-When `keepAliveMs` is present, every new TCP connection enables keepalive with
-that initial probe delay in milliseconds; `0` uses the platform default delay.
-It helps detect idle half-open connections but does not replace managed
-operation deadlines.
+When `keepAliveMs` is present, every pooled PostgreSQL connection enables
+keepalive with that initial probe delay in milliseconds; `0` uses the platform
+default delay. One-shot cancellation sockets do not need keepalive. It helps
+detect idle half-open pooled connections but does not replace managed operation
+deadlines.
 `onNotice` receives structured PostgreSQL notices and isolates observer
 failures from protocol state. `operationTimeoutMs` is opt-in because the
 library cannot choose one correct wall-clock limit for both interactive
@@ -252,6 +253,10 @@ Name-based and mapped query definitions accept execution options without mixing 
 await findUser.run(db.sql, { id }, { signal: request.signal });
 await positionalQuery.runWith({ signal: request.signal }, db.sql, id);
 ```
+
+Ordinary typed calls bind the same options through
+`db.sql.with({ signal, timeoutMs })(query, ...params)` and may retain that bound
+executor in a request-local `const`.
 
 Execution options fail closed when the supplied executor is not a managed sqlx-js executor; they are never silently ignored by a structural test double or third-party adapter.
 Inside a transaction, a query-level timeout or abort expires the whole scoped transaction so the driver can confirm rollback before the connection is reused.

@@ -3022,7 +3022,8 @@ export default {
   test("sql.with queries reach KnownQueries via the scanner", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
-      "await sql.with({ timeoutMs: 100 }).one(\"SELECT id FROM tmp_users WHERE id = $1\", 1);\n" +
+      "const requestSql = sql.with({ timeoutMs: 100 });\n" +
+      "await requestSql.one(\"SELECT id FROM tmp_users WHERE id = $1\", 1);\n" +
       "await sql.with({ signal: new AbortController().signal }).optional(\"SELECT id FROM tmp_users WHERE email = $1\", \"x\");\n",
     );
     const r = prepare();
@@ -3580,7 +3581,7 @@ export default {
 
   test("internal pool cancels an active query and remains usable", async () => {
     const { createClient } = await import("../src/index");
-    const client = createClient(dbUrl, { max: 1, keepAliveMs: 0 });
+    const client = createClient(dbUrl, { max: 1 });
     try {
       await client.unsafe("SELECT 1");
       const pending = client.unsafe("SELECT pg_sleep(10)").execute();

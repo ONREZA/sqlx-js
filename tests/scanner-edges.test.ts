@@ -23,7 +23,8 @@ test("namespace import: bs.sql(...) is detected", () => {
   setup({
     "a.ts":
       "import * as bs from \"@onreza/sqlx-js\";\n" +
-      "await bs.sql(\"SELECT 1\");\n" +
+      "const requestSql = bs.sql.with({ timeoutMs: 100 });\n" +
+      "await requestSql(\"SELECT 1\");\n" +
       "await bs.sql.one(\"SELECT 2\");\n" +
       "await bs.sql.optional(\"SELECT 3\");\n" +
       "await bs.sql.execute(\"UPDATE jobs SET active = false\");\n",
@@ -97,9 +98,11 @@ test("createSqlClient profile is attached to direct and transactional queries", 
     "a.ts":
       "import { createSqlClient } from \"@onreza/sqlx-js\";\n" +
       "const db = createSqlClient(undefined, { profile: profiles.api });\n" +
-      "await db.sql(\"SELECT direct\");\n" +
+      "const requestSql = db.sql.with({ timeoutMs: 100 });\n" +
+      "await requestSql(\"SELECT direct\");\n" +
       "await db.sql.transaction(async (tx) => {\n" +
-      "  await tx.execute(\"UPDATE jobs SET active = false\");\n" +
+      "  const requestTx = tx.with({ timeoutMs: 100 });\n" +
+      "  await requestTx.execute(\"UPDATE jobs SET active = false\");\n" +
       "});\n",
   });
 
@@ -119,7 +122,8 @@ test("contextual profiles require transaction-scoped query sites", () => {
     "a.ts":
       "import { createSqlClient } from \"@onreza/sqlx-js\";\n" +
       "const db = createSqlClient(undefined, { profile: profiles.api });\n" +
-      "await db.sql(\"SELECT direct\");\n",
+      "const requestSql = db.sql.with({ timeoutMs: 100 });\n" +
+      "await requestSql(\"SELECT direct\");\n",
   });
   expect(() => scanProject(tmp, {}, profiles)).toThrow(
     /profile "api" requires transaction settings.*inside sql\.transaction/,
@@ -130,7 +134,8 @@ test("contextual profiles require transaction-scoped query sites", () => {
       "import { createSqlClient } from \"@onreza/sqlx-js\";\n" +
       "const db = createSqlClient(undefined, { profile: profiles.api });\n" +
       "await db.sql.transaction({ settings: { \"app.tenant_id\": \"tenant-1\" } }, async (tx) => {\n" +
-      "  await tx(\"SELECT scoped\");\n" +
+      "  const requestTx = tx.with({ timeoutMs: 100 });\n" +
+      "  await requestTx(\"SELECT scoped\");\n" +
       "});\n",
   });
   expect(scanProject(tmp, {}, profiles)[0]).toMatchObject({

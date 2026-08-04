@@ -123,7 +123,7 @@ test("raw temporal reject policy fails closed for scalar and array infinity", as
   await raw.end();
 });
 
-test("raw client rejects timeout values outside the runtime timer range", () => {
+test("raw client rejects millisecond options outside the supported range", () => {
   const url = "postgres://app:secret@127.0.0.1:1/app";
   expect(() => createClient(url, { connectTimeoutMs: 0 })).toThrow("connectTimeoutMs must be an integer");
   expect(() => createClient(url, { keepAliveMs: -1 })).toThrow("keepAliveMs must be an integer");

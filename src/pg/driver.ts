@@ -122,7 +122,7 @@ type AcquireWaiter = {
 };
 
 const DEFAULT_MAX_CONNECTIONS = 10;
-const MAX_TIMEOUT_MS = 2_147_483_647;
+const MAX_MILLISECONDS = 2_147_483_647;
 
 function optionalMilliseconds(
   value: number | undefined,
@@ -131,9 +131,9 @@ function optionalMilliseconds(
 ): number | undefined {
   if (value === undefined) return undefined;
   const minimum = allowZero ? 0 : 1;
-  if (!Number.isSafeInteger(value) || value < minimum || value > MAX_TIMEOUT_MS) {
+  if (!Number.isSafeInteger(value) || value < minimum || value > MAX_MILLISECONDS) {
     throw new Error(
-      `sqlx-js: ${name} must be an integer from ${minimum} to ${MAX_TIMEOUT_MS}, got ${String(value)}`,
+      `sqlx-js: ${name} must be an integer from ${minimum} to ${MAX_MILLISECONDS}, got ${String(value)}`,
     );
   }
   return value;

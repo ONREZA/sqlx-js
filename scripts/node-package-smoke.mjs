@@ -67,6 +67,9 @@ try {
     declare const executor: SqlExecutor<Registry>;
     declare const input: Input;
     const result: Promise<{ payload: JsonValue }> = query.run(executor, input);
+    const boundedExecutor: SqlExecutor<Registry> = executor
+      .with({ signal: new AbortController().signal })
+      .with({ timeoutMs: 1_000 });
     const codec = {
       to: 20,
       from: 20,
@@ -76,6 +79,7 @@ try {
     const notice: PgNotice = { message: "smoke", code: "00000" };
     void codec;
     void notice;
+    void boundedExecutor;
     void result;
   `);
   writeFileSync(join(temp, "tsconfig.json"), JSON.stringify({
@@ -104,6 +108,7 @@ try {
       const descriptorQuery = "SELECT $1::int4 AS descriptor_value";
       db = createSqlClient(runtimeUrl.toString(), {
         max: 1,
+        keepAliveMs: 0,
         onQuery: (event) => events.push(event),
         sqlFiles: { "queries/embedded.sql": "SELECT 9::int4 AS value" },
         queryDescriptors: {
@@ -121,7 +126,11 @@ try {
       });
       const { sql } = db;
       await db.ready({ timeoutMs: 5000 });
-      assert.deepEqual(await sql.one(descriptorQuery, 42), { descriptor_value: 42 });
+      const requestSql = sql.with({ signal: new AbortController().signal });
+      assert.deepEqual(
+        await requestSql.with({ timeoutMs: 5000 }).one(descriptorQuery, 42),
+        { descriptor_value: 42 },
+      );
       await db.ping({ timeoutMs: 5000 });
       assert.equal(db.snapshot().state, "healthy");
       const bytes = new Uint8Array([0x00, 0x5c, 0x7f, 0xff]);
@@ -156,9 +165,10 @@ try {
       );
 
       const transactionValue = await sql.transaction({ timeoutMs: 5000 }, async (tx) => {
-        await tx.execute("CREATE TEMP TABLE node_package_smoke (value int NOT NULL)");
-        await tx.execute("INSERT INTO node_package_smoke (value) VALUES ($1)", 7);
-        return await tx.one("SELECT value FROM node_package_smoke");
+        const requestTx = tx.with({ timeoutMs: 5000 });
+        await requestTx.execute("CREATE TEMP TABLE node_package_smoke (value int NOT NULL)");
+        await requestTx.execute("INSERT INTO node_package_smoke (value) VALUES ($1)", 7);
+        return await requestTx.one("SELECT value FROM node_package_smoke");
       });
       assert.deepEqual(transactionValue, { value: 7 });
 

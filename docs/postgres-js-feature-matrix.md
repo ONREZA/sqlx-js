@@ -36,7 +36,7 @@ Status values are intentionally explicit:
 | Startup application name and options | Yes | Yes | URL and typed client options are supported. |
 | Startup PostgreSQL role | Partial | Yes | Required by generated connection profiles and reapplied to replacement generations. |
 | Connect timeout covering password, TCP, TLS, and auth | Yes | Yes | One deadline covers the complete startup path. |
-| TCP keepalive and initial probe delay | Yes | Yes | `keepAliveMs` explicitly enables keepalive on every new socket; `0` uses the platform default delay. Managed operation deadlines remain the correctness boundary for active work. |
+| TCP keepalive and initial probe delay | Yes | Yes | `keepAliveMs` explicitly enables keepalive on every pooled PostgreSQL connection; `0` uses the platform default delay. Managed operation deadlines remain the correctness boundary for active work. |
 | Server-side statement timeout | Yes | Yes | Supported through URL or `statementTimeoutMs`. |
 
 ## Query and protocol surface

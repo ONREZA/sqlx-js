@@ -607,6 +607,7 @@ const preparedApi = createSqlClient(undefined, {
 });
 void preparedApi.sql("SELECT api");
 void preparedApi.sql.with({ timeoutMs: 1_000 })("SELECT api");
+void preparedApi.sql.with({ signal: new AbortController().signal }).with({ timeoutMs: 1_000 })("SELECT api");
 // @ts-expect-error descriptor and adaptive execution modes are mutually exclusive
 createSqlClient(undefined, { queryDescriptors, execution: "adaptive" });
 

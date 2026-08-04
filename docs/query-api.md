@@ -178,18 +178,28 @@ Bind a request-scoped deadline or `AbortSignal` to an ordinary typed query
 without declaring a reusable `defineQuery`:
 
 ```ts
-const user = await db.sql.with({
+const requestSql = db.sql.with({
   timeoutMs: 2_000,
   signal: request.signal,
-}).one(`SELECT id, name FROM users WHERE id = $1`, userId);
+});
+const user = await requestSql.one(
+  `SELECT id, name FROM users WHERE id = $1`,
+  userId,
+);
 ```
 
 The returned typed executor also supports `.one`, `.optional`, `.execute`, and
-`.file`, and the same form works on transaction executors. The options stay
-outside PostgreSQL parameters and do not change the query fingerprint or its
-generated registry entry. A query-level timeout or abort inside a transaction
-expires the whole transaction so the runtime can establish rollback before
-reusing its connection.
+`.file`, and the same form works on transaction executors. Bound executors can
+be assigned to a local `const` and reused for one request; chained `.with(...)`
+calls merge their options, with the later call taking precedence for duplicate
+keys. Options are captured when the executor is created. Execution options
+passed by a `defineQuery` call on that bound executor are merged by the same
+rule.
+
+The options stay outside PostgreSQL parameters and do not change the query
+fingerprint or its generated registry entry. A query-level timeout or abort
+inside a transaction expires the whole transaction so the runtime can
+establish rollback before reusing its connection.
 
 ## `sql.one(query, ...params)` and `sql.optional(query, ...params)`
 

@@ -547,7 +547,7 @@ async function runRawQuery(
     });
   }
   if (options) {
-    throw new Error("sqlx-js.defineQuery: execution options require a managed sqlx-js executor");
+    throw new Error("sqlx-js: query execution options require a managed sqlx-js executor");
   }
   const onQuery = client.onQuery;
   if (!onQuery) {
@@ -685,6 +685,15 @@ function executeDefinedQuery(
   return runQuery(client, query, params, metadata, options);
 }
 
+function mergeQueryExecutionOptions(
+  defaults: QueryExecutionOptions | undefined,
+  overrides: QueryExecutionOptions | undefined,
+): QueryExecutionOptions | undefined {
+  if (!defaults) return overrides ? { ...overrides } : undefined;
+  if (!overrides) return defaults;
+  return { ...defaults, ...overrides };
+}
+
 function makeSqlCallable(
   getClient: () => RuntimeClient,
   defaultOptions?: QueryExecutionOptions,
@@ -742,12 +751,20 @@ function makeSqlCallable(
   (fn as SqlCallable).execute = (async (query: string, ...params: unknown[]) => {
     return runExecute(getClient(), query, params, undefined, defaultOptions);
   }) as AnyExecuteFn;
-  (fn as SqlCallable).with = (options) => makeSqlCallable(getClient, options);
+  (fn as SqlCallable).with = (options) =>
+    makeSqlCallable(getClient, mergeQueryExecutionOptions(defaultOptions, options));
   (fn as SqlCallable).id = id;
   (fn as SqlCallable).json = json;
   (fn as SqlCallable).array = array;
   (fn as SqlCallable)[QUERY_EXECUTOR] = (mode, query, params, metadata, options) => {
-    return executeDefinedQuery(getClient(), mode, query, params, metadata, options ?? defaultOptions);
+    return executeDefinedQuery(
+      getClient(),
+      mode,
+      query,
+      params,
+      metadata,
+      mergeQueryExecutionOptions(defaultOptions, options),
+    );
   };
   return fn as SqlCallable;
 }

@@ -6,6 +6,7 @@ import { rewriteNamedParameters } from "../sql-params";
 import {
   resolveClientInitializer,
   resolveLocalClientExports,
+  unwrapExpression,
   type ClientBinding,
   type ClientExecution,
 } from "./client-bindings";
@@ -704,6 +705,39 @@ export function scanFile(
     return changed ? { ...scope, clients: nextClients } : scope;
   };
 
+  const scopeWithSqlOptionDeclarations = (
+    scope: ScopeState,
+    declarations: readonly ts.VariableDeclaration[],
+    constant: boolean,
+  ): ScopeState => {
+    const nextSql = new Map(scope.sqlAliases);
+    let changed = false;
+    for (const declaration of declarations) {
+      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
+      const initializer = unwrapExpression(declaration.initializer);
+      if (!ts.isCallExpression(initializer)) continue;
+      const classified = classifyWithCall(initializer, scope);
+      if (!classified) continue;
+      if (!constant) {
+        const pos = here(declaration.name);
+        throw new ScanError(
+          fileRel,
+          pos.line,
+          pos.column,
+          "sql.with() bindings must use const so their query ownership cannot change",
+        );
+      }
+      const profile = classified.profiles?.[0];
+      nextSql.set(declaration.name.text, {
+        ...(profile ? { profile } : {}),
+        ...(classified.transactionScoped ? { transactionScoped: true } : {}),
+        ...(classified.execution ? { execution: classified.execution } : {}),
+      });
+      changed = true;
+    }
+    return changed ? { ...scope, sqlAliases: nextSql } : scope;
+  };
+
   const visit = (node: ts.Node, scope: ScopeState) => {
     if (ts.isCallExpression(node)) {
       const definition = classifyDefinitionCallee(node.expression, scope);
@@ -779,13 +813,11 @@ export function scanFile(
       for (const stmt of stmts) {
         if (ts.isVariableStatement(stmt)) {
           const declarations = stmt.declarationList.declarations;
+          const constant = (stmt.declarationList.flags & ts.NodeFlags.Const) !== 0;
           current = scopeWithoutBindingShadows(current, declarations.map((d) => d.name));
           visit(stmt, current);
-          current = scopeWithClientDeclarations(
-            current,
-            declarations,
-            (stmt.declarationList.flags & ts.NodeFlags.Const) !== 0,
-          );
+          current = scopeWithClientDeclarations(current, declarations, constant);
+          current = scopeWithSqlOptionDeclarations(current, declarations, constant);
           continue;
         } else if (ts.isFunctionDeclaration(stmt) && stmt.name) {
           current = scopeWithoutBindingShadows(current, [stmt.name]);

@@ -250,10 +250,13 @@ async function openPlainSocket(
   host: string,
   port: number,
   timeoutMs: number,
-  signal?: AbortSignal,
-  claim?: (socket: Socket) => void,
-  keepAliveMs?: number,
+  options: {
+    signal?: AbortSignal;
+    claim?: (socket: Socket) => void;
+    keepAliveMs?: number;
+  } = {},
 ): Promise<Socket> {
+  const { signal, claim, keepAliveMs } = options;
   return new Promise<Socket>((resolve, reject) => {
     const sock = netConnect({ host, port });
     let settled = false;
@@ -511,9 +514,7 @@ export class PgClient {
       this.cfg.host,
       this.cfg.port,
       timeoutMs,
-      signal,
-      claim,
-      this.cfg.keepAliveMs,
+      { signal, claim, keepAliveMs: this.cfg.keepAliveMs },
     );
     if (signal.aborted || this.closed) return this.abortConnect();
     let socket: AnySocket = plain;
@@ -783,14 +784,7 @@ export class PgClient {
   async cancel(): Promise<void> {
     if (this.backendPid === undefined || this.backendSecret === undefined || this.closed) return;
     const timeoutMs = this.cfg.connectTimeoutMs ?? 15000;
-    const socket = await openPlainSocket(
-      this.cfg.host,
-      this.cfg.port,
-      timeoutMs,
-      undefined,
-      undefined,
-      this.cfg.keepAliveMs,
-    );
+    const socket = await openPlainSocket(this.cfg.host, this.cfg.port, timeoutMs);
     const request = frame(null, concat([
       writeInt32(80877102),
       writeInt32(this.backendPid),
