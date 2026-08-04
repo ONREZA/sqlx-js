@@ -21,7 +21,6 @@ import {
   profileFingerprint,
   effectiveNullable,
   portableCacheOid,
-  writeCacheManifest,
   type CacheEntry,
 } from "../cache";
 import { emitDts } from "../codegen";
@@ -34,7 +33,6 @@ import {
 import {
   functionCacheExists,
   readFunctionCache,
-  writeFunctionCache,
   type FunctionEntry,
 } from "../function-cache";
 import { introspectFunctions } from "../pg/functions";
@@ -51,11 +49,8 @@ import {
   enumCatalogOutputPath,
   introspectEnumCatalog,
   readEnumCatalogCache,
-  removeEnumCatalogCache,
   renderEnumCatalog,
   selectedEnumCatalogCount,
-  writeEnumCatalogCache,
-  writeEnumCatalogModule,
   type EnumCatalogEntry,
 } from "../enum-catalog";
 import { originalPosition, rewriteNamedParameters } from "../sql-params";
@@ -68,8 +63,11 @@ import {
 import {
   renderRuntimeDescriptors,
   runtimeDescriptorPath,
-  writeRuntimeDescriptors,
 } from "../runtime-descriptor-artifact";
+import {
+  publishOfflinePrepareArtifacts,
+  publishPrepareArtifacts,
+} from "../prepare-artifacts";
 import {
   columnInference,
   duplicateOutputColumns,
@@ -836,34 +834,28 @@ export async function prepareOnce(
   }
   let pruned: number;
   try {
-    pruned = cache.replaceAll(generated, opts.prune !== false).length;
+    const publication = publishPrepareArtifacts({
+      cacheDir: opts.cacheDir,
+      dtsPath: opts.dtsPath,
+      generated,
+      entries,
+      functions,
+      enums,
+      enumCatalogEnabled: userCfg.enumCatalog !== undefined,
+      enumModule,
+      configHash: prepareConfigHash(userCfg),
+      customTypes: userCfg.customTypes,
+      profiles: userCfg.profiles,
+      temporal: userCfg.temporal,
+      prune: opts.prune !== false,
+    });
+    pruned = publication.pruned;
     if (pruned > 0) log(`pruned ${pruned} orphaned cache entry/entries`);
-    writeFunctionCache(opts.cacheDir, functions);
-    if (userCfg.enumCatalog) writeEnumCatalogCache(opts.cacheDir, enums);
-    else if (enumCatalogCacheExists(opts.cacheDir)) {
-      removeEnumCatalogCache(opts.cacheDir);
+    if (publication.enumCacheRemoved) {
       const message = "enum catalog disabled: removed its cache; delete the previous generated enum module if it is no longer used";
       diagnostics.push({ severity: "warning", phase: "cache", message });
       log(message);
     }
-    const configHash = prepareConfigHash(userCfg);
-    writeRuntimeDescriptors(
-      opts.cacheDir,
-      entries,
-      configHash,
-      userCfg.profiles,
-      userCfg.temporal,
-    );
-    writeCacheManifest(opts.cacheDir, configHash);
-    emitDts(
-      opts.dtsPath,
-      entries,
-      functions,
-      userCfg.customTypes,
-      userCfg.profiles,
-      userCfg.temporal,
-    );
-    if (enumModule) writeEnumCatalogModule(enumModule.path, enumModule.content);
   } catch (error) {
     throw fatal("cache", error);
   }
@@ -1188,22 +1180,19 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         return;
       }
       if (opts.offline) {
-        emitDts(
-          opts.dtsPath,
+        publishOfflinePrepareArtifacts({
+          cacheDir: opts.cacheDir,
+          dtsPath: opts.dtsPath,
           entries,
           functions,
-          userCfg.customTypes,
-          userCfg.profiles,
-          userCfg.temporal,
-        );
-        writeRuntimeDescriptors(
-          opts.cacheDir,
-          entries,
-          prepareConfigHash(userCfg),
-          userCfg.profiles,
-          userCfg.temporal,
-        );
-        if (enumOutput) writeEnumCatalogModule(enumOutput, renderEnumCatalog(enums, userCfg.enumCatalog));
+          enumModule: enumOutput
+            ? { path: enumOutput, content: renderEnumCatalog(enums, userCfg.enumCatalog) }
+            : undefined,
+          configHash: prepareConfigHash(userCfg),
+          customTypes: userCfg.customTypes,
+          profiles: userCfg.profiles,
+          temporal: userCfg.temporal,
+        });
       }
     } catch (error) {
       throw fatal("cache", error);

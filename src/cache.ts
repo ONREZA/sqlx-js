@@ -5,7 +5,6 @@ import {
   CACHE_FORMAT_VERSION,
   GENERATOR_REVISION,
   JSON_PROTOCOL_VERSION,
-  RUNTIME_DESCRIPTOR_FILE,
 } from "./artifact-versions";
 import { arrayElementOid, isBuiltinOid } from "./pg/oids";
 import { queryId } from "./query-id";
@@ -104,6 +103,9 @@ export function profileFingerprint(profile: string | undefined, query: string): 
     .slice(0, 16);
 }
 
+export function isQueryCacheFileName(file: string): boolean {
+  return /^[0-9a-f]{16}\.json$/.test(file);
+}
 
 export function effectiveNullable(c: CacheColumn): boolean {
   if (c.override === "non-null") return false;
@@ -403,17 +405,10 @@ export class Cache {
   }
 
   list(): { fp: string; entry: CacheEntry }[] {
-    if (!existsSync(this.dir)) return [];
-    return readdirSync(this.dir)
-      .filter((f) =>
-        f !== CACHE_MANIFEST_FILE
-        && f !== RUNTIME_DESCRIPTOR_FILE
-        && f.endsWith(".json")
-        && !f.includes(".tmp-"))
-      .map((f) => {
-        const fp = f.replace(/\.json$/, "");
-        return { fp, entry: assertEntryShape(fp, parseEntryJson(join(this.dir, f))) };
-      });
+    return this.entryFiles().map((f) => {
+      const fp = f.slice(0, -".json".length);
+      return { fp, entry: assertEntryShape(fp, parseEntryJson(join(this.dir, f))) };
+    });
   }
 
   remove(fp: string): void {
@@ -424,13 +419,19 @@ export class Cache {
   prune(keep: Iterable<string>): string[] {
     const keepSet = new Set(keep);
     const removed: string[] = [];
-    for (const { fp } of this.list()) {
+    for (const file of this.entryFiles()) {
+      const fp = file.slice(0, -".json".length);
       if (!keepSet.has(fp)) {
         this.remove(fp);
         removed.push(fp);
       }
     }
     return removed;
+  }
+
+  private entryFiles(): string[] {
+    if (!existsSync(this.dir)) return [];
+    return readdirSync(this.dir).filter(isQueryCacheFileName);
   }
 }
 

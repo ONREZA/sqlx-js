@@ -2091,6 +2091,31 @@ export default {
     expect(second[0]).not.toBe(firstFiles[0]);
   });
 
+  test("live prepare replaces a legacy orphaned cache entry", () => {
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT id FROM tmp_users\");\n",
+    );
+    let result = prepare();
+    expect(result.code).toBe(0);
+    const [legacyFile] = queryCacheFiles();
+    expect(legacyFile).toBeDefined();
+    const legacyPath = join(tmp, ".sqlx-js", legacyFile!);
+    const legacy = JSON.parse(readFileSync(legacyPath, "utf8")) as Record<string, unknown>;
+    delete legacy.resultElementNonNullOverrides;
+    writeFileSync(legacyPath, JSON.stringify(legacy));
+
+    writeFile("a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT name FROM tmp_users\");\n",
+    );
+    result = prepare(["--verbose"]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/pruned 1 orphaned/);
+    expect(existsSync(legacyPath)).toBe(false);
+    expect(queryCacheFiles()).toHaveLength(1);
+  });
+
   test("prepare --no-prune retains orphaned cache entries", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
