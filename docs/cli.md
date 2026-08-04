@@ -112,22 +112,25 @@ does not connect to PostgreSQL.
 Extended JSON tags. It opens `DATABASE_URL` in a read-only transaction and
 inspects every physical column on ordinary or materialized user relations whose
 type contains a `json`/`jsonb` leaf. Type discovery recursively follows arrays,
-domains, and composite fields. It counts physical rows containing `$sqlx` at
-any JSON-leaf nesting depth and, for text-preserving `json` leaves, rows
-containing duplicate object keys. It also inventories indexes, constraints,
-generated columns and views that depend on a containing column, then scans
+domains, and composite fields. Each relation is scanned with PostgreSQL `ONLY`,
+so inherited rows belong exclusively to their physical child relation. The audit
+counts physical rows containing `$sqlx` at any JSON-leaf nesting depth and, for
+text-preserving `json` leaves, rows containing duplicate object keys or numeric
+tokens outside the frozen reader limits. It also inventories indexes,
+constraints, generated columns and views that depend on a containing column, then scans
 application query sites for JSON operators and `json_*`/`jsonb_*` functions.
 Dependencies and source usages require review but do not by themselves fail;
-collisions, duplicate keys, missing privileges, active row-level security for
-the audit role, or column scan errors make the audit non-zero and
-`complete: false` where applicable. The command never rewrites stored data or
-application SQL.
+collisions, duplicate keys, incompatible numeric tokens, missing privileges,
+active row-level security for the audit role, or column scan errors make the
+audit non-zero and `complete: false` where applicable. The command never
+rewrites stored data or application SQL.
 
 Machine-readable output uses `formatVersion: 1` and includes
 `protocolVersion`, the physical PostgreSQL column type, `jsonLeaves` paths and
-leaf types, per-column counts/errors, dependency definitions, source
-locations/query IDs, and summary counters. Counts are deduplicated by physical
-row when one containing column has multiple JSON leaves. Preflight and fatal
+leaf types, per-column collision/duplicate-key/invalid-number counts and errors,
+dependency definitions, source locations/query IDs, and summary counters.
+Counts are deduplicated by physical row when one containing column has multiple
+JSON leaves. Preflight and fatal
 failures keep the same top-level shape with `complete: false` and add a
 `diagnostics` array, so `--json` never falls back to human stderr. A full audit
 can scan each containing column, so run it against a representative read

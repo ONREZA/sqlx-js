@@ -7,6 +7,7 @@ const entry = resolve(root, "dist/src/index.js");
 const allowedRuntimeFiles = new Set([
   "dist/src/index.js",
   "dist/src/config.js",
+  "dist/src/json-number.js",
   "dist/src/json-value.js",
   "dist/src/postgres-client-options.js",
   "dist/src/postgres-runtime.js",

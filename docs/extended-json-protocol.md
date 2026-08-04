@@ -283,15 +283,17 @@ any data rewrite. Database migrations and backfills remain application-owned.
 - `sqlx-js json audit` scans selectable ordinary/materialized user relation
   columns in a read-only transaction. It recursively follows arrays, domains,
   and composite fields so every runtime-decoded `json`/`jsonb` leaf is in the
-  inventory. It reports each leaf path, `$sqlx` collisions at any depth,
-  duplicate object keys preserved by `json`, dependent indexes, constraints,
-  generated columns and views, plus source queries using JSON operators or
-  `json_*`/`jsonb_*` functions. Missing column privileges, active row-level
-  security for the audit role, or scan errors make the audit incomplete and
-  non-zero.
+  inventory. Each physical relation is scanned through `ONLY`. The audit reports
+  each leaf path, `$sqlx` collisions at any depth, duplicate object keys and
+  reader-incompatible numeric tokens preserved by `json`, dependent indexes,
+  constraints, generated columns and views, plus source queries using JSON
+  operators or `json_*`/`jsonb_*` functions. Missing column privileges, active
+  row-level security for the audit role, or scan errors make the audit incomplete
+  and non-zero; stored collisions, duplicates, and incompatible numbers also
+  make it non-zero.
 - External producers may continue writing untagged JSON. Readers brand it and
-  materialize unsafe native numeric tokens as `JsonNumber`; only sqlx-js writers
-  require `SqlxJson` input.
+  materialize unsafe native numeric tokens within the frozen PostgreSQL `jsonb`
+  numeric limits as `JsonNumber`; only sqlx-js writers require `SqlxJson` input.
 
 None of these decisions requires runtime SQL parsing, row-schema validation, or
 model generation. Keeping those boundaries explicit is what lets Extended JSON

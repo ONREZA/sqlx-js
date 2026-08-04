@@ -439,6 +439,8 @@ if (!haveIntegrationDatabase) {
     try {
       await client.simpleQuery(`
         DROP VIEW IF EXISTS tmp_extended_json_audit_view;
+        DROP TABLE IF EXISTS tmp_extended_json_audit_child;
+        DROP TABLE IF EXISTS tmp_extended_json_audit_parent;
         DROP TABLE IF EXISTS tmp_extended_json_audit;
         DROP TYPE IF EXISTS tmp_extended_json_audit_record CASCADE;
         DROP DOMAIN IF EXISTS tmp_extended_json_audit_domain CASCADE;
@@ -462,6 +464,11 @@ if (!haveIntegrationDatabase) {
           ON tmp_extended_json_audit (((domain_document::jsonb) ->> 'kind'));
         CREATE VIEW tmp_extended_json_audit_view AS
           SELECT document ->> 'kind' AS kind FROM tmp_extended_json_audit;
+        CREATE TABLE tmp_extended_json_audit_parent (payload json);
+        CREATE TABLE tmp_extended_json_audit_child ()
+          INHERITS (tmp_extended_json_audit_parent);
+        INSERT INTO tmp_extended_json_audit_child (payload)
+          VALUES ('{"nested":{"$sqlx":"child"}}'::json);
         INSERT INTO tmp_extended_json_audit (
           raw,
           document,
@@ -469,7 +476,7 @@ if (!haveIntegrationDatabase) {
           documents,
           records
         ) VALUES (
-          '{"duplicate":1,"duplicate":2}'::json,
+          '{"duplicate":1,"duplicate":2,"outside":1e200000}'::json,
           '{"nested":{"$sqlx":"legacy"}}'::jsonb,
           '{"nested":{"$sqlx":"domain"}}'::tmp_extended_json_audit_domain,
           ARRAY['{"nested":{"$sqlx":"array"}}'::jsonb],
@@ -497,8 +504,12 @@ if (!haveIntegrationDatabase) {
         column.relation === "tmp_extended_json_audit" && column.column === "documents");
       const records = report.columns.find((column) =>
         column.relation === "tmp_extended_json_audit" && column.column === "records");
+      const parent = report.columns.find((column) =>
+        column.relation === "tmp_extended_json_audit_parent" && column.column === "payload");
+      const child = report.columns.find((column) =>
+        column.relation === "tmp_extended_json_audit_child" && column.column === "payload");
 
-      expect(raw?.duplicateKeyRows).toBe(1);
+      expect(raw).toMatchObject({ duplicateKeyRows: 1, invalidNumberRows: 1 });
       expect(document?.collisionRows).toBe(1);
       expect(domainDocument).toMatchObject({
         collisionRows: 1,
@@ -513,6 +524,9 @@ if (!haveIntegrationDatabase) {
         { path: "$[].payload", type: "jsonb" },
         { path: "$[].raw_items[]", type: "json" },
       ]);
+      expect(parent).toMatchObject({ collisionRows: 0 });
+      expect(child).toMatchObject({ collisionRows: 1 });
+      expect(report.summary).toMatchObject({ invalidNumberRows: 1 });
       expect(report.dependencies).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: "index", name: "tmp_extended_json_audit_kind_idx" }),
         expect.objectContaining({ kind: "index", name: "tmp_extended_json_audit_domain_kind_idx" }),
@@ -526,6 +540,8 @@ if (!haveIntegrationDatabase) {
     } finally {
       await client.simpleQuery(`
         DROP VIEW IF EXISTS tmp_extended_json_audit_view;
+        DROP TABLE IF EXISTS tmp_extended_json_audit_child;
+        DROP TABLE IF EXISTS tmp_extended_json_audit_parent;
         DROP TABLE IF EXISTS tmp_extended_json_audit;
         DROP TYPE IF EXISTS tmp_extended_json_audit_record CASCADE;
         DROP DOMAIN IF EXISTS tmp_extended_json_audit_domain CASCADE;

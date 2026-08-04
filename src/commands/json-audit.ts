@@ -3,6 +3,7 @@ import { scanProject } from "../scan/scanner";
 import { queryId } from "../query-id";
 import type { SqlxJsConfig } from "../config";
 import { EXTENDED_JSON_PROTOCOL_VERSION } from "../json-value";
+import { JSON_NUMBER_LIMITS } from "../json-number";
 
 type JsonLeafStep =
   | { kind: "domain"; schema: string; name: string }
@@ -35,6 +36,7 @@ type JsonColumnInventory = JsonColumn & {
 export type JsonAuditColumn = JsonColumn & {
   collisionRows: number;
   duplicateKeyRows: number;
+  invalidNumberRows: number;
   error?: string;
 };
 
@@ -69,6 +71,7 @@ export type JsonAuditReport = {
     scannedColumns: number;
     collisionRows: number;
     duplicateKeyRows: number;
+    invalidNumberRows: number;
     errors: number;
     dependencies: number;
     sourceUsages: number;
@@ -382,6 +385,7 @@ export async function inspectJsonAudit(opts: JsonAuditOptions): Promise<JsonAudi
           ...column,
           collisionRows: 0,
           duplicateKeyRows: 0,
+          invalidNumberRows: 0,
           error: "current role does not have SELECT privilege on this column",
         });
         complete = false;
@@ -392,6 +396,7 @@ export async function inspectJsonAudit(opts: JsonAuditOptions): Promise<JsonAudi
           ...column,
           collisionRows: 0,
           duplicateKeyRows: 0,
+          invalidNumberRows: 0,
           error: "row-level security is active for the current role",
         });
         complete = false;
@@ -409,6 +414,7 @@ export async function inspectJsonAudit(opts: JsonAuditOptions): Promise<JsonAudi
           ...column,
           collisionRows: 0,
           duplicateKeyRows: 0,
+          invalidNumberRows: 0,
           error: (error as Error).message,
         });
         complete = false;
@@ -435,8 +441,9 @@ export async function inspectJsonAudit(opts: JsonAuditOptions): Promise<JsonAudi
   const sourceUsages = inspectJsonSourceUsages(opts.root, opts.config);
   const collisionRows = columns.reduce((total, column) => total + column.collisionRows, 0);
   const duplicateKeyRows = columns.reduce((total, column) => total + column.duplicateKeyRows, 0);
+  const invalidNumberRows = columns.reduce((total, column) => total + column.invalidNumberRows, 0);
   const errors = columns.filter((column) => column.error).length;
-  const ok = complete && collisionRows === 0 && duplicateKeyRows === 0;
+  const ok = complete && collisionRows === 0 && duplicateKeyRows === 0 && invalidNumberRows === 0;
   return {
     formatVersion: 1,
     protocolVersion: EXTENDED_JSON_PROTOCOL_VERSION,
@@ -450,6 +457,7 @@ export async function inspectJsonAudit(opts: JsonAuditOptions): Promise<JsonAudi
       scannedColumns: columns.length - errors,
       collisionRows,
       duplicateKeyRows,
+      invalidNumberRows,
       errors,
       dependencies: dependencies.length,
       sourceUsages: sourceUsages.length,
@@ -465,14 +473,23 @@ export async function runJsonAudit(opts: JsonAuditOptions): Promise<void> {
   } else {
     console.log(
       `json audit: ${report.summary.scannedColumns}/${report.summary.columns} column(s) scanned; `
-      + `${report.summary.collisionRows} collision row(s); ${report.summary.duplicateKeyRows} duplicate-key row(s)`,
+      + `${report.summary.collisionRows} collision row(s); `
+      + `${report.summary.duplicateKeyRows} duplicate-key row(s); `
+      + `${report.summary.invalidNumberRows} invalid-number row(s)`,
     );
     for (const column of report.columns) {
-      if (!column.error && column.collisionRows === 0 && column.duplicateKeyRows === 0) continue;
+      if (
+        !column.error
+        && column.collisionRows === 0
+        && column.duplicateKeyRows === 0
+        && column.invalidNumberRows === 0
+      ) continue;
       const name = `${column.schema}.${column.relation}.${column.column}`;
       if (column.error) console.log(`error   ${name}: ${column.error}`);
       else console.log(
-        `blocked ${name}: ${column.collisionRows} collision row(s), ${column.duplicateKeyRows} duplicate-key row(s)`,
+        `blocked ${name}: ${column.collisionRows} collision row(s), `
+        + `${column.duplicateKeyRows} duplicate-key row(s), `
+        + `${column.invalidNumberRows} invalid-number row(s)`,
       );
     }
     console.log(
@@ -487,7 +504,7 @@ async function inspectColumn(
   client: PgClient,
   column: JsonColumn,
   leaves: JsonLeafInventory[],
-): Promise<Pick<JsonAuditColumn, "collisionRows" | "duplicateKeyRows">> {
+): Promise<Pick<JsonAuditColumn, "collisionRows" | "duplicateKeyRows" | "invalidNumberRows">> {
   const jsonLeaves = leaves.filter((leaf) => leaf.type === "json");
   const jsonbLeaves = leaves.filter((leaf) => leaf.type === "jsonb");
   const result = await client.simpleQuery(`
@@ -497,25 +514,28 @@ ${renderJsonRoots(column, "jsonb", jsonbLeaves)},
 ${renderJsonWalk("json")},
 ${renderJsonWalk("jsonb")},
 affected AS (
-  SELECT row_id, collision, duplicate_keys FROM json_affected
+  SELECT row_id, collision, duplicate_keys, invalid_number FROM json_affected
   UNION ALL
-  SELECT row_id, collision, duplicate_keys FROM jsonb_affected
+  SELECT row_id, collision, duplicate_keys, invalid_number FROM jsonb_affected
 ), affected_rows AS (
   SELECT
     row_id,
     pg_catalog.bool_or(collision) AS collision,
-    pg_catalog.bool_or(duplicate_keys) AS duplicate_keys
+    pg_catalog.bool_or(duplicate_keys) AS duplicate_keys,
+    pg_catalog.bool_or(invalid_number) AS invalid_number
   FROM affected
   GROUP BY row_id
 )
 SELECT
   count(*) FILTER (WHERE collision)::text,
-  count(*) FILTER (WHERE duplicate_keys)::text
+  count(*) FILTER (WHERE duplicate_keys)::text,
+  count(*) FILTER (WHERE invalid_number)::text
 FROM affected_rows
   `);
   return {
     collisionRows: parseCount(rowOrThrow(result.rows, 0)[0]),
     duplicateKeyRows: parseCount(rowOrThrow(result.rows, 0)[1]),
+    invalidNumberRows: parseCount(rowOrThrow(result.rows, 0)[2]),
   };
 }
 
@@ -558,7 +578,7 @@ function renderJsonRootSelect(
   return `SELECT
   source_row.tableoid::text || ':' || source_row.ctid::text AS row_id,
   (${expression})::pg_catalog.${leaf.type} AS value
-FROM ${target} AS source_row
+FROM ONLY ${target} AS source_row
 ${joins.join("\n")}
 WHERE ${expression} IS NOT NULL`;
 }
@@ -580,6 +600,14 @@ function renderJsonWalk(type: "json" | "jsonb"): string {
       GROUP BY duplicate.key
       HAVING count(*) > 1
     )`;
+  const invalidNumberExpression = type === "jsonb"
+    ? "false"
+    : `CASE WHEN ${typeOf}(${type}_walk.value) = 'number'
+      THEN pg_catalog.length(pg_catalog.btrim(${type}_walk.value::text, E' \\t\\r\\n'))
+        > ${JSON_NUMBER_LIMITS.tokenLength}
+        OR NOT pg_catalog.pg_input_is_valid(${type}_walk.value::text, 'pg_catalog.jsonb')
+      ELSE false
+    END`;
   return `${type}_walk(row_id, value) AS (
   SELECT row_id, value FROM ${type}_roots
 
@@ -613,7 +641,8 @@ function renderJsonWalk(type: "json" | "jsonb"): string {
       ) AS member
       WHERE member.key = '$sqlx'
     ) AS collision,
-    ${duplicateExpression} AS duplicate_keys
+    ${duplicateExpression} AS duplicate_keys,
+    ${invalidNumberExpression} AS invalid_number
   FROM ${type}_walk
 )`;
 }
