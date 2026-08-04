@@ -189,7 +189,7 @@ await Promise.all([
 ]);
 ```
 
-Each generated `sqlx-js-env.d.ts` exports its own `SqlxJsGeneratedRegistry`. Passing it to `createSqlClient<...>()` keeps a scoped client on that project's query contract even when a monorepo TypeScript program includes declarations for several databases. The global `sql` export remains as a deprecated migration convenience path.
+Each generated `sqlx-js-env.d.ts` exports its own `SqlxJsGeneratedRegistry`. Passing it to `createSqlClient<...>()` keeps a scoped client on that project's query contract even when a monorepo TypeScript program includes declarations for several databases. The global `sql` export remains as a deprecated migration convenience path. Call `configureDefaultTemporalApi(Temporal)` before its first query or lifecycle operation when the runtime has no compatible `globalThis.Temporal`.
 
 When a workspace package exports database source to other TypeScript programs, bind `SqlxJsGeneratedRegistry` at that package's client boundary. A consumer does not automatically include the database package's ambient `.d.ts`; exporting an unscoped client can therefore collapse its literal parameters to `never` outside the package.
 

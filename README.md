@@ -174,7 +174,9 @@ generation replacement, lifecycle state, and bounded shutdown. Dispatched SQL
 is never replayed after a connection loss because its outcome may be unknown.
 `init` creates a user-owned `db.ts` that binds the generated registry and
 runtime descriptor explicitly. The global `sql` export remains a deprecated
-convenience path for gradual migration.
+convenience path for gradual migration. Applications still using it must call
+`configureDefaultTemporalApi(Temporal)` before the first global query or
+lifecycle operation.
 
 PostgreSQL temporal values never cross this boundary as JavaScript `Date`.
 `date`, `time`, `timestamp`, and `timestamptz` map to

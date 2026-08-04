@@ -120,11 +120,12 @@ test("temporal reject registries compile with descriptor and explicit adaptive p
     },
   ]), [], {}, {}, { infinity: "reject" });
   writeFileSync(join(root, "consumer.ts"), `
-import { createClient, createSqlClient } from "@onreza/sqlx-js";
+import { configureDefaultTemporalApi, createClient, createSqlClient, sql } from "@onreza/sqlx-js";
 import { Temporal } from "@js-temporal/polyfill";
 import type { SqlxJsGeneratedRegistry } from "./generated";
 
 declare const queryDescriptors: import("@onreza/sqlx-js").RuntimeQueryDescriptors;
+configureDefaultTemporalApi(Temporal);
 const unscopedManaged = createSqlClient(undefined, {
   execution: "adaptive",
   temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
@@ -148,6 +149,7 @@ const raw = createClient<SqlxJsGeneratedRegistry>(undefined, {
   temporalApi: Temporal,
 });
 const instant = Temporal.Instant.from("2026-01-01T00:00:00Z");
+void sql("SELECT $1::timestamptz AS value", instant);
 void prepared.sql("SELECT $1::timestamptz AS value", instant);
 void adaptive.sql("SELECT $1::timestamptz AS value", instant);
 void unscopedManaged;

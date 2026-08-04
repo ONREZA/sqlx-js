@@ -43,7 +43,7 @@ import {
   resolveTemporalPolicy,
   type TemporalPolicy,
 } from "./temporal";
-import type { TemporalApi } from "./temporal-api";
+import { resolveTemporalApi, type TemporalApi } from "./temporal-api";
 import { ConnectionLostError, PgError } from "./pg/wire";
 import {
   createTransactionRuntimeClient,
@@ -1258,6 +1258,14 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
 }
 
 let defaultClient: ManagedPostgresRuntime | null = null;
+let defaultTemporalApi: TemporalApi | null = null;
+
+export function configureDefaultTemporalApi(api: TemporalApi): void {
+  if (defaultClient || defaultTemporalApi) {
+    throw new Error("sqlx-js: the default Temporal API is already configured");
+  }
+  defaultTemporalApi = resolveTemporalApi(api);
+}
 
 export function createClient(url = process.env.DATABASE_URL, options: CreateClientOptions = {}): PostgresClient {
   if (!url) throw new Error("sqlx-js: DATABASE_URL is not set");
@@ -1274,7 +1282,8 @@ function createManagedClient(url: string | undefined, options: CreateSqlClientOp
 }
 
 function createDefaultClient(): ManagedPostgresRuntime {
-  return createManagedClient(process.env.DATABASE_URL, {});
+  defaultTemporalApi ??= resolveTemporalApi(undefined);
+  return createManagedClient(process.env.DATABASE_URL, { temporalApi: defaultTemporalApi });
 }
 
 function getRuntimeClient(): ManagedPostgresRuntime {
