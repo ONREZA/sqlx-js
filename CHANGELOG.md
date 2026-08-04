@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.0](https://github.com/ONREZA/sqlx-js/compare/v0.27.0...v0.28.0) (2026-08-04)
+
+
+### Features
+
+* **runtime:** add query options and keepalive ([#63](https://github.com/ONREZA/sqlx-js/issues/63)) ([ff11c79](https://github.com/ONREZA/sqlx-js/commit/ff11c79de68be75857f5d8fae93623579ab946d0))
+
 ## [0.27.0](https://github.com/ONREZA/sqlx-js/compare/v0.26.0...v0.27.0) (2026-08-04)
 
 
