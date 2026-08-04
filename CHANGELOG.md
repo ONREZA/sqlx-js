@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.29.0](https://github.com/ONREZA/sqlx-js/compare/v0.28.0...v0.29.0) (2026-08-04)
+
+
+### Features
+
+* **query:** add result element assertions ([59b652e](https://github.com/ONREZA/sqlx-js/commit/59b652e0978995e99f3941c9463459ae4dabe2a8))
+
+
+### Documentation
+
+* **roadmap:** define planning data ownership ([#65](https://github.com/ONREZA/sqlx-js/issues/65)) ([ad0918c](https://github.com/ONREZA/sqlx-js/commit/ad0918c3141eed41b96703cba89098fddec3561d))
+
 ## [0.28.0](https://github.com/ONREZA/sqlx-js/compare/v0.27.0...v0.28.0) (2026-08-04)
 
 
