@@ -3,6 +3,7 @@ import { dirname, join, relative } from "node:path";
 import {
   CACHE_FORMAT_VERSION,
   GENERATOR_REVISION,
+  JSON_PROTOCOL_VERSION,
   RUNTIME_DESCRIPTOR_FORMAT_VERSION,
 } from "../artifact-versions";
 import { ensureGeneratedGitAttributes } from "../generated-git-attributes";
@@ -105,6 +106,7 @@ const RUNTIME_DESCRIPTOR_TEMPLATE = `${JSON.stringify({
   formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
   cacheFormat: CACHE_FORMAT_VERSION,
   generatorRevision: GENERATOR_REVISION,
+  jsonProtocol: JSON_PROTOCOL_VERSION,
   configHash: "unprepared",
   temporal: DEFAULT_TEMPORAL_POLICY,
   types: {},

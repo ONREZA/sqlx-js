@@ -11,9 +11,11 @@ import { SchemaCache, compositeLiteral } from "../src/pg/schema";
 import { mergeExtensionTypes } from "../src/pg/extensions";
 import { fingerprint } from "../src/cache";
 import { createSqlClient as createRuntimeSqlClient, type PostgresClient } from "../src/postgres-runtime";
-import { QueryTimeoutError } from "../src/runtime";
+import { array, json, QueryTimeoutError } from "../src/runtime";
+import { JsonNumber, SqlxJson } from "../src/json-value";
 import type { RuntimeQueryDescriptors } from "../src/runtime-descriptors";
 import { Temporal } from "@js-temporal/polyfill";
+import { inspectJsonAudit } from "../src/commands/json-audit";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-integration-"));
@@ -374,6 +376,112 @@ if (!haveIntegrationDatabase) {
       expect(result.fields[0]?.typeOid).toBe(23);
     } finally {
       await client.end();
+    }
+  });
+
+  test("PostgreSQL json, jsonb, and jsonb arrays use the Extended JSON protocol", async () => {
+    const runtime = createRuntimeSqlClient(dbUrl, { temporalApi: Temporal });
+    const payload = json({
+      id: 9_007_199_254_740_993n,
+      amount: JsonNumber.from("12345678901234567890.125"),
+      occurredAt: Temporal.Instant.from("2026-08-04T10:15:30.123456789Z"),
+      collision: { $sqlx: "application" },
+    });
+    try {
+      const rows = await runtime.unsafe(
+        "SELECT $1::json AS raw, $2::jsonb AS binary, $3::jsonb[] AS items",
+        payload,
+        payload,
+        array([payload, null]),
+      ) as Array<{ raw: SqlxJson; binary: SqlxJson; items: Array<SqlxJson | null> }>;
+      const row = rows[0]!;
+
+      expect(row.raw).toBeInstanceOf(SqlxJson);
+      expect(row.binary).toBeInstanceOf(SqlxJson);
+      expect(row.raw.value).toEqual(payload.value);
+      expect(row.binary.value).toEqual(payload.value);
+      expect(row.items[0]?.value).toEqual(payload.value);
+      expect(row.items[1]).toBeNull();
+      expect(String((row.binary.value as { occurredAt: unknown }).occurredAt))
+        .toBe("2026-08-04T10:15:30.123456789Z");
+
+      const legacy = await runtime.unsafe(
+        `SELECT '{"safe":1,"large":9007199254740993}'::jsonb AS payload`,
+      ) as Array<{ payload: SqlxJson<{ safe: number; large: JsonNumber }> }>;
+      expect(legacy[0]?.payload.value.large).toEqual(JsonNumber.from("9007199254740993"));
+
+      await expect(runtime.unsafe(
+        `SELECT '{"$sqlx":{"type":"future","v":1},"value":1}'::jsonb AS payload`,
+      )).rejects.toThrow('unknown Extended JSON tag type "future"');
+      await expect(runtime.unsafe("SELECT $1::jsonb", 1)).rejects.toThrow(
+        "PostgreSQL JSON values require a SqlxJson document",
+      );
+      await expect(runtime.unsafe(
+        "SELECT $1::jsonb[]",
+        array([payload, "raw"]),
+      )).rejects.toThrow("PostgreSQL JSON arrays must contain only SqlxJson documents or null");
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  test("Extended JSON audit inventories collisions, duplicate keys, and dependent usage", async () => {
+    const root = isolatedRoot("extended-json-audit");
+    writeRootFile(root, "tsconfig.json", JSON.stringify({ include: ["app.ts"] }));
+    writeRootFile(
+      root,
+      "app.ts",
+      'import { sql } from "@onreza/sqlx-js";\n'
+      + 'await sql("SELECT document->>\'kind\' FROM tmp_extended_json_audit");\n',
+    );
+    const client = new PgClient(parseDatabaseUrl(dbUrl));
+    await client.connect();
+    try {
+      await client.simpleQuery(`
+        DROP VIEW IF EXISTS tmp_extended_json_audit_view;
+        DROP TABLE IF EXISTS tmp_extended_json_audit;
+        CREATE TABLE tmp_extended_json_audit (
+          id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+          raw json NOT NULL,
+          document jsonb NOT NULL,
+          kind text GENERATED ALWAYS AS (document ->> 'kind') STORED
+        );
+        CREATE INDEX tmp_extended_json_audit_kind_idx
+          ON tmp_extended_json_audit ((document ->> 'kind'));
+        CREATE VIEW tmp_extended_json_audit_view AS
+          SELECT document ->> 'kind' AS kind FROM tmp_extended_json_audit;
+        INSERT INTO tmp_extended_json_audit (raw, document)
+        VALUES ('{"duplicate":1,"duplicate":2}'::json, '{"nested":{"$sqlx":"legacy"}}'::jsonb);
+      `);
+
+      const report = await inspectJsonAudit({
+        root,
+        databaseUrl: dbUrl,
+        config: {},
+      });
+      const raw = report.columns.find((column) =>
+        column.relation === "tmp_extended_json_audit" && column.column === "raw");
+      const document = report.columns.find((column) =>
+        column.relation === "tmp_extended_json_audit" && column.column === "document");
+
+      expect(raw?.duplicateKeyRows).toBe(1);
+      expect(document?.collisionRows).toBe(1);
+      expect(report.dependencies).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "index", name: "tmp_extended_json_audit_kind_idx" }),
+        expect.objectContaining({ kind: "generated", name: "kind" }),
+        expect.objectContaining({ kind: "view", name: "tmp_extended_json_audit_view" }),
+      ]));
+      expect(report.sourceUsages).toEqual([
+        expect.objectContaining({ file: "app.ts", indicators: ["->>"] }),
+      ]);
+      expect(report.ok).toBeFalse();
+    } finally {
+      await client.simpleQuery(`
+        DROP VIEW IF EXISTS tmp_extended_json_audit_view;
+        DROP TABLE IF EXISTS tmp_extended_json_audit;
+      `).catch(() => {});
+      await client.end();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -1484,6 +1592,10 @@ export default {
         DROP FUNCTION IF EXISTS tmp_catalog_json_out(text);
         DROP FUNCTION IF EXISTS tmp_catalog_json_inout(jsonb);
         DROP FUNCTION IF EXISTS tmp_catalog_json_array(jsonb[]);
+        DROP TYPE IF EXISTS tmp_catalog_json_record CASCADE;
+        DROP DOMAIN IF EXISTS tmp_catalog_json_domain CASCADE;
+        CREATE DOMAIN tmp_catalog_json_domain AS jsonb;
+        CREATE TYPE tmp_catalog_json_record AS (payload jsonb, payloads jsonb[]);
         CREATE FUNCTION tmp_catalog_slug(value text) RETURNS text
         LANGUAGE sql IMMUTABLE STRICT SET TimeZone = 'UTC'
         AS $$ SELECT lower(value) $$;
@@ -1497,6 +1609,11 @@ export default {
         LANGUAGE sql STABLE AS $$ SELECT payload $$;
         CREATE FUNCTION tmp_catalog_json_array(value jsonb[]) RETURNS jsonb[]
         LANGUAGE sql IMMUTABLE AS $$ SELECT value $$;
+        CREATE FUNCTION tmp_catalog_json_nested(
+          value tmp_catalog_json_domain,
+          record_value tmp_catalog_json_record
+        ) RETURNS jsonb
+        LANGUAGE sql IMMUTABLE AS $$ SELECT value::jsonb $$;
       `);
     } finally {
       await setup.end();
@@ -1512,10 +1629,11 @@ export default {
     expect(dts).toContain("interface KnownFunctions");
     expect(dts).toContain('"public.tmp_catalog_slug(value text)": { kind: "function"; language: "sql"; params: [string | null]; returns: string | null; returnsSet: false;');
     expect(dts).toContain('"public.tmp_catalog_pair(value text)": { kind: "function"; language: "sql"; params: [string | null]; returns: { slug: string | null; score: number | null }; returnsSet: true;');
-    expect(dts).toContain('"public.tmp_catalog_json_table(value jsonb)": { kind: "function"; language: "sql"; params: [import("@onreza/sqlx-js").JsonInput | null]; returns: { payload: import("@onreza/sqlx-js").JsonValue | null }; returnsSet: true;');
-    expect(dts).toContain('"public.tmp_catalog_json_out(value text, OUT payload jsonb)": { kind: "function"; language: "sql"; params: [string | null]; returns: { payload: import("@onreza/sqlx-js").JsonValue | null }; returnsSet: false;');
-    expect(dts).toMatch(/"public\.tmp_catalog_json_inout\([^"]*jsonb\)": \{ kind: "function"; language: "sql"; params: \[import\("@onreza\/sqlx-js"\)\.JsonInput \| null\]; returns: \{ payload: import\("@onreza\/sqlx-js"\)\.JsonValue \| null \}; returnsSet: false;/);
-    expect(dts).toContain('"public.tmp_catalog_json_array(value jsonb[])": { kind: "function"; language: "sql"; params: [(import("@onreza/sqlx-js").JsonInput | null)[] | null]; returns: (import("@onreza/sqlx-js").JsonValue | null)[] | null; returnsSet: false;');
+    expect(dts).toContain('"public.tmp_catalog_json_table(value jsonb)": { kind: "function"; language: "sql"; params: [import("@onreza/sqlx-js").SqlxJson<unknown> | null]; returns: { payload: import("@onreza/sqlx-js").SqlxJson<import("@onreza/sqlx-js").JsonValue> | null }; returnsSet: true;');
+    expect(dts).toContain('"public.tmp_catalog_json_out(value text, OUT payload jsonb)": { kind: "function"; language: "sql"; params: [string | null]; returns: { payload: import("@onreza/sqlx-js").SqlxJson<import("@onreza/sqlx-js").JsonValue> | null }; returnsSet: false;');
+    expect(dts).toMatch(/"public\.tmp_catalog_json_inout\([^"]*jsonb\)": \{ kind: "function"; language: "sql"; params: \[import\("@onreza\/sqlx-js"\)\.SqlxJson<unknown> \| null\]; returns: \{ payload: import\("@onreza\/sqlx-js"\)\.SqlxJson<import\("@onreza\/sqlx-js"\)\.JsonValue> \| null \}; returnsSet: false;/);
+    expect(dts).toContain('"public.tmp_catalog_json_array(value jsonb[])": { kind: "function"; language: "sql"; params: [(import("@onreza/sqlx-js").SqlxJson<unknown> | null)[] | null]; returns: (import("@onreza/sqlx-js").SqlxJson<import("@onreza/sqlx-js").JsonValue> | null)[] | null; returnsSet: false;');
+    expect(dts).toContain('params: [import("@onreza/sqlx-js").SqlxJson<unknown> | null, { payload: import("@onreza/sqlx-js").SqlxJson<unknown> | null; payloads: (import("@onreza/sqlx-js").SqlxJson<unknown> | null)[] | null } | null]; returns: import("@onreza/sqlx-js").SqlxJson<import("@onreza/sqlx-js").JsonValue> | null;');
     expect(dts).toMatch(/"public\.tmp_catalog_slug\(value text\)".*volatility: "immutable"; strict: true; securityDefiner: false; leakproof: false; parallelSafety: "unsafe"; owner: "[^"]+"; ownerSuperuser: (?:true|false); publicExecute: true; settings: readonly \["TimeZone=UTC"\]; searchPath: null; extensionOwned: false/);
     const functionCache = JSON.parse(readFileSync(join(tmp, ".sqlx-js/functions/functions.json"), "utf8")) as {
       version: number;
@@ -1705,7 +1823,9 @@ export default {
     const result = prepareRoot(root, ["--strict-inference"]);
     expect(result.code, result.stderr).toBe(0);
     const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
-    expect(dts).toContain('"payload": import("./types").UnionPayload');
+    expect(dts).toContain(
+      '"payload": import("@onreza/sqlx-js").SqlxJson<import("./types").UnionPayload>',
+    );
     expect(dts).toContain('"action": "created" | "deleted"');
   });
 
@@ -1964,8 +2084,8 @@ export default {
       );
       expect(result.status).toBe(0);
       const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
-      expect(dts).toContain('JsonParameter<SearchPathPayload> | null');
-      expect(dts).toContain('"payload": SearchPathPayload | null');
+      expect(dts).toContain('SqlxJson<SearchPathPayload> | null');
+      expect(dts).toContain('"payload": import("@onreza/sqlx-js").SqlxJson<SearchPathPayload> | null');
     } finally {
       await client.simpleQuery("DROP TABLE IF EXISTS public.tmp_search_path_target; DROP SCHEMA IF EXISTS tmp_search_path CASCADE");
       await client.end();
@@ -2804,7 +2924,7 @@ export default {
     const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toMatch(/WITH inserted AS MATERIALIZED.*params: \{ "name": string; "note": string \| null \}/);
     expect(dts).toMatch(
-      /tmp_cte_param_b.*params: \{ "value": "ready" \| "done" \| null; "payload": import\("@onreza\/sqlx-js"\)\.JsonParameter<import\("\.\/types"\)\.CtePayload> \| null; "payloads": import\("@onreza\/sqlx-js"\)\.PgArrayParameter<import\("@onreza\/sqlx-js"\)\.JsonParameter<import\("\.\/types"\)\.CtePayload>, false> \| null; "labels": import\("@onreza\/sqlx-js"\)\.PgArrayParameter<string, false> \| null \}/,
+      /tmp_cte_param_b.*params: \{ "value": "ready" \| "done" \| null; "payload": import\("@onreza\/sqlx-js"\)\.SqlxJson<import\("\.\/types"\)\.CtePayload> \| null; "payloads": import\("@onreza\/sqlx-js"\)\.PgArrayParameter<import\("@onreza\/sqlx-js"\)\.SqlxJson<import\("\.\/types"\)\.CtePayload>, false> \| null; "labels": import\("@onreza\/sqlx-js"\)\.PgArrayParameter<string, false> \| null \}/,
     );
     expect(dts).toMatch(/tmp_cte_param_required.*params: \{ "value": "ready" \| "done" \}/);
     expect(dts).toMatch(/VALUES \(\$value\), \(COALESCE.*params: \{ "value": "ready" \| "done" \}/);
@@ -2897,15 +3017,19 @@ export default {
     expect(dts).toMatch(/table\.dot.*params: \[bigint, string \| null\]/);
   });
 
-  test("strict inference accepts structurally checked existential JsonParameter values", () => {
+  test("strict inference accepts structurally checked existential SqlxJson values", () => {
     writeFile("migrations/0006_json_fallback.up.sql",
       "CREATE TABLE IF NOT EXISTS tmp_json_fallback (\n" +
       "  id BIGSERIAL PRIMARY KEY,\n" +
       "  payload JSONB NOT NULL,\n" +
       "  maybe_payload JSONB\n" +
-      ");\n",
+      ");\n" +
+      "CREATE DOMAIN tmp_json_param_domain AS JSONB;\n" +
+      "CREATE TYPE tmp_json_param_record AS (payload JSONB, payloads JSONB[]);\n",
     );
     writeFile("migrations/0006_json_fallback.down.sql",
+      "DROP TYPE IF EXISTS tmp_json_param_record;\n" +
+      "DROP DOMAIN IF EXISTS tmp_json_param_domain;\n" +
       "DROP TABLE IF EXISTS tmp_json_fallback;\n",
     );
     const mig = migrate();
@@ -2913,15 +3037,19 @@ export default {
 
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
-      "await sql(\"INSERT INTO tmp_json_fallback (payload, maybe_payload) VALUES ($1, $2) RETURNING payload, maybe_payload\", sql.json({ ok: true, tags: [\"a\"], nested: { n: 1 } }), null);\n",
+      "await sql(\"INSERT INTO tmp_json_fallback (payload, maybe_payload) VALUES ($1, $2) RETURNING payload, maybe_payload\", sql.json({ ok: true, tags: [\"a\"], nested: { n: 1 } }), null);\n" +
+      "await sql(\"SELECT $1::tmp_json_param_domain AS domain_value, $2::tmp_json_param_record AS record_value, $3::tmp_json_param_record[] AS record_values\", sql.json({ ok: true }), { payload: sql.json({ ok: true }), payloads: [sql.json({ ok: true })] }, sql.array([]));\n",
     );
     const r = prepare(["--strict-inference"]);
     expect(r.code).toBe(0);
     expect(r.stderr).not.toContain("inference failed");
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
-    expect(dts).toMatch(/tmp_json_fallback.*params: \[import\("@onreza\/sqlx-js"\)\.JsonParameter<unknown>, import\("@onreza\/sqlx-js"\)\.JsonParameter<unknown> \| null\]/);
-    expect(dts).toContain('"payload": import("@onreza/sqlx-js").JsonValue');
-    expect(dts).toContain('"maybe_payload": import("@onreza/sqlx-js").JsonValue | null');
+    expect(dts).toMatch(/tmp_json_fallback.*params: \[import\("@onreza\/sqlx-js"\)\.SqlxJson<unknown>, import\("@onreza\/sqlx-js"\)\.SqlxJson<unknown> \| null\]/);
+    expect(dts).toContain('"payload": import("@onreza/sqlx-js").SqlxJson<import("@onreza/sqlx-js").JsonValue>');
+    expect(dts).toContain('"maybe_payload": import("@onreza/sqlx-js").SqlxJson<import("@onreza/sqlx-js").JsonValue> | null');
+    expect(dts).toMatch(
+      /tmp_json_param_domain.*params: \[import\("@onreza\/sqlx-js"\)\.SqlxJson<unknown>, \{ payload: import\("@onreza\/sqlx-js"\)\.SqlxJson<unknown> \| null; payloads: \(import\("@onreza\/sqlx-js"\)\.SqlxJson<unknown> \| null\)\[\] \| null \}, import\("@onreza\/sqlx-js"\)\.PgArrayParameter<\{ payload: import\("@onreza\/sqlx-js"\)\.SqlxJson<unknown> \| null; payloads: \(import\("@onreza\/sqlx-js"\)\.SqlxJson<unknown> \| null\)\[\] \| null \}, boolean>\]/,
+    );
   });
 
   test("prepare validates execution intent without runtime checks", () => {
@@ -3117,7 +3245,7 @@ export default {
     const jsonResult = prepare(["--strict-inference"]);
     expect(jsonResult.code).toBe(0);
     const jsonDts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
-    expect(jsonDts).toContain('PgArrayParameter<import("@onreza/sqlx-js").JsonParameter<unknown>, boolean>');
+    expect(jsonDts).toContain('PgArrayParameter<import("@onreza/sqlx-js").SqlxJson<unknown>, boolean>');
   });
 
   test("$N IS NULL OR col = $N pattern makes the param nullable", () => {
@@ -3293,11 +3421,15 @@ export default {
         DROP DOMAIN IF EXISTS tmp_runtime_role_domain CASCADE;
         DROP DOMAIN IF EXISTS tmp_runtime_vectors CASCADE;
         DROP DOMAIN IF EXISTS tmp_runtime_positive CASCADE;
+        DROP DOMAIN IF EXISTS tmp_runtime_json CASCADE;
+        DROP TYPE IF EXISTS tmp_runtime_json_record CASCADE;
         CREATE TYPE tmp_runtime_role AS ENUM ('admin', 'member');
         CREATE DOMAIN tmp_runtime_role_domain AS tmp_runtime_role;
         CREATE DOMAIN tmp_runtime_positive AS integer CHECK (VALUE > 0);
         CREATE DOMAIN tmp_runtime_vectors AS vector[];
+        CREATE DOMAIN tmp_runtime_json AS jsonb;
         CREATE TYPE tmp_runtime_item AS (label text, score integer);
+        CREATE TYPE tmp_runtime_json_record AS (payload jsonb, history jsonb[]);
         CREATE TYPE tmp_runtime_membership AS (legacy text, tenant text, role text);
         ALTER TYPE tmp_runtime_membership DROP ATTRIBUTE legacy;
       `);
@@ -3305,7 +3437,7 @@ export default {
       await setup.end();
     }
 
-    const { createSqlClient, array } = await import("../src/index");
+    const { createSqlClient, array, json } = await import("../src/index");
     const runtime = createSqlClient(dbUrl);
     try {
       await runtime.ready();
@@ -3372,6 +3504,35 @@ export default {
         domain_vector_values: [[13, 14], [15, 16]],
         dropped_composite_value: { tenant: "tenant_c", role: "role_admin" },
       });
+
+      const jsonDocument = json({ exact: 9_007_199_254_740_993n });
+      const jsonValues = await runtime.unsafe(
+        `SELECT $1::tmp_runtime_json AS domain_value,
+                $2::tmp_runtime_json_record AS composite_value,
+                $3::tmp_runtime_json_record[] AS composite_values,
+                $4::tmp_runtime_json[] AS domain_values`,
+        jsonDocument,
+        { payload: jsonDocument, history: [jsonDocument, null] },
+        array([{ payload: jsonDocument, history: [jsonDocument] }, null]),
+        array([jsonDocument, null]),
+      ) as Array<{
+        domain_value: SqlxJson;
+        composite_value: { payload: SqlxJson; history: Array<SqlxJson | null> };
+        composite_values: Array<{ payload: SqlxJson; history: SqlxJson[] } | null>;
+        domain_values: Array<SqlxJson | null>;
+      }>;
+      expect(jsonValues[0]?.domain_value.value).toEqual(jsonDocument.value);
+      expect(jsonValues[0]?.composite_value.payload.value).toEqual(jsonDocument.value);
+      expect(jsonValues[0]?.composite_value.history.map((value) => value?.value ?? null))
+        .toEqual([jsonDocument.value, null]);
+      expect(jsonValues[0]?.composite_values[0]?.payload.value).toEqual(jsonDocument.value);
+      expect(jsonValues[0]?.domain_values.map((value) => value?.value ?? null))
+        .toEqual([jsonDocument.value, null]);
+      await expect(runtime.unsafe(
+        "SELECT $1::tmp_runtime_json_record",
+        { payload: JSON.stringify({ raw: true }), history: [] },
+      )).rejects.toThrow("PostgreSQL JSON values require a SqlxJson document");
+
       await expect(runtime.unsafe(
         "SELECT $1::tmp_runtime_item",
         { label: "missing score", score: undefined },
@@ -3454,9 +3615,9 @@ export default {
     process.env.DATABASE_URL = dbUrl;
     try {
       const rows = await sql("SELECT $1::jsonb AS value", sql.json([1, 2, 3]));
-      expect((rows[0] as { value: unknown }).value).toEqual([1, 2, 3]);
+      expect((rows[0] as { value: SqlxJson }).value.value).toEqual([1, 2, 3]);
       const jsonNull = await sql("SELECT $1::jsonb AS value", sql.json(null));
-      expect((jsonNull[0] as { value: unknown }).value).toBeNull();
+      expect((jsonNull[0] as { value: SqlxJson }).value.value).toBeNull();
     } finally {
       await close();
       if (prev === undefined) delete process.env.DATABASE_URL;
@@ -3474,14 +3635,19 @@ export default {
         sql.array([
           sql.json({ kind: "object" }),
           sql.json([1, 2, 3]),
+          sql.json(null),
           null,
         ]),
       );
-      expect((rows[0] as { values: unknown[] }).values).toEqual([
+      const values = (rows[0] as { values: Array<SqlxJson | null> }).values;
+      expect(values.map((value) => value?.value ?? null)).toEqual([
         { kind: "object" },
         [1, 2, 3],
         null,
+        null,
       ]);
+      expect(values[2]).toBeInstanceOf(SqlxJson);
+      expect(values[3]).toBeNull();
     } finally {
       await close();
       if (prev === undefined) delete process.env.DATABASE_URL;
@@ -3489,7 +3655,7 @@ export default {
     }
   });
 
-  test("createClient installs required array codecs for raw use", async () => {
+  test("createClient enforces required array codecs for raw use", async () => {
     const { createClient } = await import("../src/index");
     const external = createClient(dbUrl);
     const timestamp = Temporal.Instant.from("2026-01-02T03:04:05.000000Z");
@@ -3497,15 +3663,23 @@ export default {
       const rows = await external.unsafe(
         "SELECT $1::jsonb[] AS js, $2::bytea[] AS bs, $3::timestamptz[] AS ds",
         [
-          external.typed([JSON.stringify({ kind: "external" }), null], 3807),
+          external.array([json({ kind: "external" }), null], 3807),
           external.typed([new Uint8Array([0xde, 0xad])], 0),
           external.typed([timestamp], 0),
         ],
       );
-      const row = rows[0] as { js: unknown[]; bs: Uint8Array[]; ds: Temporal.Instant[] };
-      expect(row.js).toEqual([{ kind: "external" }, null]);
+      const row = rows[0] as {
+        js: Array<SqlxJson | null>;
+        bs: Uint8Array[];
+        ds: Temporal.Instant[];
+      };
+      expect(row.js.map((value) => value?.value ?? null)).toEqual([{ kind: "external" }, null]);
       expect(row.bs.map((value) => Array.from(value))).toEqual([[0xde, 0xad]]);
       expect(row.ds.map((value) => value.toString())).toEqual([timestamp.toString()]);
+      await expect(Promise.resolve(external.unsafe(
+        "SELECT $1::jsonb[]",
+        [external.typed([JSON.stringify({ kind: "raw" })], 3807)],
+      ))).rejects.toThrow("PostgreSQL JSON values require a SqlxJson document");
     } finally {
       await external.end();
     }
@@ -4262,7 +4436,7 @@ export default {
       await expect(Promise.resolve(client.unsafe(
         "SELECT $1::jsonb",
         [client.json(1n as never)],
-      ))).rejects.toThrow("unsupported JSON value [object BigInt]");
+      ))).rejects.toThrow("PostgreSQL JSON values require a SqlxJson document");
       const [{ value }] = await client.unsafe<{ value: number }>("SELECT 1::int AS value");
       expect(value).toBe(1);
     } finally {

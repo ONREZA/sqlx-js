@@ -35,8 +35,8 @@ guides contain the complete contracts, operational details, and edge cases.
 
 ## Architecture and compatibility
 
-- [sqlx-js Extended JSON protocol](./extended-json-protocol.md) proposes the
-  future branded, versioned `json`/`jsonb` value and transport contract.
+- [sqlx-js Extended JSON protocol](./extended-json-protocol.md) defines the
+  branded, immutable, versioned `json`/`jsonb` value and transport contract.
 - [Postgres.js compatibility matrix](./postgres-js-feature-matrix.md) defines
   the runtime replacement boundary and permanent non-goals.
 - [Postgres.js upstream audit](./postgres-js-upstream-audit.md) records which

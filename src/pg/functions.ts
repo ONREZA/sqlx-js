@@ -8,11 +8,8 @@ import type {
 } from "../function-cache";
 import { functionSettingValue, normalizeFunctionSettings } from "../function-cache";
 import { decodeText, type PgClient } from "./wire";
+import { inputTsType } from "./input-types";
 import { SchemaCache } from "./schema";
-
-const JSON_OIDS = new Set([114, 3802]);
-const JSON_ARRAY_OIDS = new Set([199, 3807]);
-const JSON_INPUT = 'import("@onreza/sqlx-js").JsonInput';
 
 type FunctionRow = {
   schema: string;
@@ -196,12 +193,6 @@ function outputObject(output: CatalogParamEntry[]): string {
     return `${name}: ${nullableReturn(p.resultTsType ?? p.tsType)}`;
   });
   return `{ ${fields.join("; ")} }`;
-}
-
-function inputTsType(oid: number, schema: SchemaCache): string {
-  if (JSON_OIDS.has(oid)) return JSON_INPUT;
-  if (JSON_ARRAY_OIDS.has(oid)) return `(${JSON_INPUT} | null)[]`;
-  return schema.tsType(oid);
 }
 
 function outputTsType(oid: number, schema: SchemaCache): string {

@@ -3,6 +3,12 @@ import { isTemporalValue } from "./temporal-api";
 const DATE_GET_TIME = Date.prototype.getTime;
 const MAP_ENTRIES = Map.prototype.entries;
 const SET_VALUES = Set.prototype.values;
+const DATE_FREE_SQL_VALUES = new WeakSet<object>();
+
+export function markDateFreeSqlValue<T extends object>(value: T): T {
+  DATE_FREE_SQL_VALUES.add(value);
+  return value;
+}
 
 export function assertNoDateSqlValue(
   value: unknown,
@@ -13,6 +19,7 @@ export function assertNoDateSqlValue(
     throw new Error(`sqlx-js: JavaScript Date is not supported as a ${context}; use the matching Temporal type`);
   }
   if (!value || typeof value !== "object" || ArrayBuffer.isView(value)) return;
+  if (DATE_FREE_SQL_VALUES.has(value)) return;
   if (seen.has(value)) return;
   seen.add(value);
   if (Array.isArray(value)) {

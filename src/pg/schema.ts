@@ -13,7 +13,7 @@ export type EnumInfo = { kind: "enum"; name: string; values: string[] };
 export type EnumArrayInfo = { kind: "enumArray"; element: EnumInfo };
 export type ScalarInfo = { kind: "scalar"; name: string; tsType: string; notNull?: boolean; baseOid?: number };
 export type ScalarArrayInfo = { kind: "scalarArray"; name: string; element: ScalarInfo };
-export type CompositeField = { name: string; tsType: string; nullable: boolean };
+export type CompositeField = { name: string; tsType: string; nullable: boolean; typeOid?: number };
 export type CompositeInfo = { kind: "composite"; name: string; fields: CompositeField[] };
 export type CompositeArrayInfo = { kind: "compositeArray"; name: string; element: CompositeInfo };
 export type CustomTypeInfo =
@@ -339,6 +339,7 @@ export class SchemaCache {
       const attrs = compositeAttrs.get(oid) ?? [];
       const fields: CompositeField[] = attrs.map((a) => ({
         name: a.name,
+        typeOid: a.typeOid,
         tsType: this.resolveBaseTs(a.typeOid) ?? "unknown",
         nullable: !a.notNull,
       }));

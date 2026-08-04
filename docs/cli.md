@@ -14,6 +14,7 @@ The command hierarchy follows ownership rather than implementation details:
 | `pgschema` | Managed pgschema tool and target plan/apply | Install cache only | `apply` |
 | `snapshot` | Runtime identifier snapshot and LLM manifest | `dump` | No |
 | `queries` | Database-free query inventory, inference explanation, and SQL embedding | With `--embed` | No |
+| `json audit` | Extended JSON collision, duplicate-key, schema-dependency, and source-usage inventory | No | No |
 | `doctor` | Runtime, descriptor coverage, config, provider, database, RLS, and artifact diagnostics | With `--fix` | No |
 
 Common syntax:
@@ -29,6 +30,7 @@ sqlx-js snapshot dump|check
 sqlx-js doctor [--fix]
 sqlx-js queries [--json] [--embed <path>]
 sqlx-js queries explain <query-id> [--json]
+sqlx-js json audit [--json]
 ```
 
 Run `sqlx-js <command> --help` or
@@ -48,12 +50,12 @@ Regular `prepare` describes and plans queries across a small connection pool (de
 | `--no-prune`          | Keep orphaned cache entries; they do not invalidate a later `--check`.                |
 | `--migrations <dir>`  | Root-relative built-in migrations directory for `migrate`, `dev`, and `verify` (default: `<root>/migrations`). |
 | `--dry-run`           | For `migrate run` / `migrate revert`: validate without applying to the target DB.   |
-| `--json`              | Machine-readable prepare diagnostics, doctor output, migration inspection and dry-runs. |
+| `--json`              | Machine-readable prepare diagnostics, doctor/audit output, migration inspection and dry-runs. |
 | `--warnings`          | Show full warning details while keeping compact prepare output. |
 | `--verbose`           | Show per-query prepare progress. Compact human output is the default for prepare/check/offline/verify. |
 | `--embed <path>`      | For `queries`: write a deterministic TypeScript map of referenced external SQL files. |
 | `--jsonl`             | Versioned streaming events for `prepare --watch`.                                     |
-| `--strict-inference`  | Fail prepare/dev/verify when nullability degrades, a generated query type contains unresolved `unknown`, plain `sql()` discards a command result, or a `parse-only` statement is not explicitly acknowledged. Intentional `JsonParameter<unknown>` wrappers remain accepted. |
+| `--strict-inference`  | Fail prepare/dev/verify when nullability degrades, a generated query type contains unresolved `unknown`, plain `sql()` discards a command result, or a `parse-only` statement is not explicitly acknowledged. Intentional `SqlxJson<unknown>` wrappers remain accepted. |
 | `--force`             | For `migrate archive restore`: allow overwriting existing migration files.           |
 | `--lock-timeout <ms>` | Advisory-lock acquisition timeout for built-in `dev` / `verify` and applicable `migrate` operations. |
 | `--shadow-url <url>`  | Use an existing disposable shadow DB instead of auto-creating one.                   |
@@ -105,6 +107,28 @@ read-only artifact gate and tells you when a live prepare is required.
 sources, source constraints, every DML and predicate target for parameters,
 nullability decisions, per-profile result assertions, and actionable hints. It
 does not connect to PostgreSQL.
+
+`json audit` is the reader-first gate before an existing application writes
+Extended JSON tags. It opens `DATABASE_URL` in a read-only transaction and
+inspects every selectable `json`/`jsonb` column on ordinary or materialized
+user relations. It counts rows containing `$sqlx` at any nesting depth and, for
+the text-preserving `json` type, rows containing duplicate object keys. It also
+inventories indexes, constraints, generated columns and views that depend on a
+JSON column, then scans application query sites for JSON operators and
+`json_*`/`jsonb_*` functions. Dependencies and source usages require review but
+do not by themselves fail; collisions, duplicate keys, missing privileges,
+active row-level security for the audit role, or column scan errors make the
+audit non-zero and `complete: false` where applicable. The command never
+rewrites stored data or application SQL.
+
+Machine-readable output uses `formatVersion: 1` and includes
+`protocolVersion`, per-column counts/errors, dependency definitions, source
+locations/query IDs, and summary counters. Preflight and fatal failures keep
+the same top-level shape with `complete: false` and add a `diagnostics` array,
+so `--json` never falls back to human stderr. A full audit can scan each JSON
+column, so run it against a representative read replica or within the
+application's normal database workload controls when tables are large.
+
 `doctor` separately reports descriptor coverage for parameterized runtime call
 sites, lists adaptive or statically unclassified locations, and errors when a
 descriptor-configured query is missing from the artifact. Its coverage

@@ -336,6 +336,7 @@ test("cache manifest binds generated artifacts to type-affecting config", () => 
   expect(readCacheManifest(dir)?.configHash).toBe("config-a");
   const manifest = assertCacheManifest(dir, "config-a");
   expect(manifest.generatorRevision).toBeGreaterThan(0);
+  expect(manifest.jsonProtocol).toBeGreaterThan(0);
   expect(() => assertCacheManifest(dir, "config-b")).toThrow(/different type-affecting config/);
   writeFileSync(join(dir, "cache-manifest.json"), JSON.stringify({
     ...manifest,

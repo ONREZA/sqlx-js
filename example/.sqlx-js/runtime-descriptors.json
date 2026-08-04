@@ -1,7 +1,8 @@
 {
-  "formatVersion": 3,
-  "cacheFormat": 8,
-  "generatorRevision": 25,
+  "formatVersion": 4,
+  "cacheFormat": 9,
+  "generatorRevision": 26,
+  "jsonProtocol": 1,
   "configHash": "97a8ce77a1bcbed9",
   "temporal": {
     "infinity": "reject",

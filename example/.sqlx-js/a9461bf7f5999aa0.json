@@ -18,7 +18,7 @@
   "paramTsTypes": [
     "string",
     "string",
-    "import(\"@onreza/sqlx-js\").JsonParameter<SqlxJsJson.UserSettings>"
+    "import(\"@onreza/sqlx-js\").SqlxJson<SqlxJsJson.UserSettings>"
   ],
   "paramNullable": [
     false,

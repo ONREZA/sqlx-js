@@ -1,6 +1,7 @@
 import {
   CACHE_FORMAT_VERSION,
   GENERATOR_REVISION,
+  JSON_PROTOCOL_VERSION,
   RUNTIME_DESCRIPTOR_FORMAT_VERSION,
 } from "./artifact-versions";
 import { isBuiltinOid } from "./pg/oids";
@@ -24,6 +25,7 @@ export type RuntimeQueryDescriptors = {
   formatVersion: number;
   cacheFormat: number;
   generatorRevision: number;
+  jsonProtocol: number;
   configHash: string;
   temporal: {
     readonly infinity: string;
@@ -97,8 +99,9 @@ export function prepareRuntimeDescriptors(
     value.formatVersion !== RUNTIME_DESCRIPTOR_FORMAT_VERSION
     || value.cacheFormat !== CACHE_FORMAT_VERSION
     || value.generatorRevision !== GENERATOR_REVISION
+    || value.jsonProtocol !== JSON_PROTOCOL_VERSION
   ) {
-    throw descriptorError("uses an incompatible format or generator revision");
+    throw descriptorError("uses an incompatible format, generator revision, or Extended JSON protocol");
   }
   if (typeof value.configHash !== "string" || !isRecord(value.types) || !isRecord(value.profiles)) {
     throw descriptorError("is malformed");

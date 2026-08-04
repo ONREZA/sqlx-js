@@ -1028,11 +1028,14 @@ class ManagedPostgresRuntime implements RuntimeClient {
   private encodeParam(client: PostgresClient, param: unknown): unknown {
     assertNoDateSqlValue(param, "PostgreSQL parameter");
     const kind = parameterKind(param);
-    if (kind === "json") return client.json((param as JsonParameter).value as never);
+    if (kind === "json") return client.json(param as JsonParameter);
     if (kind === "array") {
       const value = [...(param as PgArrayParameter).value];
       const hasJson = value.some((item) => parameterKind(item) === "json");
-      if (hasJson && value.every((item) => item === null || parameterKind(item) === "json")) {
+      if (hasJson) {
+        if (!value.every((item) => item === null || parameterKind(item) === "json")) {
+          throw new Error("sqlx-js: PostgreSQL JSON arrays must contain only SqlxJson documents or null");
+        }
         return client.array(value as never[], 3807);
       }
       return client.typed(value as never[], 0);

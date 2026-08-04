@@ -6,10 +6,14 @@ export type TemporalFactory = {
 } & (abstract new (...args: never[]) => unknown);
 
 export type TemporalApi = {
+  readonly Duration: TemporalFactory;
   readonly Instant: TemporalFactory;
   readonly PlainDate: TemporalFactory;
   readonly PlainDateTime: TemporalFactory;
+  readonly PlainMonthDay: TemporalFactory;
   readonly PlainTime: TemporalFactory;
+  readonly PlainYearMonth: TemporalFactory;
+  readonly ZonedDateTime: TemporalFactory;
 };
 
 export type PgDate = TemporalTypes.PlainDate;
@@ -26,6 +30,8 @@ export type TemporalJsonValue =
   | TemporalTypes.PlainYearMonth
   | TemporalTypes.ZonedDateTime;
 
+const RESOLVED_TEMPORAL_APIS = new WeakMap<object, TemporalApi>();
+
 export function resolveTemporalApi(api: TemporalApi | undefined): TemporalApi {
   const resolved = api ?? (globalThis as typeof globalThis & { Temporal?: TemporalApi }).Temporal;
   if (!resolved) {
@@ -35,11 +41,20 @@ export function resolveTemporalApi(api: TemporalApi | undefined): TemporalApi {
         + "or call configureDefaultTemporalApi(Temporal) before using deprecated global exports",
     );
   }
+  const cacheKey = (typeof resolved === "object" && resolved !== null) || typeof resolved === "function"
+    ? resolved as object
+    : undefined;
+  const cached = cacheKey ? RESOLVED_TEMPORAL_APIS.get(cacheKey) : undefined;
+  if (cached) return cached;
   const samples = {
+    Duration: "PT1S",
     Instant: "2000-01-01T00:00:00Z",
     PlainDate: "2000-01-01",
     PlainDateTime: "2000-01-01T00:00:00",
+    PlainMonthDay: "01-01",
     PlainTime: "00:00:00",
+    PlainYearMonth: "2000-01",
+    ZonedDateTime: "2000-01-01T00:00:00+00:00[UTC]",
   } as const;
   for (const name of Object.keys(samples) as (keyof typeof samples)[]) {
     const factory = resolved[name];
@@ -59,7 +74,19 @@ export function resolveTemporalApi(api: TemporalApi | undefined): TemporalApi {
       throw new Error(`sqlx-js: temporalApi.${name}.from returned an incompatible value`);
     }
   }
-  return resolved;
+  const snapshot: TemporalApi = Object.freeze({
+    Duration: resolved.Duration,
+    Instant: resolved.Instant,
+    PlainDate: resolved.PlainDate,
+    PlainDateTime: resolved.PlainDateTime,
+    PlainMonthDay: resolved.PlainMonthDay,
+    PlainTime: resolved.PlainTime,
+    PlainYearMonth: resolved.PlainYearMonth,
+    ZonedDateTime: resolved.ZonedDateTime,
+  });
+  if (cacheKey) RESOLVED_TEMPORAL_APIS.set(cacheKey, snapshot);
+  RESOLVED_TEMPORAL_APIS.set(snapshot, snapshot);
+  return snapshot;
 }
 
 export function isTemporalValue(value: unknown): value is TemporalJsonValue {

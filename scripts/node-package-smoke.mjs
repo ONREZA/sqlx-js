@@ -36,13 +36,13 @@ try {
   writeFileSync(join(temp, "types.ts"), `
     import {
       defineQuery,
-      type JsonParameter,
       type JsonValue,
       type PgNotice,
       type PostgresType,
       type QueryParams,
       type QueryRegistry,
       type QueryWireParams,
+      type SqlxJson,
       type SqlExecutor,
     } from "@onreza/sqlx-js";
 
@@ -50,8 +50,8 @@ try {
     declare module "@onreza/sqlx-js" {
       interface KnownQueries {
         "SELECT $payload::jsonb AS payload": {
-          params: { payload: JsonParameter<unknown> };
-          row: { payload: JsonValue };
+          params: { payload: SqlxJson<unknown> };
+          row: { payload: SqlxJson<JsonValue> };
         };
       }
     }
@@ -62,11 +62,11 @@ try {
     );
     type Input = QueryParams<typeof query>;
     type Wire = QueryWireParams<typeof query>;
-    type Entry = { params: Wire; row: { payload: JsonValue } };
+    type Entry = { params: Wire; row: { payload: SqlxJson<JsonValue> } };
     type Registry = QueryRegistry & { queries: Record<typeof statement, Entry> };
     declare const executor: SqlExecutor<Registry>;
     declare const input: Input;
-    const result: Promise<{ payload: JsonValue }> = query.run(executor, input);
+    const result: Promise<{ payload: SqlxJson<JsonValue> }> = query.run(executor, input);
     const boundedExecutor: SqlExecutor<Registry> = executor
       .with({ signal: new AbortController().signal })
       .with({ timeoutMs: 1_000 });
@@ -99,7 +99,14 @@ try {
   writeFileSync(join(temp, "app.mjs"), `
     import assert from "node:assert/strict";
     import { Temporal } from "@js-temporal/polyfill";
-    import { createSqlClient, defineQuery, queryId, TransactionTimeoutError } from "@onreza/sqlx-js";
+    import {
+      createSqlClient,
+      defineQuery,
+      JsonNumber,
+      queryId,
+      SqlxJson,
+      TransactionTimeoutError,
+    } from "@onreza/sqlx-js";
 
     let db;
     try {
@@ -117,6 +124,7 @@ try {
           formatVersion: ${descriptorVersions.formatVersion},
           cacheFormat: ${descriptorVersions.cacheFormat},
           generatorRevision: ${descriptorVersions.generatorRevision},
+          jsonProtocol: ${descriptorVersions.jsonProtocol},
           configHash: "node-package-smoke",
           temporal: ${JSON.stringify(descriptorVersions.temporal)},
           types: {},
@@ -146,13 +154,25 @@ try {
            '[0:2]={-2,NULL,3}'::int2[] AS bounded,
            ARRAY[[-1,2],[3,-4]]::int4[][] AS matrix,
            ARRAY[0::oid, 4294967295::oid, NULL]::oid[] AS oids\`,
-        sql.json({ ok: true }),
+        sql.json({
+          ok: true,
+          id: 9_007_199_254_740_993n,
+          exact: JsonNumber.from("12345678901234567890.125"),
+          at: Temporal.Instant.from("2026-08-04T10:15:30.123456789Z"),
+        }),
         sql.array([1, 2, 3]),
         bytes,
       );
-      assert.deepEqual(row, {
+      assert.ok(row.payload instanceof SqlxJson);
+      assert.deepEqual(row.payload.value, {
+        ok: true,
+        id: 9_007_199_254_740_993n,
+        exact: JsonNumber.from("12345678901234567890.125"),
+        at: Temporal.Instant.from("2026-08-04T10:15:30.123456789Z"),
+      });
+      assert.deepEqual({ ...row, payload: undefined }, {
         value: 42,
-        payload: { ok: true },
+        payload: undefined,
         numbers: [1, 2, 3],
         bytes,
         bigint: 9007199254740993n,
@@ -185,7 +205,7 @@ try {
       const echoQuery = defineQuery.one("smoke.echo", "SELECT $payload::jsonb AS payload").mapParams(
         (payload, { json }) => ({ payload: json(payload) }),
       );
-      assert.deepEqual(await echoQuery.run(sql, { ok: true }), { payload: { ok: true } });
+      assert.deepEqual((await echoQuery.run(sql, { ok: true })).payload.value, { ok: true });
       assert.deepEqual(await sql.file.one("queries/embedded.sql"), { value: 9 });
       assert.equal(answerQuery.queryId, queryId(answerQuery.query));
       assert.ok(events.some((event) => event.queryId === answerQuery.queryId && event.queryName === "smoke.answer"));

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   CACHE_FORMAT_VERSION,
   GENERATOR_REVISION,
+  JSON_PROTOCOL_VERSION,
   RUNTIME_DESCRIPTOR_FILE,
 } from "./artifact-versions";
 import { arrayElementOid, isBuiltinOid } from "./pg/oids";
@@ -23,6 +24,7 @@ export class CacheManifestStaleError extends Error {
 export type CacheManifest = {
   cacheFormat: typeof CACHE_FORMAT_VERSION;
   generatorRevision: typeof GENERATOR_REVISION;
+  jsonProtocol: typeof JSON_PROTOCOL_VERSION;
   configHash: string;
 };
 
@@ -443,6 +445,7 @@ export function writeCacheManifest(cacheDir: string, configHash: string): void {
   const manifest: CacheManifest = {
     cacheFormat: CACHE_FORMAT_VERSION,
     generatorRevision: GENERATOR_REVISION,
+    jsonProtocol: JSON_PROTOCOL_VERSION,
     configHash,
   };
   writeFileSync(tmp, JSON.stringify(manifest, null, 2) + "\n");
@@ -465,6 +468,7 @@ export function readCacheManifest(cacheDir: string): CacheManifest | null {
   if (
     value.cacheFormat !== CACHE_FORMAT_VERSION ||
     value.generatorRevision !== GENERATOR_REVISION ||
+    value.jsonProtocol !== JSON_PROTOCOL_VERSION ||
     typeof value.configHash !== "string"
   ) {
     throw new CacheManifestStaleError(path);

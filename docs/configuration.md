@@ -156,7 +156,28 @@ export type PostMeta = { tags?: string[]; pinned?: boolean };
 export type Attachment = { url: string; kind: "image" | "video" | "file"; sizeBytes: number };
 ```
 
-After re-running `prepare`, every direct `jsonb` column or mapped parameter uses the corresponding application-owned TypeScript type. Set operations preserve that type through direct or CTE-backed branches when every contributing source resolves to the same configured declaration; incompatible or partially unmapped result branches fall back to the PostgreSQL type instead of guessing. Parameters retain every direct-column target across data-modifying CTEs; conflicting configured declarations for one parameter fail prepare with the affected columns instead of choosing one by traversal order. This is a compile-time assertion, not runtime validation against the application-owned JSON schema; that schema remains the source of truth. The runtime still enforces the generic deterministic JSON boundary described in the query API. Columns without a custom mapping use `JsonValue` for result rows and `JsonParameter<unknown>` for parameters: the existential parameter type accepts any wrapper already proven JSON-safe by `sql.json(value)` without requiring domain interfaces to declare a string index signature. `--strict-inference` accepts this intentional wrapper while continuing to reject unresolved `unknown` elsewhere in generated query contracts. Non-JSON inputs such as `Date`, functions, and `bigint` are rejected by TypeScript while plain JSON objects, arrays, strings, numbers, booleans, and nested JSON `null` values are accepted. A bare top-level `null` remains SQL `NULL` and is allowed only when every stored-value target for that parameter accepts it; use `sql.json(null)` for JSON `null`.
+After re-running `prepare`, every direct `jsonb` column or mapped parameter uses
+the corresponding application-owned TypeScript type inside `SqlxJson<T>`. Set
+operations preserve that type through direct or CTE-backed branches when every
+contributing source resolves to the same configured declaration; incompatible
+or partially unmapped result branches fall back to
+`SqlxJson<JsonValue>` instead of guessing. Parameters retain every direct-column
+target across data-modifying CTEs; conflicting configured declarations for one
+parameter fail prepare with the affected columns instead of choosing one by
+traversal order. This is a compile-time assertion, not runtime validation
+against the application-owned JSON schema; that schema remains the source of
+truth. The runtime validates the versioned Extended JSON transport contract,
+not `T`.
+
+Columns without a custom mapping use `SqlxJson<JsonValue>` for result rows and
+`SqlxJson<unknown>` for parameters. `--strict-inference` accepts the intentional
+existential parameter wrapper while continuing to reject unresolved `unknown`
+elsewhere in generated query contracts. `bigint`, `JsonNumber`, supported
+Temporal objects, plain JSON shapes, and nested JSON `null` values are accepted
+inside `sql.json(...)`; `Date`, functions, non-finite numbers, unsafe integer
+`number` inputs, and non-deterministic object shapes fail. A bare top-level
+`null` remains SQL `NULL` and is allowed only when every stored-value target for
+that parameter accepts it; use `sql.json(null)` for JSON `null`.
 
 ## Direct scalar `columnTypes`
 
@@ -304,6 +325,12 @@ export default defineConfig({
 Domains resolve to their base type through `pg_type.typbasetype`. `CREATE DOMAIN positive_int AS integer CHECK (VALUE > 0)` → `number`, `CREATE DOMAIN tagged AS hstore` → `Record<string, string | null>`. PostgreSQL reports domain result columns with the base type OID, so domain-specific `customTypes` / `typeCodecs` overrides are rejected rather than producing a read/write contract that only works for parameters. Use `columnTypes` for a runtime-compatible branded assertion on a direct domain column. Array variants of any registered scalar are wired up automatically — `vector[]` → `(number[])[]`.
 
 Composite types (`CREATE TYPE foo AS (a int, b text)`) resolve to a struct literal — `{ a: number | null; b: string | null }` — with each attribute typed (enums, domains, and nested composites included) and nullable unless the attribute is `NOT NULL`. Array variants (`foo[]`) resolve too.
+
+Built-in JSON contracts compose through domains, composite attributes, and
+their arrays. Parameter leaves use `SqlxJson<unknown>` while result leaves use
+`SqlxJson<JsonValue>`. A direct built-in JSON column may instead carry the
+application type from `jsonbTypes`; the surrounding PostgreSQL shape never
+bypasses the branded transport.
 
 PostgreSQL assigns database-local OIDs to enums, domains, composites, and
 extension types. The runtime resolves those OIDs once per pool generation

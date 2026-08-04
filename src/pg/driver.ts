@@ -9,7 +9,7 @@ import {
 import {
   parseJsonResult,
   stringifyJsonParameter,
-  type JsonCompatible,
+  type SqlxJson,
 } from "../json-value";
 import { assertNoDateSqlValue, isDateValue } from "../sql-value";
 import { arrayElementOid, builtinArrayOids } from "./oids";
@@ -93,7 +93,7 @@ export type PostgresQueryClient = {
   ): PostgresPendingQuery<Row>;
   typed<T>(value: T, oid: number): PostgresParameter<T>;
   array<T>(value: readonly T[], arrayOid?: number): PostgresParameter<readonly T[]>;
-  json<T>(value: T & JsonCompatible<T>): PostgresParameter<T>;
+  json<T>(value: SqlxJson<T>): PostgresParameter<SqlxJson<T>>;
 };
 
 export type PostgresClient = PostgresQueryClient & {
@@ -253,7 +253,7 @@ class PostgresPool implements PostgresClient {
     return { [PARAMETER]: true, value, oid: arrayOid, source: "array" };
   }
 
-  json<T>(value: T & JsonCompatible<T>): PostgresParameter<T> {
+  json<T>(value: SqlxJson<T>): PostgresParameter<SqlxJson<T>> {
     return { [PARAMETER]: true, value, oid: 3802, source: "json" };
   }
 
@@ -451,7 +451,7 @@ class ReservedClient implements PostgresQueryClient {
     return { [PARAMETER]: true, value, oid: arrayOid, source: "array" };
   }
 
-  json<T>(value: T & JsonCompatible<T>): PostgresParameter<T> {
+  json<T>(value: SqlxJson<T>): PostgresParameter<SqlxJson<T>> {
     return { [PARAMETER]: true, value, oid: 3802, source: "json" };
   }
 
@@ -725,12 +725,12 @@ function builtinParsers(temporalApi: TemporalApi): Record<number, (value: string
     21: Number,
     23: Number,
     26: Number,
-    114: parseJsonResult,
+    114: (value) => parseJsonResult(value, temporalApi),
     700: Number,
     701: Number,
     ...postgresTemporalParsers(temporalApi),
     2278: () => undefined,
-    3802: parseJsonResult,
+    3802: (value) => parseJsonResult(value, temporalApi),
     5069: BigInt,
   };
   for (const oid of builtinArrayOids()) {
@@ -804,7 +804,7 @@ function encodeParameter(
           : encodePgArrayLiteral;
         return encode(
           [...value.value],
-          (item) => serializeArrayElement(item, elementOid, value.source, options),
+          (item) => serializeArrayElement(item, elementOid, options),
         );
       }
       const serializeArray = options.serializers[oid];
@@ -814,6 +814,9 @@ function encodeParameter(
     const serialize = options.serializers[oid];
     if (serialize) return String(serialize(value.value));
     return String(serializeUnknown(value.value));
+  }
+  if (inferredOid === 114 || inferredOid === 3802) {
+    throw new Error("sqlx-js: PostgreSQL JSON values require a SqlxJson document created by sql.json(...)");
   }
   if (Array.isArray(value)) {
     const serialize = inferredOid === undefined ? undefined : options.serializers[inferredOid];
@@ -844,19 +847,15 @@ function encodeParameter(
 function serializeArrayElement(
   value: unknown,
   elementOid: number,
-  source: PostgresParameter["source"],
   options: ParsedPostgresOptions,
 ): string {
   if (parameterKind(value) === "json") {
-    return serializeJson((value as JsonParameter).value);
+    return serializeJson(value as JsonParameter);
   }
   if (isPostgresParameter(value)) {
     const oid = value.oid || elementOid;
     const serialize = options.serializers[oid];
     return String(serialize ? serialize(value.value) : serializeUnknown(value.value));
-  }
-  if (source === "typed" && (elementOid === 114 || elementOid === 3802)) {
-    return String(value);
   }
   const serialize = options.serializers[elementOid];
   return String(serialize ? serialize(value) : serializeUnknown(value));
@@ -881,7 +880,7 @@ function serializeBoolean(value: unknown): string {
 }
 
 function serializeJson(value: unknown): string {
-  return stringifyJsonParameter(value);
+  return stringifyJsonParameter(value as JsonParameter);
 }
 
 function isPostgresParameter(value: unknown): value is PostgresParameter {

@@ -122,7 +122,7 @@ export const insertEvents = defineQuery.execute(
 }));
 
 type InsertEventsInput = QueryParams<typeof insertEvents>;       // readonly AnalyticsEvent[]
-type InsertEventsWire = QueryWireParams<typeof insertEvents>;    // { events: JsonParameter<unknown> }
+type InsertEventsWire = QueryWireParams<typeof insertEvents>;    // { events: SqlxJson<unknown> }
 ```
 
 The mapper receives only `json` and `array` parameter helpers. Once `prepare` has emitted `KnownQueries`, its output is checked exactly at the definition against the generated wire contract: missing, extra, and incompatible fields are compile errors. An application input can therefore narrow or reorganize the API without widening PostgreSQL parameters. The mapper executes once per call before named-parameter binding; root, generic scoped, and transaction executors keep the same result, observer, and query-ID behavior. This is the intended boundary for discriminated unions such as `preserve | clear | set`: the application owns the union and maps it to the physical flags and nullable values required by SQL.
@@ -281,17 +281,49 @@ await sql(
 );
 ```
 
-Generated parameter types require `PgArrayParameter<T, NullableElements>` or `JsonParameter<T>`, so mixing the two representations is a TypeScript error. `sql.array(...)` derives whether its input contains SQL `NULL` elements. Ordinary PostgreSQL array targets accept either form; an array whose element type is a `DOMAIN ... NOT NULL`, or whose source column has an `arrayElementNullability` assertion, accepts only a non-null-element wrapper. A PostgreSQL `json[]` / `jsonb[]` composes both wrappers: the outer `sql.array(...)` selects the PostgreSQL array representation and each non-SQL-NULL element uses `sql.json(...)`. `sql.json(null)` represents JSON `null`; a bare `null` inside `sql.array(...)` represents an SQL `NULL` array element.
+Generated parameter types require `PgArrayParameter<T, NullableElements>` or
+`SqlxJson<T>`, so mixing the two representations is a TypeScript error.
+`sql.array(...)` derives whether its input contains SQL `NULL` elements.
+Ordinary PostgreSQL array targets accept either form; an array whose element
+type is a `DOMAIN ... NOT NULL`, or whose source column has an
+`arrayElementNullability` assertion, accepts only a non-null-element wrapper. A
+PostgreSQL `json[]` / `jsonb[]` composes both wrappers: the outer
+`sql.array(...)` selects the PostgreSQL array representation and each non-SQL-
+NULL element uses `sql.json(...)`. `sql.json(null)` represents JSON `null`; a
+bare `null` inside `sql.array(...)` represents an SQL `NULL` array element.
 
 PostgreSQL column `NOT NULL` constrains the array value, not its elements. Therefore an ordinary `text[] NOT NULL` result is `(string | null)[]`; `prepare` emits `string[]` only after proving non-null elements from the SQL expression, a `NOT NULL` element domain, or an explicit application assertion. Declared array dimensions are not treated as a fixed TypeScript shape because PostgreSQL does not enforce them.
 
-`sql.json()` accepts ordinary structurally JSON-compatible interfaces and preserves their concrete type in `JsonParameter<T>`. Runtime values must be deterministic plain records or arrays; class instances, binary views, custom `toJSON`, accessors, symbol/named array properties, array holes, and ignored symbol-keyed object properties fail instead of relying on lossy `JSON.stringify` coercion. It also rejects known non-JSON values such as `Date`, Temporal objects, `bigint`, functions, non-finite numbers, unsafe integers, and `undefined` array elements. Result decoding applies the same safe-integer check so a large JSON integer cannot be silently rounded; represent exact integers outside JavaScript's safe range as strings. TypeScript is structurally typed, so it cannot identify every user-defined class solely because it was constructed with `new`; runtime validation remains authoritative.
+`sql.json()` validates and snapshots an ordinary structurally compatible value,
+deeply freezes the snapshot, and returns `SqlxJson<T>`. Every generated
+`json`/`jsonb` result is also a branded document; access the application value
+through `.value`. `bigint` and all reconstructable Temporal types round-trip
+through versioned sparse tags. `JsonNumber.from(text)` emits an exact native
+JSON number for PostgreSQL comparison, arithmetic, containment, and indexing:
 
-The built-in `json`/`jsonb` scalar and array codecs own this safety boundary.
-The planned [sqlx-js Extended JSON protocol](./extended-json-protocol.md) will
-replace this vanilla boundary with branded, versioned documents and automatic
-`bigint`/Temporal round-trips. That proposal is not implemented by the current
-`sql.json()` API.
+```ts
+const payload = sql.json({
+  id: 9_007_199_254_740_993n,
+  amount: JsonNumber.from("12345678901234567890.125"),
+  occurredAt: Temporal.Instant.from("2026-08-04T10:15:30.123456789Z"),
+});
+
+const row = await sql.one("SELECT payload FROM events WHERE id = $1", id);
+const event = row.payload.value;
+```
+
+Class instances, binary views, custom `toJSON`, accessors, symbol/named array
+properties, array holes, explicit `undefined`, functions, non-finite numbers,
+unsafe JavaScript integer `number` values, and JavaScript `Date` fail closed.
+Existing untagged database JSON remains readable; numeric tokens that cannot be
+materialized safely as JavaScript numbers become `JsonNumber` instead of being
+rounded. Unknown versions/tags, malformed controls, duplicate object keys, and
+documents above the fixed protocol resource limits fail.
+
+The built-in `json`/`jsonb` scalar and array codecs and exported
+`SqlxJson.parse`/`SqlxJson.stringify` methods share the exact implementation.
+See the [Extended JSON protocol](./extended-json-protocol.md) for tag spelling,
+canonicalization, JSONB operator consequences, and the reader-first rollout.
 Low-level numeric `types` cannot replace them; application-owned custom types
 remain configurable through their ordinary codec contract.
 

@@ -19,18 +19,22 @@ The next breaking contract slice is being delivered as one coherent boundary:
   `defineQuery` may carry a source-local allow reason or strengthen a globally
   permissive policy. Fingerprint deduplication never transfers the waiver to a
   different call site.
-- JSON numeric safety policy: non-finite inputs and unsafe integer inputs or
-  results fail instead of being coerced or rounded. Exact larger quantities
-  remain strings or PostgreSQL `numeric`; ordinary fractional JSON numbers
-  retain JavaScript `number` semantics rather than claiming arbitrary decimal
-  precision.
+- JSON numeric safety policy: non-finite and already-rounded unsafe integer
+  `number` inputs fail instead of being coerced. Exact native result tokens and
+  explicit `JsonNumber` inputs retain their decimal representation; ordinary
+  fractional JSON numbers keep JavaScript `number` semantics rather than
+  claiming arbitrary decimal precision.
+- Extended JSON protocol v1: every PostgreSQL `json`/`jsonb` input and output
+  is a branded immutable `SqlxJson<T>` document; sparse collision-safe tags
+  round-trip `bigint` and all reconstructable Temporal values; `JsonNumber`
+  preserves exact native numerics; exact parsing, resource limits, artifact
+  version binding, and the read-only reader-first audit fail closed.
 
 These items remain recorded here until the release containing the new cache,
 generator, and runtime descriptor revisions is published.
 
 | Feature | ROI | Notes |
 |---------|-----|-------|
-| sqlx-js Extended JSON protocol | 9 | Make every PostgreSQL `json`/`jsonb` input and output a branded, immutable, versioned `SqlxJson<T>` document. Inside that explicit boundary, automatically round-trip `bigint` and supported Temporal values, expose exact native JSON numbers, fail closed on unknown tags, and preserve the no-ORM boundary. Sparse tags, collision escaping, JSONB operator/index consequences, resource limits, and reader-first migration must be frozen before implementation. See the [design proposal](./docs/extended-json-protocol.md). |
 | Prisma migration assistant | 7 | Import Prisma Migrate SQL history and Prisma TypedSQL/raw SQL into `sqlx-js`; classify Prisma Client CRUD/nested-write sites as assisted/manual instead of promising a fully automatic ORM rewrite. The shipped `queries --json` inventory covers sqlx-js definitions/call sites after conversion, not Prisma reference-graph discovery. |
 | Planning datasets and query-plan inventory | 6 | Let applications seed a disposable planning database before `ANALYZE`, then capture normalized generic `EXPLAIN` metadata in a separate environment-scoped snapshot. sqlx-js owns safe orchestration and fingerprints; the application owns representative data. Without a declared planning dataset or representative database, only structural plan changes are meaningful. |
 | pgschema snapshot and migration handoff | 6 | Provider-aware `dev` / `verify` validates application SQL against `schema.sql` in disposable shadow databases. Next, automate snapshot handoff for teams migrating from built-in migrations without creating two DDL authorities. |

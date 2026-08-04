@@ -1,5 +1,6 @@
 {
-  "cacheFormat": 8,
-  "generatorRevision": 25,
+  "cacheFormat": 9,
+  "generatorRevision": 26,
+  "jsonProtocol": 1,
   "configHash": "400d87780558854a"
 }
