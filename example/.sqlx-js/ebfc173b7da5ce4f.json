@@ -25,6 +25,7 @@
     false
   ],
   "nullableParamOverrides": [],
+  "resultElementNonNullOverrides": [],
   "columns": [
     {
       "name": "id",

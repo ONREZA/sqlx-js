@@ -5,6 +5,8 @@ main README can stay focused on the current API.
 
 ## Guides
 
+- [0.29.0](./0.29.0.md) — exact-query array-element assertions and query
+  cache regeneration.
 - [0.27.0](./0.27.0.md) — source-owned nullable/parse-only contracts, CLI
   package identity, complete function settings, and artifact regeneration.
 - [0.25.0](./0.25.0.md) — compact prepare output, explicit warning and verbose

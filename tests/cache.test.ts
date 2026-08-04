@@ -20,6 +20,7 @@ function emptyEntry(query: string, hasResultSet = false): CacheEntry {
     paramTsTypes: [],
     paramNullable: [],
     nullableParamOverrides: [],
+    resultElementNonNullOverrides: [],
     columns: [],
     hasResultSet,
     inference: { columns: [], params: [] },
@@ -109,6 +110,57 @@ test("Cache rejects missing or incomplete inference explanations", () => {
       columns: [{ name: "value", typeOid: 23, tsType: "number", nullable: false }],
     }));
     expect(() => new Cache(dir).read("bad")).toThrow(/invalid inference explanations.*sqlx-js prepare/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Cache rejects invalid result assertion metadata", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sqlx-js-cache-result-assertions-"));
+  try {
+    writeFileSync(join(dir, "bad.json"), JSON.stringify({
+      ...emptyEntry("SELECT 1 AS value", true),
+      resultElementNonNullOverrides: ["missing"],
+      columns: [{ name: "value", typeOid: 23, tsType: "number", nullable: false }],
+      inference: { columns: [{ sources: null, reason: "test fixture" }], params: [] },
+    }));
+    expect(() => new Cache(dir).read("bad")).toThrow(/invalid result assertion metadata/);
+
+    writeFileSync(join(dir, "bad.json"), JSON.stringify({
+      ...emptyEntry("SELECT 1 AS value", true),
+      resultElementNonNullOverrides: ["value"],
+      columns: [{ name: "value", typeOid: 23, tsType: "number", nullable: false }],
+      inference: { columns: [{ sources: null, reason: "test fixture" }], params: [] },
+    }));
+    expect(() => new Cache(dir).read("bad")).toThrow(/invalid result assertion metadata/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Cache validates result assertion order without locale-dependent sorting", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sqlx-js-cache-result-assertion-order-"));
+  try {
+    const entry: CacheEntry = {
+      ...emptyEntry("SELECT ARRAY['x']::text[] AS \"Z\", ARRAY['y']::text[] AS a", true),
+      resultElementNonNullOverrides: ["Z", "a"],
+      columns: [
+        { name: "Z", typeOid: 1009, tsType: "(string)[]", nullable: false },
+        { name: "a", typeOid: 1009, tsType: "(string)[]", nullable: false },
+      ],
+      inference: {
+        columns: [
+          { sources: null, reason: "test fixture" },
+          { sources: null, reason: "test fixture" },
+        ],
+        params: [],
+      },
+    };
+    expect(() => new Cache(dir).write("ordered", entry)).not.toThrow();
+    expect(() => new Cache(dir).write("reversed", {
+      ...entry,
+      resultElementNonNullOverrides: ["a", "Z"],
+    })).toThrow(/invalid result assertion metadata/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

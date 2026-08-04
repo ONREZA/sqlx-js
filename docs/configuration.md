@@ -172,7 +172,7 @@ Moving `output` or disabling the catalog does not delete the previous TypeScript
 
 ## Array element nullability assertions
 
-`arrayElementNullability` is an application-owned assertion for direct PostgreSQL array columns whose elements are guaranteed non-null outside PostgreSQL's type system. Use `"non-null"` only when writes and existing data enforce that invariant. It follows direct-column provenance through CTEs, derived tables, compatible set-operation branches, and mapped parameters; arbitrary expressions are not narrowed by column name.
+`arrayElementNullability` is an application-owned assertion for direct PostgreSQL array columns whose elements are guaranteed non-null outside PostgreSQL's type system. Use `"non-null"` only when writes and existing data enforce that invariant. It follows direct-column provenance through CTEs, derived tables, compatible set-operation branches, and mapped parameters; arbitrary expressions are not narrowed by column name. For an opaque exact-query result such as a PostgreSQL function `OUT` field, use `defineQuery(..., { resultAssertions: { column: { elements: "non-null" } } })` instead.
 
 Prefer a database-owned element contract when possible:
 

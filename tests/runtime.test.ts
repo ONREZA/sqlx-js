@@ -156,6 +156,15 @@ test("query definitions execute through root and transaction executors with stab
   expect(events[1]).toMatchObject({ queryId: findUser.queryId, queryName: "users.findById" });
 });
 
+test("query definitions accept static result assertions", () => {
+  expect(defineQuery.one("SELECT capabilities", {
+    resultAssertions: { capabilities: { elements: "non-null" } },
+  })).toMatchObject({ query: "SELECT capabilities", mode: "one" });
+  expect(() => defineQuery.one("SELECT capabilities", {
+    resultAssertions: { capabilities: { elements: "nullable" } } as never,
+  })).toThrow(/must be \{ elements: "non-null" \}/);
+});
+
 test("query definitions pass execution options outside SQL parameters", async () => {
   const controller = new AbortController();
   const requests: import("../src/runtime").RuntimeQueryRequest[] = [];

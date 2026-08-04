@@ -262,14 +262,18 @@ test("defineQuery definitions are scanned with names and cardinality", () => {
   expect(sites[2]).toMatchObject({ cardinality: "execute" });
 });
 
-test("defineQuery source options preserve nullable parameters and expected validation", () => {
+test("defineQuery source options preserve parameter, validation, and result assertions", () => {
   setup({
     "queries.ts": `
       import { defineQuery } from "@onreza/sqlx-js";
       export const call = defineQuery.one(
         "billing.retire",
         "SELECT retire($retireAt::timestamptz, $operationId::text)",
-        { nullableParams: ["retireAt", "operationId"], expectedValidation: "parse-only" },
+        {
+          nullableParams: ["retireAt", "operationId"],
+          expectedValidation: "parse-only",
+          resultAssertions: { capabilities: { elements: "non-null" } },
+        },
       );
       export const positional = defineQuery("SELECT $1::text", { nullableParams: [1] });
     `,
@@ -279,6 +283,7 @@ test("defineQuery source options preserve nullable parameters and expected valid
     queryName: "billing.retire",
     nullableParams: [1, 2],
     expectedValidation: "parse-only",
+    resultAssertions: { capabilities: { elements: "non-null" } },
   });
   expect(sites[1]).toMatchObject({ nullableParams: [1] });
 });
@@ -364,6 +369,27 @@ test("defineQuery rejects an empty observability name", () => {
     `,
   });
   expect(() => scanProject(tmp)).toThrow(/name must not be empty/);
+});
+
+test("defineQuery result assertions must be static", () => {
+  setup({
+    "queries.ts": `
+      import { defineQuery } from "@onreza/sqlx-js";
+      const resultAssertions = { capabilities: { elements: "non-null" } } as const;
+      export const query = defineQuery("SELECT capabilities", { resultAssertions: resultAssertions });
+    `,
+  });
+  expect(() => scanProject(tmp)).toThrow(/resultAssertions must be an object literal/);
+
+  setup({
+    "queries.ts": `
+      import { defineQuery } from "@onreza/sqlx-js";
+      export const query = defineQuery("SELECT values", {
+        resultAssertions: { values: { elements: "nullable" } },
+      });
+    `,
+  });
+  expect(() => scanProject(tmp)).toThrow(/must be \{ elements: "non-null" \}/);
 });
 
 test("sql.file one, optional, and execute are scanned as file queries", () => {

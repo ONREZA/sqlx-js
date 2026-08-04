@@ -23,6 +23,7 @@ function cacheEntry(query: string, overrides: Partial<CacheEntry> = {}): CacheEn
     paramTsTypes,
     paramNullable: paramTsTypes.map(() => false),
     nullableParamOverrides: [],
+    resultElementNonNullOverrides: [],
     columns,
     hasResultSet: columns.length > 0,
     inference: {
@@ -43,7 +44,11 @@ test("queries inventory and embedded module are deterministic and database-free"
       export const countUsers = defineQuery.one(
         "users.count",
         "SELECT $scope::text AS scope",
-        { nullableParams: ["scope"], expectedValidation: "parse-only" },
+        {
+          nullableParams: ["scope"],
+          expectedValidation: "parse-only",
+          resultAssertions: { capabilities: { elements: "non-null" } },
+        },
       );
       export async function findUser(id: string) {
         return sql.file.optional("queries/user.sql", { id });
@@ -68,8 +73,13 @@ test("queries inventory and embedded module are deterministic and database-free"
         cardinalities: string[];
         sqlFilePaths: string[];
         nullableParamOverrides: number[];
+        resultAssertions: Record<string, { elements: "non-null" }>;
         expectedValidation: string | null;
-        callSites: Array<{ nullableParams?: number[]; expectedValidation?: string }>;
+        callSites: Array<{
+          nullableParams?: number[];
+          resultAssertions?: Record<string, { elements: "non-null" }>;
+          expectedValidation?: string;
+        }>;
         cacheStatus: string;
         validation: string | null;
       }>;
@@ -81,8 +91,13 @@ test("queries inventory and embedded module are deterministic and database-free"
       cardinalities: ["one"],
       sqlFilePaths: [],
       nullableParamOverrides: [1],
+      resultAssertions: { capabilities: { elements: "non-null" } },
       expectedValidation: "parse-only",
-      callSites: [expect.objectContaining({ nullableParams: [1], expectedValidation: "parse-only" })],
+      callSites: [expect.objectContaining({
+        nullableParams: [1],
+        resultAssertions: { capabilities: { elements: "non-null" } },
+        expectedValidation: "parse-only",
+      })],
       cacheStatus: "missing",
       validation: null,
     });
@@ -120,18 +135,30 @@ test("queries inventory and embedded module are deterministic and database-free"
 test("queries inventory distinguishes current and orphaned cache entries", async () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-query-cache-"));
   try {
-    const query = "SELECT 1 AS value";
+    const query = `SELECT ARRAY['x']::text[] AS value, 1 AS "toString"`;
     const orphanQuery = "SELECT 2";
     const orphanId = queryId(orphanQuery);
-    writeFileSync(join(root, "query.ts"), `import { sql } from "@onreza/sqlx-js"; sql(${JSON.stringify(query)});\n`);
+    writeFileSync(join(root, "query.ts"), `
+      import { defineQuery } from "@onreza/sqlx-js";
+      defineQuery(${JSON.stringify(query)}, {
+        resultAssertions: { value: { elements: "non-null" } },
+      });
+    `);
     const cacheDir = join(root, ".sqlx-js");
     const cache = new Cache(cacheDir);
     cache.write(queryId(query), cacheEntry(query, {
       validation: "planned",
-      columns: [{ name: "value", typeOid: 23, tsType: "number", nullable: false }],
+      resultElementNonNullOverrides: ["value"],
+      columns: [
+        { name: "value", typeOid: 1009, tsType: "(string)[]", nullable: false },
+        { name: "toString", typeOid: 23, tsType: "number", nullable: false },
+      ],
       hasResultSet: true,
       inference: {
-        columns: [{ sources: null, reason: "test fixture" }],
+        columns: [
+          { sources: null, reason: "test fixture" },
+          { sources: null, reason: "test fixture" },
+        ],
         params: [],
       },
     }));
@@ -140,16 +167,35 @@ test("queries inventory distinguishes current and orphaned cache entries", async
     const inventory = await buildQueryInventory(root, cacheDir);
     expect(inventory.queries[0]).toMatchObject({
       queryId: queryId(query),
+      resultAssertions: { value: { elements: "non-null" } },
       cacheStatus: "current",
       validation: "planned",
     });
     expect(inventory.orphanedCacheIds).toEqual([orphanId]);
 
+    const explained = spawnSync("bun", [
+      binPath,
+      "queries",
+      "explain",
+      queryId(query),
+      "--root",
+      root,
+    ], { encoding: "utf8", env: { ...process.env, DATABASE_URL: "" } });
+    expect(explained.status, explained.stderr).toBe(0);
+    expect(explained.stdout.match(/assertion: elements non-null/g)).toHaveLength(1);
+
     cache.write(queryId(query), cacheEntry(query, {
-      columns: [{ name: "value", typeOid: 23, tsType: "number", nullable: false }],
+      resultElementNonNullOverrides: ["value"],
+      columns: [
+        { name: "value", typeOid: 1009, tsType: "(string)[]", nullable: false },
+        { name: "toString", typeOid: 23, tsType: "number", nullable: false },
+      ],
       hasResultSet: true,
       inference: {
-        columns: [{ sources: null, reason: "test fixture" }],
+        columns: [
+          { sources: null, reason: "test fixture" },
+          { sources: null, reason: "test fixture" },
+        ],
         params: [],
       },
     }));
@@ -223,7 +269,7 @@ test("queries explain reports committed provenance and parameter targets", async
 test("queries inventory aggregates profile-specific cache contracts", async () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-profile-queries-"));
   try {
-    const query = "SELECT $scope::text AS value";
+    const query = "SELECT $scope::text AS value, ARRAY['x']::text[] AS capabilities";
     const profiles = {
       api: { name: "api", role: "app_api" },
       worker: { name: "worker", role: "app_worker" },
@@ -233,7 +279,10 @@ test("queries inventory aggregates profile-specific cache contracts", async () =
     };\n`);
     writeFileSync(join(root, "query.ts"), `
       import { defineQuery } from "@onreza/sqlx-js";
-      defineQuery.for("api").one(${JSON.stringify(query)}, { nullableParams: ["scope"] });
+      defineQuery.for("api").one(${JSON.stringify(query)}, {
+        nullableParams: ["scope"],
+        resultAssertions: { capabilities: { elements: "non-null" } },
+      });
       defineQuery.for("worker").one(${JSON.stringify(query)});
     `);
     const cacheDir = join(root, ".sqlx-js");
@@ -247,11 +296,23 @@ test("queries inventory aggregates profile-specific cache contracts", async () =
         paramTsTypes: ["string"],
         paramNullable: [profile === "api"],
         nullableParamOverrides: profile === "api" ? [1] : [],
+        resultElementNonNullOverrides: profile === "api" ? ["capabilities"] : [],
         paramNames: ["scope"],
-        columns: [{ name: "value", typeOid: 23, tsType: "number", nullable: false }],
+        columns: [
+          { name: "value", typeOid: 25, tsType: "string", nullable: profile === "api" },
+          {
+            name: "capabilities",
+            typeOid: 1009,
+            tsType: "(string)[]",
+            nullable: false,
+          },
+        ],
         hasResultSet: true,
         inference: {
-          columns: [{ sources: null, reason: "test fixture" }],
+          columns: [
+            { sources: null, reason: "test fixture" },
+            { sources: null, reason: "test fixture" },
+          ],
           params: [{ targets: [], reason: "test fixture" }],
         },
       }));
@@ -264,6 +325,7 @@ test("queries inventory aggregates profile-specific cache contracts", async () =
         query,
         profiles: ["api", "worker"],
         nullableParamOverrides: [1],
+        resultAssertions: { capabilities: { elements: "non-null" } },
         cacheStatus: "current",
         validation: "planned",
         callSites: [
@@ -271,6 +333,14 @@ test("queries inventory aggregates profile-specific cache contracts", async () =
           expect.objectContaining({ profiles: ["worker"] }),
         ],
       }),
+    ]);
+    const explanation = await buildQueryExplanation(root, cacheDir, queryId(query));
+    expect(explanation.contracts).toEqual([
+      expect.objectContaining({
+        profile: "api",
+        resultAssertions: { capabilities: { elements: "non-null" } },
+      }),
+      expect.objectContaining({ profile: "worker", resultAssertions: {} }),
     ]);
     expect(inventory.orphanedCacheIds).toEqual([]);
   } finally {

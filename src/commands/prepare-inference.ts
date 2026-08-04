@@ -92,6 +92,31 @@ export function resolveColumnTs(
   return resolveTs(f.typeOid, (oid) => schema.customType(oid), cfg);
 }
 
+export function resolveResultArrayElementNullability(
+  fields: readonly FieldDescription[],
+  schema: SchemaCache,
+  inferred: readonly ArrayElementNullability[],
+  assertedNonNullColumns: readonly string[],
+): ArrayElementNullability[] {
+  const byName = new Map(fields.map((field) => [
+    parseColumnOverride(field.name).name,
+    field,
+  ]));
+  for (const column of assertedNonNullColumns) {
+    const field = byName.get(column);
+    if (!field) {
+      throw new Error(`resultAssertions references unknown result column ${JSON.stringify(column)}`);
+    }
+    if (!schema.arrayElement(field.typeOid)) {
+      throw new Error(`resultAssertions column ${JSON.stringify(column)} must have a PostgreSQL array type`);
+    }
+  }
+  const asserted = new Set(assertedNonNullColumns);
+  return fields.map((field, index) =>
+    asserted.has(parseColumnOverride(field.name).name) ? "non-null" : inferred[index] ?? "unknown"
+  );
+}
+
 function directColumnSource(f: FieldDescription, schema: SchemaCache): ColumnSource | undefined {
   if (f.tableOid === 0 || f.columnAttr === 0) return undefined;
   const table = schema.tableNameByOid(f.tableOid);

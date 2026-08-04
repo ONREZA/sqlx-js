@@ -10,6 +10,7 @@
   "paramTsTypes": [],
   "paramNullable": [],
   "nullableParamOverrides": [],
+  "resultElementNonNullOverrides": [],
   "columns": [
     {
       "name": "n",

@@ -2,6 +2,7 @@ import ts from "typescript";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import type { DatabaseProfiles, ScanConfig } from "../config";
+import type { QueryResultAssertions } from "../query";
 import { rewriteNamedParameters } from "../sql-params";
 import {
   resolveClientInitializer,
@@ -27,6 +28,7 @@ export type QueryCallSite = {
   execution?: ClientExecution;
   nullableParams?: number[];
   expectedValidation?: "parse-only";
+  resultAssertions?: QueryResultAssertions;
 };
 
 export class ScanError extends Error {
@@ -539,6 +541,7 @@ export function scanFile(
       ...(profiles ? { profiles } : {}),
       ...(options.nullableParams ? { nullableParams: options.nullableParams } : {}),
       ...(options.expectedValidation ? { expectedValidation: options.expectedValidation } : {}),
+      ...(options.resultAssertions ? { resultAssertions: options.resultAssertions } : {}),
     });
     return true;
   };

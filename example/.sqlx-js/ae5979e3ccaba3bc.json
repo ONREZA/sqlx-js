@@ -18,6 +18,7 @@
     false
   ],
   "nullableParamOverrides": [],
+  "resultElementNonNullOverrides": [],
   "columns": [
     {
       "name": "user_id",

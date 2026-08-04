@@ -71,14 +71,18 @@ export const analyze = defineQuery.execute(
   `ANALYZE billing_event`,
   { expectedValidation: "parse-only" },
 );
+
+export const claimDelivery = defineQuery.one(
+  "delivery.claim",
+  `SELECT capabilities AS "capabilities!" FROM claim_delivery()`,
+  { resultAssertions: { capabilities: { elements: "non-null" } } },
+);
 ```
 
 For named SQL, `nullableParams` contains parameter names; for positional SQL,
 it contains 1-based indexes. The assertion widens the generated input type to
 `T | null`. It cannot override a direct `NOT NULL` stored-value target: live
 prepare fails instead of generating a contract that PostgreSQL cannot satisfy.
-Changing this option makes the committed query cache stale and requires a live
-`prepare`.
 
 `expectedValidation: "parse-only"` acknowledges a reviewed statement outside
 PostgreSQL's generic `PREPARE`/`EXPLAIN EXECUTE` surface. Parse and Describe
@@ -86,7 +90,21 @@ still run. If the statement later becomes plannable, prepare warns that the
 source expectation is stale; if any call site for the same query/profile has
 not acknowledged parse-only validation, the normal plan warning remains and
 `--strict-inference` promotes it to an error.
-`sqlx-js queries` exposes both source contracts in its database-free inventory.
+
+`resultAssertions` records an application-owned result invariant that PostgreSQL
+cannot represent. The supported assertion narrows an array result from
+`(T | null)[]` to `T[]`; the column key is the emitted object key after `!` or
+`?` alias suffix removal. Live prepare fails if the key is not an output column
+or its PostgreSQL type is not an array. The assertion is exact-query metadata,
+so use it for opaque expressions or `RETURNS TABLE` / `OUT` fields; prefer a
+database domain or `arrayElementNullability` for a direct stored column. Prepare
+does not execute the query or prove the data invariant.
+
+Changing `nullableParams` or `resultAssertions` makes the committed query cache
+stale and requires live prepare. `sqlx-js queries` exposes all source contracts
+in its database-free inventory. Keep the options object, its arrays, and nested
+assertion objects as inline literals so the database-free scanner can validate
+the complete contract; variables and spreads are rejected.
 
 Use `mapParams` when the application input is intentionally narrower or more expressive than PostgreSQL's physical parameters:
 

@@ -36,6 +36,7 @@ function descriptorEntry(query: string, oid = 23): CacheEntry {
     paramTsTypes: [oid === 23 ? "number" : "unknown"],
     paramNullable: [false],
     nullableParamOverrides: [],
+    resultElementNonNullOverrides: [],
     columns: [],
     hasResultSet: false,
     inference: {
