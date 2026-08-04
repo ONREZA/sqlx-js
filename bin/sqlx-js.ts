@@ -2,8 +2,9 @@
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
-import type { PrepareDiagnosticPhase } from "../src/commands/prepare";
+import type { JsonAuditReport } from "../src/commands/json-audit";
 import type { PgschemaSubcommand } from "../src/commands/pgschema";
+import type { PrepareDiagnosticPhase } from "../src/commands/prepare";
 import { JSON_PROTOCOL_VERSION } from "../src/artifact-versions";
 import { assertSupportedRuntime, loadConfig, loadRootEnv } from "../src/config";
 import { inspectPackageIdentity, runningPackageIdentity } from "../src/package-identity";
@@ -487,7 +488,7 @@ function printPrepareFailure(
 }
 
 function printJsonAuditFailure(message: string): void {
-  console.log(JSON.stringify({
+  const report = {
     formatVersion: 1,
     protocolVersion: JSON_PROTOCOL_VERSION,
     ok: false,
@@ -500,13 +501,17 @@ function printJsonAuditFailure(message: string): void {
       scannedColumns: 0,
       collisionRows: 0,
       duplicateKeyRows: 0,
+      invalidNumberRows: 0,
       errors: 1,
       dependencies: 0,
       sourceUsages: 0,
       reviewRequired: true,
     },
     diagnostics: [{ severity: "error", message }],
-  }, null, 2));
+  } satisfies JsonAuditReport & {
+    diagnostics: Array<{ severity: "error"; message: string }>;
+  };
+  console.log(JSON.stringify(report, null, 2));
 }
 
 function failPreflight(message: string, phase: PrepareDiagnosticPhase = "config"): never {

@@ -75,7 +75,17 @@ test("CLI rejects project commands from a different sqlx-js version and doctor r
       protocolVersion: 1,
       ok: false,
       complete: false,
-      summary: { errors: 1, reviewRequired: true },
+      summary: {
+        columns: 0,
+        scannedColumns: 0,
+        collisionRows: 0,
+        duplicateKeyRows: 0,
+        invalidNumberRows: 0,
+        errors: 1,
+        dependencies: 0,
+        sourceUsages: 0,
+        reviewRequired: true,
+      },
       diagnostics: [{ severity: "error" }],
     });
 
@@ -164,7 +174,8 @@ test("json audit --json reports missing DATABASE_URL as one structured document"
     );
     expect(result.status).toBe(2);
     expect(result.stderr).toBe("");
-    expect(JSON.parse(result.stdout)).toMatchObject({
+    const report = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(report).toMatchObject({
       formatVersion: 1,
       protocolVersion: 1,
       ok: false,
@@ -172,8 +183,18 @@ test("json audit --json reports missing DATABASE_URL as one structured document"
       columns: [],
       dependencies: [],
       sourceUsages: [],
-      summary: { errors: 1, reviewRequired: true },
       diagnostics: [{ severity: "error", message: "DATABASE_URL is required for json audit" }],
+    });
+    expect(report.summary).toEqual({
+      columns: 0,
+      scannedColumns: 0,
+      collisionRows: 0,
+      duplicateKeyRows: 0,
+      invalidNumberRows: 0,
+      errors: 1,
+      dependencies: 0,
+      sourceUsages: 0,
+      reviewRequired: true,
     });
 
     const invalid = spawnSync(
