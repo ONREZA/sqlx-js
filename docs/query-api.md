@@ -315,10 +315,12 @@ const event = row.payload.value;
 Class instances, binary views, custom `toJSON`, accessors, symbol/named array
 properties, array holes, explicit `undefined`, functions, non-finite numbers,
 unsafe JavaScript integer `number` values, and JavaScript `Date` fail closed.
-Existing untagged database JSON remains readable; numeric tokens that cannot be
+Existing untagged database JSON remains readable when it satisfies the frozen
+reader contract; numeric tokens within PostgreSQL `jsonb` limits that cannot be
 materialized safely as JavaScript numbers become `JsonNumber` instead of being
-rounded. Unknown versions/tags, malformed controls, duplicate object keys, and
-documents above the fixed protocol resource limits fail.
+rounded. Unknown versions/tags, malformed controls, duplicate object keys,
+out-of-range numeric tokens, and documents above the fixed protocol resource
+limits fail.
 
 The built-in `json`/`jsonb` scalar and array codecs and exported
 `SqlxJson.parse`/`SqlxJson.stringify` methods share the exact implementation.

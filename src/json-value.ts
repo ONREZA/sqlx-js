@@ -2,6 +2,7 @@ import type { TemporalApi, TemporalFactory, TemporalJsonValue } from "./temporal
 import { isTemporalValue, resolveTemporalApi } from "./temporal-api";
 import { isDateValue, markDateFreeSqlValue } from "./sql-value";
 import { JSON_PROTOCOL_VERSION } from "./artifact-versions";
+import { canonicalJsonNumber, JSON_NUMBER_LIMITS } from "./json-number";
 
 export const EXTENDED_JSON_PROTOCOL_VERSION = JSON_PROTOCOL_VERSION;
 
@@ -9,10 +10,8 @@ const MAX_INPUT_BYTES = 16 * 1024 * 1024;
 const MAX_STRING_BYTES = 8 * 1024 * 1024;
 const MAX_DEPTH = 128;
 const MAX_NODES = 100_000;
-const MAX_INTEGER_DIGITS = 131_072;
-const MAX_BIGINT_DIGITS = MAX_INTEGER_DIGITS;
-const MAX_FRACTION_DIGITS = 16_383;
-const MAX_NUMBER_TOKEN_LENGTH = MAX_INTEGER_DIGITS + MAX_FRACTION_DIGITS + 16;
+const MAX_BIGINT_DIGITS = JSON_NUMBER_LIMITS.integerDigits;
+const MAX_NUMBER_TOKEN_LENGTH = JSON_NUMBER_LIMITS.tokenLength;
 const SQLX_JSON_DOCUMENT = Symbol("sqlx-js.json.document");
 const JSON_NUMBER_VALUE = Symbol("sqlx-js.json.number");
 const RAW_NUMBER = Symbol("sqlx-js.json.raw-number");
@@ -68,7 +67,10 @@ export class JsonNumber {
   readonly [JSON_NUMBER_VALUE]: string;
 
   private constructor(value: string) {
-    this[JSON_NUMBER_VALUE] = value;
+    if (typeof value !== "string") {
+      throw new Error("sqlx-js: JsonNumber requires a JSON number string");
+    }
+    this[JSON_NUMBER_VALUE] = canonicalJsonNumber(value);
     Object.freeze(this);
   }
 
@@ -76,7 +78,7 @@ export class JsonNumber {
     if (typeof value !== "string") {
       throw new Error("sqlx-js: JsonNumber.from requires a JSON number string");
     }
-    return new JsonNumber(canonicalJsonNumber(value));
+    return new JsonNumber(value);
   }
 
   toString(): string {
@@ -172,7 +174,7 @@ function snapshotValue(value: unknown, state: SnapshotState, depth: number): Jso
     return Object.is(value, -0) ? 0 : value;
   }
   if (typeof value === "bigint") return value;
-  if (value instanceof JsonNumber) return value;
+  if (value instanceof JsonNumber) return JsonNumber.from(value[JSON_NUMBER_VALUE]);
   if (isDateValue(value)) {
     throw new Error("sqlx-js: JavaScript Date is not supported in Extended JSON; use the matching Temporal type");
   }
@@ -476,60 +478,6 @@ function materializeNumber(token: string): number | JsonNumber {
   if (!Number.isFinite(number) || (number === 0 && canonical !== "0")) return JsonNumber.from(canonical);
   if (Number.isInteger(number) && !Number.isSafeInteger(number)) return JsonNumber.from(canonical);
   return Object.is(number, -0) ? 0 : number;
-}
-
-function canonicalJsonNumber(value: string): string {
-  if (value.length > MAX_NUMBER_TOKEN_LENGTH) {
-    throw new Error(`sqlx-js: Extended JSON number token exceeds ${MAX_NUMBER_TOKEN_LENGTH} characters`);
-  }
-  const match = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(value);
-  if (!match) throw new Error(`sqlx-js: invalid JSON number ${quotedForError(value)}`);
-  const sign = match[1]!;
-  const integer = match[2]!;
-  const fraction = match[3] ?? "";
-  const exponent = parseExponent(match[4] ?? "0");
-  let digits = integer + fraction;
-  let decimalPosition = integer.length + exponent;
-  const firstNonZero = digits.search(/[1-9]/);
-  if (firstNonZero === -1) return "0";
-  digits = digits.slice(firstNonZero);
-  decimalPosition -= firstNonZero;
-  let canonical: string;
-  let integerDigits: number;
-  let fractionDigits: number;
-  if (decimalPosition <= 0) {
-    integerDigits = 0;
-    fractionDigits = -decimalPosition + digits.length;
-    canonical = `0.${"0".repeat(-decimalPosition)}${digits}`;
-  } else if (decimalPosition >= digits.length) {
-    integerDigits = decimalPosition;
-    fractionDigits = 0;
-    canonical = digits + "0".repeat(decimalPosition - digits.length);
-  } else {
-    integerDigits = decimalPosition;
-    fractionDigits = digits.length - decimalPosition;
-    canonical = `${digits.slice(0, decimalPosition)}.${digits.slice(decimalPosition)}`;
-  }
-  if (integerDigits > MAX_INTEGER_DIGITS || fractionDigits > MAX_FRACTION_DIGITS) {
-    throw new Error(
-      `sqlx-js: Extended JSON number exceeds PostgreSQL jsonb numeric limits (${MAX_INTEGER_DIGITS} integer digits, ${MAX_FRACTION_DIGITS} fractional digits)`,
-    );
-  }
-  return sign ? `-${canonical}` : canonical;
-}
-
-function parseExponent(value: string): number {
-  const negative = value.startsWith("-");
-  const digits = value.replace(/^[+-]?0*/, "") || "0";
-  const maximum = MAX_INTEGER_DIGITS + MAX_FRACTION_DIGITS;
-  if (digits.length > String(maximum).length) {
-    throw new Error("sqlx-js: Extended JSON number exponent exceeds PostgreSQL jsonb numeric limits");
-  }
-  const exponent = Number(digits) * (negative ? -1 : 1);
-  if (Math.abs(exponent) > maximum) {
-    throw new Error("sqlx-js: Extended JSON number exponent exceeds PostgreSQL jsonb numeric limits");
-  }
-  return exponent;
 }
 
 class ExactJsonParser {

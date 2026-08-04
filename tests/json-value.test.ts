@@ -147,6 +147,17 @@ describe("Extended JSON parsing", () => {
     expect(() => JsonNumber.from("01")).toThrow("invalid JSON number");
     expect(() => JsonNumber.from("1e200000")).toThrow("exponent exceeds PostgreSQL jsonb numeric limits");
 
+    const RuntimeJsonNumber = JsonNumber as unknown as new (value: unknown) => JsonNumber;
+    expect(() => new RuntimeJsonNumber(1)).toThrow("requires a JSON number string");
+    expect(() => new RuntimeJsonNumber('0,"injected":true')).toThrow("invalid JSON number");
+    class JsonNumberSubclass extends RuntimeJsonNumber {
+      override toString(): string {
+        return '0,"injected":true';
+      }
+    }
+    expect(SqlxJson.stringify(createSqlxJson({ amount: new JsonNumberSubclass("1") })))
+      .toBe('{"amount":1}');
+
     const oversizedBigint = "1".repeat(131_073);
     expect(() => SqlxJson.parse(
       `{"$sqlx":{"type":"bigint","v":1},"value":"${oversizedBigint}"}`,
