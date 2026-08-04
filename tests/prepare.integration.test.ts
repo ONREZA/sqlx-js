@@ -11,8 +11,9 @@ import { SchemaCache, compositeLiteral } from "../src/pg/schema";
 import { mergeExtensionTypes } from "../src/pg/extensions";
 import { fingerprint } from "../src/cache";
 import { createSqlClient as createRuntimeSqlClient, type PostgresClient } from "../src/postgres-runtime";
-import { array, json, QueryTimeoutError } from "../src/runtime";
+import { array, json, QueryTimeoutError, ResultDecodeError } from "../src/runtime";
 import { JsonNumber, SqlxJson } from "../src/json-value";
+import { queryId } from "../src/query-id";
 import type { RuntimeQueryDescriptors } from "../src/runtime-descriptors";
 import { Temporal } from "@js-temporal/polyfill";
 import { inspectJsonAudit } from "../src/commands/json-audit";
@@ -410,9 +411,15 @@ if (!haveIntegrationDatabase) {
       ) as Array<{ payload: SqlxJson<{ safe: number; large: JsonNumber }> }>;
       expect(legacy[0]?.payload.value.large).toEqual(JsonNumber.from("9007199254740993"));
 
-      await expect(runtime.unsafe(
+      const invalidTagError = await runtime.unsafe(
         `SELECT '{"$sqlx":{"type":"future","v":1},"value":1}'::jsonb AS payload`,
-      )).rejects.toThrow('unknown Extended JSON tag type "future"');
+      ).catch((error) => error);
+      expect(invalidTagError).toBeInstanceOf(ResultDecodeError);
+      expect(invalidTagError).toMatchObject({
+        cause: expect.objectContaining({
+          message: expect.stringContaining('unknown Extended JSON tag type "future"'),
+        }),
+      });
       await expect(runtime.unsafe("SELECT $1::jsonb", 1)).rejects.toThrow(
         "PostgreSQL JSON values require a SqlxJson document",
       );
@@ -4301,7 +4308,7 @@ export default {
   });
 
   test("internal codecs preserve bigint and SQL null array elements", async () => {
-    const { createClient } = await import("../src/index");
+    const { createClient, ResultDecodeError } = await import("../src/index");
     const client = createClient(dbUrl, { max: 1 });
     try {
       const [row] = await client.unsafe<{
@@ -4381,41 +4388,164 @@ export default {
       );
       expect(timestampRoundtrip.toString()).toBe("0000-02-03T04:05:06.123456");
       expect(instantRoundtrip.toString()).toBe("0000-02-03T04:05:06.123456Z");
-      await expect(Promise.resolve(client.unsafe(
+      const rangeError = await Promise.resolve(client.unsafe(
         "SELECT '5874897-12-31'::date",
-      ))).rejects.toThrow("outside Temporal.PlainDate range");
+      )).catch((error) => error);
+      expect(rangeError).toBeInstanceOf(ResultDecodeError);
+      expect(rangeError).toMatchObject({
+        columnIndex: 0,
+        column: "date",
+        typeOid: 1082,
+        cause: expect.objectContaining({
+          message: expect.stringContaining("outside Temporal.PlainDate range"),
+        }),
+      });
       expect((await client.unsafe<{ value: number }>("SELECT 1::int AS value"))[0]!.value).toBe(1);
     } finally {
       await client.end();
     }
   });
 
-  test("temporal reject policy drains rejected infinity results and keeps the pool usable", async () => {
-    const { createClient } = await import("../src/index");
+  test("raw result decode errors expose column context and keep the pool usable", async () => {
+    const { createClient, ResultDecodeError } = await import("../src/index");
     const client = createClient(dbUrl, {
       max: 1,
       temporal: { infinity: "reject" },
     });
     try {
-      await expect(Promise.resolve(client.unsafe(
-        "SELECT 'infinity'::timestamptz AS value",
-      ))).rejects.toThrow("PostgreSQL timestamptz infinity is rejected");
+      const [{ pid: initialPid }] = await client.unsafe<{ pid: number }>(
+        "SELECT pg_backend_pid()::int AS pid",
+      );
+      const scalarQuery = `SELECT
+        value::int AS ok,
+        'infinity'::timestamptz AS "nextAttemptAt"
+      FROM generate_series(1, 32) AS series(value)`;
+      const scalarError = await Promise.resolve(client.unsafe(scalarQuery)).catch((error) => error);
+      expect(scalarError).toBeInstanceOf(ResultDecodeError);
+      expect(scalarError).toMatchObject({
+        queryId: queryId(scalarQuery),
+        columnIndex: 1,
+        column: "nextAttemptAt",
+        typeOid: 1184,
+        hint: expect.stringContaining("isfinite(...)"),
+        cause: expect.objectContaining({
+          message: expect.stringContaining("PostgreSQL timestamptz infinity is rejected"),
+        }),
+      });
+      expect((scalarError as Error).message).toContain("isfinite(...)");
+      expect((scalarError as Error).stack).toContain("ResultDecodeError:");
+      expect((scalarError as Error).stack).toContain("decodeDataRow");
       await expect(Promise.resolve(client.unsafe(
         "SELECT $1::date AS value",
         ["-infinity"],
       ))).rejects.toThrow("PostgreSQL date requires Temporal.PlainDate");
-      await expect(Promise.resolve(client.unsafe(
-        "SELECT ARRAY['infinity'::timestamptz] AS value",
-      ))).rejects.toThrow("PostgreSQL timestamptz infinity is rejected");
+      const arrayQuery = "SELECT ARRAY['infinity'::timestamptz] AS value";
+      const arrayError = await Promise.resolve(client.unsafe(arrayQuery)).catch((error) => error);
+      expect(arrayError).toBeInstanceOf(ResultDecodeError);
+      expect(arrayError).toMatchObject({
+        queryId: queryId(arrayQuery),
+        columnIndex: 0,
+        column: "value",
+        typeOid: 1185,
+        hint: expect.stringContaining("isfinite(...)"),
+        cause: expect.objectContaining({
+          message: expect.stringContaining("PostgreSQL timestamptz infinity is rejected"),
+        }),
+      });
       await expect(Promise.resolve(client.unsafe(
         "SELECT $1::date[] AS value",
         [client.array(["-infinity"])],
       ))).rejects.toThrow("PostgreSQL date requires Temporal.PlainDate");
-      expect((await client.unsafe<{ value: number }>(
-        "SELECT 1::int AS value",
-      ))[0]!.value).toBe(1);
+      const [{ pid: finalPid }] = await client.unsafe<{ pid: number }>(
+        "SELECT pg_backend_pid()::int AS pid",
+      );
+      expect(finalPid).toBe(initialPid);
     } finally {
       await client.end();
+    }
+  });
+
+  test("managed custom-codec errors expose named query context in root and transaction paths", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        DROP TABLE IF EXISTS tmp_decode_role_records;
+        DROP TYPE IF EXISTS tmp_decode_role;
+        CREATE TYPE tmp_decode_role AS ENUM ('admin');
+        CREATE TABLE tmp_decode_role_records (role tmp_decode_role NOT NULL)
+      `);
+    } finally {
+      await setup.end();
+    }
+
+    const { createSqlClient, defineQuery, ResultDecodeError } = await import("../src/index");
+    const decodeCause = new Error("application role decoder rejected the value");
+    const client = createSqlClient(dbUrl, {
+      max: 1,
+      typeCodecs: {
+        tmp_decode_role: {
+          parse: () => { throw decodeCause; },
+          serialize: (value: string) => value,
+        },
+      },
+    });
+    const query = defineQuery.one(
+      "billing.decodeRole",
+      `INSERT INTO tmp_decode_role_records (role)
+       VALUES ($role)
+       RETURNING role`,
+    );
+    try {
+      const [{ pid: initialPid }] = await client.unsafe<{ pid: number }>(
+        "SELECT pg_backend_pid()::int AS pid",
+      );
+      const rootError = await query.run(client.sql as never, { role: "admin" }).catch((error) => error);
+      expect(rootError).toBeInstanceOf(ResultDecodeError);
+      expect(rootError).toMatchObject({
+        queryId: query.queryId,
+        queryName: "billing.decodeRole",
+        columnIndex: 0,
+        column: "role",
+        typeOid: expect.any(Number),
+        cause: decodeCause,
+      });
+      const [{ count: committedCount }] = await client.unsafe<{ count: number }>(
+        "SELECT count(*)::int AS count FROM tmp_decode_role_records",
+      );
+      expect(committedCount).toBe(1);
+
+      const transactionError = await client.sql.transaction(async (transaction) =>
+        await query.run(transaction as never, { role: "admin" })
+      ).catch((error) => error);
+      expect(transactionError).toBeInstanceOf(ResultDecodeError);
+      expect(transactionError).toMatchObject({
+        queryId: query.queryId,
+        queryName: "billing.decodeRole",
+        columnIndex: 0,
+        column: "role",
+        typeOid: expect.any(Number),
+        cause: decodeCause,
+      });
+      expect((rootError as Error).stack).toContain("decodeDataRow");
+      expect((transactionError as Error).stack).toContain("decodeDataRow");
+      const [{ count: countAfterRollback }] = await client.unsafe<{ count: number }>(
+        "SELECT count(*)::int AS count FROM tmp_decode_role_records",
+      );
+      expect(countAfterRollback).toBe(1);
+      const [{ pid: finalPid }] = await client.unsafe<{ pid: number }>(
+        "SELECT pg_backend_pid()::int AS pid",
+      );
+      expect(finalPid).toBe(initialPid);
+    } finally {
+      await client.close();
+      const cleanup = new PgClient(parseDatabaseUrl(dbUrl));
+      await cleanup.connect();
+      try {
+        await cleanup.simpleQuery("DROP TABLE IF EXISTS tmp_decode_role_records; DROP TYPE IF EXISTS tmp_decode_role");
+      } finally {
+        await cleanup.end();
+      }
     }
   });
 

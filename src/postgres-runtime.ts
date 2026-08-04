@@ -9,8 +9,10 @@ import {
   parsePgArrayLiteral,
   QueryAbortedError,
   QueryTimeoutError,
+  ResultDecodeError,
   toPgError,
   TransactionTimeoutError,
+  withResultDecodeQueryMetadata,
   type JsonParameter,
   type OnQueryHook,
   type OnQueryHookError,
@@ -302,7 +304,13 @@ class ManagedPostgresRuntime implements RuntimeClient {
       }
       return result;
     } catch (cause) {
-      const error = operation.interrupted ?? toPgError(cause) ?? cause;
+      let error: unknown = operation.interrupted;
+      if (error === undefined) {
+        const normalized = toPgError(cause) ?? cause;
+        error = operation.phase === "execution" && normalized instanceof ResultDecodeError
+          ? withResultDecodeQueryMetadata(normalized, request.metadata)
+          : normalized;
+      }
       this.notifyOperationError(operation, error);
       if (this.onQuery) {
         this.notifyQuery({
@@ -755,7 +763,13 @@ class ManagedPostgresRuntime implements RuntimeClient {
       }
       return result;
     } catch (cause) {
-      let error = state.expired ?? toPgError(cause) ?? cause;
+      let error: unknown = state.expired;
+      if (error === undefined) {
+        const normalized = toPgError(cause) ?? cause;
+        error = normalized instanceof ResultDecodeError
+          ? withResultDecodeQueryMetadata(normalized, request.metadata)
+          : normalized;
+      }
       if (error instanceof ConnectionLostError) {
         error = this.failTransaction(state, error);
       }

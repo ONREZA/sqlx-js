@@ -8,6 +8,14 @@ import type {
   TemporalFactory,
 } from "../temporal-api";
 
+export class TemporalInfinityError extends Error {
+  readonly decodeHint = "Normalize PostgreSQL infinity sentinels in SQL with isfinite(...) before decoding";
+
+  constructor(type: string) {
+    super(`sqlx-js: PostgreSQL ${type} infinity is rejected by temporal.infinity policy`);
+  }
+}
+
 export function postgresTemporalParsers(
   temporalApi: TemporalApi,
 ): Record<number, (value: string) => unknown> {
@@ -213,9 +221,7 @@ function formatPostgresTime(
 
 function rejectTemporalInfinity<T>(value: T, type: string): T {
   if (value === "infinity" || value === "-infinity") {
-    throw new Error(
-      `sqlx-js: PostgreSQL ${type} infinity is rejected by temporal.infinity policy`,
-    );
+    throw new TemporalInfinityError(type);
   }
   return value;
 }

@@ -3,6 +3,7 @@ import {
   encodePgArrayLiteralElements,
   parameterKind,
   parsePgArrayLiteral,
+  ResultDecodeError,
   type JsonParameter,
   type RuntimeQueryResult,
 } from "../runtime";
@@ -12,6 +13,7 @@ import {
   type SqlxJson,
 } from "../json-value";
 import { assertNoDateSqlValue, isDateValue } from "../sql-value";
+import { queryId } from "../query-id";
 import { arrayElementOid, builtinArrayOids } from "./oids";
 import {
   resolveTemporalPolicy,
@@ -25,6 +27,7 @@ import {
 import {
   postgresTemporalParsers,
   postgresTemporalSerializers,
+  TemporalInfinityError,
 } from "./temporal-codecs";
 import {
   ConnectionLostError,
@@ -561,7 +564,7 @@ class ConnectionSlot {
       try {
         const values: unknown[][] = [];
         const materializeRow = (payload: Uint8Array, fields: readonly FieldDescription[]) =>
-          decodeDataRow<Row>(payload, fields, this.options.parsers, values);
+          decodeDataRow<Row>(payload, fields, this.options.parsers, values, query);
         let raw;
         if (params.length === 0) {
           raw = await client.execParamsText(query, [], materializeRow);
@@ -892,6 +895,7 @@ function decodeDataRow<Row extends Record<string, unknown>>(
   fields: readonly FieldDescription[],
   parsers: Record<number, (value: string) => unknown>,
   values: unknown[][],
+  query: string,
 ): Row {
   const columnCount = (payload[0]! << 8) | payload[1]!;
   const decoded = new Array<unknown>(columnCount);
@@ -908,23 +912,33 @@ function decodeDataRow<Row extends Record<string, unknown>>(
     const field = fields[index]!;
     let value: unknown = null;
     if (length !== -1) {
-      const parser = parsers[field.typeOid];
-      if (parser === parseBoolean) {
-        value = payload[offset] === 0x74;
-      } else if (parser === parseBytea && field.typeOid === 17) {
-        value = parseByteaBytes(payload, offset, offset + length);
-      } else if (parser === parseIntegerArray) {
-        value = parseIntegerArrayBytes(payload, offset, offset + length);
-      } else if (
-        parser === Number
-        && (field.typeOid === 21 || field.typeOid === 23 || field.typeOid === 26)
-      ) {
-        value = parseInteger(payload, offset, offset + length);
-      } else {
-        const text = decodeTextRange(payload, offset, offset + length);
-        value = parser ? parser(text) : text;
+      try {
+        const parser = parsers[field.typeOid];
+        if (parser === parseBoolean) {
+          value = payload[offset] === 0x74;
+        } else if (parser === parseBytea && field.typeOid === 17) {
+          value = parseByteaBytes(payload, offset, offset + length);
+        } else if (parser === parseIntegerArray) {
+          value = parseIntegerArrayBytes(payload, offset, offset + length);
+        } else if (
+          parser === Number
+          && (field.typeOid === 21 || field.typeOid === 23 || field.typeOid === 26)
+        ) {
+          value = parseInteger(payload, offset, offset + length);
+        } else {
+          const text = decodeTextRange(payload, offset, offset + length);
+          value = parser ? parser(text) : text;
+        }
+        assertNoDateSqlValue(value, "PostgreSQL result");
+      } catch (cause) {
+        throw new ResultDecodeError({
+          queryId: queryId(query),
+          columnIndex: index,
+          column: field.name,
+          typeOid: field.typeOid,
+          ...(cause instanceof TemporalInfinityError ? { hint: cause.decodeHint } : {}),
+        }, cause);
       }
-      assertNoDateSqlValue(value, "PostgreSQL result");
       offset += length;
     }
     decoded[index] = value;

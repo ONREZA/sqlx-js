@@ -401,6 +401,65 @@ export class ClientClosingError extends Error {
   }
 }
 
+export type ResultDecodeErrorDetails = QueryExecutionMetadata & {
+  columnIndex: number;
+  column: string;
+  typeOid: number;
+  hint?: string;
+};
+
+function replaceErrorStackHeader(error: Error, source: unknown): void {
+  if (typeof source !== "string" || source.length === 0) return;
+  const frameStart = source.indexOf("\n");
+  error.stack = `${error.name}: ${error.message}${frameStart === -1 ? "" : source.slice(frameStart)}`;
+}
+
+export class ResultDecodeError extends Error {
+  declare readonly cause: unknown;
+  readonly queryId: string;
+  readonly queryName?: string;
+  readonly columnIndex: number;
+  readonly column: string;
+  readonly typeOid: number;
+  readonly hint?: string;
+
+  constructor(details: ResultDecodeErrorDetails, cause: unknown) {
+    const query = details.queryName !== undefined
+      ? `${JSON.stringify(details.queryName)} (${details.queryId})`
+      : details.queryId;
+    super(
+      `sqlx-js: failed to decode query ${query} column[${details.columnIndex}] `
+      + `${JSON.stringify(details.column)} (PostgreSQL type OID ${details.typeOid})`
+      + (details.hint ? `. ${details.hint}` : ""),
+      { cause },
+    );
+    this.name = "ResultDecodeError";
+    this.queryId = details.queryId;
+    if (details.queryName !== undefined) this.queryName = details.queryName;
+    this.columnIndex = details.columnIndex;
+    this.column = details.column;
+    this.typeOid = details.typeOid;
+    if (details.hint !== undefined) this.hint = details.hint;
+    replaceErrorStackHeader(this, this.stack);
+  }
+}
+
+export function withResultDecodeQueryMetadata(
+  error: ResultDecodeError,
+  metadata: QueryExecutionMetadata,
+): ResultDecodeError {
+  if (error.queryId === metadata.queryId && error.queryName === metadata.queryName) return error;
+  const enriched = new ResultDecodeError({
+    ...metadata,
+    columnIndex: error.columnIndex,
+    column: error.column,
+    typeOid: error.typeOid,
+    ...(error.hint !== undefined ? { hint: error.hint } : {}),
+  }, error.cause);
+  replaceErrorStackHeader(enriched, error.stack);
+  return enriched;
+}
+
 export class TransactionTimeoutError extends Error {
   constructor(
     public readonly timeoutMs: number,

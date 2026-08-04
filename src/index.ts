@@ -59,6 +59,7 @@ export {
   NoRowsError,
   QueryAbortedError,
   QueryTimeoutError,
+  ResultDecodeError,
   TooManyRowsError,
   TransactionTimeoutError,
   SQLSTATE,
@@ -74,6 +75,7 @@ export type {
   QueryExecutionOptions,
   QueryOutcome,
   QueryTimeoutPhase,
+  ResultDecodeErrorDetails,
 } from "./runtime";
 export type { ExecuteResult, JsonParameter, PgArrayParameter, KnownSqlState } from "./runtime";
 export type { RuntimeTypeCodec, RuntimeTypeCodecs } from "./postgres-codecs";

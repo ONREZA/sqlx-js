@@ -266,6 +266,7 @@ import {
   NoRowsError,
   QueryAbortedError,
   QueryTimeoutError,
+  ResultDecodeError,
   TooManyRowsError,
   TransactionTimeoutError,
   SQLSTATE,
@@ -279,13 +280,14 @@ try {
   if (e instanceof TooManyRowsError) console.error("ambiguous query, got", e.actual);
   if (e instanceof QueryTimeoutError) console.error(e.phase, e.outcome, e.generation);
   if (e instanceof QueryAbortedError) console.error(e.outcome, e.reason);
+  if (e instanceof ResultDecodeError) console.error(e.queryName ?? e.queryId, e.column, e.typeOid, e.hint);
   if (e instanceof TransactionTimeoutError) console.error(e.timeoutMs, e.outcome);
   if (isPgError(e, SQLSTATE.uniqueViolation)) console.error("duplicate:", e.constraint);
   throw e;
 }
 ```
 
-`sql.one` throws `NoRowsError` on 0 rows and `TooManyRowsError` (with `.actual`) on >1. `QueryTimeoutError` and `QueryAbortedError` expose `.phase`, `.outcome`, `.queryId`, and `.generation`. Collateral operations rejected during generation recovery receive `GenerationRecycledError`. `ClientClosingError` carries the same fields when shutdown interrupts an accepted operation; an admission rejected after shutdown begins has no operation fields. An expired transaction throws `TransactionTimeoutError` with `.timeoutMs`, `.generation`, and `.outcome` (`rolled_back` only after a clean rollback is confirmed; otherwise `unknown`). Any database error raised by the default runtime is normalized into a `PgError`; `isPgError(error, code?)` is the concise type guard for SQLSTATE handling. A server-side `statement_timeout` remains PostgreSQL error `57014`, not a managed `QueryTimeoutError`.
+`sql.one` throws `NoRowsError` on 0 rows and `TooManyRowsError` (with `.actual`) on >1. `QueryTimeoutError` and `QueryAbortedError` expose `.phase`, `.outcome`, `.queryId`, and `.generation`. `ResultDecodeError` identifies a client-side result-codec failure with `.queryId`, optional `.queryName`, zero-based `.columnIndex`, `.column`, `.typeOid`, optional `.hint`, and the original `.cause`. The driver does not attach the raw result value; a codec-supplied cause remains unchanged. Raw clients derive the stable ID from the dispatched SQL, while managed named queries replace it with the source query ID and name. For scanned queries, resolve that ID to current root-relative source sites with `sqlx-js queries explain <query-id>`; `ResultDecodeError` does not add build-time source paths to its fields. Rejected PostgreSQL temporal infinity values include an `isfinite(...)` normalization hint. The driver drains the PostgreSQL response before rejecting, so a decode failure alone does not recycle an otherwise healthy connection. The failure is post-dispatch: an autocommit mutation may already be durable, so retry only behind application-owned idempotency. Collateral operations rejected during generation recovery receive `GenerationRecycledError`. `ClientClosingError` carries the same fields when shutdown interrupts an accepted operation; an admission rejected after shutdown begins has no operation fields. An expired transaction throws `TransactionTimeoutError` with `.timeoutMs`, `.generation`, and `.outcome` (`rolled_back` only after a clean rollback is confirmed; otherwise `unknown`). Any database error raised by the default runtime is normalized into a `PgError`; `isPgError(error, code?)` is the concise type guard for SQLSTATE handling. A server-side `statement_timeout` remains PostgreSQL error `57014`, not a managed `QueryTimeoutError`.
 
 ## Transactions with options
 
