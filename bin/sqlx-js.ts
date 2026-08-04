@@ -919,6 +919,7 @@ if (cmd === "init") {
   }
   const opts = {
     databaseUrl: schemaDatabaseUrl,
+    cacheDir,
     snapshotPath: schemaPath,
     manifestPath,
     writeManifest: !flag("--no-manifest"),

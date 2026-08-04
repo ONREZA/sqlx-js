@@ -202,24 +202,29 @@ test("Cache round-trips entries to disk", () => {
   const dir = join(import.meta.dir, ".tmp-cache");
   rmSync(dir, { recursive: true, force: true });
   const c = new Cache(dir);
-  c.write("abc", emptyEntry("SELECT 1"));
-  expect(c.has("abc")).toBe(true);
-  expect(c.read("abc")?.query).toBe("SELECT 1");
+  const query = "SELECT 1";
+  const fp = fingerprint(query);
+  c.write(fp, emptyEntry(query));
+  expect(c.has(fp)).toBe(true);
+  expect(c.read(fp)?.query).toBe(query);
   expect(c.list().length).toBe(1);
-  c.remove("abc");
-  expect(c.has("abc")).toBe(false);
+  c.remove(fp);
+  expect(c.has(fp)).toBe(false);
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("Cache.list ignores files outside .json", () => {
+test("Cache.list ignores files outside the query-cache namespace", () => {
   const dir = join(import.meta.dir, ".tmp-cache-list");
   rmSync(dir, { recursive: true, force: true });
   const c = new Cache(dir);
-  c.write("a1", emptyEntry("x"));
-  c.write("b2", emptyEntry("y"));
+  const left = fingerprint("SELECT left_value");
+  const right = fingerprint("SELECT right_value");
+  c.write(left, emptyEntry("SELECT left_value"));
+  c.write(right, emptyEntry("SELECT right_value"));
   writeFileSync(join(dir, "runtime-descriptors.json"), "{}");
+  writeFileSync(join(dir, "provider-state.json"), "{}");
   const fps = c.list().map((e) => e.fp).sort();
-  expect(fps).toEqual(["a1", "b2"]);
+  expect(fps).toEqual([left, right].sort());
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -227,17 +232,21 @@ test("Cache.prune keeps requested fps, removes the rest", () => {
   const dir = join(import.meta.dir, ".tmp-cache-prune");
   rmSync(dir, { recursive: true, force: true });
   const c = new Cache(dir);
-  c.write("keep1", emptyEntry("a"));
-  c.write("keep2", emptyEntry("b"));
-  c.write("drop1", emptyEntry("c"));
-  c.write("drop2", emptyEntry("d"));
+  const keep = ["SELECT keep_one", "SELECT keep_two"].map(fingerprint);
+  const drop = ["SELECT drop_one", "SELECT drop_two"].map(fingerprint);
+  c.write(keep[0]!, emptyEntry("SELECT keep_one"));
+  c.write(keep[1]!, emptyEntry("SELECT keep_two"));
+  c.write(drop[0]!, emptyEntry("SELECT drop_one"));
+  c.write(drop[1]!, emptyEntry("SELECT drop_two"));
+  writeFileSync(join(dir, "provider-state.json"), "{}");
 
-  const removed = c.prune(["keep1", "keep2"]).sort();
-  expect(removed).toEqual(["drop1", "drop2"]);
-  expect(c.has("keep1")).toBe(true);
-  expect(c.has("keep2")).toBe(true);
-  expect(c.has("drop1")).toBe(false);
-  expect(c.has("drop2")).toBe(false);
+  const removed = c.prune(keep).sort();
+  expect(removed).toEqual(drop.sort());
+  expect(c.has(keep[0]!)).toBe(true);
+  expect(c.has(keep[1]!)).toBe(true);
+  expect(c.has(drop[0]!)).toBe(false);
+  expect(c.has(drop[1]!)).toBe(false);
+  expect(existsSync(join(dir, "provider-state.json"))).toBe(true);
 
   rmSync(dir, { recursive: true, force: true });
 });
@@ -246,9 +255,11 @@ test("Cache.prune with empty keep removes everything", () => {
   const dir = join(import.meta.dir, ".tmp-cache-prune-all");
   rmSync(dir, { recursive: true, force: true });
   const c = new Cache(dir);
-  c.write("x", emptyEntry("x"));
-  c.write("y", emptyEntry("y"));
-  expect(c.prune([]).sort()).toEqual(["x", "y"]);
+  const queries = ["SELECT remove_one", "SELECT remove_two"];
+  const fps = queries.map(fingerprint);
+  c.write(fps[0]!, emptyEntry(queries[0]!));
+  c.write(fps[1]!, emptyEntry(queries[1]!));
+  expect(c.prune([]).sort()).toEqual(fps.sort());
   expect(c.list()).toHaveLength(0);
   rmSync(dir, { recursive: true, force: true });
 });
@@ -257,10 +268,32 @@ test("Cache.prune with full keep removes nothing", () => {
   const dir = join(import.meta.dir, ".tmp-cache-prune-none");
   rmSync(dir, { recursive: true, force: true });
   const c = new Cache(dir);
-  c.write("x", emptyEntry("x"));
-  c.write("y", emptyEntry("y"));
-  expect(c.prune(["x", "y"])).toEqual([]);
+  const queries = ["SELECT retain_one", "SELECT retain_two"];
+  const fps = queries.map(fingerprint);
+  c.write(fps[0]!, emptyEntry(queries[0]!));
+  c.write(fps[1]!, emptyEntry(queries[1]!));
+  expect(c.prune(fps)).toEqual([]);
   expect(c.list()).toHaveLength(2);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("Cache.prune removes legacy fingerprint entries without reading them", () => {
+  const dir = join(import.meta.dir, ".tmp-cache-prune-legacy");
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  const keepQuery = "SELECT current_value";
+  const keepFp = fingerprint(keepQuery);
+  const legacyQuery = "SELECT legacy_value";
+  const legacyFp = fingerprint(legacyQuery);
+  const cache = new Cache(dir);
+  cache.write(keepFp, emptyEntry(keepQuery));
+  const legacy = { ...emptyEntry(legacyQuery) } as Partial<CacheEntry>;
+  delete legacy.resultElementNonNullOverrides;
+  writeFileSync(join(dir, `${legacyFp}.json`), JSON.stringify(legacy));
+
+  expect(cache.prune([keepFp])).toEqual([legacyFp]);
+  expect(cache.read(keepFp)?.query).toBe(keepQuery);
+  expect(existsSync(join(dir, `${legacyFp}.json`))).toBe(false);
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -291,10 +324,12 @@ test("Cache.list rejects legacy schema (forceNullable) with actionable message",
   const dir = join(import.meta.dir, ".tmp-cache-legacy-list");
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
+  const query = "SELECT name FROM t";
+  const fp = fingerprint(query);
   writeFileSync(
-    join(dir, `legacy2.json`),
+    join(dir, `${fp}.json`),
     JSON.stringify({
-      query: "SELECT name FROM t",
+      query,
       paramOids: [],
       paramTypeIdentities: [],
       paramTsTypes: [],
@@ -350,12 +385,18 @@ test("Cache.replaceAll stages the complete successful query set before pruning",
   const dir = join(import.meta.dir, ".tmp-cache-replace");
   rmSync(dir, { recursive: true, force: true });
   const cache = new Cache(dir);
-  cache.write("old", emptyEntry("SELECT old", true));
+  const oldQuery = "SELECT old";
+  const oldFp = fingerprint(oldQuery);
+  const leftQuery = "SELECT a";
+  const leftFp = fingerprint(leftQuery);
+  const rightQuery = "SELECT b";
+  const rightFp = fingerprint(rightQuery);
+  cache.write(oldFp, emptyEntry(oldQuery, true));
   const removed = cache.replaceAll([
-    { fp: "new-a", entry: emptyEntry("SELECT a", true) },
-    { fp: "new-b", entry: emptyEntry("SELECT b", true) },
+    { fp: leftFp, entry: emptyEntry(leftQuery, true) },
+    { fp: rightFp, entry: emptyEntry(rightQuery, true) },
   ]);
-  expect(removed).toEqual(["old"]);
-  expect(cache.list().map((item) => item.fp).sort()).toEqual(["new-a", "new-b"]);
+  expect(removed).toEqual([oldFp]);
+  expect(cache.list().map((item) => item.fp).sort()).toEqual([leftFp, rightFp].sort());
   rmSync(dir, { recursive: true, force: true });
 });

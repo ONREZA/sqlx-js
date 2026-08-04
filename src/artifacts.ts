@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { RUNTIME_DESCRIPTOR_FILE } from "./artifact-versions";
-import { CACHE_MANIFEST_FILE } from "./cache";
+import { CACHE_MANIFEST_FILE, isQueryCacheFileName } from "./cache";
 
 export type ArtifactSet = {
   cacheDir: string;
@@ -22,7 +22,7 @@ function readGeneratedFiles(set: ArtifactSet): Map<string, string> {
       if (
         name !== CACHE_MANIFEST_FILE
         && name !== RUNTIME_DESCRIPTOR_FILE
-        && !/^[0-9a-f]{16}\.json$/.test(name)
+        && !isQueryCacheFileName(name)
       ) continue;
       files.set(`cache/${name}`, readFileSync(join(set.cacheDir, name), "utf8"));
     }

@@ -1,16 +1,22 @@
 import { introspectDatabase, readSchemaSnapshot, schemaSnapshotEqual, schemaSnapshotExists, writeSchemaManifest, writeSchemaSnapshot } from "../schema-snapshot";
+import { withGeneratedArtifactLock } from "../prepare-artifacts";
 
 export type SchemaCommandOptions = {
   databaseUrl: string;
   snapshotPath: string;
   manifestPath: string;
   writeManifest: boolean;
+  cacheDir?: string;
 };
 
 export async function runSchemaDump(opts: SchemaCommandOptions): Promise<void> {
   const snapshot = await introspectDatabase(opts.databaseUrl);
-  writeSchemaSnapshot(opts.snapshotPath, snapshot);
-  if (opts.writeManifest) writeSchemaManifest(opts.manifestPath, snapshot);
+  const write = () => {
+    writeSchemaSnapshot(opts.snapshotPath, snapshot);
+    if (opts.writeManifest) writeSchemaManifest(opts.manifestPath, snapshot);
+  };
+  if (opts.cacheDir) withGeneratedArtifactLock(opts.cacheDir, write);
+  else write();
   console.log(`snapshot: wrote ${opts.snapshotPath}`);
   if (opts.writeManifest) console.log(`snapshot: wrote ${opts.manifestPath}`);
 }
