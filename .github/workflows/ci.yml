@@ -114,8 +114,9 @@ jobs:
         env:
           ADMIN_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
         run: >-
-          bun -e 'import { createClient } from "@onreza/sqlx-js";
-          const sql = createClient(process.env.ADMIN_DATABASE_URL, { max: 1 });
+          bun -e 'import { Temporal } from "@js-temporal/polyfill";
+          import { createClient } from "@onreza/sqlx-js";
+          const sql = createClient(process.env.ADMIN_DATABASE_URL, { max: 1, temporalApi: Temporal });
           await sql.unsafe("DROP DATABASE IF EXISTS sqlx_js_pgschema");
           await sql.unsafe("DROP DATABASE IF EXISTS sqlx_js_pgschema_plan");
           await sql.unsafe("CREATE DATABASE sqlx_js_pgschema");
@@ -136,7 +137,7 @@ jobs:
         run: |
           bun bin/sqlx-js.ts pgschema plan --root tests/fixtures/pgschema -- --output-json "$PLAN_PATH" --no-color
           bun bin/sqlx-js.ts pgschema apply --root tests/fixtures/pgschema -- --plan "$PLAN_PATH" --auto-approve
-          bun -e 'import { createClient } from "@onreza/sqlx-js"; const sql = createClient(process.env.DATABASE_URL); const rows = await sql.unsafe("SELECT name FROM pgschema_probe"); if (rows.length !== 0) throw new Error("expected empty probe table"); await sql.end();'
+          bun -e 'import { Temporal } from "@js-temporal/polyfill"; import { createClient } from "@onreza/sqlx-js"; const sql = createClient(process.env.DATABASE_URL, { temporalApi: Temporal }); const rows = await sql.unsafe("SELECT name FROM pgschema_probe"); if (rows.length !== 0) throw new Error("expected empty probe table"); await sql.end();'
 
       - name: Verify pgschema plan is idempotent
         env:
@@ -150,13 +151,13 @@ jobs:
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_pgschema
         run: |
-          bun -e 'import { createClient } from "@onreza/sqlx-js"; const sql = createClient(process.env.DATABASE_URL); await sql.unsafe("DROP TABLE pgschema_probe"); await sql.unsafe("CREATE TABLE pgschema_target_guard (id bigint PRIMARY KEY)"); await sql.end();'
+          bun -e 'import { Temporal } from "@js-temporal/polyfill"; import { createClient } from "@onreza/sqlx-js"; const sql = createClient(process.env.DATABASE_URL, { temporalApi: Temporal }); await sql.unsafe("DROP TABLE pgschema_probe"); await sql.unsafe("CREATE TABLE pgschema_target_guard (id bigint PRIMARY KEY)"); await sql.end();'
           bun bin/sqlx-js.ts verify --root tests/fixtures/pgschema --strict-inference
           bun bin/sqlx-js.ts dev --root tests/fixtures/pgschema --strict-inference
           bunx tsc -p tests/fixtures/pgschema
           git diff --exit-code -- tests/fixtures/pgschema
           # shellcheck disable=SC2016
-          bun -e 'import { createClient } from "@onreza/sqlx-js"; const sql = createClient(process.env.DATABASE_URL); const rows = await sql.unsafe("SELECT to_regclass($1)::text AS desired, to_regclass($2)::text AS guard", ["public.pgschema_probe", "public.pgschema_target_guard"]); if (rows[0]?.desired !== null || rows[0]?.guard !== "pgschema_target_guard") throw new Error("dev/verify changed the target database"); await sql.end();'
+          bun -e 'import { Temporal } from "@js-temporal/polyfill"; import { createClient } from "@onreza/sqlx-js"; const sql = createClient(process.env.DATABASE_URL, { temporalApi: Temporal }); const rows = await sql.unsafe("SELECT to_regclass($1)::text AS desired, to_regclass($2)::text AS guard", ["public.pgschema_probe", "public.pgschema_target_guard"]); if (rows[0]?.desired !== null || rows[0]?.guard !== "pgschema_target_guard") throw new Error("dev/verify changed the target database"); await sql.end();'
 
   postgres-tls:
     runs-on: ubuntu-latest
