@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.0](https://github.com/ONREZA/sqlx-js/compare/v0.26.0...v0.27.0) (2026-08-04)
+
+
+### Features
+
+* harden sql contract boundaries ([#61](https://github.com/ONREZA/sqlx-js/issues/61)) ([78c2c85](https://github.com/ONREZA/sqlx-js/commit/78c2c85a4cf44ea958f0a355e08400827dfd6454))
+
 ## [0.26.0](https://github.com/ONREZA/sqlx-js/compare/v0.25.0...v0.26.0) (2026-08-02)
 
 
