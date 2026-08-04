@@ -1,6 +1,5 @@
 import { PgClient, decodeText } from "./wire";
 import { arrayElementOid, arrayTsType, isBuiltinOid, oidToTs, type ArrayElementNullability } from "./oids";
-import type { TemporalPolicy } from "../temporal";
 
 export type ColumnInfo = {
   attrelid: number;
@@ -43,14 +42,12 @@ export class SchemaCache {
   private customTypes = new Map<number, CustomTypeInfo>();
   private typeIdentities = new Map<number, { schema: string; name: string }>();
   private customArrayElements = new Map<number, number>();
+  private containedTypeOids = new Map<number, Set<number>>();
   private typesProbed = new Set<number>();
   private typeRegistry: Record<string, string> = {};
   private userTypeRegistry: Record<string, string> = {};
 
-  constructor(
-    private client: PgClient,
-    private temporal?: TemporalPolicy,
-  ) {}
+  constructor(private client: PgClient) {}
 
   setTypeRegistry(
     registry: Record<string, string>,
@@ -235,6 +232,7 @@ export class SchemaCache {
     const arrayInfos: { arrayOid: number; arrayName: string; elemOid: number }[] = [];
     const domainInfos: { oid: number; name: string; baseOid: number; notNull: boolean }[] = [];
     const compositeInfos: { oid: number; name: string; relOid: number }[] = [];
+    const rangeTypeOids: number[] = [];
 
     for (const row of r1.rows) {
       const oid = Number(decodeText(row[0]!));
@@ -247,10 +245,12 @@ export class SchemaCache {
       const typnotnull = decodeText(row[7]!) === "t";
       const schema = decodeText(row[8]!)!;
       this.typeIdentities.set(oid, { schema, name });
+      if (typtype === "r" || typtype === "m") rangeTypeOids.push(oid);
 
       if (typcategory === "A" && typelem > 0) {
         arrayInfos.push({ arrayOid: oid, arrayName: name, elemOid: typelem });
         this.customArrayElements.set(oid, typelem);
+        this.addContainedType(oid, typelem);
       } else if (Object.hasOwn(this.userTypeRegistry, name) && typtype === "d") {
         throw new Error(
           `sqlx-js: customTypes cannot override PostgreSQL domain ${name} because PostgreSQL reports domain results as the base type`,
@@ -268,8 +268,25 @@ export class SchemaCache {
         this.customTypes.set(oid, { kind: "scalar", name, tsType: this.typeRegistry[name]! });
       } else if (typtype === "d" && typbasetype > 0) {
         domainInfos.push({ oid, name, baseOid: typbasetype, notNull: typnotnull });
+        this.addContainedType(oid, typbasetype);
       } else if (typtype === "c" && typrelid > 0) {
         compositeInfos.push({ oid, name, relOid: typrelid });
+      }
+    }
+
+    const rangeSubtypes: number[] = [];
+    if (rangeTypeOids.length > 0) {
+      const rangeList = [...new Set(rangeTypeOids)].join(",");
+      const ranges = await this.client.simpleQueryAll(
+        `SELECT rngtypid::int8, rngsubtype::int8, rngmultitypid::int8 FROM pg_range WHERE rngtypid IN (${rangeList}) OR rngmultitypid IN (${rangeList})`,
+      );
+      for (const row of ranges.rows) {
+        const rangeOid = Number(decodeText(row[0]!));
+        const subtypeOid = Number(decodeText(row[1]!));
+        const multirangeOid = Number(decodeText(row[2]!));
+        this.addContainedType(rangeOid, subtypeOid);
+        if (multirangeOid > 0) this.addContainedType(multirangeOid, subtypeOid);
+        rangeSubtypes.push(subtypeOid);
       }
     }
 
@@ -292,7 +309,11 @@ export class SchemaCache {
     const elemsToProbe = arrayInfos.map((a) => a.elemOid).filter((o) => !this.typesProbed.has(o));
     const basesToProbe = domainInfos.map((d) => d.baseOid).filter((o) => !this.typesProbed.has(o) && !isBuiltinOid(o));
     const fieldsToProbe = [...compositeAttrs.values()].flat().map((f) => f.typeOid).filter((o) => !this.typesProbed.has(o) && !isBuiltinOid(o));
-    const recurse = [...new Set([...elemsToProbe, ...basesToProbe, ...fieldsToProbe])];
+    for (const { oid } of compositeInfos) {
+      for (const field of compositeAttrs.get(oid) ?? []) this.addContainedType(oid, field.typeOid);
+    }
+    const rangesToProbe = rangeSubtypes.filter((o) => !this.typesProbed.has(o) && !isBuiltinOid(o));
+    const recurse = [...new Set([...elemsToProbe, ...basesToProbe, ...fieldsToProbe, ...rangesToProbe])];
     if (recurse.length > 0) await this.loadCustomTypes(recurse);
 
     if (enumOids.length > 0) {
@@ -339,7 +360,7 @@ export class SchemaCache {
 
   private resolveBaseTs(baseOid: number): string | undefined {
     if (baseOid === 0) return undefined;
-    if (isBuiltinOid(baseOid)) return oidToTs(baseOid, this.temporal).ts;
+    if (isBuiltinOid(baseOid)) return oidToTs(baseOid).ts;
     const info = this.customTypes.get(baseOid);
     if (!info) return undefined;
     if (info.kind === "scalar") return info.tsType;
@@ -365,6 +386,23 @@ export class SchemaCache {
 
   typeIdentity(oid: number): { schema: string; name: string } | undefined {
     return this.typeIdentities.get(oid);
+  }
+
+  isTimestampWithoutTimeZone(oid: number, seen = new Set<number>()): boolean {
+    if (oid === 1114 || oid === 1115 || oid === 3908 || oid === 3909 || oid === 4533 || oid === 6152) {
+      return true;
+    }
+    if (seen.has(oid)) return false;
+    seen.add(oid);
+    const contained = this.containedTypeOids.get(oid);
+    return contained !== undefined
+      && [...contained].some((childOid) => this.isTimestampWithoutTimeZone(childOid, seen));
+  }
+
+  private addContainedType(containerOid: number, containedOid: number): void {
+    const contained = this.containedTypeOids.get(containerOid) ?? new Set<number>();
+    contained.add(containedOid);
+    this.containedTypeOids.set(containerOid, contained);
   }
 
   arrayElement(oid: number): { typeOid: number; tsType: string; nullability: ArrayElementNullability } | undefined {

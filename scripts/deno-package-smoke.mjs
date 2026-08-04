@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Temporal } from "npm:@js-temporal/polyfill@0.5.1";
 import {
   createSqlClient,
   queryId,
@@ -13,6 +14,7 @@ const descriptorQuery = "SELECT $1::int4 AS descriptor_value";
 const db = createSqlClient(databaseUrl, {
   max: 1,
   keepAliveMs: 0,
+  temporalApi: Temporal,
   queryDescriptors: {
     formatVersion: descriptorVersions.formatVersion,
     cacheFormat: descriptorVersions.cacheFormat,

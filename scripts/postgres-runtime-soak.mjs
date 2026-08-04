@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import process from "node:process";
+import { Temporal } from "@js-temporal/polyfill";
 import { createClient, createSqlClient } from "../dist/src/index.js";
 
 const databaseUrl = process.env.SQLX_JS_SOAK_DATABASE_URL;
@@ -64,12 +65,14 @@ const fdStart = fileDescriptorCount();
 let fdPeak = fdStart;
 const workload = createSqlClient(databaseUrl, {
   max: maxConnections,
+  temporalApi: Temporal,
   applicationName,
   operationTimeoutMs,
   cancelGraceMs: 100,
 });
 const controller = createClient(databaseUrl, {
   max: 1,
+  temporalApi: Temporal,
   applicationName: `${applicationName}-controller`,
   statementTimeoutMs: 5_000,
 });

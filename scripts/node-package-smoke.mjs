@@ -98,6 +98,7 @@ try {
   run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "-p", join(temp, "tsconfig.json")], temp);
   writeFileSync(join(temp, "app.mjs"), `
     import assert from "node:assert/strict";
+    import { Temporal } from "@js-temporal/polyfill";
     import { createSqlClient, defineQuery, queryId, TransactionTimeoutError } from "@onreza/sqlx-js";
 
     let db;
@@ -109,6 +110,7 @@ try {
       db = createSqlClient(runtimeUrl.toString(), {
         max: 1,
         keepAliveMs: 0,
+        temporalApi: Temporal,
         onQuery: (event) => events.push(event),
         sqlFiles: { "queries/embedded.sql": "SELECT 9::int4 AS value" },
         queryDescriptors: {
@@ -196,9 +198,10 @@ try {
   process.stdout.write(`node ${run("node", ["app.mjs"], temp)}`);
   process.stdout.write(`bun ${run("bun", ["app.mjs"], temp)}`);
   writeFileSync(join(temp, "idle-exit.mjs"), `
+    import { Temporal } from "@js-temporal/polyfill";
     import { createClient } from "@onreza/sqlx-js";
 
-    const client = createClient(process.env.DATABASE_URL, { max: 1 });
+    const client = createClient(process.env.DATABASE_URL, { max: 1, temporalApi: Temporal });
     await client.unsafe("SELECT 1");
     console.log("idle pool exit ok");
   `);

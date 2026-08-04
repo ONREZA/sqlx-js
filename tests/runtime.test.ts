@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import {
   _internal,
   array,
@@ -11,6 +12,7 @@ import {
   id,
   json,
   NoRowsError,
+  parseJsonResult,
   type OnQueryEvent,
   type RuntimeClient,
   TooManyRowsError,
@@ -18,6 +20,7 @@ import {
 } from "../src/runtime";
 import { PgError } from "../src/pg/wire";
 import { defineQuery } from "../src/query";
+import { Temporal } from "@js-temporal/polyfill";
 import { SQLSTATE, isPgError } from "../src/runtime";
 
 describe("renameRows", () => {
@@ -71,8 +74,8 @@ describe("encodeParam", () => {
     expect(_internal.encodeParam(json(null))).toBe("null");
     expect(_internal.encodeParam(array([json({ kind: "object" }), null])))
       .toBe('{"{\\"kind\\":\\"object\\"}",NULL}');
-    expect(_internal.encodeParam(array([new Date("2026-01-02T03:04:05.000Z")])))
-      .toBe('{"2026-01-02T03:04:05.000Z"}');
+    expect(() => _internal.encodeParam(array([new Date("2026-01-02T03:04:05.000Z")])))
+      .toThrow("JavaScript Date is not supported");
     expect(_internal.encodeParam(array([new Uint8Array([0xde, 0xad])])))
       .toBe('{"\\\\xdead"}');
   });
@@ -85,6 +88,89 @@ describe("encodeParam", () => {
   test("null elements become NULL", () => {
     expect(encodePgArrayLiteral([1, null, 2])).toBe("{1,NULL,2}");
   });
+
+  test("Date and unsafe JSON integers fail before dispatch", () => {
+    expect(() => _internal.encodeParam(new Date())).toThrow("JavaScript Date is not supported");
+    expect(() => _internal.encodeParam(json({ id: Number.MAX_SAFE_INTEGER + 1 })))
+      .toThrow("JSON integers must be within JavaScript's safe integer range");
+    expect(() => _internal.encodeParam(json({ ratio: Number.POSITIVE_INFINITY })))
+      .toThrow("JSON numbers must be finite");
+    expect(() => _internal.encodeParam(json([undefined] as never)))
+      .toThrow("JSON arrays cannot contain holes, accessors, or undefined elements");
+    expect(() => _internal.encodeParam(json({ at: Temporal.Instant.from("2026-01-01T00:00:00Z") })))
+      .toThrow("Temporal values are not supported in JSON");
+    expect(() => _internal.encodeParam(json({ ttl: Temporal.Duration.from("PT1H") })))
+      .toThrow("Temporal values are not supported in JSON");
+    expect(() => parseJsonResult('{"id":9007199254740993}'))
+      .toThrow("JSON integers must be within JavaScript's safe integer range");
+    expect(() => parseJsonResult('{"ratio":1e400}'))
+      .toThrow("JSON numbers must be finite");
+    expect(_internal.encodeParam(json({ optional: undefined, value: 1 }))).toBe('{"value":1}');
+    expect(_internal.encodeParam(json(runInNewContext("({ value: 1 })") as never))).toBe('{"value":1}');
+    expect(() => _internal.encodeParam(json(new Map() as never)))
+      .toThrow("JSON objects must be plain records");
+    expect(() => _internal.encodeParam(json(new Uint8Array([1]) as never)))
+      .toThrow("binary views are not supported in JSON");
+    expect(() => _internal.encodeParam(json({ [Symbol("hidden")]: 1 } as never)))
+      .toThrow("JSON objects cannot contain symbol-keyed properties");
+    expect(() => _internal.encodeParam(json({ toJSON: () => ({ safe: true }) } as never)))
+      .toThrow("custom toJSON methods are not supported");
+    const arrayWithToJson = [1];
+    Object.setPrototypeOf(arrayWithToJson, {
+      __proto__: Array.prototype,
+      toJSON: () => [2],
+    });
+    expect(() => _internal.encodeParam(json(arrayWithToJson as never)))
+      .toThrow("custom toJSON methods are not supported");
+    expect(() => _internal.encodeParam(json(Object.defineProperty({}, "value", {
+      enumerable: true,
+      get: () => 1,
+    }) as never))).toThrow("JSON objects cannot contain accessor properties");
+  });
+});
+
+test("Date values are rejected from query results", () => {
+  expect(() => _internal.renameRows([{ createdAt: new Date() }])).toThrow(
+    "JavaScript Date is not supported as a PostgreSQL result",
+  );
+});
+
+test("Date rejection covers foreign realms and recursively stored values", () => {
+  const foreignDate = runInNewContext("new Date('2026-01-02T03:04:05Z')") as Date;
+  const foreignMap = runInNewContext("new Map([['createdAt', new Date()]])") as Map<unknown, unknown>;
+  const hidden = Symbol("hidden");
+  const spoofedTemporal = {
+    [Symbol.toStringTag]: "Temporal.Instant",
+    nested: foreignDate,
+  };
+
+  expect(foreignDate instanceof Date).toBeFalse();
+  expect(() => _internal.encodeParam(foreignDate)).toThrow("JavaScript Date is not supported");
+  expect(() => _internal.encodeParam({ nested: foreignMap })).toThrow("JavaScript Date is not supported");
+  expect(() => _internal.encodeParam(spoofedTemporal)).toThrow("JavaScript Date is not supported");
+  expect(() => _internal.renameRows([{ [hidden]: foreignDate }])).toThrow(
+    "JavaScript Date is not supported as a PostgreSQL result",
+  );
+});
+
+test("defineQuery validates timestamp exceptions at runtime", () => {
+  expect(() => defineQuery("SELECT 1", {
+    temporal: {} as never,
+  })).toThrow("temporal must contain timestampWithoutTimeZone");
+  expect(() => defineQuery("SELECT 1", {
+    temporal: { timestampWithoutTimeZone: undefined } as never,
+  })).toThrow("temporal must contain timestampWithoutTimeZone");
+  expect(() => defineQuery("SELECT $1::timestamp", {
+    temporal: { timestampWithoutTimeZone: { allow: true, reason: "wall clock" } },
+  })).toThrow("allow requires a named query");
+  expect(() => defineQuery("schedule.store", "SELECT $1::timestamp", {
+    temporal: { timestampWithoutTimeZone: { allow: true, reason: "wall clock" } },
+  })).not.toThrow();
+  expect(() => defineQuery("schedule.store", "SELECT $1::timestamp", {
+    temporal: {
+      timestampWithoutTimeZone: { allow: true, reason: "wall clock", inherited: true } as never,
+    },
+  })).toThrow('allow has unknown option "inherited"');
 });
 
 test("runtime rewrites and binds named parameters", async () => {
@@ -121,6 +207,42 @@ test("runtime delegates parameter transformation once per query", async () => {
   await runtime.sql("SELECT $1, $2", 7, "value");
   expect(transformations).toBe(1);
   expect(received).toEqual(["encoded:7", "encoded:value"]);
+});
+
+test("runtime rejects Date before and after custom parameter transformation", async () => {
+  let transformations = 0;
+  let queries = 0;
+  const client: RuntimeClient = {
+    transformParams: (params) => {
+      transformations++;
+      return params[0] === "create-date" ? [new Date()] : params;
+    },
+    query: async () => {
+      queries++;
+      return [];
+    },
+    transaction: async (fn) => fn(client),
+    close: async () => {},
+  };
+  const runtime = createSqlRuntime(() => client);
+
+  await expect(runtime.sql("SELECT $1", new Date())).rejects.toThrow("JavaScript Date is not supported");
+  expect(transformations).toBe(0);
+  await expect(runtime.sql("SELECT $1", "create-date")).rejects.toThrow("JavaScript Date is not supported");
+  expect(transformations).toBe(1);
+  expect(queries).toBe(0);
+});
+
+test("execute validates discarded result rows", async () => {
+  const client: RuntimeClient = {
+    query: async () => [{ createdAt: new Date() }],
+    transaction: async (fn) => fn(client),
+    close: async () => {},
+  };
+  const runtime = createSqlRuntime(() => client);
+
+  await expect(runtime.sql.execute("INSERT INTO events DEFAULT VALUES RETURNING created_at"))
+    .rejects.toThrow("JavaScript Date is not supported as a PostgreSQL result");
 });
 
 test("named parameters preserve the source query and object for observers", async () => {
@@ -486,7 +608,8 @@ describe("isPrimitiveArrayElement", () => {
   test("objects and arrays are not primitive", () => {
     expect(_internal.isPrimitiveArrayElement({})).toBe(false);
     expect(_internal.isPrimitiveArrayElement([])).toBe(false);
-    expect(_internal.isPrimitiveArrayElement(new Date())).toBe(true);
+    expect(_internal.isPrimitiveArrayElement(new Date())).toBe(false);
+    expect(_internal.isPrimitiveArrayElement(Temporal.Instant.from("2026-01-01T00:00:00Z"))).toBe(true);
     expect(_internal.isPrimitiveArrayElement(new Uint8Array())).toBe(true);
   });
 });

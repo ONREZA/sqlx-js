@@ -32,6 +32,7 @@ type CacheEntryFixture = Omit<
 function completeEntries(entries: CacheEntryFixture[]): CacheEntry[] {
   return entries.map((entry) => ({
     ...entry,
+    usesTimestampWithoutTimeZone: entry.usesTimestampWithoutTimeZone ?? false,
     paramTypeIdentities: entry.paramTypeIdentities ?? entry.paramOids,
     paramNullable: entry.paramNullable ?? entry.paramTsTypes.map(() => false),
     nullableParamOverrides: entry.nullableParamOverrides ?? [],
@@ -87,23 +88,23 @@ test("profile registries contain only queries assigned to that connection profil
   expect(dts).toContain("interface KnownProfiles extends SqlxJsGeneratedProfiles");
 });
 
-test("temporal reject registries are scoped and require the matching runtime policy", () => {
+test("generated registries carry the exact Temporal policy", () => {
   const dts = write([
     {
       query: "SELECT $1::timestamptz AS value",
       paramOids: [1184],
-      paramTsTypes: ["Date"],
+      paramTsTypes: ['import("@onreza/sqlx-js").PgTimestamptz'],
       hasResultSet: true,
-      columns: [{ name: "value", typeOid: 1184, tsType: "Date", nullable: false }],
+      columns: [{ name: "value", typeOid: 1184, tsType: 'import("@onreza/sqlx-js").PgTimestamptz', nullable: false }],
     },
   ], [], {}, {}, { infinity: "reject" });
 
-  expect(dts).toContain('temporalInfinity: "reject"');
+  expect(dts).toContain('temporal: { readonly infinity: "reject"; readonly timestampWithoutTimeZone: "reject"; readonly sessionTimeZone: "UTC" };');
   expect(dts).toContain(
-    '"SELECT $1::timestamptz AS value": { params: [Date]; row: { "value": Date } }',
+    '"SELECT $1::timestamptz AS value": { params: [import("@onreza/sqlx-js").PgTimestamptz]; row: { "value": import("@onreza/sqlx-js").PgTimestamptz } }',
   );
-  expect(dts).not.toContain("interface KnownQueries extends SqlxJsGeneratedQueries");
-  expect(dts).not.toContain("interface KnownFileQueries extends SqlxJsGeneratedFileQueries");
+  expect(dts).toContain("interface KnownQueries extends SqlxJsGeneratedQueries");
+  expect(dts).toContain("interface KnownFileQueries extends SqlxJsGeneratedFileQueries");
 });
 
 test("temporal reject registries compile with descriptor and explicit adaptive policies", () => {
@@ -113,35 +114,42 @@ test("temporal reject registries compile with descriptor and explicit adaptive p
     {
       query: "SELECT $1::timestamptz AS value",
       paramOids: [1184],
-      paramTsTypes: ["Date"],
+      paramTsTypes: ['import("@onreza/sqlx-js").PgTimestamptz'],
       hasResultSet: true,
-      columns: [{ name: "value", typeOid: 1184, tsType: "Date", nullable: false }],
+      columns: [{ name: "value", typeOid: 1184, tsType: 'import("@onreza/sqlx-js").PgTimestamptz', nullable: false }],
     },
   ]), [], {}, {}, { infinity: "reject" });
   writeFileSync(join(root, "consumer.ts"), `
 import { createClient, createSqlClient } from "@onreza/sqlx-js";
+import { Temporal } from "@js-temporal/polyfill";
 import type { SqlxJsGeneratedRegistry } from "./generated";
 
 declare const queryDescriptors: import("@onreza/sqlx-js").RuntimeQueryDescriptors;
 const unscopedManaged = createSqlClient(undefined, {
   execution: "adaptive",
-  temporal: { infinity: "reject" },
+  temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
+  temporalApi: Temporal,
 });
 const unscopedRaw = createClient(undefined, {
-  temporal: { infinity: "reject" },
+  temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
+  temporalApi: Temporal,
 });
 const prepared = createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
   queryDescriptors,
+  temporalApi: Temporal,
 });
 const adaptive = createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
   execution: "adaptive",
-  temporal: { infinity: "reject" },
+  temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
+  temporalApi: Temporal,
 });
 const raw = createClient<SqlxJsGeneratedRegistry>(undefined, {
-  temporal: { infinity: "reject" },
+  temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
+  temporalApi: Temporal,
 });
-void prepared.sql("SELECT $1::timestamptz AS value", new Date());
-void adaptive.sql("SELECT $1::timestamptz AS value", new Date());
+const instant = Temporal.Instant.from("2026-01-01T00:00:00Z");
+void prepared.sql("SELECT $1::timestamptz AS value", instant);
+void adaptive.sql("SELECT $1::timestamptz AS value", instant);
 void unscopedManaged;
 void unscopedRaw;
 void raw;
@@ -964,6 +972,7 @@ import {
   type SqlExecutor,
   type SqlTransactionOptions,
 } from "@onreza/sqlx-js";
+import { Temporal } from "@js-temporal/polyfill";
 import type { SqlxJsGeneratedRegistry } from "./generated";
 
 const findUser = defineQuery.optional("users.findById", ${JSON.stringify(query)});
@@ -1221,6 +1230,8 @@ declare const tree: TreeNode;
 json(tree);
 // @ts-expect-error Date is not JSON-safe
 json({ createdAt: new Date() });
+// @ts-expect-error Temporal values require an explicit JSON string representation
+json({ createdAt: Temporal.Instant.from("2026-01-01T00:00:00Z") });
 // @ts-expect-error bigint is not JSON-safe
 json({ count: 1n });
 // @ts-expect-error functions are not JSON-safe
@@ -1230,6 +1241,8 @@ json(["ok", undefined]);
 const metadata = Symbol("metadata");
 // @ts-expect-error symbol-keyed fields are not serialized by JSON.stringify
 json({ id: "visible", [metadata]: "hidden" });
+// @ts-expect-error a temporal block must choose an explicit local policy
+defineQuery("SELECT 1", { temporal: {} });
 
 const nonNullArray: PgArrayParameter<string, false> = array(["one", "two"]);
 const nullableArray: PgArrayParameter<string, boolean> = array(["one", null]);

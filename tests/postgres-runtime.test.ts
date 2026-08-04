@@ -25,6 +25,7 @@ import {
   RUNTIME_DESCRIPTOR_FORMAT_VERSION,
 } from "../src/artifact-versions";
 import { queryId } from "../src/query-id";
+import { Temporal } from "@js-temporal/polyfill";
 
 function managed(client: PostgresClient, options: CreateSqlClientOptions = {}) {
   return _internal.createManagedClient(() => client, options);
@@ -114,13 +115,122 @@ test("raw temporal reject policy fails closed for scalar and array infinity", as
     "PostgreSQL timestamptz infinity is rejected",
   );
   expect(() => options.serializers[1082]!("-infinity")).toThrow(
-    "PostgreSQL date infinity is rejected",
+    "PostgreSQL date requires Temporal.PlainDate",
   );
   expect(() => options.serializers[1182]!(["infinity"])).toThrow(
-    "PostgreSQL date infinity is rejected",
+    "PostgreSQL date requires Temporal.PlainDate",
   );
-  expect(options.parsers[1184]!("2026-07-29 00:00:00+00")).toBeInstanceOf(Date);
+  expect(options.parsers[1184]!("2026-07-29 00:00:00+00").toString()).toBe("2026-07-29T00:00:00Z");
   await raw.end();
+});
+
+test("raw numeric codecs cannot override Temporal or JSON safety contracts", async () => {
+  const raw = createClient("postgres://app:secret@127.0.0.1:1/app", {
+    types: {
+      unsafeJson: {
+        to: 3802,
+        from: [114, 3802],
+        parse: () => ({ id: Number.MAX_SAFE_INTEGER + 1 }),
+        serialize: () => "null",
+      },
+      unsafeTimestamp: {
+        to: 1184,
+        from: 1184,
+        parse: () => new Date(),
+        serialize: () => "2000-01-01T00:00:00Z",
+      },
+    },
+  });
+  const options = (raw as unknown as {
+    options: {
+      parsers: Record<number, (value: string) => unknown>;
+      serializers: Record<number, (value: unknown) => unknown>;
+    };
+  }).options;
+
+  expect(() => options.parsers[3802]!("{\"id\":9007199254740993}"))
+    .toThrow("JSON integers must be within JavaScript's safe integer range");
+  expect(() => options.serializers[3802]!({ id: Number.MAX_SAFE_INTEGER + 1 }))
+    .toThrow("JSON integers must be within JavaScript's safe integer range");
+  expect(options.parsers[1184]!("2000-01-01 00:00:00+00")).toBeInstanceOf(Temporal.Instant);
+  expect(() => options.serializers[1184]!(new Date())).toThrow("does not accept JavaScript Date");
+  await raw.end();
+});
+
+test("raw temporal codecs preserve PostgreSQL microseconds and reject Date", async () => {
+  const raw = createClient("postgres://app:secret@127.0.0.1:1/app", { temporalApi: Temporal });
+  const options = (raw as unknown as {
+    options: {
+      parsers: Record<number, (value: string) => unknown>;
+      serializers: Record<number, (value: unknown) => unknown>;
+    };
+  }).options;
+
+  const date = options.parsers[1082]!("0001-02-03 BC") as Temporal.PlainDate;
+  const time = options.parsers[1083]!("12:34:56.123456") as Temporal.PlainTime;
+  const timestamp = options.parsers[1114]!("2026-02-03 12:34:56.123456") as Temporal.PlainDateTime;
+  const instant = options.parsers[1184]!("2026-02-03 12:34:56.123456+00") as Temporal.Instant;
+
+  expect(date.toString()).toBe("0000-02-03");
+  expect(options.serializers[1082]!(date)).toBe("0001-02-03 BC");
+  expect(options.serializers[1083]!(time)).toBe("12:34:56.123456");
+  expect(options.serializers[1114]!(timestamp)).toBe("2026-02-03T12:34:56.123456");
+  expect(options.serializers[1184]!(instant)).toBe("2026-02-03T12:34:56.123456Z");
+  expect(() => options.serializers[1184]!(new Date())).toThrow("does not accept JavaScript Date");
+  expect(() => options.serializers[1083]!(Temporal.PlainTime.from("12:34:56.123456789")))
+    .toThrow("sub-microsecond precision");
+  expect(() => options.serializers[1184]!(Temporal.Instant.from("2026-02-03T12:34:56.123456789Z")))
+    .toThrow("sub-microsecond precision");
+  expect(() => options.parsers[1083]!("23:59:60")).toThrow("leap second has no lossless");
+  expect(() => options.parsers[1083]!("24:00:00")).toThrow("24:00 has no lossless");
+  expect(() => options.parsers[1114]!("2026-02-03 23:59:60")).toThrow("leap second has no lossless");
+  expect(() => options.parsers[1184]!("2026-02-03 23:59:60+00")).toThrow("leap second has no lossless");
+  await raw.end();
+});
+
+test("raw client requires an explicit Temporal provider when the runtime has none", () => {
+  const target = globalThis as typeof globalThis & { Temporal?: unknown };
+  const descriptor = Object.getOwnPropertyDescriptor(target, "Temporal");
+  Reflect.deleteProperty(target, "Temporal");
+  try {
+    expect(() => createClient("postgres://app:secret@127.0.0.1:1/app")).toThrow(
+      "install @js-temporal/polyfill and pass { temporalApi: Temporal }",
+    );
+  } finally {
+    if (descriptor) Object.defineProperty(target, "Temporal", descriptor);
+  }
+});
+
+test("raw client validates the complete Temporal provider boundary eagerly", () => {
+  const invalid = {
+    Instant: { prototype: Temporal.Instant.prototype, from: Temporal.Instant.from },
+    PlainDate: Temporal.PlainDate,
+    PlainDateTime: Temporal.PlainDateTime,
+    PlainTime: Temporal.PlainTime,
+  };
+  expect(() => createClient(
+    "postgres://app:secret@127.0.0.1:1/app",
+    { temporalApi: invalid as never },
+  )).toThrow("temporalApi.Instant must be a Temporal constructor");
+
+  class BrokenInstant {
+    static from(): unknown {
+      return "not-an-instant";
+    }
+  }
+  expect(() => createClient("postgres://app:secret@127.0.0.1:1/app", {
+    temporalApi: { ...Temporal, Instant: BrokenInstant } as never,
+  }))
+    .toThrow("temporalApi.Instant.from returned an incompatible value");
+
+  class ThrowingPlainTime {
+    static from(): never {
+      throw new Error("broken provider");
+    }
+  }
+  expect(() => createClient("postgres://app:secret@127.0.0.1:1/app", {
+    temporalApi: { ...Temporal, PlainTime: ThrowingPlainTime } as never,
+  })).toThrow("temporalApi.PlainTime.from failed its compatibility check");
 });
 
 test("raw client rejects millisecond options outside the supported range", () => {
@@ -280,7 +390,7 @@ test("managed client dispatches matching runtime descriptors and keeps adaptive 
       cacheFormat: CACHE_FORMAT_VERSION,
       generatorRevision: GENERATOR_REVISION,
       configHash: "test",
-      temporal: { infinity: "preserve" },
+      temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
       types: {},
       queries: {
         [queryId(query)]: { params: [23] },
@@ -317,7 +427,7 @@ test("managed client adopts and enforces the descriptor temporal policy", async 
         cacheFormat: CACHE_FORMAT_VERSION,
         generatorRevision: GENERATOR_REVISION,
         configHash: "test",
-        temporal: { infinity: "reject" },
+        temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
         types: {},
         queries: {},
         profiles: {},
@@ -325,21 +435,25 @@ test("managed client adopts and enforces the descriptor temporal policy", async 
     },
   );
 
-  expect(observed).toEqual({ infinity: "reject" });
+  expect(observed).toEqual({
+    infinity: "reject",
+    timestampWithoutTimeZone: "reject",
+    sessionTimeZone: "UTC",
+  });
   await db.close();
   expect(() => managed(fakePool(async () => []), {
-    temporal: { infinity: "preserve" },
+    temporal: { infinity: "reject", timestampWithoutTimeZone: "allow", sessionTimeZone: "UTC" },
     queryDescriptors: {
       formatVersion: RUNTIME_DESCRIPTOR_FORMAT_VERSION,
       cacheFormat: CACHE_FORMAT_VERSION,
       generatorRevision: GENERATOR_REVISION,
       configHash: "test",
-      temporal: { infinity: "reject" },
+      temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
       types: {},
       queries: {},
       profiles: {},
     },
-  })).toThrow("temporal.infinity does not match the generated query descriptor");
+  })).toThrow("temporal policy does not match the generated query descriptor");
 });
 
 test("managed client rejects conflicting descriptor and adaptive execution modes", () => {
@@ -350,7 +464,7 @@ test("managed client rejects conflicting descriptor and adaptive execution modes
       cacheFormat: CACHE_FORMAT_VERSION,
       generatorRevision: GENERATOR_REVISION,
       configHash: "test",
-      temporal: { infinity: "preserve" },
+      temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
       types: {},
       queries: {},
       profiles: {},
@@ -397,7 +511,7 @@ test("query hooks are preserved inside transactions", async () => {
       cacheFormat: CACHE_FORMAT_VERSION,
       generatorRevision: GENERATOR_REVISION,
       configHash: "test",
-      temporal: { infinity: "preserve" },
+      temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
       types: {},
       queries: {
         [queryId(descriptorQuery)]: { params: [16] },
@@ -715,13 +829,14 @@ test("the internal runtime receives explicit JSON and array parameters", async (
 
   const db = managed(fake);
   const jsonArray = db.sql.array([db.sql.json({ kind: "object" }), null]);
+  const instant = Temporal.Instant.from("2026-01-02T03:04:05Z");
   await db.unsafe(
     "SELECT $1::jsonb, $2::text[], $3::bytea[], $4::jsonb[], $5::timestamptz[], $6::text[], $7::int4[]",
     db.sql.json([1, 2]),
     db.sql.array(["a", "b"]),
     db.sql.array([new Uint8Array([1, 2])]),
     jsonArray,
-    db.sql.array([new Date("2026-01-02T03:04:05.000Z")]),
+    db.sql.array([instant]),
     db.sql.array([]),
     db.sql.array([null]),
   );
@@ -735,7 +850,7 @@ test("the internal runtime receives explicit JSON and array parameters", async (
       value: [...jsonArray.value],
       oid: 3807,
     },
-    { kind: "typed", value: [new Date("2026-01-02T03:04:05.000Z")], oid: 0 },
+    { kind: "typed", value: [instant], oid: 0 },
     { kind: "typed", value: [], oid: 0 },
     { kind: "typed", value: [null], oid: 0 },
   ]);

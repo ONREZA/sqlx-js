@@ -13,6 +13,7 @@ import { fingerprint } from "../src/cache";
 import { createSqlClient as createRuntimeSqlClient, type PostgresClient } from "../src/postgres-runtime";
 import { QueryTimeoutError } from "../src/runtime";
 import type { RuntimeQueryDescriptors } from "../src/runtime-descriptors";
+import { Temporal } from "@js-temporal/polyfill";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-integration-"));
@@ -242,7 +243,7 @@ if (!haveIntegrationDatabase) {
     expect(queryCacheFiles().length).toBeGreaterThan(0);
   });
 
-  test("temporal reject policy couples generated Date types to runtime descriptors", () => {
+  test("Temporal types and policy are coupled to runtime descriptors", () => {
     const root = isolatedRoot("temporal-reject");
     try {
       writeRootFile(root, "sqlx-js.config.ts", `export default {
@@ -260,20 +261,102 @@ if (!haveIntegrationDatabase) {
       const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
       expect(dts).toContain(
         '"SELECT $1::timestamptz AS value, $2::timestamptz[] AS values": '
-        + '{ params: [Date, import("@onreza/sqlx-js").PgArrayParameter<Date, boolean>]; '
-        + 'row: { "value": Date | null; "values": (Date | null)[] | null } }',
+        + '{ params: [import("@onreza/sqlx-js").PgTimestamptz, '
+        + 'import("@onreza/sqlx-js").PgArrayParameter<import("@onreza/sqlx-js").PgTimestamptz, boolean>]; '
+        + 'row: { "value": import("@onreza/sqlx-js").PgTimestamptz | null; '
+        + '"values": (import("@onreza/sqlx-js").PgTimestamptz | null)[] | null } }',
       );
-      expect(dts).toContain('temporalInfinity: "reject"');
+      expect(dts).toContain('temporal: { readonly infinity: "reject"; readonly timestampWithoutTimeZone: "reject"; readonly sessionTimeZone: "UTC" };');
       const descriptors = JSON.parse(
         readFileSync(join(root, ".sqlx-js/runtime-descriptors.json"), "utf8"),
       ) as RuntimeQueryDescriptors;
-      expect(descriptors.temporal).toEqual({ infinity: "reject" });
+      expect(descriptors.temporal).toEqual({
+        infinity: "reject",
+        timestampWithoutTimeZone: "reject",
+        sessionTimeZone: "UTC",
+      });
       expect(descriptors.queries[
         fingerprint("SELECT $1::timestamptz AS value, $2::timestamptz[] AS values")
       ]).toEqual({ params: [1184, 1185] });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  test("timestamp without time zone requires a source-local named exception", () => {
+    const query = "SELECT $1::timestamp AS value";
+    writeFile("a.ts", `
+      import { sql } from "@onreza/sqlx-js";
+      await sql(${JSON.stringify(query)}, {} as never);
+    `);
+    const rejected = prepare();
+    expect(rejected.code).not.toBe(0);
+    expect(rejected.stderr).toContain("temporal failed");
+    expect(rejected.stderr).toContain("timestamp without time zone");
+
+    writeFile("a.ts", `
+      import { defineQuery } from "@onreza/sqlx-js";
+      export const wallClock = defineQuery.one(
+        "schedule.readWallClock",
+        ${JSON.stringify(query)},
+        { temporal: { timestampWithoutTimeZone: { allow: true, reason: "Civil schedule time" } } },
+      );
+    `);
+    const allowed = prepare();
+    expect(allowed.code, allowed.stderr).toBe(0);
+
+    writeFile("b.ts", `
+      import { sql } from "@onreza/sqlx-js";
+      await sql(${JSON.stringify(query)}, {} as never);
+    `);
+    const mixed = prepare();
+    expect(mixed.code).not.toBe(0);
+    expect(mixed.stderr).toMatch(/b\.ts:\d+:\d+/);
+    expect(mixed.stderr).toContain("temporal failed");
+  });
+
+  test("timestamp policy detects PostgreSQL container types", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        DROP TYPE IF EXISTS tmp_wall_record CASCADE;
+        DROP TYPE IF EXISTS tmp_wall_nested CASCADE;
+        DROP TYPE IF EXISTS tmp_wall_custom_range CASCADE;
+        DROP TABLE IF EXISTS tmp_wall_target CASCADE;
+        DROP DOMAIN IF EXISTS tmp_wall_range_domain CASCADE;
+        DROP DOMAIN IF EXISTS tmp_wall_domain CASCADE;
+        CREATE DOMAIN tmp_wall_domain AS timestamp;
+        CREATE DOMAIN tmp_wall_range_domain AS tsrange;
+        CREATE TYPE tmp_wall_custom_range AS RANGE (
+          subtype = timestamp,
+          multirange_type_name = tmp_wall_custom_multirange
+        );
+        CREATE TYPE tmp_wall_record AS (at tmp_wall_domain);
+        CREATE TYPE tmp_wall_nested AS (records tmp_wall_record[], span tmp_wall_range_domain);
+        CREATE TABLE tmp_wall_target (at timestamp);
+      `);
+    } finally {
+      await setup.end();
+    }
+    writeFile("a.ts", `
+      import { sql } from "@onreza/sqlx-js";
+      await sql("SELECT $1::timestamp[]", {} as never);
+      await sql("SELECT $1::tsrange", {} as never);
+      await sql("SELECT $1::tsmultirange", {} as never);
+      await sql("SELECT $1::tmp_wall_domain", {} as never);
+      await sql("SELECT $1::tmp_wall_record", {} as never);
+      await sql("SELECT $1::tmp_wall_range_domain", {} as never);
+      await sql("SELECT $1::tmp_wall_nested", {} as never);
+      await sql("SELECT $1::tmp_wall_custom_range", {} as never);
+      await sql("SELECT $1::tmp_wall_custom_multirange", {} as never);
+      await sql("SELECT $1::tmp_wall_custom_range[]", {} as never);
+      await sql("INSERT INTO tmp_wall_target (at) VALUES ($1::text::timestamp)", {} as never);
+    `);
+    writeFile("b.ts", "");
+    const result = prepare();
+    expect(result.code).not.toBe(0);
+    expect(result.stderr.match(/temporal failed/g)).toHaveLength(11);
   });
 
   test("known parameter OIDs execute through the extended protocol", async () => {
@@ -2450,7 +2533,7 @@ export default {
       const result = prepare();
       expect(result.code, result.stderr).toBe(0);
       const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
-      expect(dts).toMatch(/"at": import\("@onreza\/sqlx-js"\)\.PgTemporal \| null; "operationId": string \| null/);
+      expect(dts).toMatch(/"at": import\("@onreza\/sqlx-js"\)\.PgTimestamptz \| null; "operationId": string \| null/);
       const entry = queryCacheFiles().map((file) =>
         JSON.parse(readFileSync(join(tmp, ".sqlx-js", file), "utf8")) as {
           nullableParamOverrides: number[];
@@ -2786,10 +2869,10 @@ export default {
     expect(r.code, r.stderr).toBe(0);
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toMatch(
-      /"setConditionalAt": boolean; "clearConditionalAt": boolean; "conditionalAt": import\("@onreza\/sqlx-js"\)\.PgTemporal \| null; "conditionalCount": number \| null; "setName": boolean; "name": string; "id": bigint/,
+      /"setConditionalAt": boolean; "clearConditionalAt": boolean; "conditionalAt": import\("@onreza\/sqlx-js"\)\.PgTimestamptz \| null; "conditionalCount": number \| null; "setName": boolean; "name": string; "id": bigint/,
     );
     expect(dts).toMatch(
-      /SET \(conditional_at, conditional_count\).*"conditionalAt": import\("@onreza\/sqlx-js"\)\.PgTemporal \| null; "conditionalCount": number \| null; "id": bigint/,
+      /SET \(conditional_at, conditional_count\).*"conditionalAt": import\("@onreza\/sqlx-js"\)\.PgTimestamptz \| null; "conditionalCount": number \| null; "id": bigint/,
     );
     expect(dts).toMatch(
       /UNION ALL SELECT.*"name": string; "email": string; "note": string \| null; "otherName": string; "otherEmail": string; "otherNote": string \| null/,
@@ -3184,9 +3267,10 @@ export default {
       expect((empty[0] as { xs: string[] }).xs).toEqual([]);
       const onlyNull = await sql("SELECT $1::int[] AS ns", sql.array([null]));
       expect((onlyNull[0] as { ns: (number | null)[] }).ns).toEqual([null]);
-      const timestamp = new Date("2026-01-02T03:04:05.000Z");
+      const timestamp = Temporal.Instant.from("2026-01-02T03:04:05.000000Z");
       const dates = await sql("SELECT $1::timestamptz[] AS xs", sql.array([timestamp]));
-      expect((dates[0] as { xs: Date[] }).xs).toEqual([timestamp]);
+      expect((dates[0] as { xs: Temporal.Instant[] }).xs.map((value) => value.toString()))
+        .toEqual([timestamp.toString()]);
     } finally {
       await close();
       if (prev === undefined) delete process.env.DATABASE_URL;
@@ -3408,7 +3492,7 @@ export default {
   test("createClient installs required array codecs for raw use", async () => {
     const { createClient } = await import("../src/index");
     const external = createClient(dbUrl);
-    const timestamp = new Date("2026-01-02T03:04:05.000Z");
+    const timestamp = Temporal.Instant.from("2026-01-02T03:04:05.000000Z");
     try {
       const rows = await external.unsafe(
         "SELECT $1::jsonb[] AS js, $2::bytea[] AS bs, $3::timestamptz[] AS ds",
@@ -3418,10 +3502,10 @@ export default {
           external.typed([timestamp], 0),
         ],
       );
-      const row = rows[0] as { js: unknown[]; bs: Uint8Array[]; ds: Date[] };
+      const row = rows[0] as { js: unknown[]; bs: Uint8Array[]; ds: Temporal.Instant[] };
       expect(row.js).toEqual([{ kind: "external" }, null]);
       expect(row.bs.map((value) => Array.from(value))).toEqual([[0xde, 0xad]]);
-      expect(row.ds).toEqual([timestamp]);
+      expect(row.ds.map((value) => value.toString())).toEqual([timestamp.toString()]);
     } finally {
       await external.end();
     }
@@ -3949,8 +4033,6 @@ export default {
         ordinal: bigint;
         smallints: (number | null)[];
         aggregated: (number | null)[];
-        future: "infinity";
-        past: "-infinity";
         record: string;
         waited: void;
         xid: bigint;
@@ -3966,8 +4048,6 @@ export default {
              SELECT array_agg(item ORDER BY position)
              FROM (VALUES (1, 1::int), (2, NULL::int)) AS items(position, item)
            ) AS aggregated,
-           'infinity'::timestamptz AS future,
-           '-infinity'::date AS past,
            ROW(1::int, 'value'::text) AS record,
            pg_sleep(0) AS waited,
            '123'::xid8 AS xid,
@@ -3980,8 +4060,6 @@ export default {
       expect(row.ordinal).toBe(1n);
       expect(row.smallints).toEqual([1, null]);
       expect(row.aggregated).toEqual([1, null]);
-      expect(row.future).toBe("infinity");
-      expect(row.past).toBe("-infinity");
       expect(row.record).toBe("(1,value)");
       expect(row.waited).toBeUndefined();
       expect(row.xid).toBe(123n);
@@ -3989,27 +4067,48 @@ export default {
       expect(row.bounded).toEqual([-2, null, 3]);
       expect(row.matrix).toEqual([[-1, 2], [3, -4]]);
       expect(row.oids).toEqual([0, 4294967295, null]);
-      const [{ bc }] = await client.unsafe<{ bc: Date }>(
+      const [{ bc }] = await client.unsafe<{ bc: Temporal.PlainDate }>(
         "SELECT '4714-11-24 BC'::date AS bc",
       );
-      expect(bc.toISOString()).toBe("-004713-11-24T00:00:00.000Z");
-      const [{ roundtrip }] = await client.unsafe<{ roundtrip: Date }>(
+      expect(bc.toString()).toBe("-004713-11-24");
+      const [{ roundtrip }] = await client.unsafe<{ roundtrip: Temporal.PlainDate }>(
         "SELECT $1::date AS roundtrip",
         [bc],
       );
-      expect(roundtrip.toISOString()).toBe("-004713-11-24T00:00:00.000Z");
-      const [{ futureDate }] = await client.unsafe<{ futureDate: Date }>(
+      expect(roundtrip.toString()).toBe("-004713-11-24");
+      const [{ futureDate }] = await client.unsafe<{ futureDate: Temporal.PlainDate }>(
         "SELECT '10000-01-01'::date AS \"futureDate\"",
       );
-      expect(futureDate.toISOString()).toBe("+010000-01-01T00:00:00.000Z");
-      const [{ futureRoundtrip }] = await client.unsafe<{ futureRoundtrip: Date }>(
+      expect(futureDate.toString()).toBe("+010000-01-01");
+      const [{ futureRoundtrip }] = await client.unsafe<{ futureRoundtrip: Temporal.PlainDate }>(
         "SELECT $1::date AS \"futureRoundtrip\"",
         [futureDate],
       );
-      expect(futureRoundtrip.toISOString()).toBe("+010000-01-01T00:00:00.000Z");
+      expect(futureRoundtrip.toString()).toBe("+010000-01-01");
+      const [{ bcTimestamp, bcInstant }] = await client.unsafe<{
+        bcTimestamp: Temporal.PlainDateTime;
+        bcInstant: Temporal.Instant;
+      }>(
+        `SELECT
+           '0001-02-03 04:05:06.123456 BC'::timestamp AS "bcTimestamp",
+           '0001-02-03 04:05:06.123456+00 BC'::timestamptz AS "bcInstant"`,
+      );
+      expect(bcTimestamp.toString()).toBe("0000-02-03T04:05:06.123456");
+      expect(bcInstant.toString()).toBe("0000-02-03T04:05:06.123456Z");
+      const [{ timestampRoundtrip, instantRoundtrip }] = await client.unsafe<{
+        timestampRoundtrip: Temporal.PlainDateTime;
+        instantRoundtrip: Temporal.Instant;
+      }>(
+        `SELECT
+           $1::timestamp AS "timestampRoundtrip",
+           $2::timestamptz AS "instantRoundtrip"`,
+        [bcTimestamp, bcInstant],
+      );
+      expect(timestampRoundtrip.toString()).toBe("0000-02-03T04:05:06.123456");
+      expect(instantRoundtrip.toString()).toBe("0000-02-03T04:05:06.123456Z");
       await expect(Promise.resolve(client.unsafe(
         "SELECT '5874897-12-31'::date",
-      ))).rejects.toThrow("outside the JavaScript Date range");
+      ))).rejects.toThrow("outside Temporal.PlainDate range");
       expect((await client.unsafe<{ value: number }>("SELECT 1::int AS value"))[0]!.value).toBe(1);
     } finally {
       await client.end();
@@ -4029,14 +4128,14 @@ export default {
       await expect(Promise.resolve(client.unsafe(
         "SELECT $1::date AS value",
         ["-infinity"],
-      ))).rejects.toThrow("PostgreSQL date infinity is rejected");
+      ))).rejects.toThrow("PostgreSQL date requires Temporal.PlainDate");
       await expect(Promise.resolve(client.unsafe(
         "SELECT ARRAY['infinity'::timestamptz] AS value",
       ))).rejects.toThrow("PostgreSQL timestamptz infinity is rejected");
       await expect(Promise.resolve(client.unsafe(
         "SELECT $1::date[] AS value",
         [client.array(["-infinity"])],
-      ))).rejects.toThrow("PostgreSQL date infinity is rejected");
+      ))).rejects.toThrow("PostgreSQL date requires Temporal.PlainDate");
       expect((await client.unsafe<{ value: number }>(
         "SELECT 1::int AS value",
       ))[0]!.value).toBe(1);
@@ -4045,7 +4144,7 @@ export default {
     }
   });
 
-  test("driver forces ISO temporal output over startup DateStyle options", async () => {
+  test("driver forces ISO and UTC temporal output over startup options", async () => {
     const { createClient } = await import("../src/index");
     const client = createClient(dbUrl, {
       max: 1,
@@ -4054,38 +4153,62 @@ export default {
     try {
       const [row] = await client.unsafe<{
         style: string;
-        date: Date;
-        timestamp: Date;
-        timestamptz: Date;
+        timezone: string;
+        date: Temporal.PlainDate;
+        timestamp: Temporal.PlainDateTime;
+        timestamptz: Temporal.Instant;
       }>(
         `SELECT
            current_setting('DateStyle') AS style,
+           current_setting('TimeZone') AS timezone,
            '2026-07-24'::date AS date,
            '2026-07-24 12:34:56'::timestamp AS timestamp,
            '2026-07-24 12:34:56+00'::timestamptz AS timestamptz`,
       );
       expect(row.style).toMatch(/^ISO/);
-      expect(row.date.toISOString()).toBe("2026-07-24T00:00:00.000Z");
-      expect(row.timestamp.toISOString()).toBe("2026-07-24T12:34:56.000Z");
-      expect(row.timestamptz.toISOString()).toBe("2026-07-24T12:34:56.000Z");
+      expect(row.timezone).toBe("UTC");
+      expect(row.date.toString()).toBe("2026-07-24");
+      expect(row.timestamp.toString()).toBe("2026-07-24T12:34:56");
+      expect(row.timestamptz.toString()).toBe("2026-07-24T12:34:56Z");
     } finally {
       await client.end();
     }
   });
 
-  test("timestamptz decoding handles historical second-based offsets", async () => {
+  test("UTC startup policy overrides a non-UTC startup option", async () => {
     const { createClient } = await import("../src/index");
     const client = createClient(dbUrl, {
       max: 1,
       startupOptions: "-c TimeZone=Europe/Paris",
     });
     try {
-      const [{ value }] = await client.unsafe<{ value: Date }>(
-        "SELECT '1800-01-01 00:00:00+00'::timestamptz AS value",
+      const [{ value, timezone }] = await client.unsafe<{ value: Temporal.Instant; timezone: string }>(
+        "SELECT '1800-01-01 00:00:00+00'::timestamptz AS value, current_setting('TimeZone') AS timezone",
       );
-      expect(value.toISOString()).toBe("1800-01-01T00:00:00.000Z");
+      expect(value.toString()).toBe("1800-01-01T00:00:00Z");
+      expect(timezone).toBe("UTC");
     } finally {
       await client.end();
+    }
+  });
+
+  test("session temporal settings fail closed after startup", async () => {
+    const { createSqlClient } = await import("../src/index");
+    const client = createSqlClient(dbUrl, { max: 1 });
+    try {
+      await expect(client.unsafe("SET TimeZone = 'Europe/Paris'"))
+        .rejects.toThrow("PostgreSQL session TimeZone changed");
+      expect((await client.unsafe<{ value: string }>(
+        "SELECT current_setting('TimeZone') AS value",
+      ))[0]!.value).toBe("UTC");
+
+      await expect(client.unsafe("SET DateStyle = 'SQL, DMY'"))
+        .rejects.toThrow("PostgreSQL session DateStyle changed");
+      expect((await client.unsafe<{ value: string }>(
+        "SELECT current_setting('DateStyle') AS value",
+      ))[0]!.value).toMatch(/^ISO/);
+    } finally {
+      await client.close();
     }
   });
 
@@ -4139,7 +4262,7 @@ export default {
       await expect(Promise.resolve(client.unsafe(
         "SELECT $1::jsonb",
         [client.json(1n as never)],
-      ))).rejects.toThrow("JSON parameter is not JSON-serializable");
+      ))).rejects.toThrow("unsupported JSON value [object BigInt]");
       const [{ value }] = await client.unsafe<{ value: number }>("SELECT 1::int AS value");
       expect(value).toBe(1);
     } finally {

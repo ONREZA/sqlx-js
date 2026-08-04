@@ -72,12 +72,13 @@
     {
       "name": "createdAt",
       "typeOid": 1184,
-      "tsType": "import(\"@onreza/sqlx-js\").PgTemporal",
+      "tsType": "import(\"@onreza/sqlx-js\").PgTimestamptz",
       "nullable": true,
       "override": "non-null"
     }
   ],
   "hasResultSet": true,
+  "usesTimestampWithoutTimeZone": false,
   "inference": {
     "columns": [
       {

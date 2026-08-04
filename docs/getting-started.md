@@ -5,20 +5,21 @@ Install sqlx-js, choose a schema workflow, connect PostgreSQL, and generate the 
 ## Install
 
 ```bash
-npm install @onreza/sqlx-js
-npm install --save-dev "typescript@>=5.4 <7"
+npm install @onreza/sqlx-js @js-temporal/polyfill
+npm install --save-dev "typescript@>=5.4 <6"
 # or
-bun add @onreza/sqlx-js
-bun add --dev "typescript@>=5.4 <7"
+bun add @onreza/sqlx-js @js-temporal/polyfill
+bun add --dev "typescript@>=5.4 <6"
 ```
 
 Node.js 24, Bun 1.3, or Deno 2.9 and PostgreSQL 16 or newer are required. The
 package ships ESM only; CommonJS consumers are not supported. TypeScript
-5.4–6.x is an optional peer so production-only installs do not pull the
+5.4–5.9 is an optional peer so production-only installs do not pull the
 compiler into the application image; source scanning commands (`prepare`,
 `queries`, `doctor`, `ci`, `dev`, and `verify`) require it in development
-dependencies. TypeScript 7 replaced the stable root compiler API used by the
-scanner with new `unstable/*` entrypoints and is not supported yet.
+dependencies. TypeScript 6's built-in draft Temporal declarations are not yet
+type-compatible with the current official polyfill, so 6.x is fenced until
+that provider boundary converges.
 
 The package installs `sqlx-js` and `sqlx-js-diagnostics` binaries. Examples
 below use the local `sqlx-js` binary; invoke it through a package script,

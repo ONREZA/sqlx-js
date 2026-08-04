@@ -1,8 +1,3 @@
-import {
-  resolveTemporalPolicy,
-  type TemporalPolicy,
-} from "../temporal";
-
 export type TsTypeInfo = {
   ts: string;
   bigint?: boolean;
@@ -15,8 +10,10 @@ export function arrayTsType(elementTs: string, nullability: ArrayElementNullabil
 }
 
 const JSON_VALUE = 'import("@onreza/sqlx-js").JsonValue';
-const PG_TEMPORAL = 'import("@onreza/sqlx-js").PgTemporal';
-const TEMPORAL_OIDS = new Set([1082, 1114, 1184]);
+const PG_DATE = 'import("@onreza/sqlx-js").PgDate';
+const PG_TIME = 'import("@onreza/sqlx-js").PgTime';
+const PG_TIMESTAMP = 'import("@onreza/sqlx-js").PgTimestamp';
+const PG_TIMESTAMPTZ = 'import("@onreza/sqlx-js").PgTimestamptz';
 
 const SCALAR: Record<number, TsTypeInfo> = {
   16: { ts: "boolean" },
@@ -53,10 +50,10 @@ const SCALAR: Record<number, TsTypeInfo> = {
   1033: { ts: "string" },
   1042: { ts: "string" },
   1043: { ts: "string" },
-  1082: { ts: PG_TEMPORAL },
-  1083: { ts: "string" },
-  1114: { ts: PG_TEMPORAL },
-  1184: { ts: PG_TEMPORAL },
+  1082: { ts: PG_DATE },
+  1083: { ts: PG_TIME },
+  1114: { ts: PG_TIMESTAMP },
+  1184: { ts: PG_TIMESTAMPTZ },
   1186: { ts: "string" },
   1266: { ts: "string" },
   1560: { ts: "string" },
@@ -178,21 +175,11 @@ const ARRAY: Record<number, number> = {
   6157: 4536,
 };
 
-export function oidToTs(
-  oid: number,
-  temporal?: TemporalPolicy,
-): TsTypeInfo {
-  const temporalType = resolveTemporalPolicy(temporal).infinity === "reject"
-    ? "Date"
-    : PG_TEMPORAL;
-  if (TEMPORAL_OIDS.has(oid)) return { ts: temporalType };
+export function oidToTs(oid: number): TsTypeInfo {
   const direct = SCALAR[oid];
   if (direct) return direct;
   const inner = ARRAY[oid];
   if (inner !== undefined) {
-    if (TEMPORAL_OIDS.has(inner)) {
-      return { ts: arrayTsType(temporalType) };
-    }
     const t = SCALAR[inner];
     return { ts: arrayTsType(t?.ts ?? "unknown"), bigint: t?.bigint };
   }
@@ -215,11 +202,10 @@ export type ResolveTs = (oid: number) => string;
 
 export function makeResolver(
   custom: (oid: number) => string | undefined,
-  temporal?: TemporalPolicy,
 ): ResolveTs {
   return (oid: number) => {
     const c = custom(oid);
     if (c !== undefined) return c;
-    return oidToTs(oid, temporal).ts;
+    return oidToTs(oid).ts;
   };
 }

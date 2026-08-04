@@ -1,10 +1,12 @@
 {
-  "formatVersion": 2,
-  "cacheFormat": 7,
-  "generatorRevision": 24,
-  "configHash": "353452ecfa2c53a2",
+  "formatVersion": 3,
+  "cacheFormat": 8,
+  "generatorRevision": 25,
+  "configHash": "400d87780558854a",
   "temporal": {
-    "infinity": "preserve"
+    "infinity": "reject",
+    "timestampWithoutTimeZone": "reject",
+    "sessionTimeZone": "UTC"
   },
   "types": {},
   "queries": {

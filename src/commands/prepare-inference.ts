@@ -36,7 +36,6 @@ function enumUnion(values: string[]): string {
 function resolveTs(
   oid: number,
   customLookup: (o: number) => CustomTypeInfo | undefined,
-  cfg: SqlxJsConfig,
 ): string {
   const c = customLookup(oid);
   if (c) {
@@ -47,7 +46,7 @@ function resolveTs(
     if (c.kind === "composite") return compositeLiteral(c);
     if (c.kind === "compositeArray") return arrayTsType(compositeLiteral(c.element));
   }
-  return oidToTs(oid, cfg.temporal).ts;
+  return oidToTs(oid).ts;
 }
 
 function isScalarColumnType(oid: number, schema: SchemaCache): boolean {
@@ -89,7 +88,7 @@ export function resolveColumnTs(
     }
   }
   if (schemaArray) return arrayTsType(schemaArray.tsType, nonNullElements ? "non-null" : "unknown");
-  return resolveTs(f.typeOid, (oid) => schema.customType(oid), cfg);
+  return resolveTs(f.typeOid, (oid) => schema.customType(oid));
 }
 
 export function resolveResultArrayElementNullability(
@@ -190,9 +189,9 @@ export function resolveParamTs(
   if (array) return arrayParameter(array.tsType, nonNullElements);
   const custom = schema.customType(paramOid);
   if (custom) {
-    return resolveTs(paramOid, () => custom, cfg);
+    return resolveTs(paramOid, () => custom);
   }
-  return resolveTs(paramOid, (oid) => schema.customType(oid), cfg);
+  return resolveTs(paramOid, (oid) => schema.customType(oid));
 }
 
 function resolveParamSources(targets: ParamTarget[], schema: SchemaCache): ColumnSource[] {
@@ -237,7 +236,7 @@ function resolvedTargetTable(
   return oid === undefined ? undefined : schema.tableNameByOid(oid);
 }
 
-function resolveTargetColumn(
+export function resolveTargetColumn(
   target: { schema?: string; table: string; column?: string; columnIndex?: number },
   schema: SchemaCache,
 ): string | undefined {

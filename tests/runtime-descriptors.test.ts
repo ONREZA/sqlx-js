@@ -28,6 +28,7 @@ function entry(
     resultElementNonNullOverrides: [],
     columns: [],
     hasResultSet: false,
+    usesTimestampWithoutTimeZone: false,
     inference: {
       columns: [],
       params: paramTypeIdentities.map(() => ({
@@ -60,7 +61,7 @@ test("runtime descriptor rendering deduplicates database-local types and binds p
     cacheFormat: CACHE_FORMAT_VERSION,
     generatorRevision: GENERATOR_REVISION,
     configHash: "config-hash",
-    temporal: { infinity: "preserve" },
+    temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
     types: { [key]: status },
     profiles: {
       api: { role: "app_api" },
@@ -74,7 +75,7 @@ test("runtime descriptor rendering deduplicates database-local types and binds p
   });
   expect(prepareRuntimeDescriptors(artifact, profiles.api)).toMatchObject({
     types: [{ key, ...status }],
-    temporal: { infinity: "preserve" },
+    temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
   });
 });
 
@@ -88,6 +89,8 @@ test("runtime descriptors carry the generated temporal policy", () => {
 
   expect(prepareRuntimeDescriptors(artifact).temporal).toEqual({
     infinity: "reject",
+    timestampWithoutTimeZone: "reject",
+    sessionTimeZone: "UTC",
   });
 });
 

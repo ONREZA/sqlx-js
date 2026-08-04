@@ -4,6 +4,30 @@ Future work, ordered by ROI (0–10) — how much real-world pain each item clos
 
 Items already shipped live in the [README](./README.md) feature list; this file tracks what's still ahead.
 
+## Current implementation target
+
+The next breaking contract slice is being delivered as one coherent boundary:
+
+- Temporal-only PostgreSQL I/O: exact `PlainDate`, `PlainTime`,
+  `PlainDateTime`, and `Instant` mappings; UTC sessions; preserved
+  returned microseconds; rejected `Date`, infinity, leap seconds, PostgreSQL
+  `time` 24:00, and sub-microsecond inputs; and an explicit application-owned Temporal provider when no
+  compatible native API exists.
+- Query I/O temporal policy: `timestamp without time zone` fails closed by
+  default through direct parameters/results, parameter-mapped physical
+  columns, arrays, domains, ranges, multiranges, and composites. A named
+  `defineQuery` may carry a source-local allow reason or strengthen a globally
+  permissive policy. Fingerprint deduplication never transfers the waiver to a
+  different call site.
+- JSON numeric safety policy: non-finite inputs and unsafe integer inputs or
+  results fail instead of being coerced or rounded. Exact larger quantities
+  remain strings or PostgreSQL `numeric`; ordinary fractional JSON numbers
+  retain JavaScript `number` semantics rather than claiming arbitrary decimal
+  precision.
+
+These items remain recorded here until the release containing the new cache,
+generator, and runtime descriptor revisions is published.
+
 | Feature | ROI | Notes |
 |---------|-----|-------|
 | Prisma migration assistant | 7 | Import Prisma Migrate SQL history and Prisma TypedSQL/raw SQL into `sqlx-js`; classify Prisma Client CRUD/nested-write sites as assisted/manual instead of promising a fully automatic ORM rewrite. The shipped `queries --json` inventory covers sqlx-js definitions/call sites after conversion, not Prisma reference-graph discovery. |
@@ -16,6 +40,7 @@ Items already shipped live in the [README](./README.md) feature list; this file 
 | Query-plan policy gates | 4 | Allow explicit blocking rules only for teams that maintain a representative planning database and accept environment-specific baselines. Generic-plan cost changes and sequential scans should never fail CI by default. |
 | Multi-statement queries | 2 | One SQL string with multiple statements separated by `;`. PG's `Parse` is single-statement; this would require client-side splitting. |
 | LISTEN / NOTIFY typing | 2 | Channel-name and payload typing is useful but sits outside the core compile-time query contract and adds long-lived connection lifecycle concerns. |
+| PostgreSQL `timetz` and interval Temporal mapping | Deferred | `time with time zone` has no date or IANA zone and therefore no faithful Temporal counterpart. PostgreSQL intervals can contain mixed-sign calendar and clock fields that `Temporal.Duration` cannot represent. Keep both lossless as strings until a sound dedicated public representation exists; never cast them into misleading Temporal objects. |
 | Tagged-template literal API (`` sql`SELECT ${x}` ``) | Rejected | A runtime tag can bind values, but TypeScript does not expose literal template fragments to the tag's type, so it cannot select the generated query registry entry. sqlx-js will not own `ts-patch`, a runtime-specific source rewriter, or the consumer build pipeline for syntax that is only marginally shorter than the portable typed function call. |
 | Separate runtime package | Deferred | The audited root import already excludes compile-time modules. Making TypeScript an optional peer reduced a clean production install from about 33 MB to 2.4 MB; a second public package and release boundary is not justified for the remaining analyzer dependency unless production consumers demonstrate measurable pressure. |
 | Editor integration / LSP | Deferred | Keep the versioned batch JSON, incremental `prepare --watch --jsonl`, and `sqlx-js-diagnostics` transport stable, but do not build or maintain a VS Code extension or full LSP until real consumer demand justifies the separate editor clients and release lifecycle. |
@@ -28,6 +53,9 @@ Items already shipped live in the [README](./README.md) feature list; this file 
 - Runtime SQL parsing, automatic descriptor discovery, result-schema
   validation, automatic replay, named prepared-statement caches, and implicit
   pipelining are rejected for the default path.
+- Legacy JavaScript `Date` is rejected at the public SQL parameter/result
+  boundary. Internal monotonic/deadline bookkeeping may continue to use numeric
+  epoch milliseconds; it is not a database value contract.
 - Inference grows only from real production-corpus shapes. A new sound rule
   requires a degraded strict-inference case plus a live PostgreSQL regression;
   completing the entire PostgreSQL AST is not a goal.

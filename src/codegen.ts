@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { effectiveNullable, type CacheEntry } from "./cache";
 import type { FunctionEntry } from "./function-cache";
 import type { DatabaseProfiles } from "./config";
-import { resolveTemporalPolicy, type TemporalPolicy } from "./temporal";
+import { resolveTemporalPolicy, type TemporalPolicy, type TemporalPolicyOptions } from "./temporal";
 
 function entrySignature(e: CacheEntry): { params: string; row: string } {
   const paramTypes = e.paramTsTypes.map((t, i) => {
@@ -29,7 +29,7 @@ export function emitDts(
   functions: FunctionEntry[] = [],
   runtimeTypes: Readonly<Record<string, string>> = {},
   profiles: DatabaseProfiles = {},
-  temporal?: TemporalPolicy,
+  temporal?: TemporalPolicyOptions,
 ): void {
   mkdirSync(dirname(outPath), { recursive: true });
   const lines: string[] = [];
@@ -39,7 +39,7 @@ export function emitDts(
   const temporalPolicy = resolveTemporalPolicy(temporal);
   emitRegistry(lines, entries, functions, runtimeTypes, profiles, temporalPolicy);
   lines.push("");
-  emitModuleAugmentation(lines, "@onreza/sqlx-js", temporalPolicy);
+  emitModuleAugmentation(lines, "@onreza/sqlx-js");
   lines.push("");
   lines.push("export {};");
   const tmp = `${outPath}.tmp-${randomBytes(4).toString("hex")}`;
@@ -108,20 +108,17 @@ function emitRegistry(
   lines.push("  functions: SqlxJsGeneratedFunctions;");
   lines.push("  runtimeTypes: SqlxJsGeneratedRuntimeTypes;");
   lines.push("  runtimeDescriptors: true;");
-  lines.push(`  temporalInfinity: ${JSON.stringify(temporal.infinity)};`);
+  lines.push(`  temporal: ${temporalTypeLiteral(temporal)};`);
   lines.push("}");
 }
 
 function emitModuleAugmentation(
   lines: string[],
   moduleName: string,
-  temporal: TemporalPolicy,
 ): void {
   lines.push(`declare module ${JSON.stringify(moduleName)} {`);
-  if (temporal.infinity === "preserve") {
-    lines.push("  interface KnownQueries extends SqlxJsGeneratedQueries {}");
-    lines.push("  interface KnownFileQueries extends SqlxJsGeneratedFileQueries {}");
-  }
+  lines.push("  interface KnownQueries extends SqlxJsGeneratedQueries {}");
+  lines.push("  interface KnownFileQueries extends SqlxJsGeneratedFileQueries {}");
   lines.push("  interface KnownFunctions extends SqlxJsGeneratedFunctions {}");
   lines.push("  interface KnownProfiles extends SqlxJsGeneratedProfiles {}");
   lines.push("}");
@@ -157,7 +154,7 @@ function emitProfileRegistries(
     lines.push("    functions: SqlxJsGeneratedFunctions;");
     lines.push("    runtimeTypes: SqlxJsGeneratedRuntimeTypes;");
     lines.push("    runtimeDescriptors: true;");
-    lines.push(`    temporalInfinity: ${JSON.stringify(temporal.infinity)};`);
+    lines.push(`    temporal: ${temporalTypeLiteral(temporal)};`);
     const transactionSettings = profile.transactionSettings
       ? ` readonly transactionSettings: readonly [${profile.transactionSettings.map((setting) => JSON.stringify(setting)).join(", ")}];`
       : "";
@@ -167,6 +164,10 @@ function emitProfileRegistries(
     lines.push("  };");
   }
   lines.push("}");
+}
+
+function temporalTypeLiteral(temporal: TemporalPolicy): string {
+  return `{ readonly infinity: ${JSON.stringify(temporal.infinity)}; readonly timestampWithoutTimeZone: ${JSON.stringify(temporal.timestampWithoutTimeZone)}; readonly sessionTimeZone: ${JSON.stringify(temporal.sessionTimeZone)} }`;
 }
 
 function emitInlineProperties(lines: string[], entries: CacheEntry[], indent: string): void {

@@ -100,7 +100,7 @@ Status values are intentionally explicit:
 | Explicit JSON and PostgreSQL array parameters | Yes | Yes | `sql.json(...)` and `sql.array(...)` keep representations unambiguous. |
 | Built-in scalar and array codecs | Yes | Yes | Includes `int8` as `bigint` and the sqlx-js PostgreSQL type table. |
 | Native `bigint` for PostgreSQL `int8` | Partial | Yes | sqlx-js never silently narrows `int8` to `number` or exposes it as a decimal string. |
-| Temporal infinity values | Partial | Yes | The default `PgTemporal` preserves both infinities; an explicit generator/runtime policy can instead reject them and expose `Date`. |
+| Temporal SQL boundary | Partial | Yes | Exact Temporal types replace `Date`; infinity and unpreservable precision fail, sessions use UTC, and `timestamp without time zone` is prepare-policy gated. |
 | Automatic database array-OID discovery | Yes | Yes | Managed generations discover database-local scalar and array OIDs once. |
 | Numeric-OID custom codecs | Yes | Yes | Available on raw and managed clients. |
 | Name-based custom codec discovery | No | Yes | Managed clients bind generated custom type names to database-local OIDs. |

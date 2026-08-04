@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import process from "node:process";
+import { Temporal } from "@js-temporal/polyfill";
 import {
   createClient,
   createSqlClient,
@@ -38,6 +39,7 @@ for (const testCase of cases) {
   process.stdout.write(`${runtime} ${testCase.name} start\n`);
   const client = createClient(testCase.url, {
     max: 1,
+    temporalApi: Temporal,
     applicationName: `sqlx-js-compat-${runtime}-${testCase.name}`,
   });
   try {
@@ -60,6 +62,7 @@ for (const testCase of cases) {
     const errors = [];
     const managed = createSqlClient(testCase.url, {
       max: 1,
+      temporalApi: Temporal,
       onQueryError: (event) => errors.push(event),
     });
     try {
@@ -111,6 +114,7 @@ if (config.managedUrl) {
   const errors = [];
   const first = createSqlClient(config.managedUrl, {
     max: 10,
+    temporalApi: Temporal,
     applicationName: `sqlx-js-compat-${runtime}-managed-first`,
     onQueryStart: (event) => starts.push(event),
     onQueryError: (event) => errors.push(event),
@@ -118,6 +122,7 @@ if (config.managedUrl) {
   });
   const second = createSqlClient(config.managedUrl, {
     max: 10,
+    temporalApi: Temporal,
     applicationName: `sqlx-js-compat-${runtime}-managed-second`,
   });
   try {

@@ -73,7 +73,11 @@ export interface SqlxJsGeneratedRegistry {
   functions: SqlxJsGeneratedFunctions;
   runtimeTypes: SqlxJsGeneratedRuntimeTypes;
   runtimeDescriptors: true;
-  temporalInfinity: "preserve";
+  temporal: {
+    readonly infinity: "reject";
+    readonly timestampWithoutTimeZone: "reject";
+    readonly sessionTimeZone: "UTC";
+  };
 }
 
 declare module "@onreza/sqlx-js" {
@@ -87,11 +91,13 @@ export {};
 `;
 
 const DATABASE_TEMPLATE = `import { createSqlClient } from "@onreza/sqlx-js";
+import { Temporal } from "@js-temporal/polyfill";
 import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 
 export const db = createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
   queryDescriptors,
+  temporalApi: Temporal,
 });
 `;
 

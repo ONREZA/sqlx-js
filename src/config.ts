@@ -6,6 +6,7 @@ import { parseEnv } from "node:util";
 import {
   resolveTemporalPolicy,
   type TemporalPolicy,
+  type TemporalPolicyOptions,
 } from "./temporal";
 
 export type ScanConfig = {
@@ -49,7 +50,7 @@ export type SqlxJsConfig = {
   enumCatalog?: EnumCatalogConfig;
   profiles?: DatabaseProfiles;
   scan?: ScanConfig;
-  temporal?: TemporalPolicy;
+  temporal?: TemporalPolicyOptions;
   schema?: {
     provider?: "builtin" | "pgschema";
     file?: string;
@@ -254,8 +255,22 @@ function validateTemporal(value: unknown, path: string): void {
     throw new Error(`sqlx-js: ${path} temporal must be an object`);
   }
   const temporal = value as Record<string, unknown>;
-  if (temporal.infinity !== "preserve" && temporal.infinity !== "reject") {
-    throw new Error(`sqlx-js: ${path} temporal.infinity must be preserve or reject`);
+  const unknown = Object.keys(temporal).find((key) =>
+    key !== "infinity" && key !== "timestampWithoutTimeZone" && key !== "sessionTimeZone"
+  );
+  if (unknown) throw new Error(`sqlx-js: ${path} temporal has unknown option ${JSON.stringify(unknown)}`);
+  if (temporal.infinity !== undefined && temporal.infinity !== "reject") {
+    throw new Error(`sqlx-js: ${path} temporal.infinity must be reject`);
+  }
+  if (
+    temporal.timestampWithoutTimeZone !== undefined
+    && temporal.timestampWithoutTimeZone !== "allow"
+    && temporal.timestampWithoutTimeZone !== "reject"
+  ) {
+    throw new Error(`sqlx-js: ${path} temporal.timestampWithoutTimeZone must be allow or reject`);
+  }
+  if (temporal.sessionTimeZone !== undefined && temporal.sessionTimeZone !== "UTC") {
+    throw new Error(`sqlx-js: ${path} temporal.sessionTimeZone must be UTC`);
   }
 }
 

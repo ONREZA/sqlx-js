@@ -29,6 +29,8 @@ export type QueryCallSite = {
   nullableParams?: number[];
   expectedValidation?: "parse-only";
   resultAssertions?: QueryResultAssertions;
+  timestampWithoutTimeZone?: "allow" | "reject";
+  temporalReason?: string;
 };
 
 export class ScanError extends Error {
@@ -523,6 +525,7 @@ export function scanFile(
       optionsNode,
       rewritten.names,
       rewritten.positionalCount,
+      nameNode?.text,
       (node, message) => {
         const optionPos = here(node);
         throw new ScanError(fileRel, optionPos.line, optionPos.column, message);
@@ -542,6 +545,8 @@ export function scanFile(
       ...(options.nullableParams ? { nullableParams: options.nullableParams } : {}),
       ...(options.expectedValidation ? { expectedValidation: options.expectedValidation } : {}),
       ...(options.resultAssertions ? { resultAssertions: options.resultAssertions } : {}),
+      ...(options.timestampWithoutTimeZone ? { timestampWithoutTimeZone: options.timestampWithoutTimeZone } : {}),
+      ...(options.temporalReason ? { temporalReason: options.temporalReason } : {}),
     });
     return true;
   };

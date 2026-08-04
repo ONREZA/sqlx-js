@@ -21,6 +21,7 @@ const allowedRuntimeFiles = new Set([
   "dist/src/sql-params.js",
   "dist/src/sql-lex.js",
   "dist/src/temporal.js",
+  "dist/src/temporal-api.js",
   "dist/src/migration-core.js",
   "dist/src/pg/driver.js",
   "dist/src/pg/oids.js",

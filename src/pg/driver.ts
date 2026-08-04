@@ -1,8 +1,12 @@
 import {
   encodePgArrayLiteral,
   encodePgArrayLiteralElements,
+  assertNoDateSqlValue,
+  isDateValue,
   parameterKind,
+  parseJsonResult,
   parsePgArrayLiteral,
+  stringifyJsonParameter,
   type JsonCompatible,
   type JsonParameter,
   type RuntimeQueryResult,
@@ -10,8 +14,18 @@ import {
 import { arrayElementOid, builtinArrayOids } from "./oids";
 import {
   resolveTemporalPolicy,
-  type TemporalPolicy,
+  type TemporalPolicyOptions,
 } from "../temporal";
+import {
+  isTemporalValue,
+  resolveTemporalApi,
+  type PgDate,
+  type PgTime,
+  type PgTimestamp,
+  type PgTimestamptz,
+  type TemporalApi,
+  type TemporalFactory,
+} from "../temporal-api";
 import {
   ConnectionLostError,
   decodeTextRange,
@@ -29,8 +43,6 @@ export type PostgresType<T = unknown> = {
   serialize(value: T): unknown;
 };
 
-export type PgTemporal = Date | "infinity" | "-infinity";
-
 export type PostgresOptions = {
   max?: number;
   password?: string | (() => string | Promise<string>);
@@ -43,7 +55,8 @@ export type PostgresOptions = {
   startupOptions?: string;
   role?: string;
   onNotice?: (notice: PgNotice) => void | Promise<void>;
-  temporal?: TemporalPolicy;
+  temporal?: TemporalPolicyOptions;
+  temporalApi?: TemporalApi;
   types?: Readonly<Record<string, PostgresType>>;
 };
 
@@ -57,7 +70,7 @@ type ParsedPostgresOptions = {
   applicationName?: string;
   startupOptions?: string;
   role?: string;
-  temporal: TemporalPolicy;
+  temporalApi: TemporalApi;
   types: Readonly<Record<string, PostgresType>>;
   parsers: Record<number, (value: string) => unknown>;
   serializers: Record<number, (value: unknown) => unknown>;
@@ -176,7 +189,8 @@ class PostgresPool implements PostgresClient {
       config.startupParameters = { ...(config.startupParameters ?? {}), role: options.role };
     }
     if (options.onNotice !== undefined) config.onNotice = options.onNotice;
-    const temporal = resolveTemporalPolicy(options.temporal);
+    resolveTemporalPolicy(options.temporal);
+    const temporalApi = resolveTemporalApi(options.temporalApi);
     const types = options.types ?? {};
     this.options = {
       max,
@@ -188,13 +202,13 @@ class PostgresPool implements PostgresClient {
       ...(options.applicationName === undefined ? {} : { applicationName: options.applicationName }),
       ...(options.startupOptions === undefined ? {} : { startupOptions: options.startupOptions }),
       ...(options.role === undefined ? {} : { role: options.role }),
-      temporal,
+      temporalApi,
       types,
-      parsers: builtinParsers(temporal),
-      serializers: builtinSerializers(temporal),
+      parsers: builtinParsers(temporalApi),
+      serializers: builtinSerializers(temporalApi),
     };
     installNumericTypes(this.options, types);
-    enforceTemporalPolicy(this.options);
+    enforceBuiltinContracts(this.options);
     this.config = config;
   }
 
@@ -703,13 +717,7 @@ function installNumericTypes(
   }
 }
 
-function builtinParsers(temporal: TemporalPolicy): Record<number, (value: string) => unknown> {
-  const parseTemporal = (
-    parse: (value: string) => PgTemporal,
-    type: string,
-  ) => temporal.infinity === "reject"
-    ? (value: string) => rejectTemporalInfinity(parse(value), type)
-    : parse;
+function builtinParsers(temporalApi: TemporalApi): Record<number, (value: string) => unknown> {
   const parsers: Record<number, (value: string) => unknown> = {
     16: parseBoolean,
     17: parseBytea,
@@ -717,14 +725,15 @@ function builtinParsers(temporal: TemporalPolicy): Record<number, (value: string
     21: Number,
     23: Number,
     26: Number,
-    114: JSON.parse,
+    114: parseJsonResult,
     700: Number,
     701: Number,
-    1082: parseTemporal(parseDate, "date"),
-    1114: parseTemporal(parseTimestamp, "timestamp"),
-    1184: parseTemporal(parseTimestamptz, "timestamptz"),
+    1082: (value) => parseDate(value, temporalApi),
+    1083: (value) => parseTime(value, temporalApi),
+    1114: (value) => parseTimestamp(value, temporalApi),
+    1184: (value) => parseTimestamptz(value, temporalApi),
     2278: () => undefined,
-    3802: JSON.parse,
+    3802: parseJsonResult,
     5069: BigInt,
   };
   for (const oid of builtinArrayOids()) {
@@ -739,13 +748,7 @@ function builtinParsers(temporal: TemporalPolicy): Record<number, (value: string
   return parsers;
 }
 
-function builtinSerializers(temporal: TemporalPolicy): Record<number, (value: unknown) => unknown> {
-  const serializeTemporal = (
-    serialize: (value: unknown) => string,
-    type: string,
-  ) => temporal.infinity === "reject"
-    ? (value: unknown) => serialize(rejectTemporalInfinity(value, type))
-    : serialize;
+function builtinSerializers(temporalApi: TemporalApi): Record<number, (value: unknown) => unknown> {
   const serializers: Record<number, (value: unknown) => unknown> = {
     16: serializeBoolean,
     17: serializeBytea,
@@ -756,9 +759,10 @@ function builtinSerializers(temporal: TemporalPolicy): Record<number, (value: un
     114: serializeJson,
     700: String,
     701: String,
-    1082: serializeTemporal(serializeDate, "date"),
-    1114: serializeTemporal(serializeTimestamp, "timestamp"),
-    1184: serializeTemporal(serializeTimestamp, "timestamptz"),
+    1082: (value) => serializeDate(value, temporalApi),
+    1083: (value) => serializeTime(value, temporalApi),
+    1114: (value) => serializeTimestamp(value, temporalApi),
+    1184: (value) => serializeTimestamptz(value, temporalApi),
     3802: serializeJson,
     5069: String,
   };
@@ -786,11 +790,10 @@ function rejectTemporalInfinity<T>(value: T, type: string): T {
   return value;
 }
 
-function enforceTemporalPolicy(options: ParsedPostgresOptions): void {
-  if (options.temporal.infinity !== "reject") return;
-  const parsers = builtinParsers(options.temporal);
-  const serializers = builtinSerializers(options.temporal);
-  for (const oid of [1082, 1114, 1184, 1115, 1182, 1185]) {
+function enforceBuiltinContracts(options: ParsedPostgresOptions): void {
+  const parsers = builtinParsers(options.temporalApi);
+  const serializers = builtinSerializers(options.temporalApi);
+  for (const oid of [114, 199, 1082, 1083, 1114, 1184, 1115, 1182, 1183, 1185, 3802, 3807]) {
     options.parsers[oid] = parsers[oid]!;
     options.serializers[oid] = serializers[oid]!;
   }
@@ -801,6 +804,7 @@ function encodeParameter(
   options: ParsedPostgresOptions,
   inferredOid?: number,
 ): string | null {
+  assertNoDateSqlValue(value, "PostgreSQL parameter");
   if (value === null) return null;
   if (value === undefined) {
     throw new Error("sqlx-js: undefined is not a PostgreSQL value; pass null explicitly");
@@ -839,7 +843,7 @@ function encodeParameter(
     }
     throw new Error("sqlx-js: PostgreSQL arrays require sql.array(...)");
   }
-  if (typeof value === "object" && !(value instanceof Date) && !(value instanceof Uint8Array)) {
+  if (typeof value === "object" && !(value instanceof Uint8Array)) {
     const serialize = inferredOid === undefined || inferredOid === 114 || inferredOid === 3802
       ? undefined
       : options.serializers[inferredOid];
@@ -874,7 +878,12 @@ function serializeArrayElement(
 }
 
 function serializeUnknown(value: unknown): unknown {
-  if (value instanceof Date) return serializeTimestamp(value);
+  if (isDateValue(value)) {
+    throw new Error("sqlx-js: JavaScript Date is not supported; use the matching Temporal type");
+  }
+  if (isTemporalValue(value)) {
+    throw new Error("sqlx-js: Temporal values require a known PostgreSQL temporal type");
+  }
   if (value instanceof Uint8Array) return serializeBytea(value);
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "bigint" || typeof value === "number" || typeof value === "string") return String(value);
@@ -887,13 +896,7 @@ function serializeBoolean(value: unknown): string {
 }
 
 function serializeJson(value: unknown): string {
-  try {
-    const serialized = JSON.stringify(value);
-    if (serialized === undefined) throw new Error("value has no JSON representation");
-    return serialized;
-  } catch (cause) {
-    throw new Error("sqlx-js: JSON parameter is not JSON-serializable", { cause });
-  }
+  return stringifyJsonParameter(value);
 }
 
 function isPostgresParameter(value: unknown): value is PostgresParameter {
@@ -937,6 +940,7 @@ function decodeDataRow<Row extends Record<string, unknown>>(
         const text = decodeTextRange(payload, offset, offset + length);
         value = parser ? parser(text) : text;
       }
+      assertNoDateSqlValue(value, "PostgreSQL result");
       offset += length;
     }
     decoded[index] = value;
@@ -1128,25 +1132,72 @@ function serializeBytea(value: unknown): string {
   return `\\x${Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-function parseDate(value: string): PgTemporal {
-  if (value === "infinity" || value === "-infinity") return value;
-  return parseFiniteTemporal(value, "date");
+function parseDate(value: string, temporalApi: TemporalApi): PgDate {
+  return parseTemporalValue<PgDate>(
+    temporalApi.PlainDate,
+    postgresTemporalIso(value, "date"),
+    "date",
+    "Temporal.PlainDate",
+  );
 }
 
-function parseTimestamp(value: string): PgTemporal {
-  if (value === "infinity" || value === "-infinity") return value;
-  return parseFiniteTemporal(value, "timestamp");
+function parseTime(value: string, temporalApi: TemporalApi): PgTime {
+  rejectTemporalInfinity(value, "time");
+  if (/^24:00(?::00(?:[.,]0+)?)?$/.test(value)) {
+    throw new Error("sqlx-js: PostgreSQL time 24:00 has no lossless Temporal.PlainTime representation");
+  }
+  return parseTemporalValue<PgTime>(temporalApi.PlainTime, value, "time", "Temporal.PlainTime");
 }
 
-function parseTimestamptz(value: string): PgTemporal {
-  if (value === "infinity" || value === "-infinity") return value;
-  return parseFiniteTemporal(value, "timestamptz");
+function parseTimestamp(value: string, temporalApi: TemporalApi): PgTimestamp {
+  return parseTemporalValue<PgTimestamp>(
+    temporalApi.PlainDateTime,
+    postgresTemporalIso(value, "timestamp"),
+    "timestamp",
+    "Temporal.PlainDateTime",
+  );
 }
 
-function parseFiniteTemporal(
+function parseTimestamptz(value: string, temporalApi: TemporalApi): PgTimestamptz {
+  return parseTemporalValue<PgTimestamptz>(
+    temporalApi.Instant,
+    postgresTemporalIso(value, "timestamptz"),
+    "timestamptz",
+    "Temporal.Instant",
+  );
+}
+
+function parseTemporalValue<T>(
+  factory: TemporalFactory,
+  value: string,
+  postgresType: string,
+  temporalType: string,
+): T {
+  if (/(?:^|T)\d{2}:\d{2}:60(?:[.,]\d+)?(?:Z|[+-]\d{2}(?::?\d{2})?(?::?\d{2})?)?$/.test(value)) {
+    throw new Error(
+      `sqlx-js: PostgreSQL ${postgresType} leap second has no lossless ${temporalType} representation`,
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = factory.from(value);
+  } catch (cause) {
+    throw new Error(
+      `sqlx-js: PostgreSQL ${postgresType} value ${JSON.stringify(value)} is outside ${temporalType} range`,
+      { cause },
+    );
+  }
+  if (!(parsed instanceof (factory as unknown as abstract new (...args: never[]) => T))) {
+    throw new Error(`sqlx-js: temporalApi.${temporalType.slice("Temporal.".length)}.from returned an incompatible value`);
+  }
+  return parsed;
+}
+
+function postgresTemporalIso(
   postgresValue: string,
   kind: "date" | "timestamp" | "timestamptz",
-): Date {
+): string {
+  rejectTemporalInfinity(postgresValue, kind);
   const bc = postgresValue.endsWith(" BC");
   const raw = bc ? postgresValue.slice(0, -3) : postgresValue;
   const match = /^(\d+)(.*)$/.exec(raw);
@@ -1157,66 +1208,107 @@ function parseFiniteTemporal(
       ? String(year).padStart(4, "0")
       : `${year < 0 ? "-" : "+"}${String(Math.abs(year)).padStart(6, "0")}`
     : "";
-  let isoValue = `${isoYear}${match?.[2] ?? ""}`;
-  if (kind === "date") {
-    isoValue += "T00:00:00.000Z";
-  } else {
-    isoValue = isoValue.replace(" ", "T");
-    if (kind === "timestamp") isoValue += "Z";
+  return `${isoYear}${match?.[2] ?? ""}`.replace(" ", "T");
+}
+
+function serializeDate(value: unknown, temporalApi: TemporalApi): string {
+  assertTemporalInstance<PgDate>(value, temporalApi.PlainDate, "Temporal.PlainDate", "date");
+  assertIsoCalendar(value, "date");
+  return formatPostgresDate(value);
+}
+
+function serializeTime(value: unknown, temporalApi: TemporalApi): string {
+  assertTemporalInstance<PgTime>(value, temporalApi.PlainTime, "Temporal.PlainTime", "time");
+  return formatPostgresTime(value, "time");
+}
+
+function serializeTimestamp(value: unknown, temporalApi: TemporalApi): string {
+  assertTemporalInstance<PgTimestamp>(value, temporalApi.PlainDateTime, "Temporal.PlainDateTime", "timestamp");
+  assertIsoCalendar(value, "timestamp");
+  const { date, era } = postgresDate(value);
+  return `${date}T${formatPostgresTime(value, "timestamp")}${era}`;
+}
+
+function serializeTimestamptz(value: unknown, temporalApi: TemporalApi): string {
+  assertTemporalInstance<PgTimestamptz>(value, temporalApi.Instant, "Temporal.Instant", "timestamptz");
+  if (value.epochNanoseconds % 1_000n !== 0n) {
+    throw new Error("sqlx-js: Temporal.Instant has sub-microsecond precision that PostgreSQL cannot preserve");
   }
-  const date = kind === "timestamptz"
-    ? parseOffsetTemporal(isoValue)
-    : new Date(isoValue);
-  if (Number.isNaN(date.getTime())) {
-    throw new Error(
-      `sqlx-js: PostgreSQL temporal value ${postgresValue} is outside the JavaScript Date range`,
-    );
+  return formatPostgresInstant(value);
+}
+
+function formatPostgresInstant(value: PgTimestamptz): string {
+  const iso = value.toString({ fractionalSecondDigits: 6 });
+  const match = /^([+-]?\d+)(.*)$/.exec(iso);
+  if (!match) throw new Error("sqlx-js: Temporal.Instant produced an invalid ISO value");
+  const year = Number(match[1]);
+  if (!Number.isSafeInteger(year)) {
+    throw new Error("sqlx-js: Temporal.Instant year is outside PostgreSQL's supported range");
   }
-  return date;
+  const postgresYear = year <= 0 ? 1 - year : year;
+  return `${String(postgresYear).padStart(4, "0")}${match[2]}${year <= 0 ? " BC" : ""}`;
 }
 
-function parseOffsetTemporal(value: string): Date {
-  const offset = /([+-])(\d{2})(?::(\d{2}))?(?::(\d{2}))?$/.exec(value);
-  if (!offset || offset.index === undefined) return new Date(Number.NaN);
-  const local = new Date(`${value.slice(0, offset.index)}Z`);
-  const seconds = (
-    Number(offset[2]) * 60 * 60
-    + Number(offset[3] ?? 0) * 60
-    + Number(offset[4] ?? 0)
-  ) * (offset[1] === "+" ? 1 : -1);
-  return new Date(local.getTime() - seconds * 1_000);
-}
-
-function serializeDate(value: unknown): string {
-  if (value === "infinity" || value === "-infinity") return value;
-  if (!(value instanceof Date)) throw new Error("sqlx-js: date value must be a Date");
-  return formatPostgresTemporal(value, true);
-}
-
-function serializeTimestamp(value: unknown): string {
-  if (value === "infinity" || value === "-infinity") return value;
-  if (!(value instanceof Date)) throw new Error("sqlx-js: timestamp value must be a Date");
-  return formatPostgresTemporal(value, false);
-}
-
-function formatPostgresTemporal(value: Date, dateOnly: boolean): string {
-  if (Number.isNaN(value.getTime())) {
-    throw new Error("sqlx-js: temporal parameter must be a valid Date");
+function assertTemporalInstance<T>(
+  value: unknown,
+  constructor: { prototype: object },
+  expected: string,
+  postgresType: string,
+): asserts value is T {
+  if (!(value instanceof (constructor as unknown as abstract new (...args: never[]) => T))) {
+    if (isDateValue(value)) {
+      throw new Error(`sqlx-js: PostgreSQL ${postgresType} does not accept JavaScript Date; use ${expected}`);
+    }
+    throw new Error(`sqlx-js: PostgreSQL ${postgresType} requires ${expected}`);
   }
-  const year = value.getUTCFullYear();
+}
+
+function assertIsoCalendar(value: { calendarId: string }, postgresType: string): void {
+  if (value.calendarId !== "iso8601") {
+    throw new Error(`sqlx-js: PostgreSQL ${postgresType} requires an ISO 8601 Temporal calendar`);
+  }
+}
+
+function formatPostgresDate(value: { year: number; month: number; day: number }): string {
+  const { date, era } = postgresDate(value);
+  return `${date}${era}`;
+}
+
+function postgresDate(value: { year: number; month: number; day: number }): {
+  date: string;
+  era: string;
+} {
+  const year = value.year;
   const postgresYear = year <= 0 ? 1 - year : year;
   const date = [
     String(postgresYear).padStart(4, "0"),
-    String(value.getUTCMonth() + 1).padStart(2, "0"),
-    String(value.getUTCDate()).padStart(2, "0"),
+    String(value.month).padStart(2, "0"),
+    String(value.day).padStart(2, "0"),
   ].join("-");
-  const bc = year <= 0 ? " BC" : "";
-  if (dateOnly) return `${date}${bc}`;
+  return { date, era: year <= 0 ? " BC" : "" };
+}
+
+function formatPostgresTime(
+  value: {
+    hour: number;
+    minute: number;
+    second: number;
+    millisecond: number;
+    microsecond: number;
+    nanosecond: number;
+  },
+  postgresType: string,
+): string {
+  if (value.nanosecond !== 0) {
+    throw new Error(
+      `sqlx-js: Temporal value for PostgreSQL ${postgresType} has sub-microsecond precision that PostgreSQL cannot preserve`,
+    );
+  }
   const time = [
-    String(value.getUTCHours()).padStart(2, "0"),
-    String(value.getUTCMinutes()).padStart(2, "0"),
-    String(value.getUTCSeconds()).padStart(2, "0"),
+    String(value.hour).padStart(2, "0"),
+    String(value.minute).padStart(2, "0"),
+    String(value.second).padStart(2, "0"),
   ].join(":");
-  const milliseconds = String(value.getUTCMilliseconds()).padStart(3, "0");
-  return `${date}T${time}.${milliseconds}Z${bc}`;
+  const microseconds = String(value.millisecond * 1_000 + value.microsecond).padStart(6, "0");
+  return `${time}.${microseconds}`;
 }

@@ -25,6 +25,7 @@
   "resultElementNonNullOverrides": [],
   "columns": [],
   "hasResultSet": false,
+  "usesTimestampWithoutTimeZone": false,
   "inference": {
     "columns": [],
     "params": [

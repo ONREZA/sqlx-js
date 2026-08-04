@@ -5,6 +5,8 @@ export type ScannedQueryOptions = {
   nullableParams?: number[];
   expectedValidation?: QueryValidationExpectation;
   resultAssertions?: QueryResultAssertions;
+  timestampWithoutTimeZone?: "allow" | "reject";
+  temporalReason?: string;
 };
 
 type Fail = (node: ts.Node, message: string) => never;
@@ -13,6 +15,7 @@ export function parseQueryDefinitionOptions(
   node: ts.Expression | undefined,
   paramNames: readonly string[],
   positionalCount: number,
+  queryName: string | undefined,
   fail: Fail,
 ): ScannedQueryOptions {
   if (!node) return {};
@@ -41,6 +44,12 @@ export function parseQueryDefinitionOptions(
     }
     if (name === "resultAssertions") {
       result.resultAssertions = parseResultAssertions(property.initializer, fail);
+      continue;
+    }
+    if (name === "temporal") {
+      const temporal = parseTemporalOptions(property.initializer, queryName, fail);
+      result.timestampWithoutTimeZone = temporal.mode;
+      if (temporal.reason) result.temporalReason = temporal.reason;
       continue;
     }
     fail(property.name, `defineQuery() has unknown option ${JSON.stringify(name)}`);
@@ -80,6 +89,59 @@ function parseResultAssertions(node: ts.Expression, fail: Fail): QueryResultAsse
     assertions.set(column, { elements: "non-null" });
   }
   return Object.fromEntries([...assertions].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
+}
+
+function parseTemporalOptions(
+  node: ts.Expression,
+  queryName: string | undefined,
+  fail: Fail,
+): { mode: "allow" | "reject"; reason?: string } {
+  if (!ts.isObjectLiteralExpression(node)) {
+    fail(node, "defineQuery() temporal must be an object literal");
+  }
+  if (node.properties.length !== 1) {
+    fail(node, "defineQuery() temporal must contain timestampWithoutTimeZone");
+  }
+  const property = node.properties[0]!;
+  if (!ts.isPropertyAssignment(property)) {
+    fail(property, "defineQuery() temporal must use a property assignment");
+  }
+  if (propertyName(property.name, fail) !== "timestampWithoutTimeZone") {
+    fail(property.name, "defineQuery() temporal has an unknown option");
+  }
+  if (ts.isStringLiteralLike(property.initializer) && property.initializer.text === "reject") {
+    return { mode: "reject" };
+  }
+  if (!ts.isObjectLiteralExpression(property.initializer)) {
+    fail(
+      property.initializer,
+      "defineQuery() temporal.timestampWithoutTimeZone must be \"reject\" or { allow: true, reason: string }",
+    );
+  }
+  const values = new Map<string, ts.Expression>();
+  for (const nested of property.initializer.properties) {
+    if (!ts.isPropertyAssignment(nested)) {
+      fail(nested, "defineQuery() temporal allow must use property assignments");
+    }
+    const name = propertyName(nested.name, fail);
+    if (name !== "allow" && name !== "reason") {
+      fail(nested.name, `defineQuery() temporal allow has unknown option ${JSON.stringify(name)}`);
+    }
+    if (values.has(name)) fail(nested.name, `defineQuery() temporal allow option ${JSON.stringify(name)} is duplicated`);
+    values.set(name, nested.initializer);
+  }
+  const allow = values.get("allow");
+  const reason = values.get("reason");
+  if (allow?.kind !== ts.SyntaxKind.TrueKeyword) {
+    fail(allow ?? property.initializer, "defineQuery() temporal allow must set allow: true");
+  }
+  if (!reason || !ts.isStringLiteralLike(reason) || reason.text.trim() === "") {
+    fail(reason ?? property.initializer, "defineQuery() temporal allow requires a non-empty literal reason");
+  }
+  if (!queryName) {
+    fail(property.initializer, "defineQuery() temporal allow requires a named query");
+  }
+  return { mode: "allow", reason: reason.text };
 }
 
 function parseNullableParams(

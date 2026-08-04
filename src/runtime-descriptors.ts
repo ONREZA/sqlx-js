@@ -27,6 +27,8 @@ export type RuntimeQueryDescriptors = {
   configHash: string;
   temporal: {
     readonly infinity: string;
+    readonly timestampWithoutTimeZone: string;
+    readonly sessionTimeZone: string;
   };
   types: Readonly<Record<string, RuntimeDescriptorType>>;
   queries: Readonly<Record<string, RuntimeQueryDescriptor>>;
@@ -103,12 +105,17 @@ export function prepareRuntimeDescriptors(
   }
   if (
     !isRecord(value.temporal)
-    || (value.temporal.infinity !== "preserve" && value.temporal.infinity !== "reject")
+    || value.temporal.infinity !== "reject"
+    || (value.temporal.timestampWithoutTimeZone !== "allow"
+      && value.temporal.timestampWithoutTimeZone !== "reject")
+    || value.temporal.sessionTimeZone !== "UTC"
   ) {
     throw descriptorError("contains an invalid temporal policy");
   }
   const temporal: TemporalPolicy = Object.freeze({
-    infinity: value.temporal.infinity,
+    infinity: "reject",
+    timestampWithoutTimeZone: value.temporal.timestampWithoutTimeZone,
+    sessionTimeZone: "UTC",
   });
 
   const types = new Map<string, RuntimeDescriptorType>();
