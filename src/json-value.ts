@@ -21,6 +21,7 @@ const MAX_CANONICAL_NUMBER_BYTES = JSON_RESOURCE_LIMITS.canonicalNumberBytes;
 const MAX_NUMBER_TOKEN_LENGTH = JSON_NUMBER_LIMITS.tokenLength;
 const PROTOCOL_VERSION_NUMBER_BYTES = String(EXTENDED_JSON_PROTOCOL_VERSION).length;
 const JSON_NUMBER_CANONICAL_VALUE = Symbol("sqlx-js.json.number.canonical-value");
+const JSON_NUMBER_COMPARABLE_VALUE = Symbol("sqlx-js.json.number.comparable-value");
 const RAW_NUMBER = Symbol("sqlx-js.json.raw-number");
 const SQLX_JSON_DOCUMENTS = new WeakMap<object, string | undefined>();
 // Parser output is already canonical; keep the bypass inaccessible to callers.
@@ -74,15 +75,19 @@ export type SqlxJsonParseOptions = {
 };
 
 export class JsonNumber {
+  // Deep equality may observe this snapshot; raw encoding must trust only #value.
+  private readonly [JSON_NUMBER_COMPARABLE_VALUE]: string;
   readonly #value: string;
 
   private constructor(value: string, canonical?: typeof JSON_NUMBER_CANONICAL_VALUE) {
     if (typeof value !== "string") {
       throw new Error("sqlx-js: JsonNumber requires a JSON number string");
     }
-    this.#value = canonical === JSON_NUMBER_CANONICAL_VALUE
+    const canonicalValue = canonical === JSON_NUMBER_CANONICAL_VALUE
       ? value
       : canonicalJsonNumber(value);
+    this[JSON_NUMBER_COMPARABLE_VALUE] = canonicalValue;
+    this.#value = canonicalValue;
     Object.freeze(this);
   }
 
