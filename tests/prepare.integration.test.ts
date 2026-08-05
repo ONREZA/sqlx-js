@@ -18,7 +18,7 @@ import type { RuntimeQueryDescriptors } from "../src/runtime-descriptors";
 import { Temporal } from "@js-temporal/polyfill";
 import { inspectJsonAudit } from "../src/commands/json-audit";
 import { renderCanonicalJsonNumberAnalysis } from "../src/commands/json-audit-number";
-import { canonicalJsonNumberBytes } from "../src/json-number";
+import { canonicalJsonNumberBytes, JSON_NUMBER_LIMITS } from "../src/json-number";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-integration-"));
@@ -629,6 +629,7 @@ if (!haveIntegrationDatabase) {
       "1e-000001",
       "01",
       "nan",
+      "1".repeat(JSON_NUMBER_LIMITS.tokenLength + 1),
     ];
     const client = new PgClient(parseDatabaseUrl(dbUrl));
     await client.connect();
