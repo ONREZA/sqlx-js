@@ -26,6 +26,7 @@ type ApplicationQueryCoverage = {
 export type QuerySimilarityReport = {
   formatVersion: 1;
   ok: true;
+  complete: boolean;
   kind: "ast-query-similarity";
   advisory: true;
   experimental: true;
@@ -39,7 +40,7 @@ export type QuerySimilarityReport = {
   };
   normalization: {
     locations: "ignored";
-    parameterPositions: "ignored";
+    parameterPositions: "alpha-renamed-with-identity-preserved";
     functionParameterReferences: "parameterized";
     literalValues: "ignored-with-kind-preserved";
     identifiers: "preserved";
@@ -101,9 +102,12 @@ function configuredFunctionSource(
   config: SqlxJsConfig,
   explicit: string | undefined,
 ): { absolute: string; path: string; origin: "cli" | "schema" } | null {
-  const origin = explicit ? "cli" : "schema";
+  const origin = explicit !== undefined ? "cli" : "schema";
   const input = explicit ?? (config.schema?.provider === "pgschema" ? config.schema.file ?? "schema.sql" : undefined);
-  if (!input) return null;
+  if (input === undefined) return null;
+  if (input.trim() === "") {
+    throw new QueriesError("functions", "function source must be a non-empty root-relative path");
+  }
   if (isAbsolute(input)) {
     throw new QueriesError("functions", `function source must be root-relative, got ${JSON.stringify(input)}`);
   }
@@ -159,9 +163,13 @@ export async function buildQuerySimilarityReport(options: {
     [...queries.units, ...(functions?.units ?? [])],
     { minNodes, limit },
   );
+  const complete = analysis.parseErrors.length === 0
+    && (functions?.coverage.ddlParseErrors.length ?? 0) === 0
+    && (functions?.coverage.missingSqlBodies ?? 0) === 0;
   return {
     formatVersion: 1,
     ok: true,
+    complete,
     kind: "ast-query-similarity",
     advisory: true,
     experimental: true,
@@ -174,7 +182,7 @@ export async function buildQuerySimilarityReport(options: {
     },
     normalization: {
       locations: "ignored",
-      parameterPositions: "ignored",
+      parameterPositions: "alpha-renamed-with-identity-preserved",
       functionParameterReferences: "parameterized",
       literalValues: "ignored-with-kind-preserved",
       identifiers: "preserved",
@@ -214,7 +222,9 @@ function printExactQueryAudit(report: ExactQueryAuditReport): void {
   );
   for (const candidate of report.candidates) {
     console.log(
-      `${candidate.queryId} ${candidate.status} ${candidate.classification} occurrences=${candidate.occurrenceCount}`
+      `${candidate.queryId} duplicate=${candidate.duplicateStatus} `
+      + `review=${candidate.reviewRequired ? "required" : "acknowledged"} `
+      + `${candidate.classification} occurrences=${candidate.occurrenceCount}`
       + `${candidate.divergences.length > 0 ? ` divergences=${candidate.divergences.join(",")}` : ""}`,
     );
     if (candidate.ignore) console.log(`  ignore: ${candidate.ignore.reason}`);
@@ -245,14 +255,16 @@ function printExactQueryAudit(report: ExactQueryAuditReport): void {
 
 function printQuerySimilarity(report: QuerySimilarityReport): void {
   console.log(
-    `experimental similarity candidates: ${report.coverage.returnedCandidates} returned, `
+    `experimental similarity ${report.complete ? "complete" : "partial"}: `
+    + `${report.coverage.returnedCandidates} candidates returned, `
     + `${report.coverage.candidateGroups} families, ${report.coverage.parsedUnits} parsed units`,
   );
   if (report.coverage.functions) {
     const functions = report.coverage.functions;
     console.log(
       `functions: ${functions.analyzedSqlBodies} SQL analyzed, ${functions.plpgsql} plpgsql skipped, `
-      + `${functions.ddlParseErrors.length} DDL parse errors`,
+      + `${functions.other} other-language skipped, ${functions.proceduresSkipped} procedures skipped, `
+      + `${functions.missingSqlBodies} SQL bodies missing, ${functions.ddlParseErrors.length} DDL parse errors`,
     );
   }
   for (const candidate of report.candidates) {

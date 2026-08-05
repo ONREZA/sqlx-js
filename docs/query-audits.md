@@ -62,6 +62,9 @@ duplicated is also stale.
 JSON output keeps ignored candidates, their current source sites, and the
 review reason. It also emits every stale ignore. An acknowledged candidate is
 therefore distinguishable from a candidate that is absent from the project.
+The ignore acknowledges only the duplicate-source signal. A cardinality,
+profile, assertion, validation, or Temporal contract divergence still sets the
+candidate and report `reviewRequired` fields.
 
 ## AST similarity
 
@@ -84,7 +87,9 @@ automatic refactoring decision.
 
 Normalization deliberately:
 
-- ignores source locations, literal values, and parameter positions;
+- ignores source locations and literal values;
+- alpha-renames parameter positions while preserving whether two references use
+  the same parameter or distinct parameters;
 - preserves literal kinds, identifiers, operators, types, and statement shape;
 - maps an unqualified SQL-function parameter reference to the same placeholder
   shape as an application query parameter;
@@ -111,11 +116,17 @@ analysis input only; sqlx-js does not make it a second schema authority.
 
 Only bodies declared with `LANGUAGE sql` are analyzed. `plpgsql` and other
 languages are counted in coverage and skipped until a reliable language parser
-can preserve their procedural semantics. DDL and body parse failures remain in
-the report as skipped coverage rather than being converted into guessed ASTs.
+can preserve their procedural semantics. SQL-standard `RETURN` and
+`BEGIN ATOMIC` bodies are analyzed directly from PostgreSQL's AST. Procedures
+remain separately counted and skipped because this command's unit contract is
+queries and functions. DDL and body parse failures remain in the report as
+skipped coverage rather than being converted into guessed ASTs.
 
 The JSON report uses `formatVersion: 1`, marks the feature as `experimental` and
 `advisory`, records normalization and coverage, and returns deterministic
-candidate ordering. `--limit` defaults to 50 and `--min-nodes` defaults to 12.
+candidate ordering. `complete` is false when a DDL/body parse failure or an
+unsupported SQL-function body leaves coverage partial, even though the advisory
+command itself completed successfully. `--limit` defaults to 50 and
+`--min-nodes` defaults to 12.
 
 [Back to documentation index](./README.md)

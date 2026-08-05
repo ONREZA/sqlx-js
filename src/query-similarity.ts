@@ -11,6 +11,7 @@ export type SimilarityUnit = {
   sql: string;
   sources: string[];
   parameterNames?: string[];
+  astStatements?: unknown[];
 };
 
 export type SimilarityCandidate = {
@@ -63,10 +64,13 @@ type FragmentGroup = {
 };
 
 type DigestResult = {
-  digest: string;
+  normalized: unknown;
   nodeCount: number;
   identifiers: string[];
 };
+
+const PARAMETER_TOKEN = Symbol("similarity-parameter");
+type ParameterToken = { [PARAMETER_TOKEN]: string };
 
 const LOCATION_KEYS = new Set(["location", "stmt_location", "stmt_len"]);
 const FRAGMENT_TYPES = new Set([
@@ -82,6 +86,7 @@ const FRAGMENT_TYPES = new Set([
   "MergeStmt",
   "OnConflictClause",
   "ResTarget",
+  "ReturnStmt",
   "SelectStmt",
   "SubLink",
   "UpdateStmt",
@@ -99,6 +104,33 @@ const RAW_IDENTIFIER_KEYS = new Set([
 
 function digest(parts: unknown[]): string {
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+}
+
+function parameterToken(identity: string): ParameterToken {
+  return { [PARAMETER_TOKEN]: identity };
+}
+
+function canonicalDigest(value: unknown): string {
+  const parameters = new Map<string, number>();
+  const canonicalize = (item: unknown): unknown => {
+    if (item && typeof item === "object" && PARAMETER_TOKEN in item) {
+      const identity = (item as ParameterToken)[PARAMETER_TOKEN];
+      let position = parameters.get(identity);
+      if (position === undefined) {
+        position = parameters.size + 1;
+        parameters.set(identity, position);
+      }
+      return ["ParamRef", position];
+    }
+    if (Array.isArray(item)) return item.map(canonicalize);
+    if (!item || typeof item !== "object") return item;
+    return Object.fromEntries(
+      Object.entries(item as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, canonicalize(child)]),
+    );
+  };
+  return digest(["ast", canonicalize(value)]);
 }
 
 function astNodeType(value: unknown): string | null {
@@ -128,31 +160,45 @@ function stringNodeValue(value: unknown): string | null {
   return typeof node?.String?.sval === "string" ? node.String.sval : null;
 }
 
-function functionParameterReference(value: JsonObject, parameters: ReadonlySet<string>): boolean {
+function functionParameterIdentity(
+  value: JsonObject,
+  parameters: ReadonlyMap<string, string>,
+): string | null {
   const fields = value.ColumnRef?.fields;
-  return Array.isArray(fields)
+  const name = Array.isArray(fields)
     && fields.length === 1
-    && parameters.has(stringNodeValue(fields[0]) ?? "");
+    ? stringNodeValue(fields[0])
+    : null;
+  return name ? parameters.get(name) ?? null : null;
+}
+
+function positionalParameterIdentity(
+  value: JsonObject,
+  parameters: ReadonlyMap<number, string>,
+): string {
+  const position = value.ParamRef?.number;
+  return parameters.get(position) ?? `position:${String(position)}`;
 }
 
 function digestAst(
   value: unknown,
   path: string,
   unit: SimilarityUnit,
-  parameters: ReadonlySet<string>,
+  namedParameters: ReadonlyMap<string, string>,
+  positionalParameters: ReadonlyMap<number, string>,
   minNodes: number,
   groups: Map<string, FragmentGroup>,
 ): DigestResult {
-  if (value === null) return { digest: digest(["null"]), nodeCount: 0, identifiers: [] };
+  if (value === null) return { normalized: ["null"], nodeCount: 0, identifiers: [] };
   if (typeof value !== "object") {
-    return { digest: digest([typeof value, value]), nodeCount: 0, identifiers: [] };
+    return { normalized: [typeof value, value], nodeCount: 0, identifiers: [] };
   }
   if (Array.isArray(value)) {
     const children = value.map((child, index) =>
-      digestAst(child, `${path}[${index}]`, unit, parameters, minNodes, groups)
+      digestAst(child, `${path}[${index}]`, unit, namedParameters, positionalParameters, minNodes, groups)
     );
     return {
-      digest: digest(["array", ...children.map((child) => child.digest)]),
+      normalized: ["array", ...children.map((child) => child.normalized)],
       nodeCount: children.reduce((total, child) => total + child.nodeCount, 0),
       identifiers: mergeIdentifiers(children.map((child) => child.identifiers)),
     };
@@ -162,13 +208,23 @@ function digestAst(
   const nodeType = astNodeType(object);
   if (nodeType === "A_Const") {
     return {
-      digest: digest(["A_Const", constantKind(object.A_Const)]),
+      normalized: ["A_Const", constantKind(object.A_Const)],
       nodeCount: 1,
       identifiers: [],
     };
   }
-  if (nodeType === "ParamRef" || (nodeType === "ColumnRef" && functionParameterReference(object, parameters))) {
-    return { digest: digest(["ParamRef"]), nodeCount: 1, identifiers: [] };
+  if (nodeType === "ParamRef") {
+    return {
+      normalized: parameterToken(positionalParameterIdentity(object, positionalParameters)),
+      nodeCount: 1,
+      identifiers: [],
+    };
+  }
+  const functionParameter = nodeType === "ColumnRef"
+    ? functionParameterIdentity(object, namedParameters)
+    : null;
+  if (functionParameter) {
+    return { normalized: parameterToken(functionParameter), nodeCount: 1, identifiers: [] };
   }
 
   const childResults: Array<{ key: string; result: DigestResult }> = [];
@@ -178,7 +234,15 @@ function digestAst(
     const child = object[key];
     childResults.push({
       key,
-      result: digestAst(child, `${path}.${key}`, unit, parameters, minNodes, groups),
+      result: digestAst(
+        child,
+        `${path}.${key}`,
+        unit,
+        namedParameters,
+        positionalParameters,
+        minNodes,
+        groups,
+      ),
     });
     if (typeof child === "string" && RAW_IDENTIFIER_KEYS.has(key)) ownIdentifiers.push(child);
   }
@@ -192,10 +256,11 @@ function digestAst(
     ownIdentifiers,
     ...childResults.map((child) => child.result.identifiers),
   ]);
-  const nodeDigest = digest([
+  const normalized = [
     nodeType ?? "object",
-    ...childResults.map((child) => [child.key, child.result.digest]),
-  ]);
+    ...childResults.map((child) => [child.key, child.result.normalized]),
+  ];
+  const nodeDigest = canonicalDigest(normalized);
 
   if (nodeType && FRAGMENT_TYPES.has(nodeType) && nodeCount >= minNodes) {
     const group = groups.get(nodeDigest) ?? {
@@ -211,7 +276,7 @@ function digestAst(
     groups.set(nodeDigest, group);
   }
 
-  return { digest: nodeDigest, nodeCount, identifiers };
+  return { normalized, nodeCount, identifiers };
 }
 
 function compactSql(sql: string, maxLength = 280): string {
@@ -241,21 +306,40 @@ export async function analyzeSimilarityUnits(
   let parsedStatements = 0;
 
   for (const unit of [...units].sort((left, right) => left.id.localeCompare(right.id))) {
-    let parsed: JsonObject;
-    try {
-      const sql = unit.kind === "application-query" ? rewriteNamedParameters(unit.sql).query : unit.sql;
-      parsed = await parse(sql) as JsonObject;
-    } catch (error) {
-      parseErrors.push({ unitId: unit.id, label: unit.label, message: parseMessage(error) });
-      continue;
+    let statements = unit.astStatements;
+    if (statements === undefined) {
+      let parsed: JsonObject;
+      try {
+        const sql = unit.kind === "application-query" ? rewriteNamedParameters(unit.sql).query : unit.sql;
+        parsed = await parse(sql) as JsonObject;
+      } catch (error) {
+        parseErrors.push({ unitId: unit.id, label: unit.label, message: parseMessage(error) });
+        continue;
+      }
+      const statementEntries = Array.isArray(parsed.stmts) ? parsed.stmts : [];
+      statements = statementEntries.flatMap((statement): unknown[] => statement?.stmt ? [statement.stmt] : []);
     }
     parsedUnits++;
-    const statements = Array.isArray(parsed.stmts) ? parsed.stmts : [];
     parsedStatements += statements.length;
-    const parameters = new Set(unit.parameterNames ?? []);
+    const namedParameters = new Map(
+      (unit.parameterNames ?? []).map((name, index) => [name, `function:${index + 1}`] as const),
+    );
+    const positionalParameters = new Map(
+      (unit.parameterNames ?? []).map((_, index) => [index + 1, `function:${index + 1}`] as const),
+    );
     for (let index = 0; index < statements.length; index++) {
-      const statement = statements[index]?.stmt;
-      if (statement) digestAst(statement, `stmts[${index}].stmt`, unit, parameters, minNodes, groups);
+      const statement = statements[index];
+      if (statement) {
+        digestAst(
+          statement,
+          `stmts[${index}].stmt`,
+          unit,
+          namedParameters,
+          positionalParameters,
+          minNodes,
+          groups,
+        );
+      }
     }
   }
 

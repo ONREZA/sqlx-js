@@ -8,6 +8,7 @@ type JsonObject = Record<string, any>;
 export type SqlFunctionCoverage = {
   files: number;
   discovered: number;
+  proceduresSkipped: number;
   sql: number;
   plpgsql: number;
   other: number;
@@ -62,6 +63,28 @@ function functionBody(statement: JsonObject): string | null {
   return typeof body === "string" ? body : null;
 }
 
+function standardBodyStatements(statement: JsonObject): unknown[] {
+  const body = statement.CreateFunctionStmt?.sql_body;
+  const flatten = (value: unknown): unknown[] => {
+    if (!value || typeof value !== "object") return [];
+    const items = (value as JsonObject).List?.items;
+    if (Array.isArray(items)) return items.flatMap(flatten);
+    return [value];
+  };
+  return flatten(body);
+}
+
+function statementSource(source: string, statements: JsonObject[], index: number): string {
+  const statement = statements[index]!;
+  const start = typeof statement.stmt_location === "number" ? statement.stmt_location : 0;
+  const length = typeof statement.stmt_len === "number" ? statement.stmt_len : 0;
+  const next = statements[index + 1];
+  const end = length > 0
+    ? start + length
+    : typeof next?.stmt_location === "number" ? next.stmt_location : source.length;
+  return source.slice(start, end).trim();
+}
+
 function functionLanguage(statement: JsonObject): string {
   return (stringNodeValue(optionValue(statement, "language")) ?? "unknown").toLowerCase();
 }
@@ -85,6 +108,7 @@ export async function extractSqlFunctionBodies(
   const coverage: SqlFunctionCoverage = {
     files: files.length,
     discovered: 0,
+    proceduresSkipped: 0,
     sql: 0,
     plpgsql: 0,
     other: 0,
@@ -95,25 +119,31 @@ export async function extractSqlFunctionBodies(
   const units: SimilarityUnit[] = [];
   for (const file of files) {
     const source = relative(sourceRoot, file).replace(/\\/g, "/");
+    const ddl = readFileSync(file, "utf8");
     let parsed: JsonObject;
     try {
-      parsed = await parse(readFileSync(file, "utf8")) as JsonObject;
+      parsed = await parse(ddl) as JsonObject;
     } catch (error) {
       coverage.ddlParseErrors.push({ source, message: parseMessage(error) });
       continue;
     }
-    const statements = Array.isArray(parsed.stmts) ? parsed.stmts : [];
+    const statements = Array.isArray(parsed.stmts) ? parsed.stmts as JsonObject[] : [];
     for (let index = 0; index < statements.length; index++) {
       const statement = statements[index]?.stmt as JsonObject | undefined;
       if (!statement?.CreateFunctionStmt) continue;
+      if (statement.CreateFunctionStmt.is_procedure === true) {
+        coverage.proceduresSkipped++;
+        continue;
+      }
       coverage.discovered++;
       const language = functionLanguage(statement);
       if (language === "sql") coverage.sql++;
       else if (language === "plpgsql") coverage.plpgsql++;
       else coverage.other++;
       if (language !== "sql") continue;
-      const body = functionBody(statement);
-      if (!body) {
+      const stringBody = functionBody(statement);
+      const astStatements = standardBodyStatements(statement);
+      if (!stringBody && astStatements.length === 0) {
         coverage.missingSqlBodies++;
         continue;
       }
@@ -122,9 +152,10 @@ export async function extractSqlFunctionBodies(
         id: `function:${name}:${source}:${index}`,
         kind: "sql-function",
         label: name,
-        sql: body,
+        sql: stringBody ?? statementSource(ddl, statements, index),
         sources: [source],
         parameterNames: functionParameterNames(statement),
+        ...(astStatements.length > 0 ? { astStatements } : {}),
       });
       coverage.analyzedSqlBodies++;
     }

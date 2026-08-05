@@ -122,16 +122,21 @@ one `defineQuery` name attached to multiple fingerprints. Reviewed intentional
 duplicates can be ignored by query ID, exact occurrence count, and a required
 reason under `queryAudit.exactDuplicates.ignore`. Ignored candidates remain in
 JSON; changed, removed, and no-longer-duplicate entries are reported as stale.
-Findings are advisory and do not change ordinary prepare or CI exit behavior.
+The ignore acknowledges source duplication but does not suppress a divergent
+source contract's `reviewRequired` signal. Findings are advisory and do not
+change ordinary prepare or CI exit behavior.
 
 `queries similarities` is an experimental advisory report over normalized
-PostgreSQL AST fragments. It ignores literal values and parameter positions but
-preserves identifiers, operators, types, and statement shape. With
+PostgreSQL AST fragments. It ignores literal values and alpha-renames parameter
+positions while preserving repeated-parameter identity, identifiers, operators,
+types, and statement shape. With
 `schema.provider: "pgschema"` it reads the configured schema file; `--functions`
 overrides that input for externally orchestrated desired-state SQL. Only
-`LANGUAGE sql` bodies are analyzed; `plpgsql` and other languages remain visible
-as skipped coverage. See [Query reuse and similarity audits](./query-audits.md)
-for the scoring, JSON, and ownership boundaries.
+`LANGUAGE sql` string and SQL-standard bodies are analyzed; procedures,
+`plpgsql`, and other languages remain visible as skipped coverage. Partial parse
+coverage sets JSON `complete` to false. See
+[Query reuse and similarity audits](./query-audits.md) for the scoring, JSON,
+and ownership boundaries.
 
 `json audit` is the reader-first gate before an existing application writes
 Extended JSON tags. It opens `DATABASE_URL` in a read-only transaction and
