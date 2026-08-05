@@ -27,7 +27,10 @@ FROM (
 ) AS token
 CROSS JOIN LATERAL (
   SELECT pg_catalog.regexp_match(
-    token.value,
+    CASE WHEN pg_catalog.length(token.value) <= ${JSON_NUMBER_LIMITS.tokenLength}
+      THEN token.value
+      ELSE NULL
+    END,
     '^(-?)(0|[1-9][0-9]*)(?:\\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?$'
   ) AS parts
 ) AS parsed
