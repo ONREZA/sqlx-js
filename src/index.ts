@@ -47,6 +47,8 @@ export type {
   DatabaseProfile,
   DatabaseProfiles,
   EnumCatalogConfig,
+  ExactDuplicateIgnore,
+  QueryAuditConfig,
   ScanConfig,
   SqlxJsConfig,
 } from "./config";

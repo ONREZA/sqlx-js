@@ -24,6 +24,18 @@ export type EnumCatalogConfig = {
   registry?: boolean;
 };
 
+export type ExactDuplicateIgnore = {
+  queryId: string;
+  occurrences: number;
+  reason: string;
+};
+
+export type QueryAuditConfig = {
+  exactDuplicates?: {
+    ignore?: ExactDuplicateIgnore[];
+  };
+};
+
 export type DatabaseProfile<
   Name extends string = string,
   Role extends string = string,
@@ -48,6 +60,7 @@ export type SqlxJsConfig = {
     includeExtensionOwned?: boolean;
   };
   enumCatalog?: EnumCatalogConfig;
+  queryAudit?: QueryAuditConfig;
   profiles?: DatabaseProfiles;
   scan?: ScanConfig;
   temporal?: TemporalPolicyOptions;
@@ -216,6 +229,43 @@ function validateModuleArray(value: unknown, path: string): void {
   validateStringArray(value, "scan.modules", path);
   if ((value as string[]).length === 0 || (value as string[]).some((item) => item.trim() === "")) {
     throw new Error(`sqlx-js: ${path} scan.modules must contain at least one non-empty module name`);
+  }
+}
+
+function validateQueryAudit(value: unknown, path: string): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`sqlx-js: ${path} queryAudit must be an object`);
+  }
+  const exactDuplicates = (value as Record<string, unknown>).exactDuplicates;
+  if (exactDuplicates === undefined) return;
+  if (!exactDuplicates || typeof exactDuplicates !== "object" || Array.isArray(exactDuplicates)) {
+    throw new Error(`sqlx-js: ${path} queryAudit.exactDuplicates must be an object`);
+  }
+  const ignore = (exactDuplicates as Record<string, unknown>).ignore;
+  if (ignore === undefined) return;
+  if (!Array.isArray(ignore)) {
+    throw new Error(`sqlx-js: ${path} queryAudit.exactDuplicates.ignore must be an array`);
+  }
+  const seen = new Set<string>();
+  for (const [index, raw] of ignore.entries()) {
+    const prefix = `queryAudit.exactDuplicates.ignore[${index}]`;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(`sqlx-js: ${path} ${prefix} must be an object`);
+    }
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry.queryId !== "string" || !/^[0-9a-f]{16}$/.test(entry.queryId)) {
+      throw new Error(`sqlx-js: ${path} ${prefix}.queryId must be a 16-character lowercase query ID`);
+    }
+    if (!Number.isInteger(entry.occurrences) || (entry.occurrences as number) < 2) {
+      throw new Error(`sqlx-js: ${path} ${prefix}.occurrences must be an integer of at least 2`);
+    }
+    if (typeof entry.reason !== "string" || entry.reason.trim() === "") {
+      throw new Error(`sqlx-js: ${path} ${prefix}.reason must be a non-empty string`);
+    }
+    if (seen.has(entry.queryId)) {
+      throw new Error(`sqlx-js: ${path} queryAudit.exactDuplicates.ignore contains duplicate query ID ${entry.queryId}`);
+    }
+    seen.add(entry.queryId);
   }
 }
 
@@ -414,6 +464,7 @@ function validateConfig(value: unknown, path: string): SqlxJsConfig {
     }
   }
   if (config.enumCatalog !== undefined) validateEnumCatalog(config.enumCatalog, path);
+  if (config.queryAudit !== undefined) validateQueryAudit(config.queryAudit, path);
   if (config.profiles !== undefined) validateProfiles(config.profiles, path);
   if (config.temporal !== undefined) validateTemporal(config.temporal, path);
   if (config.scan !== undefined) {

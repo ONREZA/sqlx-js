@@ -13,7 +13,7 @@ The command hierarchy follows ownership rather than implementation details:
 | `migrate` | Built-in migration files and target history | `add/squash/archive` | `run/revert` |
 | `pgschema` | Managed pgschema tool and target plan/apply | Install cache only | `apply` |
 | `snapshot` | Runtime identifier snapshot and LLM manifest | `dump` | No |
-| `queries` | Database-free query inventory, inference explanation, and SQL embedding | With `--embed` | No |
+| `queries` | Database-free query inventory, inference explanation, reuse/similarity audits, and SQL embedding | With `--embed` | No |
 | `json audit` | Extended JSON collision, duplicate-key, schema-dependency, and source-usage inventory | No | No |
 | `doctor` | Runtime, descriptor coverage, config, provider, database, RLS, and artifact diagnostics | With `--fix` | No |
 
@@ -29,6 +29,8 @@ sqlx-js pgschema install|plan|apply
 sqlx-js snapshot dump|check
 sqlx-js doctor [--fix]
 sqlx-js queries [--json] [--embed <path>]
+sqlx-js queries audit [--json]
+sqlx-js queries similarities [--json] [--functions <path>] [--min-nodes <n>] [--limit <n>]
 sqlx-js queries explain <query-id> [--json]
 sqlx-js json audit [--json]
 ```
@@ -56,6 +58,9 @@ Live prepare stages the complete generated cache and external TypeScript outputs
 | `--warnings`          | Show full warning details while keeping compact prepare output. |
 | `--verbose`           | Show per-query prepare progress. Compact human output is the default for prepare/check/offline/verify. |
 | `--embed <path>`      | For `queries`: write a deterministic TypeScript map of referenced external SQL files. |
+| `--functions <path>`  | For `queries similarities`: analyze SQL-language functions from one root-relative file or directory. |
+| `--min-nodes <n>`     | For `queries similarities`: minimum normalized AST fragment size (default: 12). |
+| `--limit <n>`         | For `queries similarities`: maximum ranked candidate families to return (default: 50). |
 | `--jsonl`             | Versioned streaming events for `prepare --watch`.                                     |
 | `--strict-inference`  | Fail prepare/dev/verify when nullability degrades, a generated query type contains unresolved `unknown`, plain `sql()` discards a command result, or a `parse-only` statement is not explicitly acknowledged. Intentional `SqlxJson<unknown>` wrappers remain accepted. |
 | `--force`             | For `migrate archive restore`: allow overwriting existing migration files.           |
@@ -109,6 +114,24 @@ read-only artifact gate and tells you when a live prepare is required.
 sources, source constraints, every DML and predicate target for parameters,
 nullability decisions, per-profile result assertions, and actionable hints. It
 does not connect to PostgreSQL.
+
+`queries audit` reports repeated stable query fingerprints as possible source
+duplicates. It classifies definition/execution origin, shows source contracts,
+highlights differing cardinality/profile/assertion/Temporal fields, and reports
+one `defineQuery` name attached to multiple fingerprints. Reviewed intentional
+duplicates can be ignored by query ID, exact occurrence count, and a required
+reason under `queryAudit.exactDuplicates.ignore`. Ignored candidates remain in
+JSON; changed, removed, and no-longer-duplicate entries are reported as stale.
+Findings are advisory and do not change ordinary prepare or CI exit behavior.
+
+`queries similarities` is an experimental advisory report over normalized
+PostgreSQL AST fragments. It ignores literal values and parameter positions but
+preserves identifiers, operators, types, and statement shape. With
+`schema.provider: "pgschema"` it reads the configured schema file; `--functions`
+overrides that input for externally orchestrated desired-state SQL. Only
+`LANGUAGE sql` bodies are analyzed; `plpgsql` and other languages remain visible
+as skipped coverage. See [Query reuse and similarity audits](./query-audits.md)
+for the scoring, JSON, and ownership boundaries.
 
 `json audit` is the reader-first gate before an existing application writes
 Extended JSON tags. It opens `DATABASE_URL` in a read-only transaction and

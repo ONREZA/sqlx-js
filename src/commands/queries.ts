@@ -9,7 +9,7 @@ import {
   readCacheManifest,
   type CacheEntry,
 } from "../cache";
-import { loadConfig, prepareConfigHash } from "../config";
+import { loadConfig, prepareConfigHash, type SqlxJsConfig } from "../config";
 import { queryId } from "../query-id";
 import type { QueryExecutionMode } from "../query";
 import {
@@ -19,9 +19,9 @@ import {
   sameResultElementNonNullOverrides,
 } from "../query-source-intent";
 import type { QueryResultAssertions } from "../query";
-import { ScanError, scanProject } from "../scan/scanner";
+import { ScanError, scanProject, type QueryCallSite } from "../scan/scanner";
 
-export type QueriesPhase = "config" | "scan" | "cache" | "embed" | "explain";
+export type QueriesPhase = "config" | "scan" | "cache" | "embed" | "explain" | "audit" | "similarity" | "functions";
 
 export class QueriesError extends Error {
   constructor(
@@ -50,6 +50,26 @@ function queriesError(phase: QueriesPhase, error: unknown): QueriesError {
     undefined,
     { cause: error },
   );
+}
+
+export async function loadQuerySources(root: string): Promise<{
+  config: SqlxJsConfig;
+  sites: QueryCallSite[];
+}> {
+  let config: SqlxJsConfig;
+  try {
+    config = await loadConfig(root);
+  } catch (error) {
+    throw queriesError("config", error);
+  }
+  try {
+    return {
+      config,
+      sites: scanProject(root, config.scan, config.profiles ?? {}),
+    };
+  } catch (error) {
+    throw queriesError("scan", error);
+  }
 }
 
 export type QueryInventoryItem = {
@@ -115,18 +135,7 @@ function resultAssertionsForColumns(columns: readonly string[]): QueryResultAsse
 }
 
 export async function buildQueryInventory(root: string, cacheDir: string): Promise<QueryInventory> {
-  let config: Awaited<ReturnType<typeof loadConfig>>;
-  try {
-    config = await loadConfig(root);
-  } catch (error) {
-    throw queriesError("config", error);
-  }
-  let sites: ReturnType<typeof scanProject>;
-  try {
-    sites = scanProject(root, config.scan, config.profiles ?? {});
-  } catch (error) {
-    throw queriesError("scan", error);
-  }
+  const { config, sites } = await loadQuerySources(root);
   const cache = new Cache(cacheDir);
   let manifestCurrent = false;
   try {

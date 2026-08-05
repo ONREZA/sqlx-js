@@ -6,7 +6,8 @@ Items already shipped live in the [README](./README.md) feature list; this file 
 
 ## Current implementation target
 
-The next breaking contract slice is being delivered as one coherent boundary:
+The current release target combines one breaking contract slice with additive
+inspection tooling:
 
 - Temporal-only PostgreSQL I/O: exact `PlainDate`, `PlainTime`,
   `PlainDateTime`, and `Instant` mappings; UTC sessions; preserved
@@ -29,6 +30,11 @@ The next breaking contract slice is being delivered as one coherent boundary:
   round-trip `bigint` and all reconstructable Temporal values; `JsonNumber`
   preserves exact native numerics; exact parsing, resource limits, artifact
   version binding, and the read-only reader-first audit fail closed.
+- Advisory query reuse analysis: exact fingerprints surface possible duplicates,
+  contract divergence, query-name collisions, reviewed occurrence-fenced
+  ignores, and stale acknowledgements. Experimental AST similarity ranks shared
+  fragments across application queries and SQL-language functions without
+  rewriting SQL or becoming a prepare gate.
 
 These items remain recorded here until the release containing the new cache,
 generator, and runtime descriptor revisions is published.
