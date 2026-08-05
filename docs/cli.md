@@ -116,9 +116,10 @@ inspects every physical column on ordinary or materialized user relations whose
 type contains a `json`/`jsonb` leaf. Type discovery recursively follows arrays,
 domains, and composite fields. Each relation is scanned with PostgreSQL `ONLY`,
 so inherited rows belong exclusively to their physical child relation. The audit
-counts physical rows containing `$sqlx` at any JSON-leaf nesting depth and, for
-text-preserving `json` leaves, rows containing duplicate object keys or numeric
-tokens outside the frozen reader limits. It also inventories indexes,
+counts physical rows containing `$sqlx` at any JSON-leaf nesting depth or
+exceeding the cumulative canonical-number limit. For text-preserving `json`
+leaves, it also counts rows containing duplicate object keys or individual
+numeric tokens outside the frozen reader limits. It also inventories indexes,
 constraints, generated columns and views that depend on a containing column, then scans
 application query sites for JSON operators and `json_*`/`jsonb_*` functions.
 Dependencies and source usages require review but do not by themselves fail;

@@ -9,6 +9,9 @@ import {
   parseJsonResult,
   stringifyJsonParameter,
 } from "../src/json-value";
+import { canonicalJsonNumber, canonicalJsonNumberBytes } from "../src/json-number";
+import { JsonEncodingBudget, JSON_RESOURCE_LIMITS } from "../src/json-limits";
+import { serializeExtendedJson } from "../src/json-encoding";
 
 describe("SqlxJson documents", () => {
   test("snapshot and deeply freeze plain values", () => {
@@ -102,6 +105,39 @@ describe("Extended JSON parsing", () => {
     });
   });
 
+  test("bound cumulative exponent expansion before materializing numbers", () => {
+    const token = "1e131071";
+    const compactDocument = `[${Array.from({ length: 129 }, () => token).join(",")}]`;
+
+    expect(new TextEncoder().encode(compactDocument).byteLength).toBeLessThan(2_000);
+    expect(() => SqlxJson.parse(compactDocument)).toThrow(
+      "Extended JSON canonical number data exceeds 16777216 bytes",
+    );
+
+    const decoded = SqlxJson.parse(`[${token}]`).value as readonly JsonNumber[];
+    expect(decoded[0]?.toString().length).toBe(131_072);
+
+    const exact = JsonNumber.from(token);
+    expect(() => createSqlxJson(Array.from({ length: 129 }, () => exact))).toThrow(
+      "Extended JSON canonical number data exceeds 16777216 bytes",
+    );
+    expect(() => createSqlxJson(Array.from({ length: 60_000 }, () => 1e-300))).toThrow(
+      "Extended JSON canonical number data exceeds 16777216 bytes",
+    );
+
+    const compactNumbers = Array.from({ length: 55_553 }, () => 1e-300);
+    const taggedValues = Array.from({ length: 1_000 }, () => 1n);
+    expect(() => createSqlxJson([...compactNumbers, ...taggedValues])).toThrow(
+      "Extended JSON canonical number data exceeds 16777216 bytes",
+    );
+  });
+
+  test("measure canonical numbers without diverging from materialization", () => {
+    for (const token of ["0", "-0", "1", "-1", "123.4500", "0.00100", "1e400", "1e-4000"]) {
+      expect(canonicalJsonNumberBytes(token), token).toBe(canonicalJsonNumber(token).length);
+    }
+  });
+
   test("reject duplicate keys and malformed or unknown control tags", () => {
     expect(() => SqlxJson.parse('{"a":1,"a":2}')).toThrow("duplicate object key");
     expect(() => SqlxJson.parse('{"$sqlx":{"type":"bigint","v":2},"value":"1"}'))
@@ -146,6 +182,7 @@ describe("Extended JSON parsing", () => {
     );
     expect(() => JsonNumber.from("01")).toThrow("invalid JSON number");
     expect(() => JsonNumber.from("1e200000")).toThrow("exponent exceeds PostgreSQL jsonb numeric limits");
+    expect(() => JsonNumber.from("1e131072")).toThrow("exceeds PostgreSQL jsonb numeric limits");
 
     const RuntimeJsonNumber = JsonNumber as unknown as new (value: unknown) => JsonNumber;
     expect(() => new RuntimeJsonNumber(1)).toThrow("requires a JSON number string");
@@ -184,6 +221,62 @@ describe("Extended JSON parsing", () => {
 });
 
 describe("Extended JSON validation", () => {
+  test("measure JSON string bytes exactly", () => {
+    for (const value of [
+      "plain",
+      "\"\\\b\t\n\f\r\u0000\u001f",
+      "é€😀",
+      "\ud800",
+      "\udc00",
+    ]) {
+      const budget = new JsonEncodingBudget();
+      budget.reserveString(value);
+      expect(budget.bytes, JSON.stringify(value)).toBe(
+        new TextEncoder().encode(JSON.stringify(value)).byteLength,
+      );
+    }
+  });
+
+  test("preflight serialized bytes before repeated values amplify output", () => {
+    const escaped = "\0".repeat(1_500_000);
+    expect(() => createSqlxJson(Array.from({ length: 20_000 }, () => escaped))).toThrow(
+      "Extended JSON document exceeds 16777216 UTF-8 bytes",
+    );
+
+    const largeBigint = BigInt("9".repeat(131_072));
+    expect(() => createSqlxJson(Array.from({ length: 20_000 }, () => largeBigint))).toThrow(
+      "Extended JSON document exceeds 16777216 UTF-8 bytes",
+    );
+  });
+
+  test("accept the exact encoded document byte boundary", () => {
+    const controlCharacters = (JSON_RESOURCE_LIMITS.inputBytes - 4) / 6;
+    const atLimit = `${"\0".repeat(controlCharacters)}aa`;
+    const encoded = SqlxJson.stringify(createSqlxJson(atLimit));
+
+    expect(new TextEncoder().encode(encoded).byteLength).toBe(JSON_RESOURCE_LIMITS.inputBytes);
+    expect(() => createSqlxJson(`${atLimit}a`)).toThrow(
+      `Extended JSON document exceeds ${JSON_RESOURCE_LIMITS.inputBytes} UTF-8 bytes`,
+    );
+  });
+
+  test("reuse one Temporal encoding across preflight and output", () => {
+    const temporal = {};
+    let encodings = 0;
+    const encoded = serializeExtendedJson(temporal, EXTENDED_JSON_PROTOCOL_VERSION, {
+      exactNumberText: () => undefined,
+      temporal(value) {
+        expect(value).toBe(temporal);
+        encodings++;
+        return { type: "temporal.Instant", payload: "2026-08-05T00:00:00Z" };
+      },
+      isPlainRecord: () => false,
+    });
+
+    expect(encodings).toBe(1);
+    expect(encoded).toContain('"value":"2026-08-05T00:00:00Z"');
+  });
+
   test("fail closed on non-deterministic application values", () => {
     expect(() => createSqlxJson(new Date() as never)).toThrow("JavaScript Date is not supported");
     expect(() => createSqlxJson({ missing: undefined } as never)).toThrow("undefined values");
