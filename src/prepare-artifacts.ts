@@ -159,9 +159,9 @@ function stageGeneratedOutputs(
   cache: StagedCacheSnapshot,
   externalTargets: StagedTarget[],
 ): void {
-  const dtsPath = resolveOutputPublicationPath(input.dtsPath);
+  const dtsPath = resolvePublicationPath(input.dtsPath);
   const enumModule = input.enumModule
-    ? { ...input.enumModule, path: resolveOutputPublicationPath(input.enumModule.path) }
+    ? { ...input.enumModule, path: resolvePublicationPath(input.enumModule.path) }
     : undefined;
   assertGeneratedOutputPaths([dtsPath, enumModule?.path], cache);
   stageOutput(dtsPath, cache, externalTargets, (path) => {
@@ -214,13 +214,13 @@ function assertGeneratedOutputPaths(
   }
 }
 
-function resolveOutputPublicationPath(path: string): string {
-  const output = resolve(path);
-  const suffix = [basename(output)];
-  let parent = dirname(output);
+function resolvePublicationPath(path: string): string {
+  const target = resolve(path);
+  const suffix = [basename(target)];
+  let parent = dirname(target);
   while (!existsSync(parent)) {
     const next = dirname(parent);
-    if (next === parent) return output;
+    if (next === parent) return target;
     suffix.unshift(basename(parent));
     parent = next;
   }
@@ -241,7 +241,7 @@ function resolveCacheBoundary(cacheDir: string): CacheBoundary {
   if (!cacheExists && pathExists(logical)) {
     throw new Error(`sqlx-js: cache path is a dangling symbolic link: ${cacheDir}`);
   }
-  const publication = cacheExists ? realpathSync(logical) : logical;
+  const publication = cacheExists ? realpathSync(logical) : resolvePublicationPath(logical);
   mkdirSync(dirname(publication), { recursive: true });
   if (cacheExists && !statSync(publication).isDirectory()) {
     throw new Error(`sqlx-js: cache path is not a directory: ${cacheDir}`);

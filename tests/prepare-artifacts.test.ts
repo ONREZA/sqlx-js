@@ -160,6 +160,44 @@ test("prepare artifact publication preserves a symlinked cache boundary", () => 
   }
 });
 
+test("prepare artifact publication canonicalizes a missing cache beneath a symlinked root", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-artifact-symlink-root-"));
+  try {
+    const project = join(root, "project");
+    const projectAlias = join(root, "project-alias");
+    mkdirSync(project);
+    symlinkSync(project, projectAlias, "dir");
+    const cacheDir = join(projectAlias, ".sqlx-js");
+    const dtsPath = join(cacheDir, "sqlx-js-env.d.ts");
+    const enumPath = join(cacheDir, "db-enums.ts");
+    const query = "SELECT missing_symlinked_cache_value";
+    const entry = emptyEntry(query);
+
+    publishPrepareArtifacts({
+      cacheDir,
+      dtsPath,
+      generated: [{ fp: fingerprint(query), entry }],
+      entries: [entry],
+      functions: [],
+      enums: [{ schema: "public", name: "role", values: ["admin"] }],
+      enumCatalogEnabled: true,
+      enumModule: { path: enumPath, content: "export const Role = { Admin: \"admin\" } as const;\n" },
+      configHash: "symlink-root-config",
+      customTypes: {},
+      profiles: {},
+      prune: true,
+    });
+
+    expect(lstatSync(projectAlias).isSymbolicLink()).toBe(true);
+    expect(realpathSync(cacheDir)).toBe(realpathSync(join(project, ".sqlx-js")));
+    expect(readFileSync(dtsPath, "utf8")).toContain(JSON.stringify(query));
+    expect(readFileSync(enumPath, "utf8")).toContain("export const Role");
+    expect(readCacheManifest(cacheDir)?.configHash).toBe("symlink-root-config");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("offline artifact publication preserves the cache source while replacing outputs", () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-artifact-offline-"));
   try {
@@ -325,6 +363,41 @@ test("prepare artifact staging never writes through managed cache symlinks", () 
     })).toThrow(/managed cache path must not be a symbolic link/);
 
     expect(readFileSync(outsideCache, "utf8")).toBe("outside\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("prepare artifact staging replaces an in-cache output symlink without following it", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-artifact-output-file-symlink-"));
+  try {
+    const cacheDir = join(root, ".sqlx-js");
+    const dtsPath = join(cacheDir, "sqlx-js-env.d.ts");
+    const outside = join(root, "outside.d.ts");
+    mkdirSync(cacheDir);
+    writeFileSync(outside, "outside\n");
+    symlinkSync(outside, dtsPath, "file");
+    const query = "SELECT output_file_symlink_value";
+    const entry = emptyEntry(query);
+
+    publishPrepareArtifacts({
+      cacheDir,
+      dtsPath,
+      generated: [{ fp: fingerprint(query), entry }],
+      entries: [entry],
+      functions: [],
+      enums: [],
+      enumCatalogEnabled: false,
+      configHash: "output-file-symlink-config",
+      customTypes: {},
+      profiles: {},
+      prune: true,
+    });
+
+    expect(readFileSync(outside, "utf8")).toBe("outside\n");
+    expect(lstatSync(dtsPath).isSymbolicLink()).toBe(false);
+    expect(readFileSync(dtsPath, "utf8")).toContain(JSON.stringify(query));
+    expect(readCacheManifest(cacheDir)?.configHash).toBe("output-file-symlink-config");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
