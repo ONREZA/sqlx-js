@@ -3,7 +3,8 @@ import { scanProject } from "../scan/scanner";
 import { queryId } from "../query-id";
 import type { SqlxJsConfig } from "../config";
 import { EXTENDED_JSON_PROTOCOL_VERSION } from "../json-value";
-import { JSON_NUMBER_LIMITS } from "../json-number";
+import { JSON_RESOURCE_LIMITS } from "../json-limits";
+import { renderCanonicalJsonNumberAnalysis } from "./json-audit-number";
 
 type JsonLeafStep =
   | { kind: "domain"; schema: string; name: string }
@@ -364,6 +365,8 @@ export async function inspectJsonAudit(opts: JsonAuditOptions): Promise<JsonAudi
   try {
     await client.connect();
     await client.simpleQuery("BEGIN READ ONLY");
+    // JIT compilation dominates these generated per-column inventory queries.
+    await client.simpleQuery("SET LOCAL jit = off");
     const columnResult = await client.simpleQuery(JSON_COLUMNS_QUERY);
     const inventory: JsonColumnInventory[] = columnResult.rows.map((row) => {
       const leafInventory = parseJsonLeafInventory(row[6]);
@@ -511,8 +514,8 @@ async function inspectColumn(
 WITH RECURSIVE
 ${renderJsonRoots(column, "json", jsonLeaves)},
 ${renderJsonRoots(column, "jsonb", jsonbLeaves)},
-${renderJsonWalk("json")},
-${renderJsonWalk("jsonb")},
+${renderJsonWalk("json", jsonLeaves.length > 0)},
+${renderJsonWalk("jsonb", jsonbLeaves.length > 0)},
 affected AS (
   SELECT row_id, collision, duplicate_keys, invalid_number FROM json_affected
   UNION ALL
@@ -547,8 +550,9 @@ function renderJsonRoots(
   const selects = leaves.map((leaf, index) => renderJsonRootSelect(column, leaf, index));
   const body = selects.length > 0
     ? selects.join("\nUNION ALL\n")
-    : `SELECT NULL::text AS row_id, NULL::pg_catalog.${type} AS value WHERE false`;
-  return `${type}_roots(row_id, value) AS (\n${body}\n)`;
+    : `SELECT NULL::text AS row_id, NULL::text AS document_id, `
+      + `NULL::pg_catalog.${type} AS value WHERE false`;
+  return `${type}_roots(row_id, document_id, value) AS (\n${body}\n)`;
 }
 
 function renderJsonRootSelect(
@@ -559,6 +563,7 @@ function renderJsonRootSelect(
   const target = `${quoteIdentifier(column.schema)}.${quoteIdentifier(column.relation)}`;
   let expression = `source_row.${quoteIdentifier(column.column)}`;
   const joins: string[] = [];
+  const documentIdParts = [`'${leafIndex}'`];
   let arrayIndex = 0;
   for (const step of leaf.steps) {
     if (step.kind === "domain") {
@@ -569,21 +574,28 @@ function renderJsonRootSelect(
       const alias = `array_${leafIndex}_${arrayIndex++}`;
       const element = `${alias}_element`;
       joins.push(`CROSS JOIN LATERAL (
-  SELECT ${element} AS value
+  SELECT ${element} AS value, pg_catalog.row_number() OVER () AS ordinality
   FROM pg_catalog.unnest(${expression}) AS ${element}
 ) AS ${alias}`);
       expression = `${alias}.value`;
+      documentIdParts.push(`${alias}.ordinality::text`);
     }
   }
   return `SELECT
   source_row.tableoid::text || ':' || source_row.ctid::text AS row_id,
+  pg_catalog.concat_ws(':', ${documentIdParts.join(", ")}) AS document_id,
   (${expression})::pg_catalog.${leaf.type} AS value
 FROM ONLY ${target} AS source_row
 ${joins.join("\n")}
 WHERE ${expression} IS NOT NULL`;
 }
 
-function renderJsonWalk(type: "json" | "jsonb"): string {
+function renderJsonWalk(type: "json" | "jsonb", enabled: boolean): string {
+  if (!enabled) {
+    return `${type}_affected(row_id, collision, duplicate_keys, invalid_number) AS (
+  SELECT NULL::text, false, false, false WHERE false
+)`;
+  }
   const each = `pg_catalog.${type}_each`;
   const arrayElements = `pg_catalog.${type}_array_elements`;
   const typeOf = `pg_catalog.${type}_typeof`;
@@ -600,20 +612,13 @@ function renderJsonWalk(type: "json" | "jsonb"): string {
       GROUP BY duplicate.key
       HAVING count(*) > 1
     )`;
-  const invalidNumberExpression = type === "jsonb"
-    ? "false"
-    : `CASE WHEN ${typeOf}(${type}_walk.value) = 'number'
-      THEN pg_catalog.length(pg_catalog.btrim(${type}_walk.value::text, E' \\t\\r\\n'))
-        > ${JSON_NUMBER_LIMITS.tokenLength}
-        OR NOT pg_catalog.pg_input_is_valid(${type}_walk.value::text, 'pg_catalog.jsonb')
-      ELSE false
-    END`;
-  return `${type}_walk(row_id, value) AS (
-  SELECT row_id, value FROM ${type}_roots
+  const isNumber = `${typeOf}(${type}_walk.value) = 'number'`;
+  return `${type}_walk(row_id, document_id, value) AS (
+  SELECT row_id, document_id, value FROM ${type}_roots
 
   UNION ALL
 
-  SELECT ${type}_walk.row_id, child.value
+  SELECT ${type}_walk.row_id, ${type}_walk.document_id, child.value
   FROM ${type}_walk
   CROSS JOIN LATERAL (
     SELECT object_item.value
@@ -630,21 +635,62 @@ function renderJsonWalk(type: "json" | "jsonb"): string {
         THEN ${type}_walk.value ELSE ${emptyArray} END
     ) AS array_item
   ) AS child
-), ${type}_affected AS (
+), ${type}_analyzed_nodes AS MATERIALIZED (
+  SELECT
+    ${type}_walk.*,
+    ${isNumber} AS is_number,
+    number_analysis.canonical_bytes
+  FROM ${type}_walk
+  CROSS JOIN LATERAL (
+${indentSql(
+    type === "json"
+      ? renderCanonicalJsonNumberAnalysis(
+        `CASE WHEN ${isNumber} THEN ${type}_walk.value::text ELSE '0' END`,
+      )
+      : `SELECT pg_catalog.length(
+  CASE WHEN ${isNumber} THEN ${type}_walk.value::text ELSE '0' END
+)::bigint AS canonical_bytes`,
+    4,
+  )}
+  ) AS number_analysis
+), ${type}_node_findings AS (
   SELECT
     row_id,
+    document_id,
     EXISTS (
       SELECT 1
       FROM ${each}(
         CASE WHEN ${typeOf}(${type}_walk.value) = 'object'
-          THEN ${type}_walk.value ELSE ${emptyObject} END
+          THEN value ELSE ${emptyObject} END
       ) AS member
       WHERE member.key = '$sqlx'
     ) AS collision,
     ${duplicateExpression} AS duplicate_keys,
-    ${invalidNumberExpression} AS invalid_number
-  FROM ${type}_walk
+    CASE WHEN is_number
+      THEN canonical_bytes IS NULL
+      ELSE false
+    END AS invalid_number,
+    CASE WHEN is_number
+      THEN COALESCE(canonical_bytes, 0)
+      ELSE 0
+    END AS canonical_number_bytes
+  FROM ${type}_analyzed_nodes AS ${type}_walk
+), ${type}_affected AS (
+  SELECT
+    row_id,
+    pg_catalog.bool_or(collision) AS collision,
+    pg_catalog.bool_or(duplicate_keys) AS duplicate_keys,
+    pg_catalog.bool_or(invalid_number)
+      OR pg_catalog.sum(canonical_number_bytes)
+        > ${JSON_RESOURCE_LIMITS.canonicalNumberBytes} AS invalid_number
+  FROM ${type}_node_findings
+  GROUP BY row_id, document_id
 )`;
+}
+
+function indentSql(value: string, spaces: number): string {
+  const indentation = " ".repeat(spaces);
+  return value.split("\n").map((line) => `${indentation}${line}`).join("\n");
 }
 
 function parseJsonLeafInventory(value: Uint8Array | null | undefined): JsonLeafInventory[] {

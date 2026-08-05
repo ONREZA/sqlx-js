@@ -207,7 +207,8 @@ Version 1 defines:
   zero;
 - maximum 16 MiB UTF-8 document text, depth 128, 100000 nodes, 8 MiB UTF-8
   strings/keys, 131072 decimal digits in a tagged `bigint`, and numeric tokens
-  bounded by the PostgreSQL-compatible decimal limits above;
+  bounded by the PostgreSQL-compatible decimal limits above, with at most 16
+  MiB of cumulative canonical numeric text per document;
 - safe own-property construction so `__proto__`, `prototype`, and
   `constructor` remain data rather than mutation paths;
 - deep immutability or an equivalent eager snapshot so a validated document
@@ -285,12 +286,13 @@ any data rewrite. Database migrations and backfills remain application-owned.
   and composite fields so every runtime-decoded `json`/`jsonb` leaf is in the
   inventory. Each physical relation is scanned through `ONLY`. The audit reports
   each leaf path, `$sqlx` collisions at any depth, duplicate object keys and
-  reader-incompatible numeric tokens preserved by `json`, dependent indexes,
-  constraints, generated columns and views, plus source queries using JSON
-  operators or `json_*`/`jsonb_*` functions. Missing column privileges, active
-  row-level security for the audit role, or scan errors make the audit incomplete
-  and non-zero; stored collisions, duplicates, and incompatible numbers also
-  make it non-zero.
+  reader-incompatible numeric tokens preserved by `json`, documents above the
+  cumulative canonical-number limit, dependent indexes, constraints, generated
+  columns and views, plus source queries using JSON operators or
+  `json_*`/`jsonb_*` functions. Missing column privileges, active row-level
+  security for the audit role, or scan errors make the audit incomplete and
+  non-zero; stored collisions, duplicates, and incompatible numbers also make
+  it non-zero.
 - External producers may continue writing untagged JSON. Readers brand it and
   materialize unsafe native numeric tokens within the frozen PostgreSQL `jsonb`
   numeric limits as `JsonNumber`; only sqlx-js writers require `SqlxJson` input.

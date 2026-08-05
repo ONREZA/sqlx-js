@@ -2,20 +2,31 @@ import type { TemporalApi, TemporalFactory, TemporalJsonValue } from "./temporal
 import { isTemporalValue, resolveTemporalApi } from "./temporal-api";
 import { isDateValue, markDateFreeSqlValue } from "./sql-value";
 import { JSON_PROTOCOL_VERSION } from "./artifact-versions";
-import { canonicalJsonNumber, JSON_NUMBER_LIMITS } from "./json-number";
+import {
+  assertJsonBigintDigits,
+  canonicalJsonNumber,
+  canonicalJsonNumberBytes,
+  JSON_NUMBER_LIMITS,
+} from "./json-number";
+import { JSON_RESOURCE_LIMITS } from "./json-limits";
+import { serializeExtendedJson, type JsonEncodingHooks } from "./json-encoding";
 
 export const EXTENDED_JSON_PROTOCOL_VERSION = JSON_PROTOCOL_VERSION;
 
-const MAX_INPUT_BYTES = 16 * 1024 * 1024;
-const MAX_STRING_BYTES = 8 * 1024 * 1024;
-const MAX_DEPTH = 128;
-const MAX_NODES = 100_000;
-const MAX_BIGINT_DIGITS = JSON_NUMBER_LIMITS.integerDigits;
+const MAX_INPUT_BYTES = JSON_RESOURCE_LIMITS.inputBytes;
+const MAX_STRING_BYTES = JSON_RESOURCE_LIMITS.stringBytes;
+const MAX_DEPTH = JSON_RESOURCE_LIMITS.depth;
+const MAX_NODES = JSON_RESOURCE_LIMITS.nodes;
+const MAX_CANONICAL_NUMBER_BYTES = JSON_RESOURCE_LIMITS.canonicalNumberBytes;
 const MAX_NUMBER_TOKEN_LENGTH = JSON_NUMBER_LIMITS.tokenLength;
+const PROTOCOL_VERSION_NUMBER_BYTES = String(EXTENDED_JSON_PROTOCOL_VERSION).length;
 const SQLX_JSON_DOCUMENT = Symbol("sqlx-js.json.document");
 const JSON_NUMBER_VALUE = Symbol("sqlx-js.json.number");
+const JSON_NUMBER_CANONICAL_VALUE = Symbol("sqlx-js.json.number.canonical-value");
 const RAW_NUMBER = Symbol("sqlx-js.json.raw-number");
 const ENCODED_DOCUMENTS = new WeakMap<SqlxJson<unknown>, string>();
+// Parser output is already canonical; keep the bypass inaccessible to callers.
+let createCanonicalJsonNumber: (value: string) => JsonNumber;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | bigint | JsonNumber | TemporalJsonValue | JsonObject | JsonArray;
@@ -66,11 +77,13 @@ export type SqlxJsonParseOptions = {
 export class JsonNumber {
   readonly [JSON_NUMBER_VALUE]: string;
 
-  private constructor(value: string) {
+  private constructor(value: string, canonical?: typeof JSON_NUMBER_CANONICAL_VALUE) {
     if (typeof value !== "string") {
       throw new Error("sqlx-js: JsonNumber requires a JSON number string");
     }
-    this[JSON_NUMBER_VALUE] = canonicalJsonNumber(value);
+    this[JSON_NUMBER_VALUE] = canonical === JSON_NUMBER_CANONICAL_VALUE
+      ? value
+      : canonicalJsonNumber(value);
     Object.freeze(this);
   }
 
@@ -79,6 +92,10 @@ export class JsonNumber {
       throw new Error("sqlx-js: JsonNumber.from requires a JSON number string");
     }
     return new JsonNumber(value);
+  }
+
+  static {
+    createCanonicalJsonNumber = (value) => new JsonNumber(value, JSON_NUMBER_CANONICAL_VALUE);
   }
 
   toString(): string {
@@ -103,7 +120,12 @@ export class SqlxJson<T = JsonValue> {
 }
 
 export function createSqlxJson<T>(value: T & JsonCompatible<T>): SqlxJson<T> {
-  const state: SnapshotState = { nodes: 0, seen: new Set() };
+  const state: SnapshotState = {
+    nodes: 0,
+    seen: new Set(),
+    canonicalNumbers: { bytes: 0 },
+    stringBytes: new Map(),
+  };
   const snapshot = snapshotValue(value, state, 0) as ImmutableJson<T>;
   const document = createDocument(snapshot);
   ENCODED_DOCUMENTS.set(document, serializeDocumentValue(snapshot));
@@ -155,13 +177,15 @@ function createDocument<T>(value: ImmutableJson<T>): SqlxJson<T> {
 type SnapshotState = {
   nodes: number;
   seen: Set<object>;
+  canonicalNumbers: CanonicalNumberBudget;
+  stringBytes: Map<string, number>;
 };
 
 function snapshotValue(value: unknown, state: SnapshotState, depth: number): JsonValue {
   assertValueBudget(state, depth);
   if (value === null || typeof value === "boolean") return value;
   if (typeof value === "string") {
-    assertUtf8Limit(value, MAX_STRING_BYTES, "Extended JSON string");
+    assertSnapshotUtf8Limit(value, state, "Extended JSON string");
     return value;
   }
   if (typeof value === "number") {
@@ -171,14 +195,28 @@ function snapshotValue(value: unknown, state: SnapshotState, depth: number): Jso
         "sqlx-js: Extended JSON integer numbers must be within JavaScript's safe integer range; use bigint or JsonNumber.from(...) instead",
       );
     }
-    return Object.is(value, -0) ? 0 : value;
+    const normalized = Object.is(value, -0) ? 0 : value;
+    reserveCanonicalNumberBytes(
+      state.canonicalNumbers,
+      canonicalJsonNumberBytes(String(normalized)),
+    );
+    return normalized;
   }
-  if (typeof value === "bigint") return value;
-  if (value instanceof JsonNumber) return JsonNumber.from(value[JSON_NUMBER_VALUE]);
+  if (typeof value === "bigint") {
+    reserveCanonicalNumberBytes(state.canonicalNumbers, PROTOCOL_VERSION_NUMBER_BYTES);
+    return value;
+  }
+  if (value instanceof JsonNumber) {
+    reserveCanonicalNumberBytes(state.canonicalNumbers, value[JSON_NUMBER_VALUE].length);
+    return createCanonicalJsonNumber(value[JSON_NUMBER_VALUE]);
+  }
   if (isDateValue(value)) {
     throw new Error("sqlx-js: JavaScript Date is not supported in Extended JSON; use the matching Temporal type");
   }
-  if (isTemporalValue(value)) return snapshotTemporal(value);
+  if (isTemporalValue(value)) {
+    reserveCanonicalNumberBytes(state.canonicalNumbers, PROTOCOL_VERSION_NUMBER_BYTES);
+    return snapshotTemporal(value, state);
+  }
   if (ArrayBuffer.isView(value)) {
     throw new Error("sqlx-js: binary views are not supported in Extended JSON; encode an explicit string instead");
   }
@@ -193,6 +231,9 @@ function snapshotValue(value: unknown, state: SnapshotState, depth: number): Jso
   try {
     if (Array.isArray(value)) return snapshotArray(value, state, depth);
     if (!isPlainRecord(value)) throw new Error("sqlx-js: Extended JSON objects must be plain records");
+    if (Object.hasOwn(value, "$sqlx")) {
+      reserveCanonicalNumberBytes(state.canonicalNumbers, PROTOCOL_VERSION_NUMBER_BYTES);
+    }
     return snapshotObject(value, state, depth);
   } finally {
     state.seen.delete(value);
@@ -231,13 +272,13 @@ function snapshotObject(value: object, state: SnapshotState, depth: number): Jso
     if (descriptor.value === undefined) {
       throw new Error("sqlx-js: Extended JSON objects cannot contain undefined values");
     }
-    assertUtf8Limit(key, MAX_STRING_BYTES, "Extended JSON object key");
+    assertSnapshotUtf8Limit(key, state, "Extended JSON object key");
     defineDataProperty(result, key, snapshotValue(descriptor.value, state, depth + 1));
   }
   return Object.freeze(result);
 }
 
-function snapshotTemporal(value: TemporalJsonValue): TemporalJsonValue {
+function snapshotTemporal(value: TemporalJsonValue, state: SnapshotState): TemporalJsonValue {
   const name = temporalTypeName(value);
   const prototype = Object.getPrototypeOf(value) as { constructor?: unknown } | null;
   const factory = prototype?.constructor;
@@ -255,7 +296,7 @@ function snapshotTemporal(value: TemporalJsonValue): TemporalJsonValue {
   if (!(restored instanceof factory) || temporalTypeName(restored) !== name) {
     throw new Error(`sqlx-js: ${name} provider returned an incompatible value`);
   }
-  assertUtf8Limit(canonical, MAX_STRING_BYTES, `${name} value`);
+  assertSnapshotUtf8Limit(canonical, state, `${name} value`);
   return Object.freeze(restored) as TemporalJsonValue;
 }
 
@@ -347,7 +388,7 @@ function decodeTaggedValue(
     if (typeof payload !== "string" || !/^-?(?:0|[1-9]\d*)$/.test(payload) || payload === "-0") {
       throw new Error("sqlx-js: malformed Extended JSON bigint tag");
     }
-    assertBigintDigits(payload);
+    assertJsonBigintDigits(payload);
     return BigInt(payload);
   }
   if (control.type === "object") {
@@ -383,106 +424,49 @@ function decodeTaggedValue(
   throw new Error(`sqlx-js: unknown Extended JSON tag type ${quotedForError(control.type)}`);
 }
 
-type EncodeState = {
-  nodes: number;
-};
-
 type TemporalDecodeState = {
   value: TemporalApi | undefined;
   resolved: boolean;
 };
 
-function encodeValue(value: unknown, depth: number, state: EncodeState): string {
-  reserveEncodedNodes(state, 1);
-  assertEncodedDepth(depth);
-  if (value === null) return "null";
-  if (typeof value === "string") return JSON.stringify(value);
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "number") return Object.is(value, -0) ? "0" : String(value);
-  if (typeof value === "bigint") {
-    const payload = value.toString();
-    assertBigintDigits(payload);
-    return encodeTag("bigint", JSON.stringify(payload), depth, state);
-  }
-  if (value instanceof JsonNumber) return value.toString();
-  if (isTemporalValue(value)) {
-    const name = temporalTypeName(value);
-    return encodeTag(
-      name.replace("Temporal.", "temporal."),
-      JSON.stringify(String(value)),
-      depth,
-      state,
-    );
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => encodeValue(item, depth + 1, state)).join(",")}]`;
-  }
-  if (!value || typeof value !== "object" || !isPlainRecord(value)) {
-    throw new Error("sqlx-js: malformed SqlxJson document value");
-  }
-  return encodeObject(
-    value as Record<string, unknown>,
-    depth,
-    Object.hasOwn(value, "$sqlx"),
-    state,
-  );
-}
-
-function assertBigintDigits(value: string): void {
-  const digits = value.startsWith("-") ? value.length - 1 : value.length;
-  if (digits > MAX_BIGINT_DIGITS) {
-    throw new Error(`sqlx-js: Extended JSON bigint exceeds ${MAX_BIGINT_DIGITS} decimal digits`);
-  }
-}
-
-function encodeObject(
-  value: Record<string, unknown>,
-  depth: number,
-  escaped: boolean,
-  state: EncodeState,
-): string {
-  const childDepth = depth + (escaped ? 2 : 1);
-  const body = Object.keys(value)
-    .sort(compareKeys)
-    .map((key) => `${JSON.stringify(key)}:${encodeValue(value[key], childDepth, state)}`)
-    .join(",");
-  return escaped ? encodeTag("object", `{${body}}`, depth, state) : `{${body}}`;
-}
-
-function encodeTag(type: string, payload: string, depth: number, state: EncodeState): string {
-  assertEncodedDepth(depth + 2);
-  reserveEncodedNodes(state, 4);
-  return `{"$sqlx":{"type":${JSON.stringify(type)},"v":${EXTENDED_JSON_PROTOCOL_VERSION}},"value":${payload}}`;
-}
-
-function assertEncodedDepth(depth: number): void {
-  if (depth > MAX_DEPTH) throw new Error(`sqlx-js: Extended JSON nesting exceeds ${MAX_DEPTH}`);
-}
-
-function reserveEncodedNodes(state: EncodeState, count: number): void {
-  state.nodes += count;
-  if (state.nodes > MAX_NODES) {
-    throw new Error(`sqlx-js: Extended JSON node count exceeds ${MAX_NODES}`);
-  }
-}
+const JSON_ENCODING_HOOKS: JsonEncodingHooks = {
+  exactNumberText(value) {
+    return value instanceof JsonNumber ? value[JSON_NUMBER_VALUE] : undefined;
+  },
+  temporal(value) {
+    if (!isTemporalValue(value)) return undefined;
+    return {
+      type: temporalTypeName(value).replace("Temporal.", "temporal."),
+      payload: String(value),
+    };
+  },
+  isPlainRecord,
+};
 
 function serializeDocumentValue(value: unknown): string {
-  const text = encodeValue(value, 0, { nodes: 0 });
-  assertUtf8Limit(text, MAX_INPUT_BYTES, "Extended JSON document");
-  return text;
+  return serializeExtendedJson(
+    value,
+    EXTENDED_JSON_PROTOCOL_VERSION,
+    JSON_ENCODING_HOOKS,
+  );
 }
 
 function materializeNumber(token: string): number | JsonNumber {
   const canonical = canonicalJsonNumber(token);
   const number = Number(canonical);
-  if (!Number.isFinite(number) || (number === 0 && canonical !== "0")) return JsonNumber.from(canonical);
-  if (Number.isInteger(number) && !Number.isSafeInteger(number)) return JsonNumber.from(canonical);
+  if (!Number.isFinite(number) || (number === 0 && canonical !== "0")) {
+    return createCanonicalJsonNumber(canonical);
+  }
+  if (Number.isInteger(number) && !Number.isSafeInteger(number)) {
+    return createCanonicalJsonNumber(canonical);
+  }
   return Object.is(number, -0) ? 0 : number;
 }
 
 class ExactJsonParser {
   private index = 0;
   private nodes = 0;
+  private readonly canonicalNumbers: CanonicalNumberBudget = { bytes: 0 };
 
   constructor(private readonly input: string) {}
 
@@ -612,6 +596,7 @@ class ExactJsonParser {
     if (token.length > MAX_NUMBER_TOKEN_LENGTH) {
       this.fail(`number token exceeds ${MAX_NUMBER_TOKEN_LENGTH} characters`);
     }
+    reserveCanonicalNumberBytes(this.canonicalNumbers, canonicalJsonNumberBytes(token));
     return Object.freeze({ [RAW_NUMBER]: token });
   }
 
@@ -638,6 +623,30 @@ function assertValueBudget(state: SnapshotState, depth: number): void {
   state.nodes++;
   if (state.nodes > MAX_NODES) throw new Error(`sqlx-js: Extended JSON node count exceeds ${MAX_NODES}`);
   if (depth > MAX_DEPTH) throw new Error(`sqlx-js: Extended JSON nesting exceeds ${MAX_DEPTH}`);
+}
+
+type CanonicalNumberBudget = {
+  bytes: number;
+};
+
+function reserveCanonicalNumberBytes(state: CanonicalNumberBudget, bytes: number): void {
+  state.bytes += bytes;
+  if (state.bytes > MAX_CANONICAL_NUMBER_BYTES) {
+    throw new Error(
+      `sqlx-js: Extended JSON canonical number data exceeds ${MAX_CANONICAL_NUMBER_BYTES} bytes`,
+    );
+  }
+}
+
+function assertSnapshotUtf8Limit(value: string, state: SnapshotState, label: string): void {
+  let bytes = state.stringBytes.get(value);
+  if (bytes === undefined) {
+    bytes = new TextEncoder().encode(value).byteLength;
+    state.stringBytes.set(value, bytes);
+  }
+  if (bytes > MAX_STRING_BYTES) {
+    throw new Error(`sqlx-js: ${label} exceeds ${MAX_STRING_BYTES} UTF-8 bytes`);
+  }
 }
 
 function assertUtf8Limit(value: string, limit: number, label: string): void {

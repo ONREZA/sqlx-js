@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { PgClient, parseDatabaseUrl } from "../src/pg/wire";
+import { decodeText, PgClient, parseDatabaseUrl } from "../src/pg/wire";
 import { validateAll } from "../src/commands/prepare";
 import { SchemaCache, compositeLiteral } from "../src/pg/schema";
 import { mergeExtensionTypes } from "../src/pg/extensions";
@@ -17,6 +17,8 @@ import { queryId } from "../src/query-id";
 import type { RuntimeQueryDescriptors } from "../src/runtime-descriptors";
 import { Temporal } from "@js-temporal/polyfill";
 import { inspectJsonAudit } from "../src/commands/json-audit";
+import { renderCanonicalJsonNumberAnalysis } from "../src/commands/json-audit-number";
+import { canonicalJsonNumberBytes } from "../src/json-number";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-integration-"));
@@ -494,6 +496,47 @@ if (!haveIntegrationDatabase) {
             )::tmp_extended_json_audit_record
           ]
         );
+        INSERT INTO tmp_extended_json_audit (raw, document)
+          VALUES (
+            ('[' || pg_catalog.rtrim(pg_catalog.repeat('1e131071,', 129), ',') || ']')::json,
+            '{}'::jsonb
+          );
+        INSERT INTO tmp_extended_json_audit (raw, document)
+          VALUES (
+            ('[' || pg_catalog.rtrim(pg_catalog.repeat('1e131071,', 128), ',') || ']')::json,
+            '{}'::jsonb
+          );
+        INSERT INTO tmp_extended_json_audit (raw, document)
+          VALUES ('[1e131071,1e-16383,-0e000001,123.4500e-2]'::json, '{}'::jsonb);
+        INSERT INTO tmp_extended_json_audit (raw, document)
+          VALUES ('[0e200000,1e-16384]'::json, '{}'::jsonb);
+        INSERT INTO tmp_extended_json_audit (raw, document, records)
+          VALUES (
+            '{}'::json,
+            '{}'::jsonb,
+            ARRAY[
+              ROW(
+                NULL::tmp_extended_json_audit_domain,
+                ARRAY[
+                  ('[' || pg_catalog.rtrim(pg_catalog.repeat('1e131071,', 128), ',') || ']')::json,
+                  ('[' || pg_catalog.rtrim(pg_catalog.repeat('1e131071,', 128), ',') || ']')::json
+                ]
+              )::tmp_extended_json_audit_record
+            ]
+          );
+        INSERT INTO tmp_extended_json_audit (raw, document, records)
+          VALUES (
+            '{}'::json,
+            '{}'::jsonb,
+            ARRAY[
+              ROW(
+                NULL::tmp_extended_json_audit_domain,
+                ARRAY[
+                  ('[' || pg_catalog.rtrim(pg_catalog.repeat('1e131071,', 129), ',') || ']')::json
+                ]
+              )::tmp_extended_json_audit_record
+            ]
+          );
       `);
 
       const report = await inspectJsonAudit({
@@ -516,7 +559,7 @@ if (!haveIntegrationDatabase) {
       const child = report.columns.find((column) =>
         column.relation === "tmp_extended_json_audit_child" && column.column === "payload");
 
-      expect(raw).toMatchObject({ duplicateKeyRows: 1, invalidNumberRows: 1 });
+      expect(raw).toMatchObject({ duplicateKeyRows: 1, invalidNumberRows: 3 });
       expect(document?.collisionRows).toBe(1);
       expect(domainDocument).toMatchObject({
         collisionRows: 1,
@@ -526,14 +569,18 @@ if (!haveIntegrationDatabase) {
         collisionRows: 1,
         jsonLeaves: [{ path: "$[]", type: "jsonb" }],
       });
-      expect(records).toMatchObject({ collisionRows: 1, duplicateKeyRows: 1 });
+      expect(records).toMatchObject({
+        collisionRows: 1,
+        duplicateKeyRows: 1,
+        invalidNumberRows: 1,
+      });
       expect(records?.jsonLeaves).toEqual([
         { path: "$[].payload", type: "jsonb" },
         { path: "$[].raw_items[]", type: "json" },
       ]);
       expect(parent).toMatchObject({ collisionRows: 0 });
       expect(child).toMatchObject({ collisionRows: 1 });
-      expect(report.summary).toMatchObject({ invalidNumberRows: 1 });
+      expect(report.summary).toMatchObject({ invalidNumberRows: 4 });
       expect(report.dependencies).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: "index", name: "tmp_extended_json_audit_kind_idx" }),
         expect.objectContaining({ kind: "index", name: "tmp_extended_json_audit_domain_kind_idx" }),
@@ -555,6 +602,62 @@ if (!haveIntegrationDatabase) {
       `).catch(() => {});
       await client.end();
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("Extended JSON audit number sizing matches the runtime contract", async () => {
+    const tokens = [
+      "0",
+      "-0",
+      "0.000",
+      "-0e147455",
+      "0e147456",
+      "1",
+      "-1",
+      "123.4500",
+      "0.00100",
+      "1e400",
+      "1e-4000",
+      "1e131071",
+      "-1e131071",
+      "1e131072",
+      "1e-16383",
+      "1e-16384",
+      "1e147455",
+      "1e00000000000000000001",
+      "1e+000001",
+      "1e-000001",
+      "01",
+      "nan",
+    ];
+    const client = new PgClient(parseDatabaseUrl(dbUrl));
+    await client.connect();
+    try {
+      await client.simpleQuery("SET jit = off");
+      const values = tokens.map((token) => `'${token}'`).join(", ");
+      const result = await client.simpleQuery(`
+SELECT input.ordinality::text, number_analysis.canonical_bytes::text
+FROM pg_catalog.unnest(ARRAY[${values}]::text[]) WITH ORDINALITY AS input(token, ordinality)
+CROSS JOIN LATERAL (
+${renderCanonicalJsonNumberAnalysis("input.token")}
+) AS number_analysis
+ORDER BY input.ordinality
+      `);
+
+      expect(result.rows).toHaveLength(tokens.length);
+      for (let index = 0; index < tokens.length; index++) {
+        const token = tokens[index]!;
+        let expected: number | null;
+        try {
+          expected = canonicalJsonNumberBytes(token);
+        } catch {
+          expected = null;
+        }
+        const actual = result.rows[index]?.[1];
+        expect(actual === null ? null : Number(decodeText(actual)), token).toBe(expected);
+      }
+    } finally {
+      await client.end();
     }
   });
 
