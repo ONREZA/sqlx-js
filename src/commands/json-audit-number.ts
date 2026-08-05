@@ -76,3 +76,51 @@ CROSS JOIN LATERAL (
     END AS fraction_digits
 ) AS sized`;
 }
+
+export function renderCanonicalJsonbNumberAnalysis(value: string): string {
+  // Numeric's wire header exposes decimal weight and scale without expanding exponent notation.
+  return `SELECT
+  CASE WHEN header.ndigits = 0 THEN 1::bigint
+    ELSE (
+      CASE WHEN numeric_value.value < 0 THEN 1 ELSE 0 END
+      + CASE WHEN header.weight < 0
+        THEN 2 + header.dscale
+        ELSE header.weight * 4
+          + CASE WHEN header.first_digit < 10 THEN 1
+            WHEN header.first_digit < 100 THEN 2
+            WHEN header.first_digit < 1000 THEN 3
+            ELSE 4
+          END
+          + CASE WHEN header.dscale > 0 THEN 1 + header.dscale ELSE 0 END
+      END
+    )::bigint
+  END AS canonical_bytes
+FROM (
+  SELECT (${value})::pg_catalog.numeric AS value
+) AS numeric_value
+CROSS JOIN LATERAL (
+  SELECT pg_catalog.numeric_send(numeric_value.value) AS value
+) AS encoded_numeric
+CROSS JOIN LATERAL (
+  SELECT
+    pg_catalog.get_byte(encoded_numeric.value, 0) * 256
+      + pg_catalog.get_byte(encoded_numeric.value, 1) AS ndigits,
+    pg_catalog.get_byte(encoded_numeric.value, 2) * 256
+      + pg_catalog.get_byte(encoded_numeric.value, 3) AS unsigned_weight,
+    pg_catalog.get_byte(encoded_numeric.value, 6) * 256
+      + pg_catalog.get_byte(encoded_numeric.value, 7) AS dscale,
+    CASE WHEN pg_catalog.octet_length(encoded_numeric.value) > 8
+      THEN pg_catalog.get_byte(encoded_numeric.value, 8) * 256
+        + pg_catalog.get_byte(encoded_numeric.value, 9)
+      ELSE 0
+    END AS first_digit
+) AS raw_header
+CROSS JOIN LATERAL (
+  SELECT
+    raw_header.ndigits,
+    raw_header.unsigned_weight
+      - CASE WHEN raw_header.unsigned_weight >= 32768 THEN 65536 ELSE 0 END AS weight,
+    raw_header.dscale,
+    raw_header.first_digit
+) AS header`;
+}
