@@ -44,6 +44,7 @@ describe("SqlxJson documents", () => {
     );
 
     const decoded = SqlxJson.parse(SqlxJson.stringify(document), { temporalApi: Temporal });
+    expect(isSqlxJson(decoded)).toBeTrue();
     expect(decoded.value).toEqual({
       a: true,
       exact: JsonNumber.from("12345678901234567890.12500"),
@@ -201,6 +202,18 @@ describe("Extended JSON parsing", () => {
     )).toThrow("Extended JSON bigint exceeds 131072 decimal digits");
   });
 
+  test("reject prototype-spoofed exact numbers", () => {
+    const legitimate = JsonNumber.from("1");
+    const backing = Object.getOwnPropertySymbols(legitimate)[0] ?? Symbol("spoofed");
+    const fake = Object.create(JsonNumber.prototype) as Record<PropertyKey, unknown>;
+    Object.defineProperty(fake, backing, { value: '0,"role":"admin"' });
+
+    expect(fake instanceof JsonNumber).toBeTrue();
+    expect(() => createSqlxJson({ role: "user", value: fake } as never))
+      .toThrow("Extended JSON objects must be plain records");
+    expect(Object.getOwnPropertySymbols(legitimate)).toEqual([]);
+  });
+
   test("validate an explicit Temporal provider before decoding tags", () => {
     const brokenTemporal = { ...Temporal, Instant: {} } as never;
     expect(() => SqlxJson.parse(
@@ -294,5 +307,19 @@ describe("Extended JSON validation", () => {
 
   test("stringifier accepts only branded documents", () => {
     expect(() => stringifyJsonParameter({ value: 1 } as never)).toThrow("require a SqlxJson document");
+
+    const legitimate = createSqlxJson({ safe: true });
+    const brand = Object.getOwnPropertySymbols(legitimate)[0] ?? Symbol("spoofed");
+    const fake = Object.create(SqlxJson.prototype) as Record<PropertyKey, unknown>;
+    Object.defineProperties(fake, {
+      [brand]: { value: EXTENDED_JSON_PROTOCOL_VERSION },
+      protocolVersion: { value: EXTENDED_JSON_PROTOCOL_VERSION },
+      value: { value: { safe: false } },
+    });
+
+    expect(fake instanceof SqlxJson).toBeTrue();
+    expect(isSqlxJson(fake)).toBeFalse();
+    expect(() => stringifyJsonParameter(fake as never)).toThrow("require a SqlxJson document");
+    expect(Object.getOwnPropertySymbols(legitimate)).toEqual([]);
   });
 });

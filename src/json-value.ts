@@ -20,13 +20,12 @@ const MAX_NODES = JSON_RESOURCE_LIMITS.nodes;
 const MAX_CANONICAL_NUMBER_BYTES = JSON_RESOURCE_LIMITS.canonicalNumberBytes;
 const MAX_NUMBER_TOKEN_LENGTH = JSON_NUMBER_LIMITS.tokenLength;
 const PROTOCOL_VERSION_NUMBER_BYTES = String(EXTENDED_JSON_PROTOCOL_VERSION).length;
-const SQLX_JSON_DOCUMENT = Symbol("sqlx-js.json.document");
-const JSON_NUMBER_VALUE = Symbol("sqlx-js.json.number");
 const JSON_NUMBER_CANONICAL_VALUE = Symbol("sqlx-js.json.number.canonical-value");
 const RAW_NUMBER = Symbol("sqlx-js.json.raw-number");
-const ENCODED_DOCUMENTS = new WeakMap<SqlxJson<unknown>, string>();
+const SQLX_JSON_DOCUMENTS = new WeakMap<object, string | undefined>();
 // Parser output is already canonical; keep the bypass inaccessible to callers.
 let createCanonicalJsonNumber: (value: string) => JsonNumber;
+let exactJsonNumberText: (value: unknown) => string | undefined;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | bigint | JsonNumber | TemporalJsonValue | JsonObject | JsonArray;
@@ -75,13 +74,13 @@ export type SqlxJsonParseOptions = {
 };
 
 export class JsonNumber {
-  readonly [JSON_NUMBER_VALUE]: string;
+  readonly #value: string;
 
   private constructor(value: string, canonical?: typeof JSON_NUMBER_CANONICAL_VALUE) {
     if (typeof value !== "string") {
       throw new Error("sqlx-js: JsonNumber requires a JSON number string");
     }
-    this[JSON_NUMBER_VALUE] = canonical === JSON_NUMBER_CANONICAL_VALUE
+    this.#value = canonical === JSON_NUMBER_CANONICAL_VALUE
       ? value
       : canonicalJsonNumber(value);
     Object.freeze(this);
@@ -96,15 +95,19 @@ export class JsonNumber {
 
   static {
     createCanonicalJsonNumber = (value) => new JsonNumber(value, JSON_NUMBER_CANONICAL_VALUE);
+    exactJsonNumberText = (value) => {
+      if (value === null || typeof value !== "object" || !(#value in value)) return undefined;
+      return value.#value;
+    };
   }
 
   toString(): string {
-    return this[JSON_NUMBER_VALUE];
+    return this.#value;
   }
 }
 
 export class SqlxJson<T = JsonValue> {
-  readonly [SQLX_JSON_DOCUMENT]!: typeof EXTENDED_JSON_PROTOCOL_VERSION;
+  private declare readonly brand: void;
   readonly protocolVersion!: typeof EXTENDED_JSON_PROTOCOL_VERSION;
   readonly value!: ImmutableJson<T>;
 
@@ -128,22 +131,21 @@ export function createSqlxJson<T>(value: T & JsonCompatible<T>): SqlxJson<T> {
   };
   const snapshot = snapshotValue(value, state, 0) as ImmutableJson<T>;
   const document = createDocument(snapshot);
-  ENCODED_DOCUMENTS.set(document, serializeDocumentValue(snapshot));
+  SQLX_JSON_DOCUMENTS.set(document, serializeDocumentValue(snapshot));
   return document;
 }
 
 export function isSqlxJson(value: unknown): value is SqlxJson<unknown> {
-  return !!value
+  return value !== null
     && typeof value === "object"
-    && (value as Partial<SqlxJson<unknown>>)[SQLX_JSON_DOCUMENT] === EXTENDED_JSON_PROTOCOL_VERSION
-    && value instanceof SqlxJson;
+    && SQLX_JSON_DOCUMENTS.has(value);
 }
 
 export function stringifyJsonParameter(document: SqlxJson<unknown>): string {
   if (!isSqlxJson(document)) {
     throw new Error("sqlx-js: PostgreSQL JSON values require a SqlxJson document created by sql.json(...)");
   }
-  return ENCODED_DOCUMENTS.get(document) ?? serializeDocumentValue(document.value);
+  return SQLX_JSON_DOCUMENTS.get(document) ?? serializeDocumentValue(document.value);
 }
 
 export function parseJsonResult(value: string, temporalApi?: TemporalApi): SqlxJson<JsonValue> {
@@ -158,10 +160,6 @@ export function parseJsonResult(value: string, temporalApi?: TemporalApi): SqlxJ
 function createDocument<T>(value: ImmutableJson<T>): SqlxJson<T> {
   const document = Object.create(SqlxJson.prototype) as SqlxJson<T>;
   Object.defineProperties(document, {
-    [SQLX_JSON_DOCUMENT]: {
-      value: EXTENDED_JSON_PROTOCOL_VERSION,
-      enumerable: false,
-    },
     protocolVersion: {
       value: EXTENDED_JSON_PROTOCOL_VERSION,
       enumerable: true,
@@ -171,7 +169,10 @@ function createDocument<T>(value: ImmutableJson<T>): SqlxJson<T> {
       enumerable: true,
     },
   });
-  return markDateFreeSqlValue(Object.freeze(document));
+  Object.freeze(document);
+  markDateFreeSqlValue(document);
+  SQLX_JSON_DOCUMENTS.set(document, undefined);
+  return document;
 }
 
 type SnapshotState = {
@@ -206,9 +207,10 @@ function snapshotValue(value: unknown, state: SnapshotState, depth: number): Jso
     reserveCanonicalNumberBytes(state.canonicalNumbers, PROTOCOL_VERSION_NUMBER_BYTES);
     return value;
   }
-  if (value instanceof JsonNumber) {
-    reserveCanonicalNumberBytes(state.canonicalNumbers, value[JSON_NUMBER_VALUE].length);
-    return createCanonicalJsonNumber(value[JSON_NUMBER_VALUE]);
+  const exactNumber = exactJsonNumberText(value);
+  if (exactNumber !== undefined) {
+    reserveCanonicalNumberBytes(state.canonicalNumbers, exactNumber.length);
+    return createCanonicalJsonNumber(exactNumber);
   }
   if (isDateValue(value)) {
     throw new Error("sqlx-js: JavaScript Date is not supported in Extended JSON; use the matching Temporal type");
@@ -430,9 +432,7 @@ type TemporalDecodeState = {
 };
 
 const JSON_ENCODING_HOOKS: JsonEncodingHooks = {
-  exactNumberText(value) {
-    return value instanceof JsonNumber ? value[JSON_NUMBER_VALUE] : undefined;
-  },
+  exactNumberText: exactJsonNumberText,
   temporal(value) {
     if (!isTemporalValue(value)) return undefined;
     return {
