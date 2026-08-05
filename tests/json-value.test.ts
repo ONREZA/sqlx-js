@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Temporal } from "@js-temporal/polyfill";
+import { isDeepStrictEqual } from "node:util";
 import {
   EXTENDED_JSON_PROTOCOL_VERSION,
   JsonNumber,
@@ -51,6 +52,18 @@ describe("SqlxJson documents", () => {
       id: 9_007_199_254_740_993n,
       z: 0,
     });
+  });
+
+  test("preserve exact-number values in deep equality", () => {
+    const one = JsonNumber.from("1");
+    const anotherOne = JsonNumber.from("1");
+    const two = JsonNumber.from("2");
+
+    expect(one).toEqual(anotherOne);
+    expect(one).not.toEqual(two);
+    expect(isDeepStrictEqual(one, anotherOne)).toBeTrue();
+    expect(isDeepStrictEqual(one, two)).toBeFalse();
+    expect(Object.isFrozen(one)).toBeTrue();
   });
 
   test("escape application-owned reserved keys without moving ordinary paths", () => {
@@ -204,14 +217,14 @@ describe("Extended JSON parsing", () => {
 
   test("reject prototype-spoofed exact numbers", () => {
     const legitimate = JsonNumber.from("1");
-    const backing = Object.getOwnPropertySymbols(legitimate)[0] ?? Symbol("spoofed");
+    const comparableValue = Object.getOwnPropertySymbols(legitimate)[0]!;
     const fake = Object.create(JsonNumber.prototype) as Record<PropertyKey, unknown>;
-    Object.defineProperty(fake, backing, { value: '0,"role":"admin"' });
+    Object.defineProperty(fake, comparableValue, { value: '0,"role":"admin"' });
 
+    expect(comparableValue).toBeDefined();
     expect(fake instanceof JsonNumber).toBeTrue();
     expect(() => createSqlxJson({ role: "user", value: fake } as never))
       .toThrow("Extended JSON objects must be plain records");
-    expect(Object.getOwnPropertySymbols(legitimate)).toEqual([]);
   });
 
   test("validate an explicit Temporal provider before decoding tags", () => {
