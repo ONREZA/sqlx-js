@@ -20,6 +20,8 @@ guides contain the complete contracts, operational details, and edge cases.
   development, migrations, snapshots, diagnostics, and query inventory.
 - [Type and nullability inference](./type-inference.md) explains where generated
   row and parameter types come from and when explicit assertions are needed.
+- [Query reuse and similarity audits](./query-audits.md) covers exact duplicate
+  review, intentional ignores, contract drift, and experimental AST clustering.
 - [Benchmarks](./benchmarks.md) documents the runtime benchmark methodology,
   controls, and interpretation boundaries.
 - [Runtime performance tuning](./performance-tuning.md) records optimization

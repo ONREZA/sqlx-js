@@ -51,6 +51,17 @@ export default defineConfig({
     // Extension-owned functions and their contract warnings are excluded by default.
     includeExtensionOwned: false,
   },
+  queryAudit: {
+    exactDuplicates: {
+      ignore: [
+        {
+          queryId: "0123456789abcdef",
+          occurrences: 3,
+          reason: "Separate workflows intentionally retain distinct query names",
+        },
+      ],
+    },
+  },
   enumCatalog: {
     output: "src/database/db-enums.ts",
     schemas: ["public", "billing"],
@@ -140,6 +151,13 @@ const db = createSqlClient(process.env.DATABASE_URL, {
 ```
 
 By default the scanner uses the root `tsconfig.json` file list and follows TypeScript project references, so a referenced monorepo is scanned without walking unrelated folders. `scan.include` replaces that source-file universe with TypeScript glob patterns; `scan.exclude` is added to the built-in dependency/build exclusions. `scan.modules` replaces the default `@onreza/sqlx-js` import source list, which lets an application re-export `sql` through a shared database module without requiring arbitrary re-export graph analysis. Include `@onreza/sqlx-js` explicitly when direct imports and application-module imports are both used. If there is no root `tsconfig.json`, the fallback is a recursive TypeScript scan.
+
+`queryAudit.exactDuplicates.ignore` acknowledges an intentional repeated query
+fingerprint for `queries audit`. Every entry requires the stable query ID, the
+exact reviewed source occurrence count, and a non-empty reason. Changed counts,
+removed queries, and queries that are no longer duplicated are reported as
+stale; the option never changes prepare artifacts or runtime behavior. See
+[Query reuse and similarity audits](./query-audits.md).
 
 The `schema` block is optional. Use `provider: "pgschema"` when sqlx-js should delegate schema planning/apply commands to pgschema. `command` can override the managed binary lookup and point at another executable. With the pinned pgschema 1.12.0 CLI, `schemas` must contain exactly one schema name. That release drops function-local `SET` clauses other than `search_path`; the upstream defect is tracked in [pgplex/pgschema#526](https://github.com/pgplex/pgschema/issues/526). Do not use the managed provider as the DDL authority for functions that require additional settings until the upstream fix is available and pinned. sqlx-js preserves the complete live `pg_proc.proconfig` array in function caches and schema snapshots, so verification detects a lost setting when the expected artifact already contains it; it cannot reconstruct omitted desired state by parsing `schema.sql` as a second DDL authority.
 

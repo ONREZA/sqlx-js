@@ -137,6 +137,11 @@ test("CLI command help is successful and command-specific", () => {
     { args: ["ci"], expected: ["usage: sqlx-js ci", "provider-aware"] },
     { args: ["prepare"], expected: ["usage: sqlx-js prepare", "Query-artifact engine"] },
     { args: ["queries"], expected: ["usage: sqlx-js queries", "without a database"] },
+    { args: ["queries", "audit"], expected: ["usage: sqlx-js queries audit", "advisory"] },
+    {
+      args: ["queries", "similarities"],
+      expected: ["usage: sqlx-js queries similarities", "experimental"],
+    },
     { args: ["json", "audit"], expected: ["usage: sqlx-js json audit", "read-only transaction"] },
     { args: ["pgschema", "install"], expected: ["usage: sqlx-js pgschema install", "checksum"] },
     { args: ["pgschema", "plan"], expected: ["usage: sqlx-js pgschema plan", "without applying"] },

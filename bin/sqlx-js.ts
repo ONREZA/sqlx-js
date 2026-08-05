@@ -43,6 +43,8 @@ schema ownership:
 inspection and generated artifacts:
   sqlx-js doctor [--root <dir>] [--dts <path>] [--json] [--fix]
   sqlx-js queries [--json] [--embed <path>] [--root <dir>]
+  sqlx-js queries audit [--json] [--root <dir>]
+  sqlx-js queries similarities [--json] [--functions <path>] [--root <dir>]
   sqlx-js queries explain <query-id> [--json] [--root <dir>]
   sqlx-js json audit [--json] [--root <dir>]
   sqlx-js snapshot dump|check
@@ -121,10 +123,14 @@ Output:
 
 For schema-source validation prefer \`sqlx-js dev\` or \`sqlx-js verify\`.`,
   queries: `usage: sqlx-js queries [--json] [--embed <path>] [--root <dir>]
+       sqlx-js queries audit [--json] [--root <dir>]
+       sqlx-js queries similarities [--json] [--functions <path>] [--min-nodes <n>] [--limit <n>] [--root <dir>]
        sqlx-js queries explain <query-id> [--json] [--root <dir>]
 
 Scan source without a database and report query call sites, cache status,
-validation mode, profiles, definitions, and referenced SQL files. Explain reads
+validation mode, profiles, definitions, and referenced SQL files. Audit reports
+possible exact duplicates and contract divergence. Similarities ranks normalized
+AST fragments across queries and optional SQL function sources. Explain reads
 committed inference provenance without connecting to PostgreSQL.`,
   migrate: `usage: sqlx-js migrate add|run|info|check|revert|squash|archive
 
@@ -141,6 +147,14 @@ const SUBCOMMAND_HELP: Record<string, string> = {
 
 Explain result provenance, parameter targets, nullability decisions, and
 actionable inference hints from committed prepare artifacts.`,
+  "queries:audit": `usage: sqlx-js queries audit [--json] [--root <dir>]
+
+Report possible exact query duplicates, source-contract divergence, query-name
+collisions, reviewed ignores, and stale ignore entries. Findings are advisory.`,
+  "queries:similarities": `usage: sqlx-js queries similarities [--json] [--functions <path>] [--min-nodes <n>] [--limit <n>] [--root <dir>]
+
+Rank normalized PostgreSQL AST fragments across application queries and optional
+SQL-language function bodies. This experimental report is advisory.`,
   "json:audit": `usage: sqlx-js json audit [--json] [--root <dir>]
 
 Audit stored json/jsonb documents and extension-sensitive schema/source usage
@@ -299,7 +313,16 @@ function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfi
       "strict-inference": { type: "boolean" },
     };
   }
-  if (command === "queries") return { ...ROOT_OPTIONS, json: { type: "boolean" }, embed: { type: "string" } };
+  if (command === "queries") {
+    return {
+      ...ROOT_OPTIONS,
+      json: { type: "boolean" },
+      embed: { type: "string" },
+      functions: { type: "string" },
+      "min-nodes": { type: "string" },
+      limit: { type: "string" },
+    };
+  }
   if (command === "snapshot") {
     const common = {
       ...ROOT_OPTIONS,
@@ -383,8 +406,30 @@ function validateInvocation(): void {
     cmd === "prepare" ||
     cmd === "queries"
   ) {
-    if (cmd === "queries" && positionals[0] === "explain") {
-      requirePositionals(2, 2, "queries explain");
+    if (cmd === "queries") {
+      const queryCommand = positionals[0];
+      if (queryCommand === "explain") {
+        requirePositionals(2, 2, "queries explain");
+      } else if (queryCommand === "audit" || queryCommand === "similarities") {
+        requirePositionals(1, 1, `queries ${queryCommand}`);
+      } else if (queryCommand) {
+        usageError(`unknown queries command ${JSON.stringify(queryCommand)}`, "queries", commandArgv);
+      } else {
+        requirePositionals(0, 0, "queries");
+      }
+      const similarityOptions = [arg("--functions"), arg("--min-nodes"), arg("--limit")].some(
+        (value) => value !== undefined,
+      );
+      if (queryCommand !== "similarities" && similarityOptions) {
+        usageError(
+          "--functions, --min-nodes, and --limit are only supported by queries similarities",
+          "queries",
+          commandArgv,
+        );
+      }
+      if (queryCommand && arg("--embed")) {
+        usageError("--embed cannot be combined with a queries subcommand", "queries", commandArgv);
+      }
       return;
     }
     requirePositionals(0, 0, cmd);
@@ -881,16 +926,38 @@ if (cmd === "init") {
 } else if (cmd === "queries") {
   const { QueriesError, runQueries } = await import("../src/commands/queries");
   const embed = arg("--embed");
-  const explainQueryId = positionals[0] === "explain" ? positionals[1] : undefined;
-  if (explainQueryId && embed) usageError("--embed cannot be combined with queries explain", "queries", commandArgv);
+  const queryCommand = positionals[0];
+  const positiveIntegerOption = (name: "--min-nodes" | "--limit"): number | undefined => {
+    const value = arg(name);
+    if (value === undefined) return undefined;
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      usageError(`${name} must be a positive integer`, "queries", commandArgv);
+    }
+    return parsed;
+  };
   try {
-    await runQueries({
-      root,
-      cacheDir,
-      json: flag("--json"),
-      embedPath: embed ? resolve(root, embed) : undefined,
-      explainQueryId,
-    });
+    if (queryCommand === "audit") {
+      const { runExactQueryAudit } = await import("../src/commands/query-audit");
+      await runExactQueryAudit({ root, json: flag("--json") });
+    } else if (queryCommand === "similarities") {
+      const { runQuerySimilarities } = await import("../src/commands/query-audit");
+      await runQuerySimilarities({
+        root,
+        json: flag("--json"),
+        functionsPath: arg("--functions"),
+        minNodes: positiveIntegerOption("--min-nodes"),
+        limit: positiveIntegerOption("--limit"),
+      });
+    } else {
+      await runQueries({
+        root,
+        cacheDir,
+        json: flag("--json"),
+        embedPath: embed ? resolve(root, embed) : undefined,
+        explainQueryId: queryCommand === "explain" ? positionals[1] : undefined,
+      });
+    }
   } catch (error) {
     if (flag("--json")) {
       const diagnostic = error instanceof QueriesError

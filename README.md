@@ -58,7 +58,7 @@ runtime, generate an ORM layer, or support MySQL and SQLite.
 | Reproducible artifacts | Versioned offline cache, `prepare --check`, live `prepare --verify`, generated declarations, enum and function catalogs | [CI and deployment checks](./docs/ci.md) |
 | PostgreSQL types | Built-ins, arrays, ranges, domains, composites, pgvector, hstore, citext, ltree, application codecs | [Configuration and custom types](./docs/configuration.md) |
 | Extended JSON | Branded immutable documents, exact native numbers, bigint/Temporal round-trips, reader-first collision audit | [Extended JSON protocol](./docs/extended-json-protocol.md) |
-| Tooling | Incremental watch mode, project doctor, JSON diagnostics, query inventory, Extended JSON audit, embedded SQL generation | [CLI and workflows](./docs/cli.md) |
+| Tooling | Incremental watch mode, project doctor, JSON diagnostics, query inventory, advisory reuse/similarity audits, Extended JSON audit, embedded SQL generation | [Query reuse and similarity audits](./docs/query-audits.md) |
 | Agent workflows | Installable skills for CLI, schema, queries, inference, runtime, RLS, types, upgrades, and releases | [Agent skills](./docs/agent-skills.md) |
 
 See the [documentation index](./docs/README.md) for the complete guide set.

@@ -22,6 +22,9 @@ The library is **PostgreSQL-only** and keeps SQL/result validation at prepare ti
 │   ├── runtime-migrate.ts    Public startup migration wrapper
 │   ├── query.ts              Reusable query definitions + public query helper types
 │   ├── query-id.ts           Shared prepare/runtime query fingerprint
+│   ├── query-audit.ts        Exact reuse, contract-divergence, and ignore audit
+│   ├── query-similarity.ts   Advisory normalized PostgreSQL AST clustering
+│   ├── sql-function-sources.ts SQL-language function body extraction for similarity
 │   ├── migration-core.ts     Lightweight migration apply/lock path shared by runtime + CLI
 │   ├── postgres-runtime.ts   Managed PostgreSQL runtime
 │   ├── postgres-client-options.ts Profile/startup option ownership
@@ -44,6 +47,7 @@ The library is **PostgreSQL-only** and keeps SQL/result validation at prepare ti
 │   │   ├── schema.ts         snapshot dump/check commands
 │   │   ├── init.ts           sqlx-js init scaffolding
 │   │   ├── queries.ts        Read-only query inventory + embedded SQL emitter
+│   │   ├── query-audit.ts    Exact-reuse and experimental similarity command output
 │   │   └── watch.ts          fs.watch loop with debounced re-prepare
 │   ├── scan/
 │   │   ├── scanner.ts        TypeScript AST walk for sql() call sites

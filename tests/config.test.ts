@@ -173,6 +173,13 @@ test("prepare config hash is independent of object key order", () => {
 test("prepare config hash includes column and function catalog contracts", () => {
   const base = prepareConfigHash({});
   expect(prepareConfigHash({ functionCatalog: { includeExtensionOwned: false } })).toBe(base);
+  expect(prepareConfigHash({
+    queryAudit: {
+      exactDuplicates: {
+        ignore: [{ queryId: "0123456789abcdef", occurrences: 2, reason: "Reviewed duplicate" }],
+      },
+    },
+  })).toBe(base);
   expect(prepareConfigHash({ columnTypes: { "users.status": "Status" } })).not.toBe(base);
   expect(prepareConfigHash({ arrayElementNullability: { "users.tags": "non-null" } })).not.toBe(base);
   expect(prepareConfigHash({ functionCatalog: false })).not.toBe(base);
