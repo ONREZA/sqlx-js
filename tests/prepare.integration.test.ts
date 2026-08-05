@@ -17,7 +17,10 @@ import { queryId } from "../src/query-id";
 import type { RuntimeQueryDescriptors } from "../src/runtime-descriptors";
 import { Temporal } from "@js-temporal/polyfill";
 import { inspectJsonAudit } from "../src/commands/json-audit";
-import { renderCanonicalJsonNumberAnalysis } from "../src/commands/json-audit-number";
+import {
+  renderCanonicalJsonbNumberAnalysis,
+  renderCanonicalJsonNumberAnalysis,
+} from "../src/commands/json-audit-number";
 import { canonicalJsonNumberBytes, JSON_NUMBER_LIMITS } from "../src/json-number";
 
 const repoRoot = resolve(import.meta.dir, "..");
@@ -510,6 +513,16 @@ if (!haveIntegrationDatabase) {
           VALUES ('[1e131071,1e-16383,-0e000001,123.4500e-2]'::json, '{}'::jsonb);
         INSERT INTO tmp_extended_json_audit (raw, document)
           VALUES ('[0e200000,1e-16384]'::json, '{}'::jsonb);
+        INSERT INTO tmp_extended_json_audit (raw, document)
+          VALUES (
+            '{}'::json,
+            ('[' || pg_catalog.rtrim(pg_catalog.repeat('1e131071,', 129), ',') || ']')::jsonb
+          );
+        INSERT INTO tmp_extended_json_audit (raw, document)
+          VALUES (
+            '{}'::json,
+            ('[' || pg_catalog.rtrim(pg_catalog.repeat('1e131071,', 128), ',') || ']')::jsonb
+          );
         INSERT INTO tmp_extended_json_audit (raw, document, records)
           VALUES (
             '{}'::json,
@@ -560,7 +573,7 @@ if (!haveIntegrationDatabase) {
         column.relation === "tmp_extended_json_audit_child" && column.column === "payload");
 
       expect(raw).toMatchObject({ duplicateKeyRows: 1, invalidNumberRows: 3 });
-      expect(document?.collisionRows).toBe(1);
+      expect(document).toMatchObject({ collisionRows: 1, invalidNumberRows: 1 });
       expect(domainDocument).toMatchObject({
         collisionRows: 1,
         jsonLeaves: [{ path: "$", type: "jsonb" }],
@@ -580,7 +593,7 @@ if (!haveIntegrationDatabase) {
       ]);
       expect(parent).toMatchObject({ collisionRows: 0 });
       expect(child).toMatchObject({ collisionRows: 1 });
-      expect(report.summary).toMatchObject({ invalidNumberRows: 4 });
+      expect(report.summary).toMatchObject({ invalidNumberRows: 5 });
       expect(report.dependencies).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: "index", name: "tmp_extended_json_audit_kind_idx" }),
         expect.objectContaining({ kind: "index", name: "tmp_extended_json_audit_domain_kind_idx" }),
@@ -656,6 +669,42 @@ ORDER BY input.ordinality
         }
         const actual = result.rows[index]?.[1];
         expect(actual === null ? null : Number(decodeText(actual)), token).toBe(expected);
+      }
+
+      const jsonbTokens = [
+        "0",
+        "-0",
+        "0.000",
+        "-0e147455",
+        "1",
+        "-1",
+        "123.4500",
+        "0.00100",
+        "1e400",
+        "1e-4000",
+        "1e131071",
+        "-1e131071",
+        "1e-16383",
+        "1e+000001",
+        "1e-000001",
+      ];
+      const jsonbValues = jsonbTokens.map((token) => `'${token}'`).join(", ");
+      const jsonbResult = await client.simpleQuery(`
+SELECT input.ordinality::text, number_analysis.canonical_bytes::text
+FROM pg_catalog.unnest(ARRAY[${jsonbValues}]::text[]) WITH ORDINALITY AS input(token, ordinality)
+CROSS JOIN LATERAL (
+${renderCanonicalJsonbNumberAnalysis("input.token::pg_catalog.jsonb")}
+) AS number_analysis
+ORDER BY input.ordinality
+      `);
+
+      expect(jsonbResult.rows).toHaveLength(jsonbTokens.length);
+      for (let index = 0; index < jsonbTokens.length; index++) {
+        const token = jsonbTokens[index]!;
+        const actual = jsonbResult.rows[index]?.[1];
+        expect(actual === null ? null : Number(decodeText(actual)), token).toBe(
+          canonicalJsonNumberBytes(token),
+        );
       }
     } finally {
       await client.end();

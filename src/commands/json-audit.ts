@@ -4,7 +4,10 @@ import { queryId } from "../query-id";
 import type { SqlxJsConfig } from "../config";
 import { EXTENDED_JSON_PROTOCOL_VERSION } from "../json-value";
 import { JSON_RESOURCE_LIMITS } from "../json-limits";
-import { renderCanonicalJsonNumberAnalysis } from "./json-audit-number";
+import {
+  renderCanonicalJsonbNumberAnalysis,
+  renderCanonicalJsonNumberAnalysis,
+} from "./json-audit-number";
 
 type JsonLeafStep =
   | { kind: "domain"; schema: string; name: string }
@@ -647,9 +650,9 @@ ${indentSql(
       ? renderCanonicalJsonNumberAnalysis(
         `CASE WHEN ${isNumber} THEN ${type}_walk.value::text ELSE '0' END`,
       )
-      : `SELECT pg_catalog.length(
-  CASE WHEN ${isNumber} THEN ${type}_walk.value::text ELSE '0' END
-)::bigint AS canonical_bytes`,
+      : renderCanonicalJsonbNumberAnalysis(
+        `CASE WHEN ${isNumber} THEN ${type}_walk.value ELSE '0'::pg_catalog.jsonb END`,
+      ),
     4,
   )}
   ) AS number_analysis
