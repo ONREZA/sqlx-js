@@ -160,6 +160,69 @@ test("loadConfig requires a default export", async () => {
   await expect(loadConfig(dir)).rejects.toThrow(/must default-export a config object/);
 });
 
+test("loadConfig validates exact duplicate audit acknowledgements", async () => {
+  const invalidContainer = root();
+  writeFileSync(join(invalidContainer, "sqlx-js.config.mjs"), "export default { queryAudit: [] };\n");
+  await expect(loadConfig(invalidContainer)).rejects.toThrow(/queryAudit must be an object/);
+
+  const invalidExactDuplicates = root();
+  writeFileSync(
+    join(invalidExactDuplicates, "sqlx-js.config.mjs"),
+    "export default { queryAudit: { exactDuplicates: [] } };\n",
+  );
+  await expect(loadConfig(invalidExactDuplicates)).rejects.toThrow(/exactDuplicates must be an object/);
+
+  const invalidIgnore = root();
+  writeFileSync(
+    join(invalidIgnore, "sqlx-js.config.mjs"),
+    "export default { queryAudit: { exactDuplicates: { ignore: {} } } };\n",
+  );
+  await expect(loadConfig(invalidIgnore)).rejects.toThrow(/exactDuplicates\.ignore must be an array/);
+
+  const invalidEntry = root();
+  writeFileSync(join(invalidEntry, "sqlx-js.config.mjs"), `export default {
+    queryAudit: {
+      exactDuplicates: {
+        ignore: [{ queryId: "ABC", occurrences: 1, reason: " " }],
+      },
+    },
+  };\n`);
+  await expect(loadConfig(invalidEntry)).rejects.toThrow(/queryId must be a 16-character lowercase query ID/);
+
+  const invalidCount = root();
+  writeFileSync(join(invalidCount, "sqlx-js.config.mjs"), `export default {
+    queryAudit: {
+      exactDuplicates: {
+        ignore: [{ queryId: "0123456789abcdef", occurrences: 1, reason: "Reviewed" }],
+      },
+    },
+  };\n`);
+  await expect(loadConfig(invalidCount)).rejects.toThrow(/occurrences must be an integer of at least 2/);
+
+  const invalidReason = root();
+  writeFileSync(join(invalidReason, "sqlx-js.config.mjs"), `export default {
+    queryAudit: {
+      exactDuplicates: {
+        ignore: [{ queryId: "0123456789abcdef", occurrences: 2, reason: " " }],
+      },
+    },
+  };\n`);
+  await expect(loadConfig(invalidReason)).rejects.toThrow(/reason must be a non-empty string/);
+
+  const duplicate = root();
+  writeFileSync(join(duplicate, "sqlx-js.config.mjs"), `export default {
+    queryAudit: {
+      exactDuplicates: {
+        ignore: [
+          { queryId: "0123456789abcdef", occurrences: 2, reason: "First review" },
+          { queryId: "0123456789abcdef", occurrences: 3, reason: "Second review" },
+        ],
+      },
+    },
+  };\n`);
+  await expect(loadConfig(duplicate)).rejects.toThrow(/contains duplicate query ID 0123456789abcdef/);
+});
+
 test("prepare config hash is independent of object key order", () => {
   expect(prepareConfigHash({
     customTypes: { vector: "number[]", geometry: "GeoJSON.Geometry" },

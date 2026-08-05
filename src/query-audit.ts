@@ -47,7 +47,8 @@ export type ExactQueryCandidate = {
   queryNames: string[];
   classification: "definition-only" | "execution-only" | "mixed";
   occurrenceCount: number;
-  status: "active" | "ignored";
+  duplicateStatus: "active" | "ignored";
+  reviewRequired: boolean;
   ignore?: ExactDuplicateIgnore;
   divergences: ExactQueryContractDivergence[];
   contracts: ExactQuerySourceContract[];
@@ -216,6 +217,7 @@ export function buildExactQueryAudit(
     const contracts = contractGroups(callSites);
     const ignore = ignoreById.get(id);
     const matchedIgnore = ignore?.occurrences === sourceSites.length ? ignore : undefined;
+    const divergences = contractDivergences(contracts);
     return [{
       queryId: id,
       query: sourceSites[0]!.query,
@@ -223,9 +225,10 @@ export function buildExactQueryAudit(
       queryNames: [...new Set(sourceSites.flatMap((site) => site.queryName ? [site.queryName] : []))].sort(),
       classification: originClassification(sourceSites),
       occurrenceCount: sourceSites.length,
-      status: matchedIgnore ? "ignored" : "active",
+      duplicateStatus: matchedIgnore ? "ignored" : "active",
+      reviewRequired: !matchedIgnore || divergences.length > 0,
       ...(matchedIgnore ? { ignore: matchedIgnore } : {}),
-      divergences: contractDivergences(contracts),
+      divergences,
       contracts,
       callSites,
     }];
@@ -244,7 +247,7 @@ export function buildExactQueryAudit(
     return [];
   }).sort((left, right) => left.queryId.localeCompare(right.queryId));
   const collisions = queryNameCollisions(sites);
-  const active = candidates.filter((candidate) => candidate.status === "active").length;
+  const active = candidates.filter((candidate) => candidate.duplicateStatus === "active").length;
   const ignored = candidates.length - active;
   return {
     formatVersion: 1,
@@ -260,7 +263,9 @@ export function buildExactQueryAudit(
       contractDivergences: candidates.filter((candidate) => candidate.divergences.length > 0).length,
       queryNameCollisions: collisions.length,
       staleIgnores: staleIgnores.length,
-      reviewRequired: active > 0 || collisions.length > 0 || staleIgnores.length > 0,
+      reviewRequired: candidates.some((candidate) => candidate.reviewRequired)
+        || collisions.length > 0
+        || staleIgnores.length > 0,
     },
     candidates,
     queryNameCollisions: collisions,

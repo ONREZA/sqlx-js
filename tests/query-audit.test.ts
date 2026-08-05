@@ -38,12 +38,16 @@ test("exact query audit keeps reviewed duplicates visible and reports contract d
       profiles: ["api"],
       nullableParams: [1],
       resultAssertions: { tags: { elements: "non-null" } },
+      expectedValidation: "parse-only",
+      timestampWithoutTimeZone: "allow",
+      temporalReason: "Legacy reporting value",
     }),
     site("src/b.ts", `  ${query} -- same fingerprint`, {
       line: 2,
       queryName: "users.byId",
       cardinality: "optional",
       profiles: ["worker"],
+      timestampWithoutTimeZone: "reject",
     }),
     site("src/c.ts", query, {
       line: 3,
@@ -75,9 +79,17 @@ test("exact query audit keeps reviewed duplicates visible and reports contract d
     queryId: id,
     classification: "mixed",
     occurrenceCount: 3,
-    status: "ignored",
+    duplicateStatus: "ignored",
+    reviewRequired: true,
     ignore: { reason: "Separate read paths retain their identities" },
-    divergences: ["cardinality", "profiles", "nullable-parameters", "result-assertions"],
+    divergences: [
+      "cardinality",
+      "profiles",
+      "nullable-parameters",
+      "result-assertions",
+      "expected-validation",
+      "temporal-policy",
+    ],
   });
   expect(report.candidates[0]!.sourceTextVariants).toHaveLength(2);
   expect(report.candidates[0]!.contracts).toHaveLength(3);
@@ -103,7 +115,11 @@ test("exact query audit resurfaces changed duplicates and classifies stale ignor
     },
   );
 
-  expect(report.candidates[0]).toMatchObject({ status: "active", occurrenceCount: 2 });
+  expect(report.candidates[0]).toMatchObject({
+    duplicateStatus: "active",
+    reviewRequired: true,
+    occurrenceCount: 2,
+  });
   expect(report.staleIgnores).toEqual([
     {
       queryId: "0000000000000000",
@@ -127,6 +143,30 @@ test("exact query audit resurfaces changed duplicates and classifies stale ignor
       staleReason: "occurrence-count-changed",
     },
   ].sort((left, right) => left.queryId.localeCompare(right.queryId)));
+});
+
+test("an exact duplicate ignore does not acknowledge divergent source contracts", () => {
+  const query = "SELECT id FROM users";
+  const report = buildExactQueryAudit([
+    site("src/one.ts", query, { cardinality: "one" }),
+    site("src/many.ts", query, { cardinality: "many" }),
+  ], {
+    exactDuplicates: {
+      ignore: [{ queryId: queryId(query), occurrences: 2, reason: "Intentional reuse" }],
+    },
+  });
+
+  expect(report.summary).toMatchObject({
+    activePossibleDuplicates: 0,
+    ignoredPossibleDuplicates: 1,
+    contractDivergences: 1,
+    reviewRequired: true,
+  });
+  expect(report.candidates[0]).toMatchObject({
+    duplicateStatus: "ignored",
+    reviewRequired: true,
+    divergences: ["cardinality"],
+  });
 });
 
 test("queries audit loads config ignores and emits advisory JSON", async () => {
@@ -158,7 +198,11 @@ test("queries audit loads config ignores and emits advisory JSON", async () => {
     const config = await loadConfig(root);
     expect(config.queryAudit?.exactDuplicates?.ignore?.[0]).toMatchObject({ queryId: id, occurrences: 2 });
     const report = await buildExactQueryAuditReport(root);
-    expect(report.candidates[0]).toMatchObject({ queryId: id, status: "ignored" });
+    expect(report.candidates[0]).toMatchObject({
+      queryId: id,
+      duplicateStatus: "ignored",
+      reviewRequired: false,
+    });
 
     const cli = spawnSync("bun", [binPath, "queries", "audit", "--json", "--root", root], {
       encoding: "utf8",
