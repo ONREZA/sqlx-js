@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.30.0](https://github.com/ONREZA/sqlx-js/compare/v0.29.0...v0.30.0) (2026-08-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** remove global managed client exports and ambient generated registries. Remove jsonbTypes, queries --embed, and legacy lifecycle hooks.
+* **json:** PostgreSQL JSON inputs and results now use SqlxJson documents and require regenerated cache and runtime descriptors.
+* **runtime:** require Temporal SQL values and reject timestamp without time zone unless explicitly allowed.
+
+### Features
+
+* **api:** consolidate generated workflows ([2ed92de](https://github.com/ONREZA/sqlx-js/commit/2ed92de56e6895d1b80c3a05ca8f3f06216e667f))
+* close prepare and runtime dx gaps ([7cb8b76](https://github.com/ONREZA/sqlx-js/commit/7cb8b769f782cf1c061017fe51e4866aff57de40))
+* **json:** add extended json protocol ([e2d0040](https://github.com/ONREZA/sqlx-js/commit/e2d0040b71b3d200274dd8a5c2abb1ab68ebddb9))
+* **queries:** audit query reuse ([b732b74](https://github.com/ONREZA/sqlx-js/commit/b732b7461f90485b42306fa8ac56cb7fd46de062))
+* **runtime:** add decode error context ([84a86df](https://github.com/ONREZA/sqlx-js/commit/84a86df4c859e3a2d93b6745424ddab0ff465429))
+* **runtime:** require temporal sql values ([4484391](https://github.com/ONREZA/sqlx-js/commit/4484391ece035a50429438678c97b0f3282ba086))
+
+
+### Bug Fixes
+
+* **api:** close compatibility review gaps ([70ece28](https://github.com/ONREZA/sqlx-js/commit/70ece28d637e167abd0685bf4c702bf6071282d1))
+* **api:** close mapped query review gaps ([be15bd7](https://github.com/ONREZA/sqlx-js/commit/be15bd7a18b3d20b52c78ecd631f3e160d841de2))
+* **api:** enforce exact generated contracts ([a8c8a76](https://github.com/ONREZA/sqlx-js/commit/a8c8a763e4efb157baf1695280a2906a8ab83e34))
+* **ci:** provide temporal api to clients ([bd7290d](https://github.com/ONREZA/sqlx-js/commit/bd7290da0182fb4dd9d9ad78520e2303de289c31))
+* **ci:** refresh pgschema fixture artifacts ([070b098](https://github.com/ONREZA/sqlx-js/commit/070b098899efc594519cbe923fd514d1231462dd))
+* **cli:** keep json failure summary complete ([aeac2f1](https://github.com/ONREZA/sqlx-js/commit/aeac2f1884d9803a17b62433254308ed61639751))
+* **doctor:** probe schema materializer ([6f9f4fd](https://github.com/ONREZA/sqlx-js/commit/6f9f4fd830d481671f39f0128b250cd9b0c0bb43))
+* **json:** bound audit number regex input ([c76072f](https://github.com/ONREZA/sqlx-js/commit/c76072fb26d128ddf531b43979fe1bab7b3b94f8))
+* **json:** bound canonical number expansion ([2f6c81f](https://github.com/ONREZA/sqlx-js/commit/2f6c81f806ce8a376ec48c7b19d217fdf82b6dec))
+* **json:** enforce reader audit invariants ([dc460da](https://github.com/ONREZA/sqlx-js/commit/dc460dadec4e4d78e038e5bc08fa063101e0a38a))
+* **json:** enforce review invariants ([7f12847](https://github.com/ONREZA/sqlx-js/commit/7f128479e6e3923dbe4e2d15565967057862377d))
+* **json:** make document brands unforgeable ([7bb6598](https://github.com/ONREZA/sqlx-js/commit/7bb65987e60c856c65e2550abe650de4651ce85b))
+* **json:** preserve exact-number equality ([2878711](https://github.com/ONREZA/sqlx-js/commit/287871109afe55a2ab7bf3ee19dba7f295927765))
+* **json:** size jsonb numbers without rendering ([ca1dd30](https://github.com/ONREZA/sqlx-js/commit/ca1dd3016deaa86422e05da3a9b32147ebe66550))
+* **prepare:** canonicalize cache publication ([f5d3d11](https://github.com/ONREZA/sqlx-js/commit/f5d3d11f74e697d74995bec758dacc15a8510a5a))
+* **prepare:** publish artifacts atomically ([044c74c](https://github.com/ONREZA/sqlx-js/commit/044c74cb631800bf4f4b96f8454db3bb1ef74b8a))
+* **queries:** preserve audit semantics ([0946041](https://github.com/ONREZA/sqlx-js/commit/09460413eba00fc895106d29087a3bf0eadf9047))
+* **runtime:** close temporal review gaps ([6d5d8e2](https://github.com/ONREZA/sqlx-js/commit/6d5d8e2dddc481150a722639d26b538ae43b1a9b))
+* **schema:** canonicalize generated contracts ([0873196](https://github.com/ONREZA/sqlx-js/commit/0873196346b00d34192ebde4b1d717bbc81250ac))
+
+
+### Documentation
+
+* **json:** propose extended protocol ([9cfd1c6](https://github.com/ONREZA/sqlx-js/commit/9cfd1c614c2d29f868453102fd219e893f3a3da4))
+* **upgrade:** merge 0.30 migration guide ([368a768](https://github.com/ONREZA/sqlx-js/commit/368a768172992af3ede966191207ab451e5e97be))
+* **upgrades:** merge 0.31 into 0.30 ([5425de6](https://github.com/ONREZA/sqlx-js/commit/5425de624af42612f6fc119bbd5fc8bd1a8ffb18))
+
 ## [0.29.0](https://github.com/ONREZA/sqlx-js/compare/v0.28.0...v0.29.0) (2026-08-04)
 
 
