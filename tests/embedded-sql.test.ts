@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { fingerprint, type CacheEntry } from "../src/cache";
 import { renderEmbeddedSqlModule } from "../src/embedded-sql";
 import {
@@ -33,12 +34,27 @@ test("embedded SQL module is deterministic and rejects divergent file contracts"
     entry("SELECT 2", ["queries/z.sql"]),
     entry("SELECT 1", ["queries/a.sql"]),
   ]);
-  expect(module.indexOf('"queries/a.sql"')).toBeLessThan(module.indexOf('"queries/z.sql"'));
-  expect(module).toContain('"queries/a.sql": "SELECT 1"');
+  expect(module.indexOf('["queries/a.sql"]')).toBeLessThan(module.indexOf('["queries/z.sql"]'));
+  expect(module).toContain('["queries/a.sql"]: "SELECT 1"');
   expect(() => renderEmbeddedSqlModule([
     entry("SELECT 1", ["queries/a.sql"]),
     entry("SELECT 2", ["queries/a.sql"]),
   ])).toThrow(/resolves to multiple query texts/);
+});
+
+test("embedded SQL module preserves magic property names", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-embedded-proto-"));
+  try {
+    const output = join(root, "sql-files.ts");
+    writeFileSync(output, renderEmbeddedSqlModule([
+      entry("SELECT 1", ["__proto__"]),
+    ]));
+    const generated = await import(pathToFileURL(output).href);
+    expect(Object.hasOwn(generated.sqlxJsEmbeddedSql, "__proto__")).toBe(true);
+    expect(generated.sqlxJsEmbeddedSql.__proto__).toBe("SELECT 1");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("prepare and offline regeneration publish embedded SQL with generated artifacts", () => {

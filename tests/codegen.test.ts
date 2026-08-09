@@ -222,7 +222,25 @@ test("profiled mapped queries validate their generated wire parameters", () => {
   });
   writeFileSync(join(root, "consumer.ts"), `
 import { createSqlClient, defineQuery } from "@onreza/sqlx-js";
+import type {
+  MappedQueryDefinition,
+  QueryRegistry,
+  SqlExecutor,
+} from "@onreza/sqlx-js";
 import type { SqlxJsGeneratedProfileRegistry } from "./generated";
+
+function runGenericMapped<
+  Query extends string,
+  WireParams extends Record<string, unknown>,
+  Entry extends { params: WireParams; row: unknown },
+  Registry extends QueryRegistry & { queries: Record<Query, Entry> },
+>(
+  definition: MappedQueryDefinition<Query, "one", { id: string }, WireParams>,
+  executor: SqlExecutor<Registry>,
+  input: { id: string },
+) {
+  return definition.run(executor, input);
+}
 
 const api = createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, { execution: "adaptive", profile: { name: "api", role: "app_api" } });
 const worker = createSqlClient<SqlxJsGeneratedProfileRegistry<"worker">>(undefined, { execution: "adaptive", profile: { name: "worker", role: "app_worker" } });
@@ -230,6 +248,7 @@ const valid = defineQuery.for("api").one(${JSON.stringify(query)}).mapParams(
   (input: { id: string }) => ({ id: input.id }),
 );
 void valid.run(api.sql, { id: "user-1" });
+void runGenericMapped(valid, api.sql, { id: "user-1" });
 const wrongKey = defineQuery.for("api").one(${JSON.stringify(query)}).mapParams(
   (input: { id: string }) => ({ wrong: input.id }),
 );

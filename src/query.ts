@@ -76,31 +76,13 @@ export type QueryParameterHelpers = Pick<
   "json" | "array"
 >;
 
-type ReadonlyWireParams<Params> = Params extends readonly unknown[] ? Readonly<Params> : Params;
-
-type SameKeys<Left, Right> =
-  Exclude<keyof Left, keyof Right> extends never
-    ? Exclude<keyof Right, keyof Left> extends never
-      ? true
-      : false
-    : false;
-
-type SameTupleLength<Left extends readonly unknown[], Right extends readonly unknown[]> =
-  Left["length"] extends Right["length"]
-    ? Right["length"] extends Left["length"]
-      ? true
-      : false
-    : false;
+type ReadonlyWireParams<Params> = Readonly<Params>;
 
 type ExactWireShape<Actual extends QueryWireParams, Expected> =
-  Actual extends ReadonlyWireParams<Expected>
-    ? Actual extends readonly unknown[]
-      ? Expected extends readonly unknown[]
-        ? SameTupleLength<Actual, Expected>
-        : false
-      : Expected extends readonly unknown[]
-        ? false
-        : SameKeys<Actual, Expected>
+  [Actual] extends [ReadonlyWireParams<Expected>]
+    ? [Exclude<keyof Actual, keyof Expected>] extends [never]
+      ? true
+      : false
     : false;
 
 export type MappedQueryDefinition<
@@ -142,9 +124,9 @@ type MappedExecutor<
   Query extends string,
   Registry extends { queries: object; fileQueries: object },
   WireParams extends QueryWireParams,
-> = ExactWireShape<WireParams, RegistryParams<Query, NoInfer<Registry>>> extends true
-  ? TypedSqlForRegistry<Registry>
-  : never;
+> = ExactWireShape<WireParams, RegistryParams<Query, NoInfer<Registry>>> extends false
+  ? never
+  : TypedSqlForRegistry<Registry>;
 
 export type QueryWireParamsFor<Definition, Registry extends { queries: object }> =
   RegistryParams<DefinitionQuery<Definition>, Registry>;
