@@ -25,7 +25,7 @@ import {
 } from "../runtime-descriptors";
 import { ensureGeneratedGitAttributes } from "../generated-git-attributes";
 import { inspectGitAttributesDoctorCheck } from "./doctor-git-attributes";
-import { probePgschema } from "./pgschema";
+import { probePgschema, probeSchemaMaterializer } from "./pgschema";
 
 export type DoctorCheck = {
   name: string;
@@ -737,6 +737,18 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
         effectiveDevVerifyProvider: config.schema.materializer ? "custom-materializer" : "pgschema",
       },
     });
+    if (config.schema.materializer) {
+      const materializerProbe = probeSchemaMaterializer(opts.root, config);
+      checks.push({
+        name: "schemaMaterializer",
+        status: materializerProbe.ok ? "ok" : "error",
+        message: materializerProbe.message,
+        details: {
+          command: materializerProbe.command ?? config.schema.materializer.command,
+          workflow: "dev-verify-shadow-materialization",
+        },
+      });
+    }
   } else if (config.schema?.provider === "builtin") {
     checks.push({
       name: "pgschema",
