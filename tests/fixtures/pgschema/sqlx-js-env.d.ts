@@ -24,8 +24,7 @@ export interface SqlxJsGeneratedProfileFileQueries {
 export interface SqlxJsGeneratedProfiles {
 }
 
-export type SqlxJsGeneratedProfileRegistry<Name extends keyof SqlxJsGeneratedProfiles> =
-  SqlxJsGeneratedProfiles[Name];
+export type SqlxJsGeneratedProfileRegistry<Name extends keyof SqlxJsGeneratedProfiles> = SqlxJsGeneratedProfiles[Name];
 
 export interface SqlxJsGeneratedRegistry {
   queries: SqlxJsGeneratedQueries;
@@ -36,5 +35,3 @@ export interface SqlxJsGeneratedRegistry {
   jsonProtocol: 1;
   temporal: { readonly infinity: "reject"; readonly timestampWithoutTimeZone: "reject"; readonly sessionTimeZone: "UTC" };
 }
-
-export {};
