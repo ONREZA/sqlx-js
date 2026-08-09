@@ -175,7 +175,7 @@ Dropping a shadow database does not remove cluster-scoped roles or extensions.
 Use pre-existing objects or an ephemeral PostgreSQL cluster when validation
 creates them.
 
-Without a materializer, the pinned pgschema 1.12.0 CLI requires exactly one schema name. That release drops function-local `SET` clauses other than `search_path`; the upstream defect is tracked in [pgplex/pgschema#526](https://github.com/pgplex/pgschema/issues/526). Do not use the managed provider as the DDL authority for functions that require additional settings until the upstream fix is available and pinned. sqlx-js preserves the complete live `pg_proc.proconfig` array in function caches and schema snapshots, so verification detects a lost setting when the expected artifact already contains it; it cannot reconstruct omitted desired state by parsing `schema.sql` as a second DDL authority.
+Without a materializer, the pinned pgschema 1.12.2 CLI requires exactly one schema name. This version preserves every function-local `SET` clause from `pg_proc.proconfig`; the fixed upstream defect is tracked in [pgplex/pgschema#526](https://github.com/pgplex/pgschema/issues/526). sqlx-js preserves the same complete normalized settings in function caches and schema snapshots, so verification detects provider or target drift without parsing `schema.sql` as a second DDL authority.
 
 Point mappings directly at the application's canonical exported types. The strings are emitted as TypeScript type expressions, so `import("...").Type` keeps the generated declaration self-contained and avoids a duplicate ambient schema:
 
@@ -375,7 +375,7 @@ export default defineConfig({
 
 Domains resolve to their base type through `pg_type.typbasetype`. `CREATE DOMAIN positive_int AS integer CHECK (VALUE > 0)` → `number`, `CREATE DOMAIN tagged AS hstore` → `Record<string, string | null>`. PostgreSQL reports domain result columns with the base type OID, so domain-specific `customTypes` / `typeCodecs` overrides are rejected rather than producing a read/write contract that only works for parameters. Use `columnTypes` for a runtime-compatible branded assertion on a direct domain column. Array variants of any registered scalar are wired up automatically — `vector[]` → `(number[])[]`.
 
-Composite types (`CREATE TYPE foo AS (a int, b text)`) resolve to a struct literal — `{ a: number | null; b: string | null }` — with each attribute typed (enums, domains, and nested composites included) and nullable unless the attribute is `NOT NULL`. Array variants (`foo[]`) resolve too.
+Composite types (`CREATE TYPE foo AS (a int, b text)`) resolve to a struct literal — `{ a: number | null; b: string | null }` — with each attribute typed (enums, domains, and nested composites included) and nullable unless the attribute is `NOT NULL`. Array variants (`foo[]`) resolve too. Generated TypeScript properties for named composites and `RETURNS TABLE` / OUT function results are sorted by field name because object types are structural; runtime codecs, function parameters, and schema snapshots retain PostgreSQL ordinal order where position is part of execution or physical drift checks.
 
 Built-in JSON contracts compose through domains, composite attributes, and
 their arrays. Parameter leaves use `SqlxJson<unknown>` while result leaves use

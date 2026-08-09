@@ -71,12 +71,25 @@ test("stableSchemaJson is deterministic and newline terminated", () => {
   expect(text).toBe(stableSchemaJson(JSON.parse(text) as SchemaSnapshot));
 });
 
-test("schema snapshot equality ignores cluster-local OIDs but preserves identifiers", () => {
+test("schema snapshot equality ignores cluster-local OIDs but preserves identifiers and physical order", () => {
   const other = structuredClone(snapshot);
   other.relations[0]!.columns[0]!.typeOid = 50_000;
   expect(schemaSnapshotEqual(snapshot, other)).toBe(true);
   other.relations[0]!.columns[0]!.name = "forbidden_secret";
   expect(schemaSnapshotEqual(snapshot, other)).toBe(false);
+
+  const physical = structuredClone(snapshot);
+  physical.types.push({
+    kind: "composite",
+    schema: "public",
+    name: "address",
+    fields: [{ name: "zip", type: "integer" }, { name: "street", type: "text" }],
+  });
+  const reordered = structuredClone(physical);
+  const reorderedComposite = reordered.types[1];
+  if (reorderedComposite?.kind !== "composite") throw new Error("expected composite snapshot fixture");
+  reorderedComposite.fields.reverse();
+  expect(schemaSnapshotEqual(physical, reordered)).toBe(false);
 });
 
 test("renderSchemaManifest includes constraints, indexes, types, and functions", () => {

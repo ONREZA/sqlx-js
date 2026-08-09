@@ -261,12 +261,10 @@ configured; otherwise they prefer the managed binary under
 `node_modules/.cache/sqlx-js/pgschema/` and fall back to `pgschema` on `PATH`.
 Arguments after `--` are forwarded only by `plan` and `apply`.
 `pgschema apply -- --plan plan.json` applies a reviewed plan without requiring
-the local `schema.sql`. The pinned pgschema 1.12.0 CLI accepts one `--schema`
-value, so multi-schema configurations fail explicitly. It also has a known
-upstream defect that omits function-local `SET` entries other than
-`search_path`; see [pgplex/pgschema#526](https://github.com/pgplex/pgschema/issues/526).
-Use another DDL workflow for routines that depend on settings such as
-`TimeZone` until a fixed provider version is pinned.
+the local `schema.sql`. The pinned pgschema 1.12.2 CLI accepts one `--schema`
+value, so multi-schema configurations fail explicitly. This version preserves
+the complete function-local `SET` contract; the fixed upstream defect is
+tracked in [pgplex/pgschema#526](https://github.com/pgplex/pgschema/issues/526).
 
 Use provider-aware `dev` while developing built-in migrations and SQL:
 
