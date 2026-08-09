@@ -26,6 +26,18 @@ function writeSetWithEnums(root: string) {
   return { ...set, enumOutputPath, enumArtifactName: "src/db-enums.ts" };
 }
 
+function writeSetWithEmbeddedSql(root: string) {
+  const set = writeSet(root);
+  const embeddedSqlOutputPath = join(root, "src/sql-files.generated.ts");
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(embeddedSqlOutputPath, "export const sqlFiles = { one: 'SELECT 1' } as const;\n");
+  return {
+    ...set,
+    embeddedSqlOutputPath,
+    embeddedSqlArtifactName: "src/sql-files.generated.ts",
+  };
+}
+
 test("compareArtifacts reports exact generated files that changed", () => {
   const leftRoot = mkdtempSync(join(tmpdir(), "sqlx-js-artifacts-left-"));
   const rightRoot = mkdtempSync(join(tmpdir(), "sqlx-js-artifacts-right-"));
@@ -74,6 +86,25 @@ test("compareArtifacts includes the runtime descriptor", () => {
     expect(compareArtifacts(left, right)).toEqual({
       ok: false,
       changed: ["cache/runtime-descriptors.json"],
+    });
+  } finally {
+    rmSync(leftRoot, { recursive: true, force: true });
+    rmSync(rightRoot, { recursive: true, force: true });
+  }
+});
+
+test("compareArtifacts includes the configured embedded SQL output", () => {
+  const leftRoot = mkdtempSync(join(tmpdir(), "sqlx-js-artifacts-sql-left-"));
+  const rightRoot = mkdtempSync(join(tmpdir(), "sqlx-js-artifacts-sql-right-"));
+  try {
+    const left = writeSetWithEmbeddedSql(leftRoot);
+    const right = writeSetWithEmbeddedSql(rightRoot);
+    expect(compareArtifacts(left, right)).toEqual({ ok: true, changed: [] });
+
+    writeFileSync(right.embeddedSqlOutputPath, "export const sqlFiles = { one: 'SELECT 2' } as const;\n");
+    expect(compareArtifacts(left, right)).toEqual({
+      ok: false,
+      changed: ["src/sql-files.generated.ts"],
     });
   } finally {
     rmSync(leftRoot, { recursive: true, force: true });

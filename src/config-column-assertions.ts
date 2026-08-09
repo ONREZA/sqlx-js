@@ -3,7 +3,7 @@ import { jsonScalarOid } from "./pg/input-types";
 import type { ColumnMatch, SchemaCache } from "./pg/schema";
 
 type ColumnAssertion = {
-  configKey: "jsonbTypes" | "columnTypes" | "arrayElementNullability";
+  configKey: "columnTypes" | "arrayElementNullability";
   key: string;
   schema?: string;
   table: string;
@@ -54,21 +54,9 @@ export async function validateColumnAssertions(
     if (assertion.configKey === "arrayElementNullability" && !array) {
       throw assertionError(configPath, assertion, "must reference a PostgreSQL array column");
     }
-    if (assertion.configKey === "jsonbTypes") {
-      const jsonOid = array
-        ? jsonScalarOid(array.typeOid, schema)
-        : jsonScalarOid(column.typeOid, schema);
-      if (!jsonOid) {
-        throw assertionError(configPath, assertion, "must reference a PostgreSQL JSON column or JSON array column");
-      }
-    }
     if (assertion.configKey === "columnTypes") {
-      const directJson = column.typeOid === 114 || column.typeOid === 3802;
-      if (array) {
-        throw assertionError(configPath, assertion, "does not support PostgreSQL array columns");
-      }
-      if (directJson) {
-        throw assertionError(configPath, assertion, "must use jsonbTypes for a direct json or jsonb column");
+      if (array && !jsonScalarOid(array.typeOid, schema)) {
+        throw assertionError(configPath, assertion, "does not support non-JSON PostgreSQL array columns");
       }
     }
   }
@@ -82,7 +70,7 @@ function matchesAssertion(match: ColumnMatch, assertion: ColumnAssertion): boole
 
 function collectAssertions(config: SqlxJsConfig, configPath: string | undefined): ColumnAssertion[] {
   const assertions: ColumnAssertion[] = [];
-  for (const configKey of ["jsonbTypes", "columnTypes", "arrayElementNullability"] as const) {
+  for (const configKey of ["columnTypes", "arrayElementNullability"] as const) {
     for (const key of Object.keys(config[configKey] ?? {}).sort()) {
       const parts = key.split(".");
       if ((parts.length !== 2 && parts.length !== 3) || parts.some((part) => part.length === 0)) {

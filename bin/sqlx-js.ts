@@ -1,217 +1,21 @@
 #!/usr/bin/env node
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
+import { parseArgs } from "node:util";
 import type { JsonAuditReport } from "../src/commands/json-audit";
 import type { PgschemaSubcommand } from "../src/commands/pgschema";
 import type { PrepareDiagnosticPhase } from "../src/commands/prepare";
 import { JSON_PROTOCOL_VERSION } from "../src/artifact-versions";
 import { assertSupportedRuntime, loadConfig, loadRootEnv } from "../src/config";
 import { inspectPackageIdentity, runningPackageIdentity } from "../src/package-identity";
+import { optionsFor } from "./sqlx-js-options";
+import { helpText, type HelpScope } from "./sqlx-js-help";
 
 const CLI_IDENTITY = runningPackageIdentity(import.meta.url);
 const VERSION = CLI_IDENTITY.version;
 
-type HelpScope =
-  | "root"
-  | "init"
-  | "dev"
-  | "verify"
-  | "doctor"
-  | "ci"
-  | "json"
-  | "pgschema"
-  | "prepare"
-  | "queries"
-  | "migrate"
-  | "snapshot";
-
-const HELP: Record<HelpScope, string> = {
-  root: `sqlx-js — compile-time-checked SQL for TypeScript + Postgres (v${VERSION})
-
-common workflows:
-  sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]
-  sqlx-js dev [--strict-inference] [--shadow-url <url>]
-  sqlx-js verify [--strict-inference] [--shadow-url <url>]
-  sqlx-js prepare [--watch | --check | --offline | --verify]
-  sqlx-js ci [--json]
-
-schema ownership:
-  sqlx-js migrate add|run|info|check|revert|squash|archive
-  sqlx-js pgschema install|plan|apply
-
-inspection and generated artifacts:
-  sqlx-js doctor [--root <dir>] [--dts <path>] [--json] [--fix]
-  sqlx-js queries [--json] [--embed <path>] [--root <dir>]
-  sqlx-js queries audit [--json] [--root <dir>]
-  sqlx-js queries similarities [--json] [--functions <path>] [--root <dir>]
-  sqlx-js queries explain <query-id> [--json] [--root <dir>]
-  sqlx-js json audit [--json] [--root <dir>]
-  sqlx-js snapshot dump|check
-  sqlx-js --version
-  sqlx-js-diagnostics github|unix < prepare-diagnostics.json
-
-Run \`sqlx-js <command> --help\` or
-\`sqlx-js <command> <subcommand> --help\` for exact behavior and flags.
-`,
-  init: `usage: sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]
-
-Scaffold config, a descriptor-bound db.ts, generated artifact placeholders,
-package scripts, and the selected schema source without replacing existing files.`,
-  dev: `usage: sqlx-js dev [--root <dir>] [--dts <path>] [--migrations <dir>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] [--no-prune]
-
-Build the configured schema source in a disposable shadow database and
-regenerate query artifacts. Uses built-in migrations by default or schema.sql
-when schema.provider is "pgschema".
-
---migrations and --lock-timeout apply only to the built-in provider.
-
-Writes worktree: yes
-Changes target database: no`,
-  verify: `usage: sqlx-js verify [--root <dir>] [--dts <path>] [--migrations <dir>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference]
-
-Build the configured schema source in a disposable shadow database and compare
-fresh query artifacts with the committed files. When the default schema
-snapshot exists, verify it against the same shadow database.
-
---migrations and --lock-timeout apply only to the built-in provider.
-
-Writes worktree: no
-Changes target database: no`,
-  doctor: `usage: sqlx-js doctor [--root <dir>] [--dts <path>] [--json] [--fix]
-
-Inspect runtime, config, environment, generated artifacts, PostgreSQL
-connectivity and shadow permissions, runtime types, and pgschema availability.
-
---fix adds missing linguist-generated rules to .gitattributes.
-
-Writes worktree: only with --fix
-Changes target database: no`,
-  ci: `usage: sqlx-js ci [--root <dir>] [--dts <path>] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--migrations <dir>]
-
-Run provider-aware \`verify\`, including the default schema snapshot when
-present, then the database-free artifact consistency check. This validates the
-proposed schema source without changing the target database. Run \`pgschema
-plan\` or \`migrate run --dry-run\` separately for target deployment drift.
-
---migrations applies only to the built-in provider.`,
-  json: `usage: sqlx-js json audit [--json] [--root <dir>]
-
-Read-only inventory for the Extended JSON reader-first rollout. Scans every
-selectable user-table json/jsonb column for reserved $sqlx keys and duplicate
-json object keys, then reports dependent schema objects and source query usage.
-
-Writes worktree: no
-Changes target database: no`,
-  pgschema: `usage: sqlx-js pgschema install | plan | apply
-
-Manage the pinned pgschema tool and target-database deployment plans.
-Use provider-aware \`sqlx-js dev\` and \`sqlx-js verify\` for shadow validation.`,
-  prepare: `usage: sqlx-js prepare [--check | --offline | --verify | --watch] [--include <glob>] [--query <name-or-id>] [--warnings | --verbose | --json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune]
-
-Query-artifact engine:
-  prepare             regenerate artifacts against DATABASE_URL
-  prepare --watch     regenerate after source changes
-  prepare --check     verify committed artifacts offline
-  prepare --offline   restore generated files from committed cache
-  prepare --verify    compare fresh artifacts against a supplied live database
-  prepare --include   live-validate matching source files and mark artifacts incomplete
-  prepare --query     live-validate an exact defineQuery name or stable query ID
-
-Output:
-  default             compact counts; errors remain expanded
-  --warnings          also show full warning details
-  --verbose           show warnings and per-query progress
-
-For schema-source validation prefer \`sqlx-js dev\` or \`sqlx-js verify\`.`,
-  queries: `usage: sqlx-js queries [--json] [--embed <path>] [--root <dir>]
-       sqlx-js queries audit [--json] [--root <dir>]
-       sqlx-js queries similarities [--json] [--functions <path>] [--min-nodes <n>] [--limit <n>] [--root <dir>]
-       sqlx-js queries explain <query-id> [--json] [--root <dir>]
-
-Scan source without a database and report query call sites, cache status,
-validation mode, profiles, definitions, and referenced SQL files. Audit reports
-possible exact duplicates and contract divergence. Similarities ranks normalized
-AST fragments across queries and optional SQL function sources. Explain reads
-committed inference provenance without connecting to PostgreSQL.`,
-  migrate: `usage: sqlx-js migrate add|run|info|check|revert|squash|archive
-
-Manage built-in migration files and target history. Use provider-aware
-\`sqlx-js dev\` and \`sqlx-js verify\` for shadow validation.`,
-  snapshot: `usage: sqlx-js snapshot dump | check
-
-Read DATABASE_URL or an explicit --shadow-url to generate or compare the
-schema snapshot used by sql.id() and the optional LLM-facing manifest.`,
-};
-
-const SUBCOMMAND_HELP: Record<string, string> = {
-  "queries:explain": `usage: sqlx-js queries explain <query-id> [--json] [--root <dir>]
-
-Explain result provenance, parameter targets, nullability decisions, and
-actionable inference hints from committed prepare artifacts.`,
-  "queries:audit": `usage: sqlx-js queries audit [--json] [--root <dir>]
-
-Report possible exact query duplicates, source-contract divergence, query-name
-collisions, reviewed ignores, and stale ignore entries. Findings are advisory.`,
-  "queries:similarities": `usage: sqlx-js queries similarities [--json] [--functions <path>] [--min-nodes <n>] [--limit <n>] [--root <dir>]
-
-Rank normalized PostgreSQL AST fragments across application queries and optional
-SQL-language function bodies. This experimental report is advisory.`,
-  "json:audit": `usage: sqlx-js json audit [--json] [--root <dir>]
-
-Audit stored json/jsonb documents and extension-sensitive schema/source usage
-before Extended JSON writers are enabled. Runs in a read-only transaction.`,
-  "pgschema:install": `usage: sqlx-js pgschema install [--root <dir>]
-
-Download and checksum the pinned pgschema binary. \`sqlx-js doctor\` reports
-its availability as part of full-project diagnostics.`,
-  "pgschema:plan": `usage: sqlx-js pgschema plan [--root <dir>] [-- <pgschema args>]
-
-Plan target-database changes from schema.sql without applying them.`,
-  "pgschema:apply": `usage: sqlx-js pgschema apply [--root <dir>] [-- <pgschema args>]
-
-Apply schema.sql or a reviewed --plan to the target database.`,
-  "migrate:add": `usage: sqlx-js migrate add <name> [--root <dir>] [--migrations <dir>]
-
-Create matching .up.sql and .down.sql migration stubs.`,
-  "migrate:run": `usage: sqlx-js migrate run [--dry-run] [--json] [--lock-timeout <ms>] [--root <dir>] [--migrations <dir>]
-
-Apply pending built-in migrations to the target database.`,
-  "migrate:info": `usage: sqlx-js migrate info [--json] [--root <dir>] [--migrations <dir>]
-
-Inspect target migration history without changing it.`,
-  "migrate:check": `usage: sqlx-js migrate check [--json] [--root <dir>] [--migrations <dir>]
-
-Validate migration filenames, versions, down files, and squash metadata
-without a database.`,
-  "migrate:revert": `usage: sqlx-js migrate revert [--dry-run] [--json] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--root <dir>] [--migrations <dir>]
-
-Revert the latest target migration, or validate its down migration in a
-shadow transaction with --dry-run.`,
-  "migrate:squash": `usage: sqlx-js migrate squash <name> [--shadow-admin-url <url> | --shadow-url <url>] [--replace] [--pg-dump <path>] [--lock-timeout <ms>] [--root <dir>] [--migrations <dir>]
-
-Build migrations in a shadow database and write one schema-only baseline.`,
-  "migrate:archive": `usage: sqlx-js migrate archive list [--root <dir>] [--migrations <dir>]
-       sqlx-js migrate archive restore <name> [--force] [--root <dir>] [--migrations <dir>]
-
-Inspect or restore migration files archived by migrate squash --replace.`,
-  "snapshot:dump": `usage: sqlx-js snapshot dump [--schema <path>] [--manifest <path>] [--no-manifest] [--shadow-url <url>] [--root <dir>]
-
-Write the schema snapshot and optional LLM manifest from DATABASE_URL or the
-explicit --shadow-url. The selected database is read-only.`,
-  "snapshot:check": `usage: sqlx-js snapshot check [--schema <path>] [--shadow-url <url>] [--root <dir>]
-
-Compare the committed schema snapshot with DATABASE_URL or the explicit
---shadow-url. The selected database is read-only.`,
-};
-
-function helpText(scope: HelpScope, args: string[] = []): string {
-  const subcommand = args[0]?.startsWith("-") ? undefined : args[0];
-  return SUBCOMMAND_HELP[`${scope}:${subcommand}`] ?? HELP[scope];
-}
-
 function printHelp(scope: HelpScope, error = false, args: string[] = []): void {
-  (error ? console.error : console.log)(helpText(scope, args));
+  (error ? console.error : console.log)(helpText(VERSION, scope, args));
 }
 
 function exitHelp(scope: HelpScope, args: string[] = []): never {
@@ -260,110 +64,6 @@ const scope = cmd as Exclude<HelpScope, "root">;
 if (cliArgv.includes("--help") || cliArgv.includes("-h")) exitHelp(scope, commandArgv);
 if (passthroughIndex >= 0 && cmd !== "pgschema") {
   usageError("arguments after -- are only supported by sqlx-js pgschema", scope, commandArgv);
-}
-
-const ROOT_OPTIONS: ParseArgsOptionsConfig = {
-  root: { type: "string" },
-  help: { type: "boolean", short: "h" },
-};
-
-function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfig {
-  if (command === "init") return { ...ROOT_OPTIONS, "schema-provider": { type: "string" } };
-  if (command === "dev" || command === "verify") {
-    return {
-      ...ROOT_OPTIONS,
-      dts: { type: "string" },
-      migrations: { type: "string" },
-      "shadow-admin-url": { type: "string" },
-      "shadow-url": { type: "string" },
-      "lock-timeout": { type: "string" },
-      "strict-inference": { type: "boolean" },
-      ...(command === "dev" ? { "no-prune": { type: "boolean" } } : {}),
-    };
-  }
-  if (command === "doctor") {
-    return {
-      ...ROOT_OPTIONS,
-      dts: { type: "string" },
-      json: { type: "boolean" },
-      fix: { type: "boolean" },
-    };
-  }
-  if (command === "ci") return {
-    ...ROOT_OPTIONS,
-    json: { type: "boolean" },
-    dts: { type: "string" },
-    migrations: { type: "string" },
-    "shadow-url": { type: "string" },
-    "shadow-admin-url": { type: "string" },
-  };
-  if (command === "json") return { ...ROOT_OPTIONS, json: { type: "boolean" } };
-  if (command === "pgschema") return ROOT_OPTIONS;
-  if (command === "prepare") {
-    return {
-      ...ROOT_OPTIONS,
-      dts: { type: "string" },
-      check: { type: "boolean" },
-      offline: { type: "boolean" },
-      verify: { type: "boolean" },
-      watch: { type: "boolean" },
-      json: { type: "boolean" },
-      jsonl: { type: "boolean" },
-      warnings: { type: "boolean" },
-      verbose: { type: "boolean" },
-      "no-prune": { type: "boolean" },
-      "strict-inference": { type: "boolean" },
-      include: { type: "string", multiple: true },
-      query: { type: "string", multiple: true },
-    };
-  }
-  if (command === "queries") {
-    return {
-      ...ROOT_OPTIONS,
-      json: { type: "boolean" },
-      embed: { type: "string" },
-      functions: { type: "string" },
-      "min-nodes": { type: "string" },
-      limit: { type: "string" },
-    };
-  }
-  if (command === "snapshot") {
-    const common = {
-      ...ROOT_OPTIONS,
-      schema: { type: "string" },
-      "shadow-url": { type: "string" },
-    } satisfies ParseArgsOptionsConfig;
-    return subcommand === "dump"
-      ? { ...common, manifest: { type: "string" }, "no-manifest": { type: "boolean" } }
-      : common;
-  }
-  const common = { ...ROOT_OPTIONS, migrations: { type: "string" } } satisfies ParseArgsOptionsConfig;
-  if (subcommand === "run") {
-    return { ...common, "dry-run": { type: "boolean" }, json: { type: "boolean" }, "lock-timeout": { type: "string" } };
-  }
-  if (subcommand === "info" || subcommand === "check") return { ...common, json: { type: "boolean" } };
-  if (subcommand === "revert") {
-    return {
-      ...common,
-      "dry-run": { type: "boolean" },
-      json: { type: "boolean" },
-      "shadow-admin-url": { type: "string" },
-      "shadow-url": { type: "string" },
-      "lock-timeout": { type: "string" },
-    };
-  }
-  if (subcommand === "squash") {
-    return {
-      ...common,
-      "shadow-admin-url": { type: "string" },
-      "shadow-url": { type: "string" },
-      "lock-timeout": { type: "string" },
-      replace: { type: "boolean" },
-      "pg-dump": { type: "string" },
-    };
-  }
-  if (subcommand === "archive") return { ...common, force: { type: "boolean" } };
-  return common;
 }
 
 const subcommand = commandArgv[0]?.startsWith("-") ? undefined : commandArgv[0];
@@ -436,9 +136,6 @@ function validateInvocation(): void {
           "queries",
           commandArgv,
         );
-      }
-      if (queryCommand && arg("--embed")) {
-        usageError("--embed cannot be combined with a queries subcommand", "queries", commandArgv);
       }
       return;
     }
@@ -861,7 +558,8 @@ if (cmd === "init") {
     }
   }
 } else if (cmd === "prepare") {
-  const { PrepareFatalError, runPrepare } = await import("../src/commands/prepare");
+  const { PrepareFatalError } = await import("../src/commands/prepare");
+  const { runPrepare } = await import("../src/commands/prepare-command");
   const prepareCheck = flag("--check");
   const prepareOffline = flag("--offline");
   const prepareVerify = flag("--verify");
@@ -958,7 +656,6 @@ if (cmd === "init") {
   }
 } else if (cmd === "queries") {
   const { QueriesError, runQueries } = await import("../src/commands/queries");
-  const embed = arg("--embed");
   const queryCommand = positionals[0];
   const positiveIntegerOption = (name: "--min-nodes" | "--limit"): number | undefined => {
     const value = arg(name);
@@ -987,7 +684,6 @@ if (cmd === "init") {
         root,
         cacheDir,
         json: flag("--json"),
-        embedPath: embed ? resolve(root, embed) : undefined,
         explainQueryId: queryCommand === "explain" ? positionals[1] : undefined,
       });
     }

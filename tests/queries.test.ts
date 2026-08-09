@@ -1,14 +1,12 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { Cache, profileFingerprint, type CacheEntry, writeCacheManifest } from "../src/cache";
 import { buildQueryExplanation, buildQueryInventory, QueriesError } from "../src/commands/queries";
 import { prepareConfigHash } from "../src/config";
 import { queryId } from "../src/query-id";
-import { _internal } from "../src/runtime";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const binPath = join(repoRoot, "bin/sqlx-js.ts");
@@ -35,7 +33,7 @@ function cacheEntry(query: string, overrides: Partial<CacheEntry> = {}): CacheEn
   };
 }
 
-test("queries inventory and embedded module are deterministic and database-free", async () => {
+test("queries inventory is deterministic and database-free", async () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-queries-"));
   try {
     mkdirSync(join(root, "queries"));
@@ -61,13 +59,10 @@ test("queries inventory and embedded module are deterministic and database-free"
         return sql.file.optional("queries/user.sql", { id });
       }
     `);
-    const embedded = join(root, "generated/embedded.ts");
     const result = spawnSync("bun", [
       binPath,
       "queries",
       "--json",
-      "--embed",
-      "generated/embedded.ts",
       "--root",
       root,
     ], { encoding: "utf8", env: { ...process.env, DATABASE_URL: "" } });
@@ -92,7 +87,6 @@ test("queries inventory and embedded module are deterministic and database-free"
         cacheStatus: string;
         validation: string | null;
       }>;
-      embeddedModule: string;
     };
     expect(inventory.formatVersion).toBe(1);
     expect(inventory.queries).toHaveLength(2);
@@ -116,28 +110,15 @@ test("queries inventory and embedded module are deterministic and database-free"
       cardinalities: ["optional"],
       sqlFilePaths: ["queries/user.sql"],
     });
-    expect(inventory.embeddedModule).toBe("generated/embedded.ts");
-    const module = readFileSync(embedded, "utf8");
-    expect(module).toContain('"queries/user.sql": "SELECT id FROM users WHERE id = $id\\n"');
-    expect(module).not.toContain("COUNT(*)");
-
     const second = spawnSync("bun", [
       binPath,
       "queries",
-      "--embed",
-      "generated/embedded.ts",
+      "--json",
       "--root",
       root,
     ], { encoding: "utf8", env: { ...process.env, DATABASE_URL: "" } });
     expect(second.status, second.stderr).toBe(0);
-    expect(readFileSync(embedded, "utf8")).toBe(module);
-
-    const generated = await import(`${pathToFileURL(embedded).href}?test=${Date.now()}`) as {
-      sqlxJsEmbeddedSql: Readonly<Record<string, string>>;
-    };
-    rmSync(join(root, "queries/user.sql"));
-    expect(_internal.loadSqlFile("queries/user.sql", root, false, generated.sqlxJsEmbeddedSql))
-      .toBe("SELECT id FROM users WHERE id = $id\n");
+    expect(second.stdout).toBe(result.stdout);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -376,7 +357,7 @@ test("queries inventory classifies config and cache failures", async () => {
   }
 });
 
-test("queries --json reports scan failures without writing an embedded module", () => {
+test("queries --json reports scan failures", () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-query-error-"));
   try {
     writeFileSync(join(root, "query.ts"), `
@@ -384,13 +365,10 @@ test("queries --json reports scan failures without writing an embedded module", 
       const text = "SELECT 1";
       export const query = defineQuery(text);
     `);
-    const output = join(root, "embedded.ts");
     const result = spawnSync("bun", [
       binPath,
       "queries",
       "--json",
-      "--embed",
-      "embedded.ts",
       "--root",
       root,
     ], { encoding: "utf8", env: { ...process.env, DATABASE_URL: "" } });
@@ -400,32 +378,6 @@ test("queries --json reports scan failures without writing an embedded module", 
       formatVersion: 1,
       ok: false,
       diagnostics: [{ severity: "error", phase: "scan", file: "query.ts", line: 4 }],
-    });
-    expect(() => readFileSync(output, "utf8")).toThrow();
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("queries --json reports embedded-module write failures", () => {
-  const root = mkdtempSync(join(tmpdir(), "sqlx-js-query-embed-error-"));
-  try {
-    writeFileSync(join(root, "query.ts"), 'import { sql } from "@onreza/sqlx-js"; sql("SELECT 1");\n');
-    mkdirSync(join(root, "generated"));
-    const result = spawnSync("bun", [
-      binPath,
-      "queries",
-      "--json",
-      "--embed",
-      "generated",
-      "--root",
-      root,
-    ], { encoding: "utf8", env: { ...process.env, DATABASE_URL: "" } });
-    expect(result.status).toBe(2);
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      formatVersion: 1,
-      ok: false,
-      diagnostics: [{ severity: "error", phase: "embed" }],
     });
   } finally {
     rmSync(root, { recursive: true, force: true });

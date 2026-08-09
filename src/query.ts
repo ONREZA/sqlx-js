@@ -33,44 +33,8 @@ type NamedQueryEntry = { params: Record<string, unknown>; row: unknown };
 type PositionalQueryEntry = { params: readonly unknown[]; row: unknown };
 type QueryEntry = NamedQueryEntry | PositionalQueryEntry;
 type QueryWireParams = Record<string, unknown> | readonly unknown[];
-type KnownProfileQueryEntry<Profile, Query extends string> = Profile extends keyof import("./index").KnownProfiles
-  ? import("./index").KnownProfiles[Profile] extends { queries: infer Queries }
-    ? Query extends keyof Queries ? Queries[Query] : never
-    : never
-  : never;
-type KnownQueryEntry<Query extends string, Profiles extends readonly string[]> = Profiles extends readonly []
-  ? Query extends keyof import("./index").KnownQueries ? import("./index").KnownQueries[Query] : never
-  : KnownProfileQueryEntry<Profiles[number], Query>;
-type QueryEntryWireParams<Entry> =
-  Entry extends { params: infer Params extends QueryWireParams } ? Params : never;
-type UnionToIntersection<Union> =
-  (Union extends unknown ? (value: Union) => void : never) extends (value: infer Intersection) => void
-    ? Intersection
-    : never;
-type KnownQueryWireParams<Query extends string, Profiles extends readonly string[]> =
-  [KnownQueryEntry<Query, Profiles>] extends [never]
-    ? QueryWireParams
-    : UnionToIntersection<QueryEntryWireParams<KnownQueryEntry<Query, Profiles>>> extends
-      infer Params extends QueryWireParams
-      ? Params
-      : QueryWireParams;
-type CheckedMappedWireParams<
-  Query extends string,
-  Profiles extends readonly string[],
-  WireParams extends QueryWireParams,
-> =
-  [KnownQueryEntry<Query, Profiles>] extends [never]
-    ? WireParams
-    : WireParams extends ReadonlyWireParams<KnownQueryWireParams<Query, Profiles>>
-      ? KnownQueryWireParams<Query, Profiles> extends readonly unknown[]
-        ? WireParams
-        : Exclude<keyof WireParams, keyof KnownQueryWireParams<Query, Profiles>> extends never
-          ? WireParams
-          : WireParams & {
-            [Key in Exclude<keyof WireParams, keyof KnownQueryWireParams<Query, Profiles>>]: never;
-          }
-      : ReadonlyWireParams<KnownQueryWireParams<Query, Profiles>>;
 declare const MAPPED_QUERY_INPUT: unique symbol;
+declare const MAPPED_QUERY_WIRE_PARAMS: unique symbol;
 type QueryModeResult<Mode extends QueryExecutionMode, Row> =
   Mode extends "many" ? Row[]
     : Mode extends "one" ? Row
@@ -80,7 +44,6 @@ type QueryModeResult<Mode extends QueryExecutionMode, Row> =
 export type QueryDefinition<
   Query extends string = string,
   Mode extends QueryExecutionMode = QueryExecutionMode,
-  Profiles extends readonly string[] = readonly [],
 > = {
   readonly query: Query;
   readonly mode: Mode;
@@ -88,8 +51,8 @@ export type QueryDefinition<
   readonly queryName?: string;
   readonly profiles?: readonly string[];
   mapParams<Input, const WireParams extends QueryWireParams>(
-    mapper: (input: Input, helpers: QueryParameterHelpers) => CheckedMappedWireParams<Query, Profiles, WireParams>,
-  ): MappedQueryDefinition<Query, Mode, Input>;
+    mapper: (input: Input, helpers: QueryParameterHelpers) => WireParams,
+  ): MappedQueryDefinition<Query, Mode, Input, WireParams>;
   run<Registry extends { queries: Record<Query, NamedQueryEntry>; fileQueries: object }>(
     executor: TypedSqlForRegistry<Registry>,
     params: RegistryParams<Query, Registry>,
@@ -119,6 +82,7 @@ export type MappedQueryDefinition<
   Query extends string = string,
   Mode extends QueryExecutionMode = QueryExecutionMode,
   Input = unknown,
+  WireParams extends QueryWireParams = QueryWireParams,
 > = {
   readonly query: Query;
   readonly mode: Mode;
@@ -126,14 +90,15 @@ export type MappedQueryDefinition<
   readonly queryName?: string;
   readonly profiles?: readonly string[];
   readonly [MAPPED_QUERY_INPUT]: Input;
+  readonly [MAPPED_QUERY_WIRE_PARAMS]: WireParams;
   run<Registry extends { queries: Record<Query, QueryEntry>; fileQueries: object }>(
-    executor: TypedSqlForRegistry<Registry>,
+    executor: MappedExecutor<Query, Registry, WireParams>,
     input: Input,
     options?: QueryExecutionOptions,
   ): Promise<QueryResultFor<MappedQueryDefinition<Query, Mode, Input>, Registry>>;
   runWith<Registry extends { queries: Record<Query, QueryEntry>; fileQueries: object }>(
     options: QueryExecutionOptions,
-    executor: TypedSqlForRegistry<Registry>,
+    executor: MappedExecutor<Query, Registry, WireParams>,
     input: Input,
   ): Promise<QueryResultFor<MappedQueryDefinition<Query, Mode, Input>, Registry>>;
 };
@@ -148,6 +113,13 @@ type RegistryParams<Query extends string, Registry extends { queries: object }> 
   RegistryQuery<Query, Registry>["params" & keyof RegistryQuery<Query, Registry>];
 type RegistryRow<Query extends string, Registry extends { queries: object }> =
   RegistryQuery<Query, Registry>["row" & keyof RegistryQuery<Query, Registry>];
+type MappedExecutor<
+  Query extends string,
+  Registry extends { queries: object; fileQueries: object },
+  WireParams extends QueryWireParams,
+> = WireParams extends ReadonlyWireParams<RegistryParams<Query, Registry>>
+  ? TypedSqlForRegistry<Registry>
+  : never;
 
 export type QueryWireParamsFor<Definition, Registry extends { queries: object }> =
   RegistryParams<DefinitionQuery<Definition>, Registry>;
@@ -161,13 +133,13 @@ export type QueryResultFor<Definition, Registry extends { queries: object }> = Q
   QueryRowFor<Definition, Registry>
 >;
 
-type DefineQueryMethod<Mode extends QueryExecutionMode, Profiles extends readonly string[] = readonly []> = {
-  <const Query extends string>(query: Query, options?: DefineQueryOptions): QueryDefinition<Query, Mode, Profiles>;
+type DefineQueryMethod<Mode extends QueryExecutionMode> = {
+  <const Query extends string>(query: Query, options?: DefineQueryOptions): QueryDefinition<Query, Mode>;
   <const Query extends string>(
     name: string,
     query: Query,
     options?: DefineQueryOptions,
-  ): QueryDefinition<Query, Mode, Profiles>;
+  ): QueryDefinition<Query, Mode>;
 };
 
 function validateDefinitionOptions(
@@ -276,7 +248,7 @@ function validateDefinitionOptions(
 function definitionMethod<Mode extends QueryExecutionMode, Profiles extends readonly string[] = readonly []>(
   mode: Mode,
   profiles: Profiles = [] as unknown as Profiles,
-): DefineQueryMethod<Mode, Profiles> {
+): DefineQueryMethod<Mode> {
   return ((
     nameOrQuery: string,
     queryOrOptions?: string | DefineQueryOptions,
@@ -352,7 +324,7 @@ function definitionMethod<Mode extends QueryExecutionMode, Profiles extends read
       },
     };
     return Object.freeze(definition);
-  }) as unknown as DefineQueryMethod<Mode, Profiles>;
+  }) as unknown as DefineQueryMethod<Mode>;
 }
 
 export const defineQuery = Object.assign(definitionMethod("many"), {

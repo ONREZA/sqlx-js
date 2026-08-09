@@ -1,8 +1,7 @@
-import "./temporal";
-import { sql, close } from "@onreza/sqlx-js";
+import { db } from "./database";
 
 async function main() {
-  const insert = await sql(
+  const insert = await db.sql(
     `INSERT INTO users (name, email, age) VALUES ($1, $2, $3) RETURNING id AS "id!", created_at AS "created_at!"`,
     "Alice",
     `alice-${Date.now()}@example.com`,
@@ -11,7 +10,7 @@ async function main() {
   const newId = insert[0]!.id;
   console.log("inserted user id:", newId, "created_at:", insert[0]!.created_at);
 
-  const found = await sql(
+  const found = await db.sql(
     `SELECT id AS "id!", name AS "name!", email AS "email!", age, bio FROM users WHERE id = $1`,
     newId,
   );
@@ -22,13 +21,13 @@ async function main() {
     console.log(`found ${u.name} (${u.email}), age: ${ageDesc}, bio: ${bioDesc}`);
   }
 
-  const counts = await sql(
+  const counts = await db.sql(
     `SELECT COUNT(*) AS "n!" FROM users WHERE age >= $1`,
     18,
   );
   console.log("adult users:", counts[0]!.n);
 
-  await close();
+  await db.close();
 }
 
 await main();

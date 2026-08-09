@@ -1,7 +1,7 @@
-import { sql } from "@onreza/sqlx-js";
+import { db } from "./database";
 
 export async function listUsersWithPostStats(limit: number, offset: number) {
-  return await sql(
+  return await db.sql(
     `SELECT
        u.id AS user_id,
        u.email AS user_email,
@@ -19,7 +19,7 @@ export async function listUsersWithPostStats(limit: number, offset: number) {
 }
 
 export async function upsertUserByEmail(name: string, email: string) {
-  return await sql.one(
+  return await db.sql.one(
     `INSERT INTO users (name, email)
      VALUES ($1, $2)
      ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name
@@ -30,7 +30,7 @@ export async function upsertUserByEmail(name: string, email: string) {
 }
 
 export async function findUsers(name: string | null, limit: number) {
-  return await sql(
+  return await db.sql(
     `SELECT id AS user_id, name AS user_name, email AS user_email
      FROM users
      WHERE ($1::text IS NULL OR name ILIKE '%' || $1 || '%')
@@ -42,7 +42,7 @@ export async function findUsers(name: string | null, limit: number) {
 }
 
 export async function publishNextDraft() {
-  return await sql.optional(
+  return await db.sql.optional(
     `UPDATE posts
      SET status = 'published', published = true
      WHERE id = (
@@ -58,7 +58,7 @@ export async function publishNextDraft() {
 }
 
 export async function deleteArchivedPosts(userId: bigint) {
-  return await sql(
+  return await db.sql(
     `DELETE FROM posts
      WHERE user_id = $1 AND status = 'archived'
      RETURNING id AS post_id, user_id, status`,

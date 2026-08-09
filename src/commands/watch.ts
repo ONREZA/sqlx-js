@@ -11,6 +11,7 @@ import {
 } from "./prepare";
 import { configHash, loadConfig } from "../config";
 import { profileFingerprint } from "../cache";
+import { embeddedSqlOutputPath } from "../embedded-sql";
 import { enumCatalogOutputPath } from "../enum-catalog";
 import { findSourceFiles, scanFile, scanProject, type QueryCallSite } from "../scan/scanner";
 
@@ -330,8 +331,12 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
     const enumOutput = state.session
       ? enumCatalogOutputPath(opts.root, state.session.userCfg)
       : undefined;
+    const embeddedSqlOutput = state.session
+      ? embeddedSqlOutputPath(opts.root, state.session.userCfg)
+      : undefined;
     const ignored = [relative(opts.root, resolve(opts.root, opts.dtsPath))];
     if (enumOutput) ignored.push(relative(opts.root, enumOutput));
+    if (embeddedSqlOutput) ignored.push(relative(opts.root, embeddedSqlOutput));
     if (!shouldWatchFile(filename.toString(), ignored)) return;
     changedFiles.add(normalizePath(filename.toString()));
     trigger();

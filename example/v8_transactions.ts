@@ -1,7 +1,7 @@
-import { sql } from "@onreza/sqlx-js";
+import { db } from "./database";
 
 export async function createUserWithFirstPost(name: string, email: string, title: string) {
-  return await sql.transaction(async (tx) => {
+  return await db.sql.transaction(async (tx) => {
     const inserted = await tx(
       `INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id AS "id!"`,
       name,
@@ -19,7 +19,7 @@ export async function createUserWithFirstPost(name: string, email: string, title
 
 export async function rollbackOnError() {
   try {
-    await sql.transaction(async (tx) => {
+    await db.sql.transaction(async (tx) => {
       await tx(
         `INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id AS "id!"`,
         "rollback-test",

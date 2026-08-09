@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { functionSettingValue, normalizeFunctionSettings } from "./function-cache";
+import { loadEnumCatalogRows, loadFunctionCatalogRows, userSchemaFilter } from "./pg/catalog";
 import { decodeText, parseDatabaseUrl, PgClient, type PgRowResult } from "./pg/wire";
 
 export type SchemaRelationKind = "table" | "partitioned_table" | "view" | "materialized_view" | "foreign_table";
@@ -211,10 +212,6 @@ function relationKey(schema: string, name: string): string {
   return `${schema}.${name}`;
 }
 
-function systemSchemaFilter(alias = "n"): string {
-  return `${alias}.nspname <> 'information_schema' AND ${alias}.nspname NOT LIKE 'pg\\_%' ESCAPE '\\'`;
-}
-
 export async function introspectDatabase(databaseUrl: string): Promise<SchemaSnapshot> {
   const client = new PgClient(parseDatabaseUrl(databaseUrl));
   await client.connect();
@@ -235,7 +232,7 @@ export async function introspectConnected(client: PgClient): Promise<SchemaSnaps
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
-      AND ${systemSchemaFilter("n")}
+      AND ${userSchemaFilter("n")}
     ORDER BY n.nspname, c.relname
   `));
 
@@ -257,7 +254,7 @@ export async function introspectConnected(client: PgClient): Promise<SchemaSnaps
     JOIN pg_attribute a ON a.attrelid = c.oid
     LEFT JOIN pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
     WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
-      AND ${systemSchemaFilter("n")}
+      AND ${userSchemaFilter("n")}
       AND a.attnum > 0
       AND NOT a.attisdropped
     ORDER BY n.nspname, c.relname, a.attnum
@@ -293,7 +290,7 @@ export async function introspectConnected(client: PgClient): Promise<SchemaSnaps
     LEFT JOIN pg_class rc ON rc.oid = con.confrelid
     LEFT JOIN pg_namespace rn ON rn.oid = rc.relnamespace
     WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
-      AND ${systemSchemaFilter("n")}
+      AND ${userSchemaFilter("n")}
     ORDER BY n.nspname, c.relname, con.conname
   `));
 
@@ -319,18 +316,11 @@ export async function introspectConnected(client: PgClient): Promise<SchemaSnaps
     JOIN pg_namespace n ON n.oid = tbl.relnamespace
     JOIN pg_am am ON am.oid = idx.relam
     WHERE tbl.relkind IN ('r', 'p', 'm')
-      AND ${systemSchemaFilter("n")}
+      AND ${userSchemaFilter("n")}
     ORDER BY n.nspname, tbl.relname, idx.relname
   `));
 
-  const enumRows = rows(await client.simpleQuery(`
-    SELECT n.nspname AS schema, t.typname AS name, e.enumlabel AS value
-    FROM pg_type t
-    JOIN pg_namespace n ON n.oid = t.typnamespace
-    JOIN pg_enum e ON e.enumtypid = t.oid
-    WHERE ${systemSchemaFilter("n")}
-    ORDER BY n.nspname, t.typname, e.enumsortorder
-  `));
+  const enumRows = await loadEnumCatalogRows(client);
 
   const domainRows = rows(await client.simpleQuery(`
     SELECT
@@ -347,7 +337,7 @@ export async function introspectConnected(client: PgClient): Promise<SchemaSnaps
     FROM pg_type t
     JOIN pg_namespace n ON n.oid = t.typnamespace
     WHERE t.typtype = 'd'
-      AND ${systemSchemaFilter("n")}
+      AND ${userSchemaFilter("n")}
     ORDER BY n.nspname, t.typname
   `));
 
@@ -366,47 +356,11 @@ export async function introspectConnected(client: PgClient): Promise<SchemaSnaps
     JOIN pg_namespace n ON n.oid = t.typnamespace
     JOIN pg_class c ON c.oid = t.typrelid AND c.relkind = 'c'
     WHERE t.typtype = 'c'
-      AND ${systemSchemaFilter("n")}
+      AND ${userSchemaFilter("n")}
     ORDER BY n.nspname, t.typname
   `));
 
-  const functionRows = rows(await client.simpleQuery(`
-    SELECT
-      n.nspname AS schema,
-      p.proname AS name,
-      p.prokind::text AS kind,
-      pg_get_function_identity_arguments(p.oid) AS identity_arguments,
-      pg_get_function_arguments(p.oid) AS arguments,
-      pg_get_function_result(p.oid) AS return_type,
-      p.proretset AS returns_set,
-      p.provolatile::text AS volatility,
-      p.proisstrict AS strict,
-      p.prosecdef AS security_definer,
-      p.proleakproof AS leakproof,
-      p.proparallel::text AS parallel_safety,
-      owner.rolname AS owner,
-      owner.rolsuper AS owner_superuser,
-      EXISTS (
-        SELECT 1
-        FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) privilege
-        WHERE privilege.grantee = 0
-          AND privilege.privilege_type = 'EXECUTE'
-      ) AS public_execute,
-      to_json(COALESCE(p.proconfig, ARRAY[]::text[]))::text AS settings,
-      extension_dependency.objid IS NOT NULL AS extension_owned,
-      l.lanname AS language
-    FROM pg_proc p
-    JOIN pg_namespace n ON n.oid = p.pronamespace
-    JOIN pg_language l ON l.oid = p.prolang
-    JOIN pg_roles owner ON owner.oid = p.proowner
-    LEFT JOIN pg_depend extension_dependency
-      ON extension_dependency.classid = 'pg_proc'::regclass
-      AND extension_dependency.objid = p.oid
-      AND extension_dependency.refclassid = 'pg_extension'::regclass
-      AND extension_dependency.deptype = 'e'
-    WHERE ${systemSchemaFilter("n")}
-    ORDER BY n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)
-  `));
+  const functionRows = await loadFunctionCatalogRows(client, { includeExtensionOwned: true });
 
   const columnsByRel = byRelationKey(colRows.map((r) => ({
     schema: r.schema!,
@@ -481,10 +435,10 @@ export async function introspectConnected(client: PgClient): Promise<SchemaSnaps
 
   const enumMap = new Map<string, SchemaEnumSnapshot>();
   for (const r of enumRows) {
-    const key = relationKey(r.schema!, r.name!);
-    const existing = enumMap.get(key);
-    if (existing) existing.values.push(r.value!);
-    else enumMap.set(key, { kind: "enum", schema: r.schema!, name: r.name!, values: [r.value!] });
+    const key = relationKey(r.schema, r.name);
+    const entry = enumMap.get(key) ?? { kind: "enum" as const, schema: r.schema, name: r.name, values: [] };
+    if (r.value !== null) entry.values.push(r.value);
+    enumMap.set(key, entry);
   }
 
   const domains: SchemaDomainSnapshot[] = domainRows.map((r) => ({
@@ -511,27 +465,27 @@ export async function introspectConnected(client: PgClient): Promise<SchemaSnaps
   }));
 
   const functions: SchemaFunctionSnapshot[] = functionRows.map((r) => {
-    const settings = normalizeFunctionSettings(parseJsonArray(r.settings));
+    const settings = normalizeFunctionSettings(r.settings);
     return {
-      schema: r.schema!,
-      name: r.name!,
+      schema: r.schema,
+      name: r.name,
       kind: functionKind(r.kind),
-      identityArguments: r.identity_arguments ?? "",
-      arguments: r.arguments ?? "",
-      returnType: r.return_type ?? "void",
-      returnsSet: bool(r.returns_set),
+      identityArguments: r.identityArguments,
+      arguments: r.arguments,
+      returnType: r.returnType,
+      returnsSet: r.returnsSet,
       volatility: volatility(r.volatility),
-      strict: bool(r.strict),
-      securityDefiner: bool(r.security_definer),
-      leakproof: bool(r.leakproof),
-      parallelSafety: parallelSafety(r.parallel_safety),
-      owner: r.owner!,
-      ownerSuperuser: bool(r.owner_superuser),
-      publicExecute: bool(r.public_execute),
+      strict: r.strict,
+      securityDefiner: r.securityDefiner,
+      leakproof: r.leakproof,
+      parallelSafety: parallelSafety(r.parallelSafety),
+      owner: r.owner,
+      ownerSuperuser: r.ownerSuperuser,
+      publicExecute: r.publicExecute,
       settings,
       searchPath: functionSettingValue(settings, "search_path"),
-      extensionOwned: bool(r.extension_owned),
-      language: r.language!,
+      extensionOwned: r.extensionOwned,
+      language: r.language,
     };
   });
 

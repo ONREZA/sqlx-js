@@ -287,7 +287,8 @@ async function main() {
     connectTimeoutMs: operationTimeoutMs,
     operationTimeoutMs,
     cancelGraceMs: 100,
-    onClientStateChange: (event) => {
+    onLifecycle: (event) => {
+      if (event.kind !== "state-change") return;
       metrics.stateTransitions.push({
         from: event.from,
         to: event.to,

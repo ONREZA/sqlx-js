@@ -1,9 +1,9 @@
 {
   "formatVersion": 4,
-  "cacheFormat": 10,
-  "generatorRevision": 27,
+  "cacheFormat": 11,
+  "generatorRevision": 28,
   "jsonProtocol": 1,
-  "configHash": "97a8ce77a1bcbed9",
+  "configHash": "3a32fe448af94c94",
   "temporal": {
     "infinity": "reject",
     "timestampWithoutTimeZone": "reject",

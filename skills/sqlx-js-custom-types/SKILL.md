@@ -1,6 +1,6 @@
 ---
 name: sqlx-js-custom-types
-description: Configure or implement sqlx-js PostgreSQL type handling, including built-in OIDs, enums, domains, composites, arrays, jsonbTypes, columnTypes, array element assertions, customTypes, typeCodecs, numeric raw codecs, enum catalogs, and function catalogs. Use when generated and runtime representations differ or a PostgreSQL type needs support.
+description: Configure or implement sqlx-js PostgreSQL type handling, including built-in OIDs, enums, domains, composites, arrays, columnTypes, array element assertions, customTypes, typeCodecs, numeric raw codecs, enum catalogs, and function catalogs. Use when generated and runtime representations differ or a PostgreSQL type needs support.
 ---
 
 # sqlx-js custom types
@@ -12,12 +12,11 @@ remain aligned.
 
 1. Prefer a database-owned PostgreSQL type or constraint.
 2. Use the built-in OID or extension registry when supported.
-3. Use `jsonbTypes` for direct JSON/JSONB column contracts.
-4. Use `columnTypes` for an application-owned direct scalar assertion.
-5. Use `arrayElementNullability` only for a real externally enforced invariant.
-6. Use `customTypes` plus matching managed `typeCodecs` for a non-system type
+3. Use `columnTypes` for an application-owned direct scalar or JSON assertion.
+4. Use `arrayElementNullability` only for a real externally enforced invariant.
+5. Use `customTypes` plus matching managed `typeCodecs` for a non-system type
    representation.
-7. Use explicit numeric `types` only when the raw client owns database-local
+6. Use explicit numeric `types` only when the raw client owns database-local
    OIDs.
 
 Read [the type routing guide](references/type-routing.md) before adding a

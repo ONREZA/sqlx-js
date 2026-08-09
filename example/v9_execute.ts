@@ -1,6 +1,6 @@
-import { sql } from "@onreza/sqlx-js";
+import { db } from "./database";
 
-const result = await sql.execute(
+const result = await db.sql.execute(
   `UPDATE users SET name = $1 WHERE id = $2`,
   "Updated Name",
   1n,

@@ -7,7 +7,7 @@ export default defineConfig({
     exclude: ["public.post_status"],
     registry: true,
   },
-  jsonbTypes: {
+  columnTypes: {
     "users.settings": "SqlxJsJson.UserSettings",
     "posts.meta": "SqlxJsJson.PostMeta",
     "posts.attachments": "SqlxJsJson.Attachment",

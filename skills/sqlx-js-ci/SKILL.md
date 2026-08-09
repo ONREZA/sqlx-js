@@ -24,7 +24,7 @@ Read [the CI gate map](references/gates.md) before changing a pipeline.
 
 ## Invariants
 
-- `ci` validates a clean shadow and then offline artifact consistency.
+- `ci` delegates to the provider-aware strict verification gate.
 - `prepare --check` is database-free and cannot prove live schema parity.
 - `prepare --verify` compares against a specifically supplied live database and
   does not write the worktree.

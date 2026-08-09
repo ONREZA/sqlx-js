@@ -132,12 +132,12 @@ test("loadConfig rejects malformed database profile contracts", async () => {
 test("loadConfig rejects malformed JavaScript config with an actionable path", async () => {
   const dir = root();
   writeFileSync(join(dir, "sqlx-js.config.mjs"), `export default {
-    jsonbTypes: { "users.settings": 42 },
+    columnTypes: { "users.settings": 42 },
     scan: { include: "src/**/*.ts" },
   };
   `);
 
-  await expect(loadConfig(dir)).rejects.toThrow(/sqlx-js\.config\.mjs jsonbTypes\.users\.settings must be a non-empty string/);
+  await expect(loadConfig(dir)).rejects.toThrow(/sqlx-js\.config\.mjs columnTypes\.users\.settings must be a non-empty string/);
 });
 
 test("loadConfig rejects empty declarations and qualified custom type keys", async () => {
@@ -226,9 +226,9 @@ test("loadConfig validates exact duplicate audit acknowledgements", async () => 
 test("prepare config hash is independent of object key order", () => {
   expect(prepareConfigHash({
     customTypes: { vector: "number[]", geometry: "GeoJSON.Geometry" },
-    jsonbTypes: { "users.settings": "Settings" },
+    columnTypes: { "users.settings": "Settings" },
   })).toBe(prepareConfigHash({
-    jsonbTypes: { "users.settings": "Settings" },
+    columnTypes: { "users.settings": "Settings" },
     customTypes: { geometry: "GeoJSON.Geometry", vector: "number[]" },
   }));
 });
@@ -384,14 +384,12 @@ test("loadConfig validates array element nullability assertions", async () => {
   await expect(loadConfig(dir)).rejects.toThrow(/arrayElementNullability\.users\.tags must be non-null/);
 });
 
-test("loadConfig rejects conflicting column type assertions", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "sqlx-js-config-conflict-"));
-  roots.push(dir);
+test("loadConfig validates generated SQL file module settings", async () => {
+  const dir = root();
   writeFileSync(join(dir, "sqlx-js.config.mjs"), `export default {
-    jsonbTypes: { "public.users.payload": "Payload" },
-    columnTypes: { "users.payload": "Payload" },
+    sqlFiles: { output: "../outside.ts" },
   };\n`);
-  await expect(loadConfig(dir)).rejects.toThrow(/same column/);
+  await expect(loadConfig(dir)).rejects.toThrow(/sqlFiles\.output must be a root-relative/);
 });
 
 test("loadConfig validates function catalog settings", async () => {

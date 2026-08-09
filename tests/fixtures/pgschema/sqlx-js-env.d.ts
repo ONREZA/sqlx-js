@@ -24,6 +24,9 @@ export interface SqlxJsGeneratedProfileFileQueries {
 export interface SqlxJsGeneratedProfiles {
 }
 
+export type SqlxJsGeneratedProfileRegistry<Name extends keyof SqlxJsGeneratedProfiles> =
+  SqlxJsGeneratedProfiles[Name];
+
 export interface SqlxJsGeneratedRegistry {
   queries: SqlxJsGeneratedQueries;
   fileQueries: SqlxJsGeneratedFileQueries;
@@ -32,13 +35,6 @@ export interface SqlxJsGeneratedRegistry {
   runtimeDescriptors: true;
   jsonProtocol: 1;
   temporal: { readonly infinity: "reject"; readonly timestampWithoutTimeZone: "reject"; readonly sessionTimeZone: "UTC" };
-}
-
-declare module "@onreza/sqlx-js" {
-  interface KnownQueries extends SqlxJsGeneratedQueries {}
-  interface KnownFileQueries extends SqlxJsGeneratedFileQueries {}
-  interface KnownFunctions extends SqlxJsGeneratedFunctions {}
-  interface KnownProfiles extends SqlxJsGeneratedProfiles {}
 }
 
 export {};

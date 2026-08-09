@@ -13,7 +13,6 @@ import {
   toPgError,
   TransactionTimeoutError,
   withResultDecodeQueryMetadata,
-  type JsonParameter,
   type OnQueryHook,
   type OnQueryHookError,
   type PgArrayParameter,
@@ -46,7 +45,8 @@ import {
   resolveTemporalPolicy,
   type TemporalPolicy,
 } from "./temporal";
-import { resolveTemporalApi, type TemporalApi } from "./temporal-api";
+import type { TemporalApi } from "./temporal-api";
+import type { SqlxJson } from "./json-value";
 import { ConnectionLostError, PgError } from "./pg/wire";
 import {
   createTransactionRuntimeClient,
@@ -196,8 +196,9 @@ function queryTiming(startedAt: number, pending: PendingQuery | undefined): {
   };
 }
 
-// Admission, transaction deadlines, and generation recycling mutate the same
-// operation record; keeping them together makes no-replay/outcome ordering reviewable.
+// This state machine intentionally keeps admission, deadlines, recovery, and
+// generation transitions together because splitting them would obscure the
+// no-replay and outcome-ordering invariants they mutate as one operation.
 class ManagedPostgresRuntime implements RuntimeClient {
   readonly fileRoot: string;
   readonly reloadSqlFiles: boolean;
@@ -205,10 +206,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
   readonly onQuery?: OnQueryHook;
   readonly onQueryHookError?: OnQueryHookError;
   readonly transactionSettings?: readonly string[];
-  private readonly onQueryStart?: CreateSqlClientOptions["onQueryStart"];
-  private readonly onQueryTimeout?: CreateSqlClientOptions["onQueryTimeout"];
-  private readonly onQueryError?: CreateSqlClientOptions["onQueryError"];
-  private readonly onClientStateChange?: CreateSqlClientOptions["onClientStateChange"];
+  private readonly onLifecycle?: CreateSqlClientOptions["onLifecycle"];
   private readonly onLifecycleHookError?: CreateSqlClientOptions["onLifecycleHookError"];
   private readonly operationTimeoutMs?: number;
   private readonly cancelGraceMs: number;
@@ -239,10 +237,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
     }
     this.onQuery = options.onQuery;
     this.onQueryHookError = options.onQueryHookError;
-    this.onQueryStart = options.onQueryStart;
-    this.onQueryTimeout = options.onQueryTimeout;
-    this.onQueryError = options.onQueryError;
-    this.onClientStateChange = options.onClientStateChange;
+    this.onLifecycle = options.onLifecycle;
     this.onLifecycleHookError = options.onLifecycleHookError;
     this.operationTimeoutMs = validateOptionalTimeout(options.operationTimeoutMs, "operationTimeoutMs");
     this.cancelGraceMs = validateTimeout(options.cancelGraceMs ?? 1_000, "cancelGraceMs", true);
@@ -572,12 +567,11 @@ class ManagedPostgresRuntime implements RuntimeClient {
     if (timeoutMs !== undefined) {
       operation.timer = setTimeout(() => this.timeoutOperation(operation, timeoutMs), timeoutMs);
     }
-    if (this.onQueryStart) {
-      this.notifyLifecycle(this.onQueryStart, {
-        ...metadata,
-        generation: generation.id,
-      });
-    }
+    this.notifyLifecycle({
+      kind: "query-start",
+      ...metadata,
+      generation: generation.id,
+    });
     if (signal) {
       operation.abortListener = () => this.abortOperation(operation, signal.reason);
       try {
@@ -678,9 +672,11 @@ class ManagedPostgresRuntime implements RuntimeClient {
     const signal = validateOptionalAbortSignal(request.options?.signal);
     const timeoutMs = validateOptionalTimeout(request.options?.timeoutMs, "timeoutMs");
     const startedAt = performance.now();
-    if (this.onQueryStart) {
-      this.notifyLifecycle(this.onQueryStart, { ...request.metadata, generation: generation.id });
-    }
+    this.notifyLifecycle({
+      kind: "query-start",
+      ...request.metadata,
+      generation: generation.id,
+    });
     this.checkTransactionState(state);
     const deadlineAt = timeoutMs === undefined ? undefined : startedAt + timeoutMs;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -704,7 +700,8 @@ class ManagedPostgresRuntime implements RuntimeClient {
           generation: generation.id,
         });
         this.lastTimeoutAt = Date.now();
-        this.notifyLifecycle(this.onQueryTimeout, {
+        this.notifyLifecycle({
+          kind: "query-timeout",
           ...request.metadata,
           generation: generation.id,
           durationMs: performance.now() - startedAt,
@@ -1068,7 +1065,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
   private encodeParam(client: PostgresClient, param: unknown): unknown {
     assertNoDateSqlValue(param, "PostgreSQL parameter");
     const kind = parameterKind(param);
-    if (kind === "json") return client.json(param as JsonParameter);
+    if (kind === "json") return client.json(param as SqlxJson);
     if (kind === "array") {
       const value = [...(param as PgArrayParameter).value];
       const hasJson = value.some((item) => parameterKind(item) === "json");
@@ -1084,7 +1081,8 @@ class ManagedPostgresRuntime implements RuntimeClient {
   }
 
   private notifyTimeout(operation: OperationRecord, timeoutMs: number): void {
-    this.notifyLifecycle(this.onQueryTimeout, {
+    this.notifyLifecycle({
+      kind: "query-timeout",
       ...operation.metadata,
       generation: operation.generation.id,
       durationMs: performance.now() - operation.startedAt,
@@ -1113,7 +1111,8 @@ class ManagedPostgresRuntime implements RuntimeClient {
     sent: boolean,
     error: unknown,
   ): void {
-    this.notifyLifecycle(this.onQueryError, {
+    this.notifyLifecycle({
+      kind: "query-error",
       ...metadata,
       generation,
       durationMs: performance.now() - startedAt,
@@ -1140,13 +1139,10 @@ class ManagedPostgresRuntime implements RuntimeClient {
     } catch {}
   }
 
-  private notifyLifecycle<Event extends ClientLifecycleEvent>(
-    hook: ((event: Event) => void | Promise<void>) | undefined,
-    event: Event,
-  ): void {
+  private notifyLifecycle(event: ClientLifecycleEvent): void {
     const profiled = this.profileEvent(event);
     try {
-      const pending = hook?.(profiled);
+      const pending = this.onLifecycle?.(profiled);
       if (pending) void pending.catch((error) => this.notifyLifecycleError(error, profiled));
     } catch (error) {
       this.notifyLifecycleError(error, profiled);
@@ -1172,7 +1168,8 @@ class ManagedPostgresRuntime implements RuntimeClient {
     const from = this.state;
     if (from === to) return;
     this.state = to;
-    this.notifyLifecycle(this.onClientStateChange, {
+    this.notifyLifecycle({
+      kind: "state-change",
       from,
       to,
       generation,
@@ -1300,16 +1297,6 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
   return !!value && typeof (value as PromiseLike<unknown>).then === "function";
 }
 
-let defaultClient: ManagedPostgresRuntime | null = null;
-let defaultTemporalApi: TemporalApi | null = null;
-
-export function configureDefaultTemporalApi(api: TemporalApi): void {
-  if (defaultClient || defaultTemporalApi) {
-    throw new Error("sqlx-js: the default Temporal API is already configured");
-  }
-  defaultTemporalApi = resolveTemporalApi(api);
-}
-
 export function createClient(url = process.env.DATABASE_URL, options: CreateClientOptions = {}): PostgresClient {
   if (!url) throw new Error("sqlx-js: DATABASE_URL is not set");
   return createPostgresClient(normalizeRuntimeDatabaseUrl(url), options);
@@ -1322,35 +1309,6 @@ function createManagedClient(url: string | undefined, options: CreateSqlClientOp
     (temporal) => createClient(url, { ...clientOptions, temporal }),
     options,
   );
-}
-
-function createDefaultClient(): ManagedPostgresRuntime {
-  defaultTemporalApi ??= resolveTemporalApi(undefined);
-  return createManagedClient(process.env.DATABASE_URL, { temporalApi: defaultTemporalApi });
-}
-
-function getRuntimeClient(): ManagedPostgresRuntime {
-  defaultClient ??= createDefaultClient();
-  return defaultClient;
-}
-
-export async function close(options: CloseOptions = {}): Promise<void> {
-  if (defaultClient) {
-    await defaultClient.close(options);
-    defaultClient = null;
-  }
-}
-
-export async function ready(options: DeadlineOptions = {}): Promise<void> {
-  await getRuntimeClient().ready(options);
-}
-
-export async function ping(options: DeadlineOptions = {}): Promise<void> {
-  await getRuntimeClient().ping(options);
-}
-
-export function snapshot(): ClientSnapshot {
-  return getRuntimeClient().snapshot();
 }
 
 function managedClientApi(runtimeClient: ManagedPostgresRuntime) {
@@ -1376,8 +1334,3 @@ export const _internal = {
     return managedClientApi(new ManagedPostgresRuntime(createPool, options));
   },
 };
-
-const runtime = createSqlRuntime(getRuntimeClient);
-
-export const sql = runtime.sql;
-export const unsafe = runtime.unsafe;

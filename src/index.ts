@@ -1,20 +1,11 @@
 import * as rt from "./postgres-runtime";
-import type {
-  TypedFile as TypedFileFor,
-  TypedForRegistry,
-  TypedSqlForRegistry,
-} from "./typed";
+import type { TypedForRegistry, TypedSqlForRegistry } from "./typed";
 import type {
   QueryParamsFor,
   QueryResultFor,
   QueryRowFor,
   QueryWireParamsFor,
 } from "./query";
-
-export interface KnownQueries {}
-export interface KnownFileQueries {}
-export interface KnownFunctions {}
-export interface KnownProfiles {}
 
 export type {
   ImmutableJson,
@@ -50,6 +41,7 @@ export type {
   ExactDuplicateIgnore,
   QueryAuditConfig,
   ScanConfig,
+  SqlFilesConfig,
   SqlxJsConfig,
 } from "./config";
 export type { TemporalPolicy, TemporalPolicyOptions, TimestampWithoutTimeZoneMode } from "./temporal";
@@ -79,7 +71,7 @@ export type {
   QueryTimeoutPhase,
   ResultDecodeErrorDetails,
 } from "./runtime";
-export type { ExecuteResult, JsonParameter, PgArrayParameter, KnownSqlState } from "./runtime";
+export type { ExecuteResult, PgArrayParameter, KnownSqlState } from "./runtime";
 export type { RuntimeTypeCodec, RuntimeTypeCodecs } from "./postgres-codecs";
 export type {
   ClientLifecycleEvent,
@@ -98,10 +90,6 @@ export type {
   QueryTimeoutEvent,
 } from "./postgres-runtime";
 
-export type TypedFile = TypedFileFor<KnownFileQueries>;
-export type TypedSql = TypedSqlForRegistry<DefaultQueryRegistry>;
-export type Typed = TypedForRegistry<DefaultQueryRegistry, import("./runtime").TransactionOptions>;
-
 export type QueryRegistry = {
   queries: object;
   fileQueries: object;
@@ -111,13 +99,6 @@ export type QueryRegistry = {
   jsonProtocol: typeof import("./json-value").EXTENDED_JSON_PROTOCOL_VERSION;
   temporal?: import("./temporal").TemporalPolicy;
 };
-
-export interface DefaultQueryRegistry {
-  queries: KnownQueries;
-  fileQueries: KnownFileQueries;
-  functions: KnownFunctions;
-  jsonProtocol: typeof import("./json-value").EXTENDED_JSON_PROTOCOL_VERSION;
-}
 
 type ProfileTransactionSetting<Profile> =
   Profile extends {
@@ -131,10 +112,10 @@ type RegistryTransactionSetting<Registry extends QueryRegistry> =
   string extends DeclaredRegistryTransactionSetting<Registry>
     ? never
     : DeclaredRegistryTransactionSetting<Registry>;
-export type SqlTransactionOptions<Registry extends QueryRegistry = DefaultQueryRegistry> =
+export type SqlTransactionOptions<Registry extends QueryRegistry = QueryRegistry> =
   import("./runtime").TransactionOptions<RegistryTransactionSetting<Registry>>;
 
-export type SqlClient<Registry extends QueryRegistry = DefaultQueryRegistry> = {
+export type SqlClient<Registry extends QueryRegistry> = {
   sql: TypedForRegistry<Registry, SqlTransactionOptions<Registry>>;
   unsafe: [RegistryTransactionSetting<Registry>] extends [never] ? Unsafe : never;
   ready: (options?: import("./postgres-runtime").DeadlineOptions) => Promise<void>;
@@ -242,15 +223,15 @@ type CreateRawClientArgs<Registry extends QueryRegistry> =
       },
     ];
 
-export type SqlExecutor<Registry extends QueryRegistry = DefaultQueryRegistry> =
+export type SqlExecutor<Registry extends QueryRegistry> =
   TypedSqlForRegistry<Registry>;
-export type QueryParams<Definition, Registry extends QueryRegistry = DefaultQueryRegistry> =
+export type QueryParams<Definition, Registry extends QueryRegistry> =
   QueryParamsFor<Definition, Registry>;
-export type QueryWireParams<Definition, Registry extends QueryRegistry = DefaultQueryRegistry> =
+export type QueryWireParams<Definition, Registry extends QueryRegistry> =
   QueryWireParamsFor<Definition, Registry>;
-export type QueryRow<Definition, Registry extends QueryRegistry = DefaultQueryRegistry> =
+export type QueryRow<Definition, Registry extends QueryRegistry> =
   QueryRowFor<Definition, Registry>;
-export type QueryResult<Definition, Registry extends QueryRegistry = DefaultQueryRegistry> =
+export type QueryResult<Definition, Registry extends QueryRegistry> =
   QueryResultFor<Definition, Registry>;
 export type {
   DefineQueryOptions,
@@ -266,34 +247,14 @@ export type { RuntimeQueryDescriptors } from "./runtime-descriptors";
 export { defineQuery } from "./query";
 export { queryId } from "./query-id";
 
-/** @deprecated Prefer a generated registry bound with createSqlClient(). */
-export const sql: Typed = rt.sql as unknown as Typed;
-
 export type Unsafe = (query: string, ...params: unknown[]) => Promise<Record<string, unknown>[]>;
-/** @deprecated Prefer a generated registry bound with createSqlClient(). */
-export const unsafe: Unsafe = rt.unsafe as Unsafe;
-export function createClient<Registry extends QueryRegistry = DefaultQueryRegistry>(
+export function createClient<Registry extends QueryRegistry = QueryRegistry>(
   ...args: CreateRawClientArgs<Registry>
 ): import("./postgres-runtime").PostgresClient {
   const [url, options] = args as [string | undefined, import("./postgres-runtime").CreateClientOptions | undefined];
   return rt.createClient(url, options);
 }
-type KnownProfileName = keyof KnownProfiles & string;
-type KnownProfileRegistry<Name extends KnownProfileName> =
-  KnownProfiles[Name] extends QueryRegistry & {
-    profile: import("./config").DatabaseProfile;
-  } ? KnownProfiles[Name] : never;
-type KnownProfileClientOptions<Name extends KnownProfileName> =
-  keyof RegistryRuntimeTypes<KnownProfileRegistry<Name>> extends never
-    ? PlainClientOptionsFor<KnownProfileRegistry<Name>>
-    : GeneratedClientOptionsFor<KnownProfileRegistry<Name>>;
-export function createSqlClient<const Name extends KnownProfileName>(
-  url: string | undefined,
-  options: KnownProfileClientOptions<Name> & {
-    profile: KnownProfileRegistry<Name>["profile"] & { readonly name: Name };
-  },
-): SqlClient<KnownProfileRegistry<Name>>;
-export function createSqlClient<Registry extends QueryRegistry = DefaultQueryRegistry>(
+export function createSqlClient<Registry extends QueryRegistry = QueryRegistry>(
   ...args: CreateClientArgs<Registry>
 ): SqlClient<Registry>;
 export function createSqlClient(
@@ -302,14 +263,4 @@ export function createSqlClient(
   const [url, options] = args as [string | undefined, import("./postgres-runtime").CreateSqlClientOptions | undefined];
   return rt.createSqlClient(url, options) as unknown as SqlClient<QueryRegistry>;
 }
-/** @deprecated Prefer passing temporalApi to createSqlClient(). */
-export const configureDefaultTemporalApi = rt.configureDefaultTemporalApi;
-/** @deprecated Prefer createSqlClient().close(). */
-export const close = rt.close;
-/** @deprecated Prefer createSqlClient().ready(). */
-export const ready = rt.ready;
-/** @deprecated Prefer createSqlClient().ping(). */
-export const ping = rt.ping;
-/** @deprecated Prefer createSqlClient().snapshot(). */
-export const snapshot = rt.snapshot;
 export { migrate, clearSqlFileCache, encodePgArrayLiteral, id, json, array } from "./runtime";

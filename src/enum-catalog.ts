@@ -1,8 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { isTypeScriptExportName, type EnumCatalogConfig, type SqlxJsConfig } from "./config";
-import { decodeText, type PgClient } from "./pg/wire";
+import type { PgClient } from "./pg/wire";
+import { loadEnumCatalogRows } from "./pg/catalog";
 
 export type EnumCatalogEntry = {
   schema: string;
@@ -22,17 +23,6 @@ export function enumCatalogOutputPath(
 ): string | undefined {
   if (!config.enumCatalog) return undefined;
   return override ?? resolve(root, config.enumCatalog.output);
-}
-
-export function assertDistinctEnumCatalogOutput(
-  root: string,
-  config: SqlxJsConfig,
-  dtsPath: string,
-  override?: string,
-): void {
-  const output = enumCatalogOutputPath(root, config, override);
-  if (!output || comparablePath(output) !== comparablePath(dtsPath)) return;
-  throw new Error("sqlx-js: enumCatalog.output must differ from the declaration output configured by --dts");
 }
 
 export function enumCatalogCachePath(cacheDir: string): string {
@@ -81,24 +71,12 @@ export async function introspectEnumCatalog(
   client: PgClient,
   schemas: readonly string[],
 ): Promise<EnumCatalogEntry[]> {
-  const schemaList = schemas.map(quoteLiteral).join(", ");
-  const result = await client.simpleQueryAll(`
-    SELECT n.nspname, t.typname, e.enumlabel
-    FROM pg_catalog.pg_type t
-    JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
-    LEFT JOIN pg_catalog.pg_enum e ON e.enumtypid = t.oid
-    WHERE t.typtype = 'e'
-      AND n.nspname IN (${schemaList})
-    ORDER BY n.nspname, t.typname, e.enumsortorder
-  `);
   const entries = new Map<string, EnumCatalogEntry>();
-  for (const row of result.rows) {
-    const schema = decodeText(row[0]!)!;
-    const name = decodeText(row[1]!)!;
+  for (const row of await loadEnumCatalogRows(client, schemas)) {
+    const { schema, name } = row;
     const key = `${schema}\0${name}`;
     const entry = entries.get(key) ?? { schema, name, values: [] };
-    const value = decodeText(row[2] ?? null);
-    if (value !== null) entry.values.push(value);
+    if (row.value !== null) entry.values.push(row.value);
     entries.set(key, entry);
   }
   return [...entries.values()];
@@ -257,22 +235,6 @@ function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-function comparablePath(path: string): string {
-  let current = resolve(path);
-  const missing: string[] = [];
-  while (!existsSync(current)) {
-    const parent = dirname(current);
-    if (parent === current) break;
-    missing.unshift(basename(current));
-    current = parent;
-  }
-  const absolute = resolve(realpathSync.native(current), ...missing);
-  return process.platform === "win32" ? absolute.toLowerCase() : absolute;
-}
-
-function quoteLiteral(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
-}
 
 function isEnumCatalogEntry(value: unknown): value is EnumCatalogEntry {
   if (!value || typeof value !== "object") return false;

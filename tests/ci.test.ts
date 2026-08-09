@@ -8,11 +8,10 @@ test("CI delegates source and snapshot verification to the provider-aware gate",
     migrationsDir: "database/migrations",
     shadowAdminUrl: "postgres://localhost/postgres",
   });
-  expect(steps.map((step) => step.name)).toEqual(["verify", "prepare-offline"]);
+  expect(steps.map((step) => step.name)).toEqual(["verify"]);
   expect(steps[0]!.args[0]).toBe("verify");
   expect(steps[0]!.args).toContain("--strict-inference");
   expect(steps[0]!.args).toContain("types/generated.d.ts");
   expect(steps[0]!.args).toContain("database/migrations");
   expect(steps[0]!.args).toContain("postgres://localhost/postgres");
-  expect(steps[1]!.args).toContain("types/generated.d.ts");
 });

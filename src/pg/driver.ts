@@ -4,7 +4,6 @@ import {
   parameterKind,
   parsePgArrayLiteral,
   ResultDecodeError,
-  type JsonParameter,
   type RuntimeQueryResult,
 } from "../runtime";
 import {
@@ -905,7 +904,7 @@ function serializeArrayElement(
   options: ParsedPostgresOptions,
 ): string {
   if (parameterKind(value) === "json") {
-    return serializeJson(value as JsonParameter);
+    return serializeJson(value as SqlxJson);
   }
   if (isPostgresParameter(value)) {
     const oid = value.oid || elementOid;
@@ -935,7 +934,7 @@ function serializeBoolean(value: unknown): string {
 }
 
 function serializeJson(value: unknown): string {
-  return stringifyJsonParameter(value as JsonParameter);
+  return stringifyJsonParameter(value as SqlxJson);
 }
 
 function isPostgresParameter(value: unknown): value is PostgresParameter {

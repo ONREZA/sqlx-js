@@ -4,6 +4,7 @@ import {
   type QueryRow,
   type SqlExecutor,
 } from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env";
 
 /*
  * This demonstrates the sqlx-js boundary: one literal, prepared call to a
@@ -33,9 +34,12 @@ export const listFilteredUsers = defineQuery(
    )`,
 );
 
-export type ListFilteredUsersParams = QueryParams<typeof listFilteredUsers>;
-export type ListFilteredUsersRow = QueryRow<typeof listFilteredUsers>;
+export type ListFilteredUsersParams = QueryParams<typeof listFilteredUsers, SqlxJsGeneratedRegistry>;
+export type ListFilteredUsersRow = QueryRow<typeof listFilteredUsers, SqlxJsGeneratedRegistry>;
 
-export function listUsers(executor: SqlExecutor, params: ListFilteredUsersParams) {
+export function listUsers(
+  executor: SqlExecutor<SqlxJsGeneratedRegistry>,
+  params: ListFilteredUsersParams,
+) {
   return listFilteredUsers.run(executor, params);
 }

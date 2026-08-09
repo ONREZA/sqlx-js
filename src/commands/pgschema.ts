@@ -16,6 +16,7 @@ import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import type { SqlxJsConfig } from "../config";
 import { parseDatabaseUrl, type ConnConfig } from "../pg/wire";
 import { withWorkflowShadowDatabase } from "./shadow";
+import { runSchemaWorkflow } from "./schema-workflow";
 
 export type PgschemaSubcommand = "plan" | "apply";
 
@@ -384,58 +385,17 @@ export function runSchemaMaterializer(opts: PgschemaWorkflowOptions, databaseUrl
 }
 
 export async function runPgschemaDev(opts: PgschemaWorkflowOptions): Promise<boolean> {
-  validatePgschemaWorkflow(opts);
-  let ok = true;
-  await withWorkflowShadowDatabase(opts, async (shadowDatabaseUrl) => {
-    applyDesiredSchema(opts, shadowDatabaseUrl);
-    const { writePrepareArtifacts } = await import("./prepare");
-    ok = await writePrepareArtifacts({
-      root: opts.root,
-      databaseUrl: shadowDatabaseUrl,
-      cacheDir: opts.cacheDir,
-      dtsPath: opts.dtsPath,
-      check: false,
-      prune: opts.prune,
-      strictInference: opts.strictInference,
-    });
+  return await runSchemaWorkflow("dev", opts, {
+    validate: () => validatePgschemaWorkflow(opts),
+    materialize: (databaseUrl) => applyDesiredSchema(opts, databaseUrl),
   });
-  return ok;
 }
 
 export async function runPgschemaVerify(opts: PgschemaWorkflowOptions): Promise<boolean> {
-  validatePgschemaWorkflow(opts);
-  let ok = true;
-  await withWorkflowShadowDatabase(opts, async (shadowDatabaseUrl) => {
-    applyDesiredSchema(opts, shadowDatabaseUrl);
-    if (existsSync(opts.snapshotPath)) {
-      const { runSchemaCheck } = await import("./schema");
-      await runSchemaCheck({
-        databaseUrl: shadowDatabaseUrl,
-        snapshotPath: opts.snapshotPath,
-      });
-    }
-    const { verifyPrepareArtifacts } = await import("./prepare");
-    const verification = await verifyPrepareArtifacts(
-      {
-        root: opts.root,
-        databaseUrl: shadowDatabaseUrl,
-        cacheDir: opts.cacheDir,
-        dtsPath: opts.dtsPath,
-        check: false,
-        verify: true,
-        prune: true,
-        strictInference: opts.strictInference,
-      },
-      console.log,
-      console.error,
-      {
-        command: "sqlx-js verify",
-        regenerateCommand: "sqlx-js dev",
-      },
-    );
-    ok = verification.ok;
+  return await runSchemaWorkflow("verify", opts, {
+    validate: () => validatePgschemaWorkflow(opts),
+    materialize: (databaseUrl) => applyDesiredSchema(opts, databaseUrl),
   });
-  return ok;
 }
 
 function pgschemaSchemas(config: NonNullable<SqlxJsConfig["schema"]>): string[] {

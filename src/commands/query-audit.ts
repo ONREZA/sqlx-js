@@ -3,6 +3,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import type { SqlxJsConfig } from "../config";
 import { buildExactQueryAudit, type ExactQueryAuditReport, type ExactQueryAuditSite } from "../query-audit";
 import { queryId } from "../query-id";
+import { buildQuerySourceCatalog, querySourceLocation } from "../query-source-catalog";
 import {
   analyzeSimilarityUnits,
   type SimilarityCandidate,
@@ -63,26 +64,18 @@ function applicationQueryUnits(sites: readonly QueryCallSite[]): {
   units: SimilarityUnit[];
   coverage: ApplicationQueryCoverage;
 } {
-  const grouped = new Map<string, QueryCallSite[]>();
-  for (const site of sites) {
-    const id = queryId(site.query);
-    const group = grouped.get(id) ?? [];
-    group.push(site);
-    grouped.set(id, group);
-  }
-  const units = [...grouped.entries()].map(([id, group]): SimilarityUnit => {
+  const catalog = buildQuerySourceCatalog(sites);
+  const units = catalog.map(({ queryId: id, query, sites: group }): SimilarityUnit => {
     const names = [...new Set(group.flatMap((site) => site.queryName ? [site.queryName] : []))].sort();
     return {
       id: `query:${id}`,
       kind: "application-query",
       label: names.length > 0 ? names.join(", ") : id,
-      sql: group[0]!.query,
-      sources: group
-        .map((site) => `${site.file}:${site.line}:${site.column}`)
-        .sort(),
+      sql: query,
+      sources: group.map(querySourceLocation),
     };
-  }).sort((left, right) => left.id.localeCompare(right.id));
-  const repeated = [...grouped.values()].filter((group) => group.length > 1);
+  });
+  const repeated = catalog.map((group) => group.sites).filter((group) => group.length > 1);
   return {
     units,
     coverage: {

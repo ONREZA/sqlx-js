@@ -63,7 +63,9 @@ for (const testCase of cases) {
     const managed = createSqlClient(testCase.url, {
       max: 1,
       temporalApi: Temporal,
-      onQueryError: (event) => errors.push(event),
+      onLifecycle: (event) => {
+        if (event.kind === "query-error") errors.push(event);
+      },
     });
     try {
       await assert.rejects(managed.ready());
@@ -116,8 +118,10 @@ if (config.managedUrl) {
     max: 10,
     temporalApi: Temporal,
     applicationName: `sqlx-js-compat-${runtime}-managed-first`,
-    onQueryStart: (event) => starts.push(event),
-    onQueryError: (event) => errors.push(event),
+    onLifecycle: (event) => {
+      if (event.kind === "query-start") starts.push(event);
+      if (event.kind === "query-error") errors.push(event);
+    },
     cancelGraceMs: 100,
   });
   const second = createSqlClient(config.managedUrl, {
