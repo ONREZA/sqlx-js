@@ -30,6 +30,8 @@ export { clearSqlFileCache, id } from "./runtime-files";
 export { migrate, type MigrateOptions } from "./runtime-migrate";
 export { parseJsonResult, stringifyJsonParameter } from "./json-value";
 export type { JsonCompatible, SqlxJson } from "./json-value";
+/** @deprecated Use SqlxJson<T>. */
+export type JsonParameter<T = unknown> = import("./json-value").SqlxJson<T>;
 export { assertNoDateSqlValue, isDateValue } from "./sql-value";
 export {
   array,

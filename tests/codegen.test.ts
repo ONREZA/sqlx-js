@@ -978,6 +978,7 @@ import {
   defineQuery,
   json,
   type ExecuteResult,
+  type JsonParameter,
   type QueryParams,
   type QueryRegistry,
   type QueryResult,
@@ -987,6 +988,7 @@ import {
   type PgArrayParameter,
   type SqlClient,
   type SqlExecutor,
+  type SqlxJson,
   type SqlTransactionOptions,
 } from "@onreza/sqlx-js";
 import { Temporal } from "@js-temporal/polyfill";
@@ -1142,8 +1144,11 @@ interface Payload {
 }
 declare const payload: Payload;
 const encoded = json(payload);
+const legacyEncoded: JsonParameter<Payload> = encoded;
+const currentEncoded: SqlxJson<Payload> = legacyEncoded;
 const preserved: Payload = encoded.value;
 void executor(${JSON.stringify(jsonQuery)}, { payload: encoded });
+void currentEncoded;
 void preserved;
 
 const mappedPayloadQuery = defineQuery.one("payload.select", ${JSON.stringify(jsonQuery)}).mapParams(
