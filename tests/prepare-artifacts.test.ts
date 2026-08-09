@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Cache, fingerprint, readCacheManifest, type CacheEntry } from "../src/cache";
 import type { FunctionEntry } from "../src/function-cache";
 import {
@@ -222,6 +222,49 @@ test("offline artifact publication preserves the cache source while replacing ou
     expect(readFileSync(dtsPath, "utf8")).toContain(JSON.stringify(query));
     expect(readFileSync(join(cacheDir, "runtime-descriptors.json"), "utf8"))
       .toContain('"configHash": "offline-config"');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("live and offline publication create nested in-cache output parents", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-artifact-nested-cache-output-"));
+  try {
+    const cacheDir = join(root, ".sqlx-js");
+    const dtsPath = join(root, "sqlx-js-env.d.ts");
+    const embeddedPath = join(cacheDir, "generated/sql-files.ts");
+    const query = "SELECT nested_cache_output";
+    const entry = emptyEntry(query);
+
+    publishPrepareArtifacts({
+      cacheDir,
+      dtsPath,
+      generated: [{ fp: fingerprint(query), entry }],
+      entries: [entry],
+      functions: [],
+      enums: [],
+      enumCatalogEnabled: false,
+      embeddedSqlModule: { path: embeddedPath, content: "export const sqlFiles = {};\n" },
+      configHash: "nested-live-config",
+      customTypes: {},
+      profiles: {},
+      prune: true,
+    });
+    expect(readFileSync(embeddedPath, "utf8")).toBe("export const sqlFiles = {};\n");
+
+    rmSync(dirname(embeddedPath), { recursive: true });
+    publishOfflinePrepareArtifacts({
+      cacheDir,
+      dtsPath,
+      entries: [entry],
+      functions: [],
+      embeddedSqlModule: { path: embeddedPath, content: "export const sqlFiles = { offline: true };\n" },
+      configHash: "nested-offline-config",
+      customTypes: {},
+      profiles: {},
+    });
+    expect(readFileSync(embeddedPath, "utf8"))
+      .toBe("export const sqlFiles = { offline: true };\n");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

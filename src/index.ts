@@ -71,7 +71,7 @@ export type {
   QueryTimeoutPhase,
   ResultDecodeErrorDetails,
 } from "./runtime";
-export type { ExecuteResult, PgArrayParameter, KnownSqlState } from "./runtime";
+export type { ExecuteResult, JsonParameter, PgArrayParameter, KnownSqlState } from "./runtime";
 export type { RuntimeTypeCodec, RuntimeTypeCodecs } from "./postgres-codecs";
 export type {
   ClientLifecycleEvent,

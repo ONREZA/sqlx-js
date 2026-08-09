@@ -25,18 +25,19 @@ export default defineConfig({
 
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedProfileRegistry } from "./sqlx-js-env.js";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 import { databaseProfiles } from "../sqlx-js.config.js";
 
-export const apiDb = createSqlClient(process.env.DATABASE_URL, {
-  profile: databaseProfiles.api,
-  queryDescriptors,
-});
+export const apiDb = createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(
+  process.env.DATABASE_URL,
+  { profile: databaseProfiles.api, queryDescriptors },
+);
 
-export const workerDb = createSqlClient(process.env.DATABASE_URL, {
-  profile: databaseProfiles.worker,
-  queryDescriptors,
-});
+export const workerDb = createSqlClient<SqlxJsGeneratedProfileRegistry<"worker">>(
+  process.env.DATABASE_URL,
+  { profile: databaseProfiles.worker, queryDescriptors },
+);
 
 const users = await apiDb.sql.transaction({
   settings: {

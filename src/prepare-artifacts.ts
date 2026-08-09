@@ -328,7 +328,9 @@ function stageOutput(
     ?? descendantPath(cache.logical, target);
   if (cacheRelative !== null) {
     assertNoSymlinkParents(cache.staged, cacheRelative);
-    write(join(cache.staged, cacheRelative));
+    const staged = join(cache.staged, cacheRelative);
+    mkdirSync(dirname(staged), { recursive: true });
+    write(staged);
     return;
   }
   mkdirSync(dirname(target), { recursive: true });
