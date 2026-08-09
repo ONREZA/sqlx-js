@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -622,9 +622,16 @@ test("doctor does not infer DDL ownership when schema.provider is absent", async
   });
 
   const pgschemaRoot = root();
+  const materializer = join(pgschemaRoot, "materialize.sh");
+  writeFileSync(materializer, "#!/bin/sh\nexit 0\n");
+  chmodSync(materializer, 0o755);
   writeFileSync(
     join(pgschemaRoot, "sqlx-js.config.mjs"),
-    `export default { schema: { provider: "pgschema", command: ${JSON.stringify(process.execPath)} } };\n`,
+    `export default { schema: {
+      provider: "pgschema",
+      command: ${JSON.stringify(process.execPath)},
+      materializer: { command: "./materialize.sh" },
+    } };\n`,
   );
   checks = await inspectDoctor({
     root: pgschemaRoot,
@@ -637,8 +644,36 @@ test("doctor does not infer DDL ownership when schema.provider is absent", async
     details: {
       configuredProvider: "pgschema",
       ddlOwnership: "sqlx-js-pgschema-workflow",
-      effectiveDevVerifyProvider: "pgschema",
+      effectiveDevVerifyProvider: "custom-materializer",
     },
+  });
+  expect(checks.find((check) => check.name === "schemaMaterializer")).toMatchObject({
+    status: "ok",
+    details: {
+      command: "./materialize.sh",
+      workflow: "dev-verify-shadow-materialization",
+    },
+  });
+
+  const missingMaterializerRoot = root();
+  writeFileSync(
+    join(missingMaterializerRoot, "sqlx-js.config.mjs"),
+    `export default { schema: {
+      provider: "pgschema",
+      command: ${JSON.stringify(process.execPath)},
+      materializer: { command: "./missing-materializer" },
+    } };\n`,
+  );
+  checks = await inspectDoctor({
+    root: missingMaterializerRoot,
+    databaseUrl: "",
+    cacheDir: join(missingMaterializerRoot, ".sqlx-js"),
+    dtsPath: join(missingMaterializerRoot, "sqlx-js-env.d.ts"),
+  });
+  expect(checks.find((check) => check.name === "pgschema")?.status).toBe("ok");
+  expect(checks.find((check) => check.name === "schemaMaterializer")).toMatchObject({
+    status: "error",
+    message: expect.stringContaining("not found or not executable"),
   });
 });
 

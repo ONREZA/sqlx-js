@@ -8,6 +8,7 @@ import { join } from "node:path";
 import {
   managedPgschemaPath,
   PGSCHEMA_VERSION,
+  probeSchemaMaterializer,
   resolvePgschemaAsset,
   runPgschemaInstall,
   runSchemaMaterializer,
@@ -21,6 +22,33 @@ function sha256(data: Buffer): string {
 
 test("resolvePgschemaAsset rejects Windows", () => {
   expect(() => resolvePgschemaAsset("win32", "x64")).toThrow("WSL");
+});
+
+test("probeSchemaMaterializer checks executability without running the command", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-materializer-probe-"));
+  const command = join(root, "materialize.sh");
+  const marker = join(root, "executed");
+  try {
+    writeFileSync(command, `#!/bin/sh\nprintf ran > ${JSON.stringify(marker)}\n`);
+    chmodSync(command, 0o755);
+    expect(probeSchemaMaterializer(root, {
+      schema: { provider: "pgschema", materializer: { command: "./materialize.sh" } },
+    })).toMatchObject({
+      ok: true,
+      command: "./materialize.sh",
+    });
+    expect(existsSync(marker)).toBe(false);
+
+    chmodSync(command, 0o644);
+    expect(probeSchemaMaterializer(root, {
+      schema: { provider: "pgschema", materializer: { command: "./materialize.sh" } },
+    })).toMatchObject({
+      ok: false,
+      message: expect.stringContaining("not found or not executable"),
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("runPgschemaInstall downloads and verifies the pinned binary", async () => {

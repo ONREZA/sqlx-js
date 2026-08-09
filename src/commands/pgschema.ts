@@ -1,7 +1,18 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import type { SqlxJsConfig } from "../config";
 import { parseDatabaseUrl, type ConnConfig } from "../pg/wire";
 import { withWorkflowShadowDatabase } from "./shadow";
@@ -161,6 +172,53 @@ export function probePgschema(root: string, config: SqlxJsConfig): PgschemaProbe
       return { ok: false, command, message: `${command} --help exited with ${child.status}` };
     }
     return { ok: true, command, message: `pgschema is available: ${command}` };
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+}
+
+function resolveExecutable(command: string, root: string): string | undefined {
+  const pathEntries = command.includes("/") || command.includes("\\")
+    ? [isAbsolute(command) ? "" : root]
+    : (process.env.PATH ?? "").split(delimiter).map((entry) => entry || root);
+  const extensions = process.platform === "win32"
+    ? ["", ...(process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";")]
+    : [""];
+
+  for (const pathEntry of pathEntries) {
+    for (const extension of extensions) {
+      const candidate = isAbsolute(command)
+        ? `${command}${extension}`
+        : resolve(isAbsolute(pathEntry) ? pathEntry : resolve(root, pathEntry), `${command}${extension}`);
+      try {
+        if (!statSync(candidate).isFile()) continue;
+        accessSync(candidate, process.platform === "win32" ? constants.F_OK : constants.X_OK);
+        return candidate;
+      } catch {}
+    }
+  }
+  return undefined;
+}
+
+export function probeSchemaMaterializer(root: string, config: SqlxJsConfig): PgschemaProbe {
+  try {
+    const materializer = pgschemaConfig(config).materializer;
+    if (!materializer) {
+      return { ok: false, message: "sqlx-js schema materializer: schema.materializer is not configured" };
+    }
+    const resolved = resolveExecutable(materializer.command, root);
+    if (!resolved) {
+      return {
+        ok: false,
+        command: materializer.command,
+        message: `sqlx-js schema materializer: command not found or not executable: ${materializer.command}`,
+      };
+    }
+    return {
+      ok: true,
+      command: materializer.command,
+      message: `schema materializer is available: ${materializer.command}`,
+    };
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
