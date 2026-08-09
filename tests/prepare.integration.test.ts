@@ -9,9 +9,9 @@ import { decodeText, PgClient, parseDatabaseUrl } from "../src/pg/wire";
 import { validateAll } from "../src/commands/prepare";
 import { SchemaCache, compositeLiteral } from "../src/pg/schema";
 import { mergeExtensionTypes } from "../src/pg/extensions";
-import { fingerprint } from "../src/cache";
+import { fingerprint, readCacheManifest } from "../src/cache";
 import { createSqlClient as createRuntimeSqlClient, type PostgresClient } from "../src/postgres-runtime";
-import { array, json, QueryTimeoutError, ResultDecodeError } from "../src/runtime";
+import { array, json, QueryTimeoutError, ResultDecodeError, type OnQueryEvent } from "../src/runtime";
 import { JsonNumber, SqlxJson } from "../src/json-value";
 import { queryId } from "../src/query-id";
 import type { RuntimeQueryDescriptors } from "../src/runtime-descriptors";
@@ -235,6 +235,195 @@ if (!haveIntegrationDatabase) {
     expect(r.stderr).toMatch(/a\.ts:2:11/);
     expect(r.stderr).toMatch(/describe failed/);
     expect(r.stderr).toMatch(/relation .* does not exist/i);
+  });
+
+  test("live prepare validates every configured column assertion", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    try {
+      await setup.simpleQuery(`
+        DROP TABLE IF EXISTS tmp_config_assertions;
+        CREATE TABLE tmp_config_assertions (
+          payload jsonb,
+          labels text[],
+          state text
+        )
+      `);
+    } finally {
+      await setup.end();
+    }
+
+    const root = isolatedRoot("config-assertions");
+    writeRootFile(root, "a.ts", 'import { sql } from "@onreza/sqlx-js";\nawait sql("SELECT 1 AS value");\n');
+    writeRootFile(root, "sqlx-js.config.ts", `export default {
+      jsonbTypes: { "public.tmp_config_assertions.missing": "MissingPayload" },
+      columnTypes: { "public.tmp_config_assertions.state": '"ready" | "done"' },
+      arrayElementNullability: { "public.tmp_config_assertions.labels": "non-null" },
+    };\n`);
+
+    const result = prepareRoot(root);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("sqlx-js.config.ts jsonbTypes.public.tmp_config_assertions.missing");
+    expect(result.stderr).toContain("does not resolve to a PostgreSQL column");
+
+    const diagnosis = spawnSync(
+      "bun",
+      [join(repoRoot, "bin/sqlx-js.ts"), "doctor", "--root", root, "--json"],
+      { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
+    );
+    const report = JSON.parse(diagnosis.stdout) as {
+      checks: Array<{ name: string; status: string; message: string }>;
+    };
+    expect(report.checks.find((check) => check.name === "columnAssertions")).toMatchObject({
+      status: "error",
+      message: expect.stringContaining("jsonbTypes.public.tmp_config_assertions.missing"),
+    });
+
+    const invalidShapes = [
+      {
+        config: 'jsonbTypes: { "public.tmp_config_assertions.state": "State" }',
+        message: "must reference a PostgreSQL JSON column or JSON array column",
+      },
+      {
+        config: 'columnTypes: { "public.tmp_config_assertions.payload": "Payload" }',
+        message: "must use jsonbTypes for a direct json or jsonb column",
+      },
+      {
+        config: 'arrayElementNullability: { "public.tmp_config_assertions.state": "non-null" }',
+        message: "must reference a PostgreSQL array column",
+      },
+    ];
+    for (const invalid of invalidShapes) {
+      writeRootFile(root, "sqlx-js.config.ts", `export default { ${invalid.config} };\n`);
+      const shapeResult = prepareRoot(root);
+      expect(shapeResult.code).toBe(1);
+      expect(shapeResult.stderr).toContain(invalid.message);
+    }
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("unqualified column assertions reject cross-schema ambiguity", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    const root = isolatedRoot("config-assertion-ambiguity");
+    try {
+      await setup.simpleQuery(`
+        DROP SCHEMA IF EXISTS tmp_assertion_a CASCADE;
+        DROP SCHEMA IF EXISTS tmp_assertion_b CASCADE;
+        CREATE SCHEMA tmp_assertion_a;
+        CREATE SCHEMA tmp_assertion_b;
+        CREATE TABLE tmp_assertion_a.shared_state (value text);
+        CREATE TABLE tmp_assertion_b.shared_state (value text)
+      `);
+      writeRootFile(root, "a.ts", 'import { sql } from "@onreza/sqlx-js";\nawait sql("SELECT 1 AS value");\n');
+      writeRootFile(root, "sqlx-js.config.ts", `export default {
+        columnTypes: { "shared_state.value": '"ready" | "done"' },
+      };\n`);
+
+      const result = prepareRoot(root);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("columnTypes.shared_state.value is ambiguous across");
+      expect(result.stderr).toContain("tmp_assertion_a.shared_state.value");
+      expect(result.stderr).toContain("tmp_assertion_b.shared_state.value");
+    } finally {
+      await setup.simpleQuery(`
+        DROP SCHEMA IF EXISTS tmp_assertion_a CASCADE;
+        DROP SCHEMA IF EXISTS tmp_assertion_b CASCADE
+      `).catch(() => {});
+      await setup.end();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("column assertions reject shadowed duplicate keys", async () => {
+    const setup = new PgClient(parseDatabaseUrl(dbUrl));
+    await setup.connect();
+    const root = isolatedRoot("config-assertion-duplicates");
+    try {
+      await setup.simpleQuery(`
+        DROP TABLE IF EXISTS tmp_assertion_duplicate;
+        CREATE TABLE tmp_assertion_duplicate (value text)
+      `);
+      writeRootFile(root, "a.ts", 'import { sql } from "@onreza/sqlx-js";\nawait sql("SELECT 1 AS value");\n');
+      writeRootFile(root, "sqlx-js.config.ts", `export default {
+        columnTypes: {
+          "tmp_assertion_duplicate.value": '"ready" | "done"',
+          "public.tmp_assertion_duplicate.value": '"ready" | "done"',
+        },
+      };\n`);
+
+      const result = prepareRoot(root);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("columnTypes.tmp_assertion_duplicate.value duplicates");
+      expect(result.stderr).toContain("columnTypes.public.tmp_assertion_duplicate.value");
+    } finally {
+      await setup.simpleQuery("DROP TABLE IF EXISTS tmp_assertion_duplicate").catch(() => {});
+      await setup.end();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("focused prepare preserves reusable contracts and marks artifacts incomplete", () => {
+    const root = isolatedRoot("focused-prepare");
+    writeRootFile(root, "a.ts", 'import { sql } from "@onreza/sqlx-js";\nawait sql("SELECT 1::int AS retained");\n');
+    writeRootFile(root, "b.ts", 'import { sql } from "@onreza/sqlx-js";\nawait sql("SELECT 2::int AS existing");\n');
+    const initial = prepareRoot(root);
+    expect(initial.code, initial.stderr).toBe(0);
+
+    writeRootFile(root, "b.ts", 'import { sql } from "@onreza/sqlx-js";\nawait sql("SELECT * FROM missing_focused_relation");\n');
+    writeRootFile(root, "c.ts", 'import { defineQuery } from "@onreza/sqlx-js";\nexport const selected = defineQuery("focus.selected", "SELECT 3::int AS selected");\n');
+    const focused = prepareRoot(root, ["--include", "c.ts", "--json"]);
+    expect(focused.code, focused.stderr).toBe(0);
+    const payload = JSON.parse(focused.stdout) as {
+      artifactState: string;
+      projectSites: number;
+      selectedSites: number;
+      omittedSites: number;
+      omittedContracts: number;
+    };
+    expect(payload).toMatchObject({
+      artifactState: "incomplete",
+      projectSites: 3,
+      selectedSites: 1,
+      omittedSites: 1,
+      omittedContracts: 1,
+    });
+    const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
+    expect(dts).toContain("SELECT 1::int AS retained");
+    expect(dts).toContain("SELECT 3::int AS selected");
+    expect(dts).not.toContain("missing_focused_relation");
+    expect(readCacheManifest(join(root, ".sqlx-js"))?.complete).toBe(false);
+
+    const repeated = prepareRoot(root, ["--query", "focus.selected", "--json"]);
+    expect(repeated.code, repeated.stderr).toBe(0);
+    expect(JSON.parse(repeated.stdout)).toMatchObject({
+      artifactState: "incomplete",
+      selectedSites: 1,
+    });
+
+    const byId = prepareRoot(root, ["--query", queryId("SELECT 3::int AS selected"), "--json"]);
+    expect(byId.code, byId.stderr).toBe(0);
+    expect(JSON.parse(byId.stdout)).toMatchObject({
+      artifactState: "incomplete",
+      selectedSites: 1,
+    });
+
+    const incompleteCheck = prepareRoot(root, ["--check", "--json"]);
+    expect(incompleteCheck.code).toBe(1);
+    expect(incompleteCheck.stdout).toContain("incomplete after focused prepare");
+
+    writeRootFile(root, "b.ts", 'import { sql } from "@onreza/sqlx-js";\nawait sql("SELECT 2::int AS existing");\n');
+    const completed = prepareRoot(root);
+    expect(completed.code, completed.stderr).toBe(0);
+    expect(readCacheManifest(join(root, ".sqlx-js"))?.complete).toBe(true);
+    const completedCheck = prepareRoot(root, ["--check"]);
+    expect(completedCheck.code, completedCheck.stderr).toBe(0);
+
+    rmSync(join(root, ".sqlx-js", "functions", "functions.json"));
+    const missingCatalog = prepareRoot(root, ["--include", "a.ts"]);
+    expect(missingCatalog.code).toBe(1);
+    expect(missingCatalog.stderr).toContain("function catalog cache is missing");
+    rmSync(root, { recursive: true, force: true });
   });
 
   test("prepare succeeds for a valid query and emits .d.ts and cache", () => {
@@ -1679,6 +1868,7 @@ export default {
       "database",
       "permissions",
       "runtimeTypes",
+      "columnAssertions",
       "pgschema",
     ]);
     expect(payload.checks.every((check) => check.status !== "error")).toBe(true);
@@ -2738,6 +2928,50 @@ export default {
       const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
       expect(dts).toContain("tmp_migrate_dev_auto_shadow_users");
       expect(queryCacheFiles(root)).toHaveLength(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("pgschema dev materializer owns only the disposable shadow", async () => {
+    const root = isolatedRoot("pgschema-materializer-dev");
+    try {
+      const materializer = join(root, "materialize.ts");
+      writeRootFile(root, "sqlx-js.config.ts", `export default {
+        schema: {
+          provider: "pgschema",
+          materializer: { command: "bun", args: [${JSON.stringify(materializer)}] },
+        },
+      };\n`);
+      writeRootFile(root, "materialize.ts", `
+        import { PgClient, parseDatabaseUrl } from ${JSON.stringify(join(repoRoot, "src/pg/wire.ts"))};
+        const client = new PgClient(parseDatabaseUrl(process.env.SQLX_JS_SHADOW_DATABASE_URL!));
+        await client.connect();
+        try {
+          await client.simpleQuery("CREATE TABLE tmp_custom_materializer (id bigint PRIMARY KEY)");
+        } finally {
+          await client.end();
+        }
+      `);
+      writeRootFile(root, "query.ts",
+        'import { sql } from "@onreza/sqlx-js";\nawait sql("SELECT id FROM tmp_custom_materializer");\n',
+      );
+
+      const result = workflowCommand("dev", root, dbUrl, ["--strict-inference"]);
+      expect(result.code, result.stderr).toBe(0);
+      expect(readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8"))
+        .toContain("SELECT id FROM tmp_custom_materializer");
+
+      const target = new PgClient(parseDatabaseUrl(dbUrl));
+      await target.connect();
+      try {
+        const relation = await target.simpleQueryAll(
+          "SELECT to_regclass('public.tmp_custom_materializer')",
+        );
+        expect(relation.rows[0]![0]).toBeNull();
+      } finally {
+        await target.end();
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -4192,6 +4426,56 @@ export default {
       await close();
       if (prev === undefined) delete process.env.DATABASE_URL;
       else process.env.DATABASE_URL = prev;
+    }
+  });
+
+  test("managed query timing separates pool wait from execution", async () => {
+    const events: OnQueryEvent[] = [];
+    const client = createRuntimeSqlClient(dbUrl, {
+      max: 1,
+      execution: "adaptive",
+      onQuery: (event) => events.push(event),
+    });
+    try {
+      await client.ready();
+      const blocker = client.sql("SELECT pg_sleep(0.15) AS blocked");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const queued = client.sql("SELECT 2::int AS queued");
+      await Promise.all([blocker, queued]);
+
+      const blockerEvent = events.find((event) => event.query.includes("blocked"))!;
+      const queuedEvent = events.find((event) => event.query.includes("queued"))!;
+      expect(blockerEvent.executionDurationMs).toBeGreaterThan(100);
+      expect(queuedEvent.acquireDurationMs).toBeGreaterThan(100);
+      expect(queuedEvent.executionDurationMs).toBeLessThan(queuedEvent.acquireDurationMs!);
+      expect(queuedEvent.preDispatchDurationMs).toBeGreaterThanOrEqual(queuedEvent.acquireDurationMs!);
+      expect(queuedEvent.durationMs).toBeGreaterThanOrEqual(queuedEvent.preDispatchDurationMs!);
+
+      await client.sql.transaction(async (tx) => {
+        const transactionBlocker = tx("SELECT pg_sleep(0.15) AS transaction_blocked");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        const transactionQueued = tx("SELECT 3::int AS transaction_queued");
+        await Promise.all([transactionBlocker, transactionQueued]);
+      });
+      const transactionQueuedEvent = events.find((event) => event.query.includes("transaction_queued"))!;
+      expect(transactionQueuedEvent.acquireDurationMs).toBeUndefined();
+      expect(transactionQueuedEvent.preDispatchDurationMs).toBeGreaterThan(100);
+      expect(transactionQueuedEvent.executionDurationMs).toBeLessThan(100);
+
+      await expect(client.sql("SELECT $1::text", undefined as never)).rejects.toThrow(/undefined/);
+      const preDispatchFailure = events.find((event) => event.query.includes("SELECT $1::text"))!;
+      expect(preDispatchFailure.acquireDurationMs).toBeGreaterThanOrEqual(0);
+      expect(preDispatchFailure.preDispatchDurationMs).toBe(preDispatchFailure.durationMs);
+      expect(preDispatchFailure.executionDurationMs).toBeUndefined();
+
+      await expect(
+        client.sql.with({ timeoutMs: 50 })("SELECT pg_sleep(0.2) AS timed_out"),
+      ).rejects.toBeInstanceOf(QueryTimeoutError);
+      const timeout = events.find((event) => event.query.includes("timed_out"))!;
+      expect(timeout.preDispatchDurationMs).toBeLessThan(timeout.durationMs);
+      expect(timeout.executionDurationMs).toBeUndefined();
+    } finally {
+      await client.close();
     }
   });
 

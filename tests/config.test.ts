@@ -403,6 +403,20 @@ test("loadConfig validates function catalog settings", async () => {
   await expect(loadConfig(dir)).rejects.toThrow(/includeExtensionOwned must be a boolean/);
 });
 
+test("loadConfig validates schema materializer commands", async () => {
+  const dir = root();
+  writeFileSync(join(dir, "sqlx-js.config.mjs"), `export default {
+    schema: { provider: "pgschema", materializer: { command: "", args: ["schema.ts"] } },
+  };\n`);
+  await expect(loadConfig(dir)).rejects.toThrow(/schema\.materializer\.command must be a non-empty string/);
+
+  const wrongProvider = root();
+  writeFileSync(join(wrongProvider, "sqlx-js.config.mjs"), `export default {
+    schema: { provider: "builtin", materializer: { command: "bun" } },
+  };\n`);
+  await expect(loadConfig(wrongProvider)).rejects.toThrow(/schema\.materializer requires schema\.provider = "pgschema"/);
+});
+
 test("current development runtime satisfies the supported baseline", () => {
   expect(() => assertSupportedRuntime()).not.toThrow();
 });

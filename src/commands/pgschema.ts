@@ -84,6 +84,13 @@ export class PgschemaCommandError extends Error {
   }
 }
 
+export class SchemaMaterializerCommandError extends Error {
+  constructor(public readonly exitCode: number, command: string) {
+    super(`sqlx-js schema materializer: ${command} exited with ${exitCode}`);
+    this.name = "SchemaMaterializerCommandError";
+  }
+}
+
 export function resolvePgschemaAsset(
   platform: NodeJS.Platform = process.platform,
   arch: NodeJS.Architecture = process.arch,
@@ -265,12 +272,17 @@ export function runPgschemaCommand(opts: PgschemaCommandOptions): void {
 
 function validatePgschemaWorkflow(opts: PgschemaWorkflowOptions): void {
   const config = pgschemaConfig(opts.config);
+  if (config.materializer) return;
   const file = schemaFile(opts.root, config);
   if (!existsSync(file)) throw new Error(`sqlx-js pgschema: schema file not found: ${file}`);
   pgschemaSchemas(config);
 }
 
 function applyDesiredSchema(opts: PgschemaWorkflowOptions, databaseUrl: string): void {
+  if (opts.config.schema?.materializer) {
+    runSchemaMaterializer(opts, databaseUrl);
+    return;
+  }
   runPgschemaCommand({
     root: opts.root,
     databaseUrl,
@@ -278,6 +290,39 @@ function applyDesiredSchema(opts: PgschemaWorkflowOptions, databaseUrl: string):
     subcommand: "apply",
     passthrough: ["--auto-approve", "--no-color"],
   });
+}
+
+export function runSchemaMaterializer(opts: PgschemaWorkflowOptions, databaseUrl: string): void {
+  const materializer = pgschemaConfig(opts.config).materializer;
+  if (!materializer) throw new Error("sqlx-js pgschema: schema.materializer is not configured");
+  const file = schemaFile(opts.root, opts.config.schema!);
+  const child = spawnSync(materializer.command, materializer.args ?? [], {
+    cwd: opts.root,
+    env: {
+      ...process.env,
+      DATABASE_URL: databaseUrl,
+      SQLX_JS_SHADOW_DATABASE_URL: databaseUrl,
+      SQLX_JS_PROJECT_ROOT: opts.root,
+      ...(existsSync(file) ? { SQLX_JS_SCHEMA_FILE: file } : {}),
+    },
+    stdio: "inherit",
+  });
+  if (child.error) {
+    const code = (child.error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      throw new Error(`sqlx-js schema materializer: command not found: ${materializer.command}`);
+    }
+    throw child.error;
+  }
+  if (child.signal) {
+    throw new Error(`sqlx-js schema materializer: ${materializer.command} terminated by signal ${child.signal}`);
+  }
+  if (child.status === null) {
+    throw new Error(`sqlx-js schema materializer: ${materializer.command} ended without an exit status`);
+  }
+  if (child.status !== 0) {
+    throw new SchemaMaterializerCommandError(child.status, materializer.command);
+  }
 }
 
 export async function runPgschemaDev(opts: PgschemaWorkflowOptions): Promise<boolean> {

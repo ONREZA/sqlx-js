@@ -69,6 +69,10 @@ export type SqlxJsConfig = {
     file?: string;
     schemas?: string[];
     command?: string;
+    materializer?: {
+      command: string;
+      args?: string[];
+    };
   };
 };
 
@@ -490,6 +494,21 @@ function validateConfig(value: unknown, path: string): SqlxJsConfig {
       }
     }
     if (schema.schemas !== undefined) validateStringArray(schema.schemas, "schema.schemas", path);
+    if (schema.materializer !== undefined) {
+      if (schema.provider !== "pgschema") {
+        throw new Error(`sqlx-js: ${path} schema.materializer requires schema.provider = "pgschema"`);
+      }
+      if (!schema.materializer || typeof schema.materializer !== "object" || Array.isArray(schema.materializer)) {
+        throw new Error(`sqlx-js: ${path} schema.materializer must be an object`);
+      }
+      const materializer = schema.materializer as Record<string, unknown>;
+      if (typeof materializer.command !== "string" || materializer.command.trim() === "") {
+        throw new Error(`sqlx-js: ${path} schema.materializer.command must be a non-empty string`);
+      }
+      if (materializer.args !== undefined) {
+        validateStringArray(materializer.args, "schema.materializer.args", path);
+      }
+    }
   }
   return value as SqlxJsConfig;
 }

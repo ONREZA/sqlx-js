@@ -25,7 +25,18 @@ export type CacheManifest = {
   generatorRevision: typeof GENERATOR_REVISION;
   jsonProtocol: typeof JSON_PROTOCOL_VERSION;
   configHash: string;
+  complete: boolean;
 };
+
+export class CacheManifestIncompleteError extends Error {
+  constructor(path: string) {
+    super(
+      `sqlx-js: cache manifest is incomplete after focused prepare: ${path}. `
+      + "Run a full `sqlx-js prepare` before check or release.",
+    );
+    this.name = "CacheManifestIncompleteError";
+  }
+}
 
 export type CacheColumn = {
   name: string;
@@ -439,7 +450,7 @@ export function cacheManifestPath(cacheDir: string): string {
   return join(cacheDir, CACHE_MANIFEST_FILE);
 }
 
-export function writeCacheManifest(cacheDir: string, configHash: string): void {
+export function writeCacheManifest(cacheDir: string, configHash: string, complete = true): void {
   if (!existsSync(cacheDir)) mkdirSync(cacheDir, { recursive: true });
   const path = cacheManifestPath(cacheDir);
   const tmp = `${path}.tmp-${randomBytes(4).toString("hex")}`;
@@ -448,6 +459,7 @@ export function writeCacheManifest(cacheDir: string, configHash: string): void {
     generatorRevision: GENERATOR_REVISION,
     jsonProtocol: JSON_PROTOCOL_VERSION,
     configHash,
+    complete,
   };
   writeFileSync(tmp, JSON.stringify(manifest, null, 2) + "\n");
   try {
@@ -470,14 +482,19 @@ export function readCacheManifest(cacheDir: string): CacheManifest | null {
     value.cacheFormat !== CACHE_FORMAT_VERSION ||
     value.generatorRevision !== GENERATOR_REVISION ||
     value.jsonProtocol !== JSON_PROTOCOL_VERSION ||
-    typeof value.configHash !== "string"
+    typeof value.configHash !== "string" ||
+    typeof value.complete !== "boolean"
   ) {
     throw new CacheManifestStaleError(path);
   }
   return value as CacheManifest;
 }
 
-export function assertCacheManifest(cacheDir: string, configHash: string): CacheManifest {
+export function assertCacheManifest(
+  cacheDir: string,
+  configHash: string,
+  options: { allowIncomplete?: boolean } = {},
+): CacheManifest {
   const manifest = readCacheManifest(cacheDir);
   if (!manifest) {
     throw new Error(`sqlx-js: cache manifest is missing. Run \`sqlx-js prepare\` to regenerate the cache.`);
@@ -487,6 +504,9 @@ export function assertCacheManifest(cacheDir: string, configHash: string): Cache
       "sqlx-js: cache was generated with different type-affecting config, connection profiles, "
       + "or function catalog settings. Run `sqlx-js prepare`.",
     );
+  }
+  if (!manifest.complete && !options.allowIncomplete) {
+    throw new CacheManifestIncompleteError(cacheManifestPath(cacheDir));
   }
   return manifest;
 }

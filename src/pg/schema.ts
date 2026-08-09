@@ -9,6 +9,12 @@ export type ColumnInfo = {
   name?: string;
 };
 
+export type ColumnMatch = {
+  schema: string;
+  table: string;
+  column: ColumnInfo;
+};
+
 export type EnumInfo = { kind: "enum"; name: string; values: string[] };
 export type EnumArrayInfo = { kind: "enumArray"; element: EnumInfo };
 export type ScalarInfo = { kind: "scalar"; name: string; tsType: string; notNull?: boolean; baseOid?: number };
@@ -213,6 +219,42 @@ export class SchemaCache {
       this.columnsByOid.set(oid, m);
       this.fullyLoaded.add(oid);
     }
+  }
+
+  async findColumns(
+    references: readonly { schema?: string; table: string; column: string }[],
+  ): Promise<ColumnMatch[]> {
+    const predicates = [...new Set(references.map((reference) =>
+      `c.relname = ${quote(reference.table)} AND a.attname = ${quote(reference.column)}`
+      + (reference.schema ? ` AND n.nspname = ${quote(reference.schema)}` : "")
+    ))];
+    if (predicates.length === 0) return [];
+    const result = await this.client.simpleQueryAll(`
+      SELECT n.nspname, c.relname, c.oid::int8, a.attnum::int4,
+        a.attname, a.attnotnull, a.atttypid::int8
+      FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
+      WHERE (${predicates.map((predicate) => `(${predicate})`).join(" OR ")})
+        AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+        AND a.attnum > 0
+        AND NOT a.attisdropped
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND n.nspname NOT LIKE 'pg_toast%'
+        AND n.nspname NOT LIKE 'pg_temp_%'
+      ORDER BY n.nspname, c.relname, a.attname
+    `);
+    return result.rows.map((row) => ({
+      schema: decodeText(row[0]!)!,
+      table: decodeText(row[1]!)!,
+      column: {
+        attrelid: Number(decodeText(row[2]!)),
+        attnum: Number(decodeText(row[3]!)),
+        name: decodeText(row[4]!)!,
+        notNull: decodeText(row[5]!) === "t",
+        typeOid: Number(decodeText(row[6]!)),
+      },
+    }));
   }
 
   columnsOf(tableOid: number): Map<string, ColumnInfo> | undefined {

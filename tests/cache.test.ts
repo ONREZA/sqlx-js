@@ -381,6 +381,16 @@ test("cache manifest binds generated artifacts to type-affecting config", () => 
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("focused cache manifests require a later full prepare", () => {
+  const dir = join(import.meta.dir, ".tmp-cache-focused-manifest");
+  rmSync(dir, { recursive: true, force: true });
+  writeCacheManifest(dir, "config-a", false);
+  expect(readCacheManifest(dir)).toMatchObject({ configHash: "config-a", complete: false });
+  expect(() => assertCacheManifest(dir, "config-a")).toThrow(/incomplete after focused prepare/);
+  expect(assertCacheManifest(dir, "config-a", { allowIncomplete: true }).complete).toBe(false);
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("Cache.replaceAll stages the complete successful query set before pruning", () => {
   const dir = join(import.meta.dir, ".tmp-cache-replace");
   rmSync(dir, { recursive: true, force: true });

@@ -26,6 +26,7 @@ import {
 import {
   EXECUTE_KNOWN_PARAMS,
   createPostgresClient,
+  queryDispatchedAt,
   type KnownParamsQueryClient,
   type PostgresClient as InternalPostgresClient,
   type PostgresOptions as InternalPostgresOptions,
@@ -170,6 +171,31 @@ function lifecycleErrorDetails(error: unknown): {
   return { errorName, ...(errorCode ? { errorCode } : {}) };
 }
 
+function queryTiming(startedAt: number, pending: PendingQuery | undefined): {
+  durationMs: number;
+  preDispatchDurationMs?: number;
+  acquireDurationMs?: number;
+  executionDurationMs?: number;
+  connectionCreated?: boolean;
+} {
+  const durationMs = performance.now() - startedAt;
+  const timing = pending?.timing;
+  if (!timing) return { durationMs };
+  const executionDurationMs = timing.executionDurationMs;
+  const dispatchedAt = queryDispatchedAt(timing);
+  return {
+    durationMs,
+    preDispatchDurationMs: executionDurationMs !== undefined
+      ? Math.max(0, durationMs - executionDurationMs)
+      : dispatchedAt === undefined
+        ? durationMs
+        : Math.max(0, dispatchedAt - startedAt),
+    ...(timing.acquireDurationMs === undefined ? {} : { acquireDurationMs: timing.acquireDurationMs }),
+    ...(executionDurationMs === undefined ? {} : { executionDurationMs }),
+    ...(timing.connectionCreated === undefined ? {} : { connectionCreated: timing.connectionCreated }),
+  };
+}
+
 // Admission, transaction deadlines, and generation recycling mutate the same
 // operation record; keeping them together makes no-replay/outcome ordering reviewable.
 class ManagedPostgresRuntime implements RuntimeClient {
@@ -298,7 +324,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
             : descriptor ? "descriptor" : "adaptive",
           query: request.observedQuery,
           params: request.observedParams,
-          durationMs: performance.now() - operation.startedAt,
+          ...queryTiming(operation.startedAt, operation.pending),
           rowCount: result.count ?? result.length,
         });
       }
@@ -320,7 +346,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
             : descriptor ? "descriptor" : "adaptive",
           query: request.observedQuery,
           params: request.observedParams,
-          durationMs: performance.now() - operation.startedAt,
+          ...queryTiming(operation.startedAt, operation.pending),
           error,
         });
       }
@@ -757,7 +783,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
             : descriptor ? "descriptor" : "adaptive",
           query: request.observedQuery,
           params: request.observedParams,
-          durationMs: performance.now() - startedAt,
+          ...queryTiming(startedAt, pending),
           rowCount: result.count ?? result.length,
         });
       }
@@ -789,7 +815,7 @@ class ManagedPostgresRuntime implements RuntimeClient {
             : descriptor ? "descriptor" : "adaptive",
           query: request.observedQuery,
           params: request.observedParams,
-          durationMs: performance.now() - startedAt,
+          ...queryTiming(startedAt, pending),
           error,
         });
       }

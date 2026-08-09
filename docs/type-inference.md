@@ -75,8 +75,13 @@ Expression nullability follows PostgreSQL semantics. Common examples include:
 - strict functions preserve nullable inputs unless SQL structure narrows them;
 - array constructors and supported aggregates track both value and element
   nullability;
-- arithmetic and ordinary value-preserving expressions propagate nullable
-  inputs.
+- null tests, Boolean tests, `IS DISTINCT FROM`, and
+  `IS NOT DISTINCT FROM` are non-null;
+- ordinary PostgreSQL operator results are nullable unless an exact result
+  assertion says otherwise. Operators are overloadable catalog functions and
+  PostgreSQL does not expose a `RETURNS NOT NULL` contract, so non-null operands
+  alone cannot prove a non-null result. This includes arithmetic, comparisons,
+  and JSON operators such as `->>`.
 
 When an expression cannot be analysed precisely, sqlx-js keeps the PostgreSQL
 type and degrades nullability conservatively rather than guessing.

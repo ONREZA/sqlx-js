@@ -1,5 +1,5 @@
 import { queryId } from "./query-id";
-import type { PostgresQueryClient } from "./pg/driver";
+import type { PostgresQueryClient, PostgresQueryTiming } from "./pg/driver";
 import type {
   RuntimeClient,
   RuntimeQueryRequest,
@@ -9,6 +9,7 @@ import type {
 export type PendingQuery = PromiseLike<RuntimeQueryResult> & {
   cancel?: () => unknown;
   execute?: () => PendingQuery;
+  timing?: PostgresQueryTiming;
 };
 
 export type TransactionState = {

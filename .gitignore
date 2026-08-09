@@ -5,3 +5,5 @@ node_modules/
 tests/.tmp-*/
 dist/
 .profiles/
+/.sqlx-js/
+/sqlx-js-env.d.ts
