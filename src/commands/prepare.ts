@@ -60,7 +60,7 @@ import {
   assertDistinctPrepareGeneratedOutputs,
   publishPrepareArtifacts,
 } from "../prepare-artifacts";
-import { embeddedSqlOutputPath, renderEmbeddedSqlModule } from "../embedded-sql";
+import { embeddedSqlOutputPath, renderEmbeddedSqlModuleFromSites } from "../embedded-sql";
 import {
   columnInference,
   duplicateOutputColumns,
@@ -854,7 +854,7 @@ export async function prepareOnce(
       enumCatalogEnabled: userCfg.enumCatalog !== undefined,
       enumModule,
       embeddedSqlModule: embeddedOutput
-        ? { path: embeddedOutput, content: renderEmbeddedSqlModule(entries) }
+        ? { path: embeddedOutput, content: renderEmbeddedSqlModuleFromSites(sites) }
         : undefined,
       configHash: prepareConfigHash(userCfg),
       customTypes: userCfg.customTypes,

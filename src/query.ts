@@ -78,6 +78,31 @@ export type QueryParameterHelpers = Pick<
 
 type ReadonlyWireParams<Params> = Params extends readonly unknown[] ? Readonly<Params> : Params;
 
+type SameKeys<Left, Right> =
+  Exclude<keyof Left, keyof Right> extends never
+    ? Exclude<keyof Right, keyof Left> extends never
+      ? true
+      : false
+    : false;
+
+type SameTupleLength<Left extends readonly unknown[], Right extends readonly unknown[]> =
+  Left["length"] extends Right["length"]
+    ? Right["length"] extends Left["length"]
+      ? true
+      : false
+    : false;
+
+type ExactWireShape<Actual extends QueryWireParams, Expected> =
+  Actual extends ReadonlyWireParams<Expected>
+    ? Actual extends readonly unknown[]
+      ? Expected extends readonly unknown[]
+        ? SameTupleLength<Actual, Expected>
+        : false
+      : Expected extends readonly unknown[]
+        ? false
+        : SameKeys<Actual, Expected>
+    : false;
+
 export type MappedQueryDefinition<
   Query extends string = string,
   Mode extends QueryExecutionMode = QueryExecutionMode,
@@ -117,7 +142,7 @@ type MappedExecutor<
   Query extends string,
   Registry extends { queries: object; fileQueries: object },
   WireParams extends QueryWireParams,
-> = WireParams extends ReadonlyWireParams<RegistryParams<Query, Registry>>
+> = ExactWireShape<WireParams, RegistryParams<Query, NoInfer<Registry>>> extends true
   ? TypedSqlForRegistry<Registry>
   : never;
 

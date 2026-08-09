@@ -235,6 +235,11 @@ const wrongKey = defineQuery.for("api").one(${JSON.stringify(query)}).mapParams(
 );
 // @ts-expect-error mapped wire parameters must match the explicit registry
 void wrongKey.run(api.sql, { id: "user-1" });
+const extraKey = defineQuery.for("api").one(${JSON.stringify(query)}).mapParams(
+  (input: { id: string }) => ({ id: input.id, extra: true }),
+);
+// @ts-expect-error mapped named parameters must have the registry's exact keys
+void extraKey.run(api.sql, { id: "user-1" });
 const shared = defineQuery.for("api", "worker").one(${JSON.stringify(query)}).mapParams(
   (input: { id: string }) => ({ id: input.id }),
 );
@@ -251,6 +256,11 @@ const positional = defineQuery.for("api", "worker").one(${JSON.stringify(positio
 );
 void positional.run(api.sql, { id: "user-1" });
 void positional.run(worker.sql, { id: "user-1" });
+const extraPosition = defineQuery.for("api").one(${JSON.stringify(positionalQuery)}).mapParams(
+  (input: { id: string }) => [input.id, "extra"] as const,
+);
+// @ts-expect-error mapped positional parameters must have the registry's exact length
+void extraPosition.run(api.sql, { id: "user-1" });
 `);
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
