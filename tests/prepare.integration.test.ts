@@ -1680,7 +1680,7 @@ export default {
       expect(prepared.code, prepared.stderr).toBe(0);
       expect(prepared.stdout).toContain(output);
       let generated = readFileSync(output, "utf8");
-      expect(generated).toContain('"queries/value.sql": "SELECT 42::int4 AS value\\n"');
+      expect(generated).toContain('["queries/value.sql"]: "SELECT 42::int4 AS value\\n"');
       expect(prepareRoot(root, ["--check"]).code).toBe(0);
 
       const diagnosis = spawnSync(
