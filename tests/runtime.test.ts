@@ -278,6 +278,31 @@ test("query definitions execute through root and transaction executors with stab
   expect(events[1]).toMatchObject({ queryId: findUser.queryId, queryName: "users.findById" });
 });
 
+test("cardinality errors carry stable query metadata", async () => {
+  let rows: unknown[] = [];
+  const client: RuntimeClient = {
+    query: async () => rows,
+    transaction: async (fn) => fn(client),
+    close: async () => {},
+  };
+  const runtime = createSqlRuntime(() => client);
+  const one = defineQuery.one("users.require", "SELECT id FROM users");
+  const optional = defineQuery.optional("users.optional", "SELECT id FROM users");
+
+  const noRows = await one.run(runtime.sql as never).catch((error) => error);
+  expect(noRows).toBeInstanceOf(NoRowsError);
+  expect(noRows).toMatchObject({ queryId: one.queryId, queryName: "users.require" });
+
+  rows = [{ id: 1 }, { id: 2 }];
+  const tooMany = await optional.run(runtime.sql as never).catch((error) => error);
+  expect(tooMany).toBeInstanceOf(TooManyRowsError);
+  expect(tooMany).toMatchObject({
+    actual: 2,
+    queryId: optional.queryId,
+    queryName: "users.optional",
+  });
+});
+
 test("query definitions accept static result assertions", () => {
   expect(defineQuery.one("SELECT capabilities", {
     resultAssertions: { capabilities: { elements: "non-null" } },

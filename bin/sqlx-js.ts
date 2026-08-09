@@ -107,7 +107,7 @@ Changes target database: no`,
 
 Manage the pinned pgschema tool and target-database deployment plans.
 Use provider-aware \`sqlx-js dev\` and \`sqlx-js verify\` for shadow validation.`,
-  prepare: `usage: sqlx-js prepare [--check | --offline | --verify | --watch] [--warnings | --verbose | --json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune]
+  prepare: `usage: sqlx-js prepare [--check | --offline | --verify | --watch] [--include <glob>] [--query <name-or-id>] [--warnings | --verbose | --json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune]
 
 Query-artifact engine:
   prepare             regenerate artifacts against DATABASE_URL
@@ -115,6 +115,8 @@ Query-artifact engine:
   prepare --check     verify committed artifacts offline
   prepare --offline   restore generated files from committed cache
   prepare --verify    compare fresh artifacts against a supplied live database
+  prepare --include   live-validate matching source files and mark artifacts incomplete
+  prepare --query     live-validate an exact defineQuery name or stable query ID
 
 Output:
   default             compact counts; errors remain expanded
@@ -311,6 +313,8 @@ function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfi
       verbose: { type: "boolean" },
       "no-prune": { type: "boolean" },
       "strict-inference": { type: "boolean" },
+      include: { type: "string", multiple: true },
+      query: { type: "string", multiple: true },
     };
   }
   if (command === "queries") {
@@ -384,6 +388,12 @@ function arg(name: string, def?: string): string | undefined {
 
 function flag(name: string): boolean {
   return values[name.replace(/^--/, "")] === true;
+}
+
+function args(name: string): string[] {
+  const value = values[name.replace(/^--/, "")];
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
+  return typeof value === "string" ? [value] : [];
 }
 
 function requirePositionals(min: number, max: number, label: string): void {
@@ -488,8 +498,13 @@ function validateInvocation(): void {
 validateInvocation();
 
 const root = resolve(arg("--root", process.cwd())!);
-function prepareMode(): "prepare" | "check" | "offline" | "verify" {
-  return flag("--verify") ? "verify" : flag("--check") ? "check" : flag("--offline") ? "offline" : "prepare";
+function prepareMode(): "prepare" | "prepare-focused" | "check" | "offline" | "verify" {
+  if (flag("--verify")) return "verify";
+  if (flag("--check")) return "check";
+  if (flag("--offline")) return "offline";
+  return args("--include").length > 0 || args("--query").length > 0
+    ? "prepare-focused"
+    : "prepare";
 }
 
 function printPrepareFailure(
@@ -724,6 +739,7 @@ if (cmd === "init") {
     }
     const {
       PgschemaCommandError,
+      SchemaMaterializerCommandError,
       runPgschemaDev,
       runPgschemaVerify,
     } = await import("../src/commands/pgschema");
@@ -745,7 +761,11 @@ if (cmd === "init") {
       if (!ok) process.exit(1);
     } catch (error) {
       console.error((error as Error).message);
-      process.exit(error instanceof PgschemaCommandError ? error.exitCode : 2);
+      process.exit(
+        error instanceof PgschemaCommandError || error instanceof SchemaMaterializerCommandError
+          ? error.exitCode
+          : 2,
+      );
     }
   } else {
     const { migrateDev, migrateVerify } = await import("../src/commands/migrate");
@@ -850,6 +870,9 @@ if (cmd === "init") {
   const prepareJsonl = flag("--jsonl");
   const prepareWarnings = flag("--warnings");
   const prepareVerbose = flag("--verbose");
+  const prepareIncludes = args("--include");
+  const prepareQueries = args("--query");
+  const prepareFocused = prepareIncludes.length > 0 || prepareQueries.length > 0;
   const failPrepare = (
     message: string,
     phase: PrepareDiagnosticPhase,
@@ -880,6 +903,15 @@ if (cmd === "init") {
   if ((prepareCheck || prepareOffline || prepareVerify) && flag("--no-prune")) {
     failPrepare("--no-prune is only supported by live prepare and prepare --watch", "config");
   }
+  if ([...prepareIncludes, ...prepareQueries].some((value) => value.trim() === "")) {
+    failPrepare("--include and --query values must be non-empty", "config");
+  }
+  if (prepareFocused && (prepareCheck || prepareOffline || prepareVerify || prepareWatch)) {
+    failPrepare("--include and --query are only supported by live prepare", "config");
+  }
+  if (prepareFocused && flag("--no-prune")) {
+    failPrepare("focused prepare already preserves unselected cache entries; remove --no-prune", "config");
+  }
   if (!prepareCheck && !prepareOffline && !databaseUrl) {
     failPrepare("DATABASE_URL is required for prepare (use --check or --offline without a database)", "connect");
   }
@@ -896,6 +928,7 @@ if (cmd === "init") {
     verbose: prepareVerbose,
     prune: !flag("--no-prune"),
     strictInference: flag("--strict-inference"),
+    ...(prepareFocused ? { focus: { include: prepareIncludes, query: prepareQueries } } : {}),
   };
   if (prepareWatch) {
     const { runWatch } = await import("../src/commands/watch");

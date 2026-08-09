@@ -44,6 +44,7 @@ export type PrepareArtifactPublication = GeneratedOutputPublication & {
   enumCatalogEnabled: boolean;
   configHash: string;
   prune: boolean;
+  artifactComplete?: boolean;
 };
 
 export type PrepareArtifactPublicationResult = {
@@ -103,7 +104,7 @@ export function publishPrepareArtifacts(
         input.profiles,
         input.temporal,
       );
-      writeCacheManifest(cache.staged, input.configHash);
+      writeCacheManifest(cache.staged, input.configHash, input.artifactComplete !== false);
 
       stageGeneratedOutputs(input, cache, externalTargets);
 

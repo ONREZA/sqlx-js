@@ -179,10 +179,24 @@ const db = createSqlClient(process.env.DATABASE_URL, {
     },
   },
   // Fires after every query/transaction statement, success or failure.
-  onQuery: ({ queryId, queryName, executionPath, query, params, durationMs, rowCount, error }) => {
+  onQuery: ({
+    queryId,
+    queryName,
+    executionPath,
+    query,
+    durationMs,
+    preDispatchDurationMs,
+    acquireDurationMs,
+    executionDurationMs,
+    connectionCreated,
+    rowCount,
+    error,
+  }) => {
     if (error) logger.error({ queryId, queryName, executionPath, query, error });
-    else if (durationMs > 200) {
-      logger.warn({ queryId, queryName, executionPath, durationMs, rowCount });
+    else if ((acquireDurationMs ?? 0) > 200) {
+      logger.warn({ queryId, queryName, durationMs, preDispatchDurationMs, acquireDurationMs, connectionCreated });
+    } else if ((executionDurationMs ?? durationMs) > 200) {
+      logger.warn({ queryId, queryName, executionPath, durationMs, executionDurationMs, rowCount });
     }
   },
   onQueryStart: ({ queryId, queryName, generation }) => {
@@ -223,6 +237,17 @@ const db = createSqlClient(process.env.DATABASE_URL, {
 ```
 
 The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. `queryId` is the stable prepare/cache fingerprint and is suitable for metric labels; `queryName` is present for named `defineQuery` calls. For parameterized queries, managed PostgreSQL clients add `executionPath` as `descriptor` for a prepared-descriptor hit or `adaptive` when parameter types are described at runtime. Parameterless queries already use one write and leave the field undefined. It is produced only for observers and does not enable hot-path counters. Profiled managed clients also attach the stable `profile` name and PostgreSQL `role` to query, query-start/error/timeout, client-state, and lifecycle-hook-error events, including events emitted by replacement pool generations. The hook is a non-blocking observer: synchronous throws and asynchronous rejections preserve the database result/error and are passed to `onQueryHookError` when configured. The event preserves source-level parameters for direct queries (including the named-parameter object); mapped definitions report the mapper output rather than their application input. Parameters may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
+
+`durationMs` remains the end-to-end operation duration. Integrated managed
+clients also report `preDispatchDurationMs` for bootstrap, encoding, and
+pool/connect work before wire dispatch; `acquireDurationMs` for the driver's
+pool wait and lazy connection setup; `executionDurationMs` for wire execution
+and result decoding; and `connectionCreated` when the observed statement's
+driver acquisition opened a new connection. Transaction-owned queries do not
+acquire a pool lease, so their `acquireDurationMs` is absent and serial queueing
+remains part of `preDispatchDurationMs`. The split fields are optional for
+custom `RuntimeClient` implementations and for failures whose boundary is not
+known.
 
 Query lifecycle events intentionally omit SQL text and parameters.
 `onQueryStart` fires before codec bootstrap. `onQueryError` reports admitted

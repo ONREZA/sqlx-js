@@ -30,6 +30,11 @@ export default defineConfig({
     provider: "pgschema",
     file: "schema.sql",
     schemas: ["public"],
+    // Optional disposable dev/verify adapter for include graphs and hooks.
+    materializer: {
+      command: "bun",
+      args: ["scripts/materialize-shadow.ts"],
+    },
   },
   jsonbTypes: {
     "users.settings":     'import("@app/shared/database-json").UserSettings',
@@ -160,7 +165,15 @@ stale. The ignore acknowledges duplication only: divergent source contracts
 remain review-required. The option never changes prepare artifacts or runtime
 behavior. See [Query reuse and similarity audits](./query-audits.md).
 
-The `schema` block is optional. Use `provider: "pgschema"` when sqlx-js should delegate schema planning/apply commands to pgschema. `command` can override the managed binary lookup and point at another executable. With the pinned pgschema 1.12.0 CLI, `schemas` must contain exactly one schema name. That release drops function-local `SET` clauses other than `search_path`; the upstream defect is tracked in [pgplex/pgschema#526](https://github.com/pgplex/pgschema/issues/526). Do not use the managed provider as the DDL authority for functions that require additional settings until the upstream fix is available and pinned. sqlx-js preserves the complete live `pg_proc.proconfig` array in function caches and schema snapshots, so verification detects a lost setting when the expected artifact already contains it; it cannot reconstruct omitted desired state by parsing `schema.sql` as a second DDL authority.
+The `schema` block is optional. Use `provider: "pgschema"` when sqlx-js should delegate schema planning/apply commands to pgschema. `command` can override the managed binary lookup and point at another executable. `materializer` is a separate adapter used only by disposable `dev` and `verify`: sqlx-js runs it from the project root with `DATABASE_URL` and `SQLX_JS_SHADOW_DATABASE_URL` set to the shadow database, plus `SQLX_JS_PROJECT_ROOT` and, when present, `SQLX_JS_SCHEMA_FILE`. The command must expand includes, run required pre/post steps, and leave the shadow fully materialized before exiting successfully. It never replaces target `pgschema plan/apply` authority.
+
+The materializer is trusted project code and inherits the process environment;
+sqlx-js guarantees only that its `DATABASE_URL` variables point to the shadow.
+Dropping a shadow database does not remove cluster-scoped roles or extensions.
+Use pre-existing objects or an ephemeral PostgreSQL cluster when validation
+creates them.
+
+Without a materializer, the pinned pgschema 1.12.0 CLI requires exactly one schema name. That release drops function-local `SET` clauses other than `search_path`; the upstream defect is tracked in [pgplex/pgschema#526](https://github.com/pgplex/pgschema/issues/526). Do not use the managed provider as the DDL authority for functions that require additional settings until the upstream fix is available and pinned. sqlx-js preserves the complete live `pg_proc.proconfig` array in function caches and schema snapshots, so verification detects a lost setting when the expected artifact already contains it; it cannot reconstruct omitted desired state by parsing `schema.sql` as a second DDL authority.
 
 Point mappings directly at the application's canonical exported types. The strings are emitted as TypeScript type expressions, so `import("...").Type` keeps the generated declaration self-contained and avoids a duplicate ambient schema:
 
@@ -187,6 +200,16 @@ traversal order. This is a compile-time assertion, not runtime validation
 against the application-owned JSON schema; that schema remains the source of
 truth. The runtime validates the versioned Extended JSON transport contract,
 not `T`.
+
+Every live `prepare`, `prepare --verify`, and shadow workflow resolves each
+configured `jsonbTypes`, `columnTypes`, and
+`arrayElementNullability` key against the live database, including keys not
+touched by a query. A key must use `table.column` or `schema.table.column`, name
+a unique application relation and column, and match the assertion's PostgreSQL
+shape. An unqualified key that matches the same column in multiple schemas is
+rejected; qualify it instead of relying on `search_path`.
+Offline `--check` relies on the complete live-generated manifest rather than
+opening a database.
 
 Columns without a custom mapping use `SqlxJson<JsonValue>` for result rows and
 `SqlxJson<unknown>` for parameters. `--strict-inference` accepts the intentional

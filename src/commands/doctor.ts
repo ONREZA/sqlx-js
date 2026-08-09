@@ -13,6 +13,7 @@ import {
 import { decodeText, parseDatabaseUrl, PgClient } from "../pg/wire";
 import { mergeExtensionTypes } from "../pg/extensions";
 import { SchemaCache } from "../pg/schema";
+import { validateColumnAssertions } from "../config-column-assertions";
 import { scanProject, type QueryCallSite } from "../scan/scanner";
 import { assertDistinctEnumCatalogOutput, enumCatalogOutputPath } from "../enum-catalog";
 import { queryId } from "../query-id";
@@ -358,10 +359,12 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
   }
 
   let config: Awaited<ReturnType<typeof loadConfigInfo>>["config"] = {};
+  let configPath: string | undefined;
   let configLoaded = true;
   try {
     const info = await loadConfigInfo(opts.root);
     config = info.config;
+    configPath = info.path;
     const nativeTs = nativeTypeScriptEnabled();
     if (info.path && /\.m?ts$/.test(info.path) && nativeTs === false) {
       checks.push({ name: "config", status: "error", message: "native TypeScript execution is disabled" });
@@ -691,11 +694,26 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
         } catch (error) {
           checks.push({ name: "runtimeTypes", status: "error", message: (error as Error).message });
         }
+        try {
+          await validateColumnAssertions(config, configPath, schema);
+          checks.push({
+            name: "columnAssertions",
+            status: "ok",
+            message: "column type assertions resolve to exact PostgreSQL columns",
+          });
+        } catch (error) {
+          checks.push({ name: "columnAssertions", status: "error", message: (error as Error).message });
+        }
       } else {
         checks.push({
           name: "runtimeTypes",
           status: "warning",
           message: "runtime type check skipped because config failed to load",
+        });
+        checks.push({
+          name: "columnAssertions",
+          status: "warning",
+          message: "column assertion check skipped because config failed to load",
         });
       }
     } catch (e) {
@@ -716,7 +734,7 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
       details: {
         configuredProvider: "pgschema",
         ddlOwnership: "sqlx-js-pgschema-workflow",
-        effectiveDevVerifyProvider: "pgschema",
+        effectiveDevVerifyProvider: config.schema.materializer ? "custom-materializer" : "pgschema",
       },
     });
   } else if (config.schema?.provider === "builtin") {

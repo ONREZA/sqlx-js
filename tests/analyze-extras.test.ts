@@ -294,20 +294,41 @@ describe("analyze: non-null expressions", () => {
     expect(result.degraded).toBeUndefined();
   });
 
-  test("accounts for nullable elements in quantified array comparisons", async () => {
+  test("keeps operator results nullable without a result contract", async () => {
     const schema = fakeSchema([]);
     const sql = `SELECT
       2 = ANY(ARRAY[1, NULL::int]) AS nullable_any,
       2 = ALL(ARRAY[2, NULL::int]) AS nullable_all,
       2 = ANY(ARRAY(SELECT NULL::int)) AS nullable_subquery,
-      2 = ANY(ARRAY[1, 2]) AS non_nullable_any`;
+      2 = ANY(ARRAY[1, 2]) AS nullable_operator,
+      '{}'::jsonb ->> 'missing' AS nullable_json_text,
+      1 + 1 AS nullable_arithmetic`;
     const result = await analyzeQuery(sql, rowDesc([
       { name: "nullable_any" },
       { name: "nullable_all" },
       { name: "nullable_subquery" },
-      { name: "non_nullable_any" },
+      { name: "nullable_operator" },
+      { name: "nullable_json_text" },
+      { name: "nullable_arithmetic" },
     ]), schema);
-    expect(result.perColumnNullable).toEqual([true, true, true, false]);
+    expect(result.perColumnNullable).toEqual([true, true, true, true, true, true]);
+    expect(result.degraded).toBeUndefined();
+  });
+
+  test("recognizes distinct comparisons as non-null", async () => {
+    const schema = fakeSchema([]);
+    const sql = `SELECT
+      NULL IS DISTINCT FROM NULL AS distinct_value,
+      NULL IS NOT DISTINCT FROM NULL AS not_distinct_value,
+      NULL IS NULL AS null_test,
+      NULL::boolean IS NOT TRUE AS boolean_test`;
+    const result = await analyzeQuery(sql, rowDesc([
+      { name: "distinct_value" },
+      { name: "not_distinct_value" },
+      { name: "null_test" },
+      { name: "boolean_test" },
+    ]), schema);
+    expect(result.perColumnNullable).toEqual([false, false, false, false]);
     expect(result.degraded).toBeUndefined();
   });
 

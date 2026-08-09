@@ -39,9 +39,21 @@ Run `sqlx-js <command> --help` or
 `sqlx-js <command> <subcommand> --help` for exact flags, side effects, and
 behavior. Subcommand help is intentionally narrower than the root overview.
 
-Regular `prepare` describes and plans queries across a small connection pool (default 8, override with `SQLX_JS_PREPARE_CONCURRENCY`) for faster cold runs on large projects. After `Describe` establishes the server-side parameter contract, `SELECT`, `INSERT`, `UPDATE`, `DELETE`, and `MERGE` are SQL-prepared on the same session and planned through `EXPLAIN EXECUTE` under `plan_cache_mode = force_generic_plan`. The resulting plan is independent of placeholder values. `ANALYZE` is never used, so DML is not executed. Statements outside PostgreSQL's generic SQL `PREPARE` surface, such as `SET` and `CALL`, remain valid but are reported and cached as `parse-only`. A reusable definition can record `{ expectedValidation: "parse-only" }`; acknowledged entries stay visible in verbose output and query inventory without producing a permanent warning. Watch mode keeps one session warm, rescans only affected source files, and reuses cached metadata for unchanged fingerprints. Config and tsconfig changes invalidate the incremental state and perform a full prepare.
+Regular `prepare` describes and plans queries across a small connection pool (default 8, override with `SQLX_JS_PREPARE_CONCURRENCY`) for faster cold runs on large projects. After `Describe` establishes the server-side parameter contract, `SELECT`, `INSERT`, `UPDATE`, `DELETE`, and `MERGE` are SQL-prepared on the same session and planned through `EXPLAIN EXECUTE` under `plan_cache_mode = force_generic_plan`. The resulting plan is independent of placeholder values. `ANALYZE` is never used, so DML is not executed. The local PostgreSQL AST classifier recognizes statements outside the generic SQL `PREPARE` surface, such as `SET`, `CALL`, and `ANALYZE`, before sending a known-failing server probe; they remain valid and are cached as `parse-only`. A reusable definition can record `{ expectedValidation: "parse-only" }`; acknowledged entries stay visible in verbose output and query inventory without producing a permanent warning. Watch mode keeps one session warm, rescans only affected source files, and reuses cached metadata for unchanged fingerprints. Config and tsconfig changes invalidate the incremental state and perform a full prepare.
 
 Live prepare stages the complete generated cache and external TypeScript outputs before publication. It publishes external outputs first and swaps the cache directory last, making the cache manifest the commit marker; a synchronous publication failure restores the previous artifacts. Offline regeneration and snapshot writes under `.sqlx-js/` use the same single-writer boundary. Default pruning identifies obsolete query files by filename without parsing their contents, so an incompatible orphan from an older cache format cannot block live regeneration. `--no-prune` deliberately retains those entries.
+
+For local work in a temporarily broken monorepo, repeat `--include <glob>` to
+select source files and/or `--query <name-or-id>` to select exact reusable query
+names or stable IDs. Different selector kinds intersect; repeated values within
+one kind form a union. Focused prepare live-validates the selected fingerprints,
+reuses compatible current entries for the rest, omits uncached unselected
+query/profile contracts, and preserves orphan cache files. It atomically marks
+the generated manifest `incomplete`. Function and enum catalogs are reused from
+the current cache rather than refreshed from an unrelated live environment.
+`prepare --check`, doctor, and query freshness fail closed until a full
+`sqlx-js prepare` succeeds. Focused output is a development aid, never a release
+artifact.
 
 | Flag                  | Meaning                                                                              |
 |-----------------------|--------------------------------------------------------------------------------------|
@@ -49,6 +61,8 @@ Live prepare stages the complete generated cache and external TypeScript outputs
 | `--offline`           | Regenerate declarations, the runtime descriptor, and an enabled enum module from committed cache without a database. |
 | `--verify`            | Prepare against `DATABASE_URL` and compare generated artifacts without writing.          |
 | `--watch`             | Persistent connection, re-prepare on file change.                                    |
+| `--include <glob>`    | Focus live prepare on matching source files; repeatable and incompatible with check/offline/verify/watch. |
+| `--query <name-or-id>` | Focus live prepare on an exact reusable-query name or stable query ID; repeatable. |
 | `--root <dir>`        | Source/cache/migrations root (default: cwd).                                         |
 | `--dts <path>`        | Root-relative declarations output (default: `<root>/sqlx-js-env.d.ts`).             |
 | `--no-prune`          | Keep orphaned cache entries; they do not invalidate a later `--check`.                |
@@ -228,6 +242,17 @@ database, applies `schema.sql`, prepares project SQL, writes `.sqlx-js/`,
 `sqlx-js-env.d.ts`, and any configured enum catalog, then drops the shadow.
 `verify` repeats the same build but compares fresh artifacts without modifying
 the worktree.
+
+When `schema.materializer` is configured, `dev` and `verify` run that command
+instead of applying `schema.file` directly with pgschema. The command receives
+the disposable shadow URL through sqlx-js-owned environment variables and must
+finish include expansion, prelude setup, ownership, privileges, and other
+required hooks itself. It is trusted project code and inherits the surrounding
+process environment. Target `pgschema plan/apply` continues to use
+`schema.command` and the configured desired file or reviewed plan. Dropping a
+shadow database does not remove cluster-scoped roles or extensions: use
+pre-existing objects or an ephemeral PostgreSQL cluster when validation creates
+them.
 
 `pgschema install` installs the pinned version used by this sqlx-js release.
 `dev`, `verify`, `pgschema plan`, and `pgschema apply` use `schema.command` when

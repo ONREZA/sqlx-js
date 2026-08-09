@@ -974,13 +974,14 @@ async function expressionNullable(val: any, scope: Scope): Promise<boolean> {
     return await anyExpressionNullable([...branches, elseExpr], scope);
   }
 
+  if (val.NullTest || val.BooleanTest) return false;
+
   if (val.A_Expr) {
     const e = val.A_Expr;
-    if (await expressionNullable(e.lexpr, scope) || await expressionNullable(e.rexpr, scope)) return true;
-    if (e.kind === "AEXPR_OP_ANY" || e.kind === "AEXPR_OP_ALL") {
-      return await expressionArrayElementNullability(e.rexpr, scope) !== "non-null";
+    if (e.kind === "AEXPR_DISTINCT" || e.kind === "AEXPR_NOT_DISTINCT") {
+      return false;
     }
-    return false;
+    return true;
   }
 
   if (val.SubLink) {

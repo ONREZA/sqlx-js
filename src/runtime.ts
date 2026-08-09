@@ -39,6 +39,10 @@ export type OnQueryEvent = {
   query: string;
   params: unknown[];
   durationMs: number;
+  preDispatchDurationMs?: number;
+  acquireDurationMs?: number;
+  executionDurationMs?: number;
+  connectionCreated?: boolean;
   rowCount?: number;
   error?: unknown;
 };
@@ -312,18 +316,36 @@ export function encodeParam(p: unknown): unknown {
 }
 
 export class NoRowsError extends Error {
-  constructor(message = "expected exactly 1 row, got 0") {
+  readonly queryId?: string;
+  readonly queryName?: string;
+
+  constructor(message = "expected exactly 1 row, got 0", metadata?: QueryExecutionMetadata) {
     super(message);
     this.name = "NoRowsError";
+    if (metadata) {
+      this.queryId = metadata.queryId;
+      if (metadata.queryName !== undefined) this.queryName = metadata.queryName;
+    }
   }
 }
 
 export class TooManyRowsError extends Error {
-  public actual: number;
-  constructor(actual: number, expected: "1" | "0 or 1" = "1") {
+  readonly actual: number;
+  readonly queryId?: string;
+  readonly queryName?: string;
+
+  constructor(
+    actual: number,
+    expected: "1" | "0 or 1" = "1",
+    metadata?: QueryExecutionMetadata,
+  ) {
     super(`expected ${expected} row${expected === "1" ? "" : "s"}, got ${actual}`);
     this.name = "TooManyRowsError";
     this.actual = actual;
+    if (metadata) {
+      this.queryId = metadata.queryId;
+      if (metadata.queryName !== undefined) this.queryName = metadata.queryName;
+    }
   }
 }
 
@@ -618,24 +640,40 @@ async function runRawQuery(
     }
   }
   const start = performance.now();
+  let executionStartedAt: number | undefined;
   try {
     const transformed = client.transformParams
       ? client.transformParams(params)
       : params.length === 0 ? params : params.map(encodeParam);
     const encoded = isPromiseLike(transformed) ? await transformed : transformed;
     assertNoDateSqlValue(encoded, "PostgreSQL parameter");
+    executionStartedAt = performance.now();
     const result = await client.query(query, encoded);
+    const completedAt = performance.now();
     notifyQuery(client, {
       ...observed,
       query: observedQuery,
       params: observedParams,
-      durationMs: performance.now() - start,
+      durationMs: completedAt - start,
+      preDispatchDurationMs: executionStartedAt - start,
+      executionDurationMs: completedAt - executionStartedAt,
       rowCount: result.count ?? result.length,
     });
     return result;
   } catch (e) {
     const error = toPgError(e) ?? e;
-    notifyQuery(client, { ...observed, query: observedQuery, params: observedParams, durationMs: performance.now() - start, error });
+    const completedAt = performance.now();
+    notifyQuery(client, {
+      ...observed,
+      query: observedQuery,
+      params: observedParams,
+      durationMs: completedAt - start,
+      ...(executionStartedAt === undefined ? {} : {
+        preDispatchDurationMs: executionStartedAt - start,
+        executionDurationMs: completedAt - executionStartedAt,
+      }),
+      error,
+    });
     throw error;
   }
 }
@@ -693,10 +731,11 @@ async function runOne(
   metadata?: QueryExecutionMetadata,
   options?: QueryExecutionOptions,
 ): Promise<unknown> {
+  const observed = observedMetadata(runtimeQuery(query).id, metadata);
   const rows = await runQuery(client, query, params, metadata, options);
   if (rows.length === 1) return rows[0];
-  if (rows.length === 0) throw new NoRowsError();
-  throw new TooManyRowsError(rows.length, "1");
+  if (rows.length === 0) throw new NoRowsError(undefined, observed);
+  throw new TooManyRowsError(rows.length, "1", observed);
 }
 
 async function runOptional(
@@ -706,10 +745,11 @@ async function runOptional(
   metadata?: QueryExecutionMetadata,
   options?: QueryExecutionOptions,
 ): Promise<unknown | null> {
+  const observed = observedMetadata(runtimeQuery(query).id, metadata);
   const rows = await runQuery(client, query, params, metadata, options);
   if (rows.length === 0) return null;
   if (rows.length === 1) return rows[0];
-  throw new TooManyRowsError(rows.length, "0 or 1");
+  throw new TooManyRowsError(rows.length, "0 or 1", observed);
 }
 
 type FileCallable = AnyFn & { one: AnyOneFn; optional: AnyOptionalFn; execute: AnyExecuteFn };

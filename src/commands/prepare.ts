@@ -13,6 +13,7 @@ import {
 } from "../pg/wire";
 import { SchemaCache } from "../pg/schema";
 import { analyzeQuery } from "../pg/analyze";
+import { classifyPlanValidation } from "../pg/plan-classification";
 import { isBuiltinOid } from "../pg/oids";
 import { scanProject, type QueryCallSite } from "../scan/scanner";
 import {
@@ -26,10 +27,12 @@ import {
 import { emitDts } from "../codegen";
 import {
   loadConfig,
+  loadConfigInfo,
   prepareConfigHash,
   type DatabaseProfile,
   type SqlxJsConfig,
 } from "../config";
+import { validateColumnAssertions } from "../config-column-assertions";
 import {
   functionCacheExists,
   readFunctionCache,
@@ -120,6 +123,10 @@ export type PrepareOptions = {
   verbose?: boolean;
   prune?: boolean;
   strictInference?: boolean;
+  focus?: {
+    include: string[];
+    query: string[];
+  };
 };
 
 export type PrepareResult = {
@@ -192,13 +199,18 @@ export type PrepareSession = {
 export type PrepareIncrementalInput = {
   sites?: QueryCallSite[];
   reuseCacheFps?: ReadonlySet<string>;
+  reuseFunctionCatalog?: boolean;
   reuseEnumCatalog?: boolean;
+  artifactComplete?: boolean;
 };
 
 export async function openSession(opts: PrepareOptions): Promise<PrepareSession> {
   let userCfg: SqlxJsConfig;
+  let userConfigPath: string | undefined;
   try {
-    userCfg = await loadConfig(opts.root);
+    const info = await loadConfigInfo(opts.root);
+    userCfg = info.config;
+    userConfigPath = info.path;
   } catch (error) {
     throw fatal("config", error);
   }
@@ -224,6 +236,7 @@ export async function openSession(opts: PrepareOptions): Promise<PrepareSession>
   schema.setTypeRegistry(mergeExtensionTypes(userCfg.customTypes), userCfg.customTypes);
   try {
     await schema.validateUserTypeRegistry();
+    await validateColumnAssertions(userCfg, userConfigPath, schema);
   } catch (error) {
     await client.end().catch(() => {});
     throw fatal("config", error);
@@ -322,7 +335,10 @@ export async function validateAll(
       try {
         const d = await client.describe(query);
         try {
-          const validation = await client.plan(query, d.paramOids.length);
+          const classified = await classifyPlanValidation(query);
+          const validation = classified === "parse-only"
+            ? classified
+            : await client.plan(query, d.paramOids.length);
           results.set(fp, {
             ok: true,
             paramOids: d.paramOids,
@@ -801,6 +817,8 @@ export async function prepareOnce(
   let functions: FunctionEntry[];
   if (userCfg.functionCatalog === false) {
     functions = [];
+  } else if (input.reuseFunctionCatalog && functionCacheExists(opts.cacheDir)) {
+    functions = readFunctionCache(opts.cacheDir);
   } else {
     try {
       functions = await introspectFunctions(client, session.schema, {
@@ -848,6 +866,7 @@ export async function prepareOnce(
       profiles: userCfg.profiles,
       temporal: userCfg.temporal,
       prune: opts.prune !== false,
+      artifactComplete: input.artifactComplete,
     });
     pruned = publication.pruned;
     if (pruned > 0) log(`pruned ${pruned} orphaned cache entry/entries`);
@@ -1234,15 +1253,67 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
 
   const session = await openSession(opts);
   try {
+    let focused: import("./prepare-focus").FocusedPrepareSelection | undefined;
+    if (opts.focus) {
+      try {
+        assertCacheManifest(
+          opts.cacheDir,
+          prepareConfigHash(session.userCfg),
+          { allowIncomplete: true },
+        );
+      } catch (error) {
+        throw fatal("cache", error);
+      }
+      const {
+        assertFocusedPrepareCatalogs,
+        selectFocusedPrepareInput,
+      } = await import("./prepare-focus");
+      try {
+        assertFocusedPrepareCatalogs(session.userCfg, opts.cacheDir);
+      } catch (error) {
+        throw fatal("cache", error);
+      }
+      try {
+        focused = selectFocusedPrepareInput(
+          opts.root,
+          session.userCfg,
+          opts.cacheDir,
+          opts.focus,
+        );
+      } catch (error) {
+        throw fatal("scan", error);
+      }
+    }
     const compact = opts.json || !opts.verbose;
     const r = await prepareOnce(
-      opts,
+      focused ? { ...opts, prune: false } : opts,
       session,
       compact ? () => {} : console.log,
       compact ? () => {} : console.error,
+      defaultPrepareConcurrency(),
+      focused?.input,
     );
+    if (focused && r.failures === 0) {
+      r.diagnostics.push({
+        severity: "warning",
+        phase: "cache",
+        message: "focused prepare artifacts are incomplete; run a full `sqlx-js prepare` before check or release",
+      });
+    }
     if (opts.json) {
-      console.log(JSON.stringify({ formatVersion: 1, ok: r.failures === 0, mode: "prepare", ...r }, null, 2));
+      console.log(JSON.stringify({
+        formatVersion: 1,
+        ok: r.failures === 0,
+        mode: focused ? "prepare-focused" : "prepare",
+        artifactState: focused ? "incomplete" : "complete",
+        ...(focused ? {
+          projectSites: focused.projectSites,
+          selectedSites: focused.selectedSites,
+          omittedSites: focused.omittedSites,
+          omittedContracts: focused.omittedContracts,
+        } : {}),
+        ...r,
+      }, null, 2));
     } else if (!opts.verbose) {
       reportPrepareDiagnostics(r.diagnostics, opts.warnings);
     }
@@ -1263,21 +1334,22 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
     }
     if (!opts.json && !opts.verbose) {
       const enumOutput = enumCatalogOutputPath(opts.root, session.userCfg, opts.enumOutputPath);
-      console.log(
-        withOutputHints(
-          `prepared ${formatPrepareTotals(r)}; `
+      const message = focused
+        ? `focused prepare validated ${focused.selectedSites}/${focused.projectSites} source site(s); `
+          + `${focused.omittedContracts} uncached unselected query/profile contract(s) omitted; `
+          + `artifacts are incomplete → ${opts.dtsPath}`
+        : `prepared ${formatPrepareTotals(r)}; `
           + `${formatPrepareDiagnosticCounts(r.diagnostics)} → ${opts.dtsPath}`
-          + `${enumOutput ? `, ${enumOutput}` : ""}`,
-          r.diagnostics,
-          opts.warnings,
-        ),
-      );
+          + `${enumOutput ? `, ${enumOutput}` : ""}`;
+      console.log(withOutputHints(message, r.diagnostics, opts.warnings));
     } else if (!opts.json) {
       const enumOutput = enumCatalogOutputPath(opts.root, session.userCfg, opts.enumOutputPath);
-      console.log(
-        `\nprepared ${r.entries} unique query/queries, ${r.functions} function(s), ${r.enums} enum(s) `
-        + `→ ${opts.dtsPath}${enumOutput ? `, ${enumOutput}` : ""}`,
-      );
+      console.log(focused
+        ? `\nfocused prepare validated ${focused.selectedSites}/${focused.projectSites} source site(s); `
+          + `${focused.omittedContracts} uncached unselected query/profile contract(s) omitted; `
+          + `artifacts are incomplete → ${opts.dtsPath}`
+        : `\nprepared ${r.entries} unique query/queries, ${r.functions} function(s), ${r.enums} enum(s) `
+          + `→ ${opts.dtsPath}${enumOutput ? `, ${enumOutput}` : ""}`);
     }
   } finally {
     await closePrepareSession(session);

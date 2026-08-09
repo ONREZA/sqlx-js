@@ -84,10 +84,17 @@ export type PostgresResult<Row extends Record<string, unknown> = Record<string, 
 
 export type PostgresPendingQuery<Row extends Record<string, unknown> = Record<string, unknown>> =
   PromiseLike<PostgresResult<Row>> & {
+    readonly timing?: PostgresQueryTiming;
     execute(): PostgresPendingQuery<Row>;
     cancel(): Promise<void> | void;
     values(): Promise<unknown[][]>;
   };
+
+export type PostgresQueryTiming = {
+  acquireDurationMs?: number;
+  executionDurationMs?: number;
+  connectionCreated?: boolean;
+};
 
 export type PostgresQueryClient = {
   unsafe<Row extends Record<string, unknown> = Record<string, unknown>>(
@@ -136,6 +143,19 @@ type AcquireWaiter = {
   resolve(lease: ConnectionLease): void;
   reject(error: unknown): void;
 };
+
+const QUERY_STARTED_AT = Symbol("sqlx-js.query-started-at");
+const QUERY_MEASURES_ACQUIRE = Symbol("sqlx-js.query-measures-acquire");
+const QUERY_DISPATCHED_AT = Symbol("sqlx-js.query-dispatched-at");
+type MutablePostgresQueryTiming = PostgresQueryTiming & {
+  [QUERY_STARTED_AT]?: number;
+  [QUERY_MEASURES_ACQUIRE]?: boolean;
+  [QUERY_DISPATCHED_AT]?: number;
+};
+
+export function queryDispatchedAt(timing: PostgresQueryTiming | undefined): number | undefined {
+  return (timing as MutablePostgresQueryTiming | undefined)?.[QUERY_DISPATCHED_AT];
+}
 
 const DEFAULT_MAX_CONNECTIONS = 10;
 const MAX_MILLISECONDS = 2_147_483_647;
@@ -220,10 +240,11 @@ class PostgresPool implements PostgresClient {
     params: unknown[] = [],
   ): PostgresPendingQuery<Row> {
     return new DriverQuery<Row>(
-      async (setCancel, isCancelled) => {
+      async (setCancel, isCancelled, timing) => {
+        timing[QUERY_MEASURES_ACQUIRE] = true;
         const lease = await this.acquire(setCancel, isCancelled);
         try {
-          return await lease.slot.query(query, params, setCancel, isCancelled, true);
+          return await lease.slot.query(query, params, setCancel, isCancelled, true, undefined, timing);
         } finally {
           lease.release();
         }
@@ -237,10 +258,11 @@ class PostgresPool implements PostgresClient {
     params: unknown[],
   ): PostgresPendingQuery<Row> {
     return new DriverQuery<Row>(
-      async (setCancel, isCancelled) => {
+      async (setCancel, isCancelled, timing) => {
+        timing[QUERY_MEASURES_ACQUIRE] = true;
         const lease = await this.acquire(setCancel, isCancelled);
         try {
-          return await lease.slot.query(query, params, setCancel, isCancelled, true, parameterOids);
+          return await lease.slot.query(query, params, setCancel, isCancelled, true, parameterOids, timing);
         } finally {
           lease.release();
         }
@@ -415,11 +437,11 @@ class ReservedClient implements PostgresQueryClient {
     params: unknown[] = [],
   ): PostgresPendingQuery<Row> {
     return new DriverQuery<Row>(
-      (setCancel, isCancelled) => {
+      (setCancel, isCancelled, timing) => {
         if (!this.active) {
           throw new Error("sqlx-js: transaction client cannot be used after the transaction ends");
         }
-        return this.slot.query(query, params, setCancel, isCancelled, this.allowReconnect);
+        return this.slot.query(query, params, setCancel, isCancelled, this.allowReconnect, undefined, timing);
       },
     );
   }
@@ -430,7 +452,7 @@ class ReservedClient implements PostgresQueryClient {
     params: unknown[],
   ): PostgresPendingQuery<Row> {
     return new DriverQuery<Row>(
-      (setCancel, isCancelled) => {
+      (setCancel, isCancelled, timing) => {
         if (!this.active) {
           throw new Error("sqlx-js: transaction client cannot be used after the transaction ends");
         }
@@ -441,6 +463,7 @@ class ReservedClient implements PostgresQueryClient {
           isCancelled,
           this.allowReconnect,
           parameterOids,
+          timing,
         );
       },
     );
@@ -464,6 +487,7 @@ class ReservedClient implements PostgresQueryClient {
 }
 
 class DriverQuery<Row extends Record<string, unknown>> implements PostgresPendingQuery<Row> {
+  readonly timing: MutablePostgresQueryTiming = {};
   private promise: Promise<PostgresResult<Row>> | undefined;
   private cancelCurrent: (() => Promise<void> | void) | undefined;
   private cancelResult: Promise<void> | void = undefined;
@@ -473,12 +497,14 @@ class DriverQuery<Row extends Record<string, unknown>> implements PostgresPendin
     private readonly start: (
       setCancel: (cancel: () => Promise<void> | void) => void,
       isCancelled: () => boolean,
+      timing: MutablePostgresQueryTiming,
     ) => Promise<PostgresResult<Row>>,
   ) {}
 
   execute(): this {
     if (!this.promise) {
       let started: Promise<PostgresResult<Row>>;
+      this.timing[QUERY_STARTED_AT] = performance.now();
       try {
         started = this.start(
           (cancel) => {
@@ -486,11 +512,18 @@ class DriverQuery<Row extends Record<string, unknown>> implements PostgresPendin
             if (this.cancelled) this.cancelResult = cancel();
           },
           () => this.cancelled,
+          this.timing,
         );
       } catch (error) {
         started = Promise.reject(error);
       }
       this.promise = started.finally(() => {
+        if (this.timing[QUERY_MEASURES_ACQUIRE]) {
+          this.timing.acquireDurationMs ??= performance.now() - this.timing[QUERY_STARTED_AT]!;
+        }
+        delete this.timing[QUERY_STARTED_AT];
+        delete this.timing[QUERY_MEASURES_ACQUIRE];
+        delete this.timing[QUERY_DISPATCHED_AT];
         this.cancelCurrent = undefined;
       });
     }
@@ -538,6 +571,7 @@ class ConnectionSlot {
     isCancelled: () => boolean,
     allowReconnect: boolean,
     parameterOids?: readonly number[],
+    timing?: MutablePostgresQueryTiming,
   ): Promise<PostgresResult<Row>> {
     const result = this.tail.then(async () => {
       if (isCancelled()) throw queryCancelledBeforeDispatch();
@@ -550,10 +584,12 @@ class ConnectionSlot {
         );
       }
       let client = this.client;
+      let connectionCreated = false;
       if (!client || client.isClosed) {
         const startupAbort = new AbortController();
         setCancel(() => startupAbort.abort(queryCancelledBeforeDispatch()));
         client = await this.readyClient(allowReconnect, startupAbort.signal);
+        connectionCreated = true;
       }
       setCancel(() => client.cancel());
       if (isCancelled()) {
@@ -561,12 +597,20 @@ class ConnectionSlot {
         client.destroy(error);
         throw error;
       }
+      let executionStartedAt: number | undefined;
       try {
+        const acquiredAt = performance.now();
+        if (timing?.[QUERY_MEASURES_ACQUIRE] && timing[QUERY_STARTED_AT] !== undefined) {
+          timing.acquireDurationMs = acquiredAt - timing[QUERY_STARTED_AT];
+          timing.connectionCreated = connectionCreated;
+        }
         const values: unknown[][] = [];
         const materializeRow = (payload: Uint8Array, fields: readonly FieldDescription[]) =>
           decodeDataRow<Row>(payload, fields, this.options.parsers, values, query);
         let raw;
         if (params.length === 0) {
+          executionStartedAt = performance.now();
+          if (timing) timing[QUERY_DISPATCHED_AT] = executionStartedAt;
           raw = await client.execParamsText(query, [], materializeRow);
         } else if (parameterOids) {
           const encoded = params.map((value, index) =>
@@ -577,8 +621,12 @@ class ConnectionSlot {
             client.destroy(error);
             throw error;
           }
+          executionStartedAt = performance.now();
+          if (timing) timing[QUERY_DISPATCHED_AT] = executionStartedAt;
           raw = await client.execKnownParamsText(query, parameterOids, encoded, materializeRow);
         } else {
+          executionStartedAt = performance.now();
+          if (timing) timing[QUERY_DISPATCHED_AT] = executionStartedAt;
           raw = await client.execParamsTextWithSerializer(query, (inferredOids) => {
             const encoded = params.map((value, index) =>
               encodeParameter(value, this.options, inferredOids[index])
@@ -600,6 +648,10 @@ class ConnectionSlot {
           client.destroy(error instanceof Error ? error : undefined);
         }
         throw error;
+      } finally {
+        if (timing && executionStartedAt !== undefined) {
+          timing.executionDurationMs = performance.now() - executionStartedAt;
+        }
       }
     });
     this.tail = result.then(() => undefined, () => undefined);

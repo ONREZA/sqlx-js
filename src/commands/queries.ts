@@ -140,7 +140,7 @@ export async function buildQueryInventory(root: string, cacheDir: string): Promi
   let manifestCurrent = false;
   try {
     const manifest = readCacheManifest(cacheDir);
-    manifestCurrent = manifest?.configHash === prepareConfigHash(config);
+    manifestCurrent = manifest?.complete === true && manifest.configHash === prepareConfigHash(config);
   } catch (error) {
     if (!(error instanceof CacheManifestStaleError)) {
       throw queriesError("cache", error);

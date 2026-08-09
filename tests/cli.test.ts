@@ -790,6 +790,37 @@ test("prepare --json reports missing DATABASE_URL as one structured document", (
   }
 });
 
+test("focused prepare failures keep their machine-readable mode", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-cli-focused-json-"));
+  try {
+    const missingDatabase = spawnSync(
+      "bun",
+      [binPath, "prepare", "--include", "src/**/*.ts", "--json", "--root", root],
+      { encoding: "utf8", env: { ...process.env, DATABASE_URL: "" } },
+    );
+    expect(missingDatabase.status).toBe(2);
+    expect(JSON.parse(missingDatabase.stdout)).toMatchObject({
+      ok: false,
+      mode: "prepare-focused",
+      diagnostics: [{ phase: "connect" }],
+    });
+
+    const emptySelector = spawnSync(
+      "bun",
+      [binPath, "prepare", "--include", "", "--json", "--root", root],
+      { encoding: "utf8", env: { ...process.env, DATABASE_URL: "" } },
+    );
+    expect(emptySelector.status).toBe(2);
+    expect(JSON.parse(emptySelector.stdout)).toMatchObject({
+      ok: false,
+      mode: "prepare-focused",
+      diagnostics: [{ phase: "config", message: expect.stringContaining("must be non-empty") }],
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("prepare --jsonl rejects non-watch mode with one structured event", () => {
   const r = spawnSync("bun", [binPath, "prepare", "--jsonl"], {
     encoding: "utf8",
