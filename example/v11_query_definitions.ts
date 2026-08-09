@@ -1,11 +1,12 @@
 import {
   defineQuery,
-  sql,
   type QueryParams,
   type QueryResult,
   type QueryRow,
   type SqlExecutor,
 } from "@onreza/sqlx-js";
+import { db } from "./database";
+import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env";
 
 export const findUserByEmail = defineQuery.optional(
   "users.findByEmail",
@@ -14,14 +15,17 @@ export const findUserByEmail = defineQuery.optional(
    WHERE email = $email`,
 );
 
-export type FindUserByEmailParams = QueryParams<typeof findUserByEmail>;
-export type FindUserByEmailRow = QueryRow<typeof findUserByEmail>;
-export type FindUserByEmailResult = QueryResult<typeof findUserByEmail>;
+export type FindUserByEmailParams = QueryParams<typeof findUserByEmail, SqlxJsGeneratedRegistry>;
+export type FindUserByEmailRow = QueryRow<typeof findUserByEmail, SqlxJsGeneratedRegistry>;
+export type FindUserByEmailResult = QueryResult<typeof findUserByEmail, SqlxJsGeneratedRegistry>;
 
-export function findUser(executor: SqlExecutor, params: FindUserByEmailParams) {
+export function findUser(
+  executor: SqlExecutor<SqlxJsGeneratedRegistry>,
+  params: FindUserByEmailParams,
+) {
   return findUserByEmail.run(executor, params);
 }
 
 export function findUserInTransaction(email: string) {
-  return sql.transaction((tx) => findUserByEmail.run(tx, { email }));
+  return db.sql.transaction((tx) => findUserByEmail.run(tx, { email }));
 }

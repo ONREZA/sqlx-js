@@ -39,7 +39,7 @@ lifecycle guarantees.
 
 ## `sql.transaction(fn)`
 
-Wrap a function body in a database transaction. The callback receives a scoped `tx` that has the same typed `()` and `.file()` surface, but routes through the transaction's dedicated connection. The scanner recognises the callback parameter name and validates inner queries against `KnownQueries`.
+Wrap a function body in a database transaction. The callback receives a scoped `tx` that has the same typed `()` and `.file()` surface, but routes through the transaction's dedicated connection. The scanner recognises the callback parameter name and validates inner queries against the client's generated registry.
 
 ```ts
 import { db } from "./db.js";
@@ -189,11 +189,11 @@ await Promise.all([
 ]);
 ```
 
-Each generated `sqlx-js-env.d.ts` exports its own `SqlxJsGeneratedRegistry`. Passing it to `createSqlClient<...>()` keeps a scoped client on that project's query contract even when a monorepo TypeScript program includes declarations for several databases. The global `sql` export remains as a deprecated migration convenience path. Call `configureDefaultTemporalApi(Temporal)` before its first query or lifecycle operation when the runtime has no compatible `globalThis.Temporal`.
+Each generated `sqlx-js-env.d.ts` exports its own `SqlxJsGeneratedRegistry`. Passing it to `createSqlClient<...>()` keeps a scoped client on that project's query contract even when a monorepo TypeScript program includes declarations for several databases. There is no ambient registry or global managed client; the application owns each client and its Temporal provider explicitly.
 
-When a workspace package exports database source to other TypeScript programs, bind `SqlxJsGeneratedRegistry` at that package's client boundary. A consumer does not automatically include the database package's ambient `.d.ts`; exporting an unscoped client can therefore collapse its literal parameters to `never` outside the package.
+When a workspace package exports database source to other TypeScript programs, bind and export the client with that package's `SqlxJsGeneratedRegistry` at the database boundary.
 
-The scanner recognizes clients assigned directly from an imported `createSqlClient(...)` (including aliased and namespace imports), so `client.sql(...)`, its cardinality helpers, file queries, and transactions participate in `prepare` exactly like the global `sql` surface.
+The scanner recognizes clients assigned directly from an imported `createSqlClient(...)` (including aliased and namespace imports), so `client.sql(...)`, its cardinality helpers, file queries, and transactions participate in `prepare`.
 
 ## Prepared runtime descriptors
 
@@ -272,6 +272,9 @@ import {
   SQLSTATE,
   isPgError,
 } from "@onreza/sqlx-js";
+import { db } from "./db.js";
+
+const { sql } = db;
 
 try {
   const u = await sql.one(`SELECT id FROM users WHERE id = $1`, 99);
@@ -294,6 +297,10 @@ try {
 `sql.transaction(fn)` and `sql.transaction(opts, fn)`:
 
 ```ts
+import { db } from "./db.js";
+
+const { sql } = db;
+
 await sql.transaction({
   isolation: "serializable",
   readOnly: true,
@@ -307,9 +314,5 @@ await sql.transaction({
 Base options are `{ isolation?: "read uncommitted" | "read committed" | "repeatable read" | "serializable"; readOnly?: boolean; deferrable?: boolean; timeoutMs?: number; signal?: AbortSignal }`. Profiled clients add the required `settings` object when their profile declares `transactionSettings`. Transaction characteristics are applied via `SET TRANSACTION` immediately after `BEGIN`, followed by transaction-local settings before the callback. The deadline starts before codec bootstrap and covers pool acquisition, `BEGIN`, context setup, the callback, `COMMIT`, and `ROLLBACK`. On expiration the scoped executor is disabled, active statements are cancelled, and the driver is given `cancelGraceMs` to confirm rollback. A clean rollback produces `outcome: "rolled_back"`; an unconfirmed `BEGIN`, `COMMIT`, or `ROLLBACK` produces `unknown` and retires the entire pool generation. Arbitrary non-database work already running inside the callback cannot be forcibly stopped by JavaScript, so external side effects should observe their own signal or be idempotent.
 
 The transaction-scoped executor is valid only while its callback is active. Capturing `tx` and using it after commit or rollback fails locally without dispatching SQL.
-
-## Namespace imports
-
-In addition to `import { sql } from "@onreza/sqlx-js"`, the scanner recognises `import * as ns from "@onreza/sqlx-js"`. It validates `ns.sql(...)`, `ns.sql.one(...)`, `ns.sql.file(...)`, and `ns.sql.transaction(...)` exactly like the named-import form. Local re-declarations (`const sql = ...`, `const { sql } = ...`) correctly shadow the alias inside their scope.
 
 [Documentation index](./README.md)

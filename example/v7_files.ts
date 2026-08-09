@@ -1,7 +1,7 @@
-import { sql } from "@onreza/sqlx-js";
+import { db } from "./database";
 
 export async function topAdmins() {
-  const rows = await sql.file("queries/get_users_by_role.sql", "admin", 5);
+  const rows = await db.sql.file("queries/get_users_by_role.sql", "admin", 5);
   for (const r of rows) {
     const id: bigint = r.id;
     const name: string = r.name;
@@ -12,7 +12,7 @@ export async function topAdmins() {
 }
 
 export async function postsCount(userId: bigint) {
-  const r = await sql.file("queries/count_posts.sql", userId);
+  const r = await db.sql.file("queries/count_posts.sql", userId);
   const n: bigint = r[0]!.n;
   return n;
 }

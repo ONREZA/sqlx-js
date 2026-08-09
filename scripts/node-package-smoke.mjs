@@ -36,6 +36,7 @@ try {
   writeFileSync(join(temp, "types.ts"), `
     import {
       defineQuery,
+      EXTENDED_JSON_PROTOCOL_VERSION,
       type JsonValue,
       type PgNotice,
       type PostgresType,
@@ -47,25 +48,24 @@ try {
     } from "@onreza/sqlx-js";
 
     const statement = "SELECT $payload::jsonb AS payload";
-    declare module "@onreza/sqlx-js" {
-      interface KnownQueries {
-        "SELECT $payload::jsonb AS payload": {
-          params: { payload: SqlxJson<unknown> };
-          row: { payload: SqlxJson<JsonValue> };
-        };
-      }
-    }
-
     interface Payload { id: string; nested: { count: number } }
     const query = defineQuery.one("smoke.typedEcho", statement).mapParams(
       (payload: Payload, { json }) => ({ payload: json(payload) }),
     );
-    type Input = QueryParams<typeof query>;
-    type Wire = QueryWireParams<typeof query>;
-    type Entry = { params: Wire; row: { payload: SqlxJson<JsonValue> } };
-    type Registry = QueryRegistry & { queries: Record<typeof statement, Entry> };
+    type Entry = {
+      params: { payload: SqlxJson<unknown> };
+      row: { payload: SqlxJson<JsonValue> };
+    };
+    type Registry = QueryRegistry & {
+      queries: Record<typeof statement, Entry>;
+      fileQueries: {};
+      jsonProtocol: typeof EXTENDED_JSON_PROTOCOL_VERSION;
+    };
+    type Input = QueryParams<typeof query, Registry>;
+    type Wire = QueryWireParams<typeof query, Registry>;
     declare const executor: SqlExecutor<Registry>;
     declare const input: Input;
+    declare const wire: Wire;
     const result: Promise<{ payload: SqlxJson<JsonValue> }> = query.run(executor, input);
     const boundedExecutor: SqlExecutor<Registry> = executor
       .with({ signal: new AbortController().signal })
@@ -79,6 +79,7 @@ try {
     const notice: PgNotice = { message: "smoke", code: "00000" };
     void codec;
     void notice;
+    void wire;
     void boundedExecutor;
     void result;
   `);

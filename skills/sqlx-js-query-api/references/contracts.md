@@ -11,7 +11,7 @@
 | Dynamic application input | `defineQuery(...).mapParams(...)` |
 | Transaction | `sql.transaction(...)` or a scoped client transaction |
 | Dynamic allowlisted identifier | `sql.id(...)` |
-| Genuinely dynamic SQL | `unsafe(...)` with parameterized values |
+| Genuinely dynamic SQL | `db.unsafe(...)` with parameterized values |
 
 ## Parameter rules
 
@@ -34,5 +34,6 @@
 ## SQL files
 
 Prepare resolves paths against `--root`; runtime resolves against `fileRoot`.
-Absolute paths and root escapes are rejected. For bundled applications, use
-`queries --embed` and provide the generated SQL map to the client.
+Absolute paths and root escapes are rejected. For bundled applications,
+configure `sqlFiles.output`; prepare publishes the SQL map with the artifact
+snapshot. Provide that map to the scoped client.

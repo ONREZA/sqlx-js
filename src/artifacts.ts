@@ -8,6 +8,8 @@ export type ArtifactSet = {
   dtsPath: string;
   enumOutputPath?: string;
   enumArtifactName?: string;
+  embeddedSqlOutputPath?: string;
+  embeddedSqlArtifactName?: string;
 };
 
 export type ArtifactComparison = {
@@ -34,6 +36,12 @@ function readGeneratedFiles(set: ArtifactSet): Map<string, string> {
   if (existsSync(set.dtsPath)) files.set("sqlx-js-env.d.ts", readFileSync(set.dtsPath, "utf8"));
   if (set.enumOutputPath && existsSync(set.enumOutputPath)) {
     files.set(set.enumArtifactName ?? "sqlx-js-enums.ts", readFileSync(set.enumOutputPath, "utf8"));
+  }
+  if (set.embeddedSqlOutputPath && existsSync(set.embeddedSqlOutputPath)) {
+    files.set(
+      set.embeddedSqlArtifactName ?? "sqlx-js-sql-files.ts",
+      readFileSync(set.embeddedSqlOutputPath, "utf8"),
+    );
   }
   return files;
 }

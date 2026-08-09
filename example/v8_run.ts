@@ -1,5 +1,4 @@
-import "./temporal";
-import { sql, close } from "@onreza/sqlx-js";
+import { db } from "./database";
 import { createUserWithFirstPost } from "./v8_transactions";
 
 const { userId, postId } = await createUserWithFirstPost(
@@ -9,15 +8,15 @@ const { userId, postId } = await createUserWithFirstPost(
 );
 console.log("transaction created user", userId, "post", postId);
 
-const sameUser = await sql(
+const sameUser = await db.sql(
   `SELECT id AS "id!", name AS "name!" FROM users WHERE id = $1`,
   userId,
 );
 console.log("re-read inside same session:", sameUser[0]);
 
-const before = await sql(`SELECT COUNT(*) AS "n!" FROM users`);
+const before = await db.sql(`SELECT COUNT(*) AS "n!" FROM users`);
 try {
-  await sql.transaction(async (tx) => {
+  await db.sql.transaction(async (tx) => {
     await tx(
       `INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id AS "id!"`,
       "should-rollback",
@@ -27,7 +26,7 @@ try {
   });
 } catch {
 }
-const after = await sql(`SELECT COUNT(*) AS "n!" FROM users`);
+const after = await db.sql(`SELECT COUNT(*) AS "n!" FROM users`);
 console.log(`count before=${before[0]!.n}, after=${after[0]!.n} (should be equal)`);
 
-await close();
+await db.close();

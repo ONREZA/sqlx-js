@@ -20,6 +20,7 @@ test("CLI help prints package metadata version", () => {
   expect(r.status).toBe(0);
   expect(r.stderr).toBe("");
   expect(r.stdout).toContain(`v${pkg.version}`);
+  expect(r.stdout).toContain("\ncommon workflows:\n  sqlx-js init");
   expect(r.stdout).toContain("sqlx-js dev");
   expect(r.stdout).toContain("sqlx-js verify");
   expect(r.stdout).toContain("sqlx-js pgschema install|plan|apply");
@@ -367,10 +368,6 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
       exports: { ".": { types: "./index.d.ts" } },
     }));
     writeFileSync(join(packageDir, "index.d.ts"), `
-      export interface KnownQueries {}
-      export interface KnownFileQueries {}
-      export interface KnownFunctions {}
-      export interface KnownProfiles {}
       export interface QueryRegistry {
         queries: object;
         fileQueries: object;
@@ -450,6 +447,7 @@ test("CLI doctor --fix adds generated Git attributes to an existing project", ()
     writeFileSync(join(root, ".gitattributes"), "*.ts text\n");
     writeFileSync(join(root, "sqlx-js.config.mjs"), `export default {
       enumCatalog: { output: "db-enums.ts", schemas: ["public"] },
+      sqlFiles: { output: "sql-files.generated.ts" },
     };\n`);
     const diagnosis = spawnSync(
       "bun",
@@ -463,6 +461,9 @@ test("CLI doctor --fix adds generated Git attributes to an existing project", ()
     expect(diagnosisPayload.checks.find((check) => check.name === "gitAttributes")).toMatchObject({
       status: "warning",
       fixable: true,
+    });
+    expect(diagnosisPayload.checks.find((check) => check.name === "embeddedSql")).toMatchObject({
+      status: "error",
     });
     expect(readFileSync(join(root, ".gitattributes"), "utf8")).toBe("*.ts text\n");
 
@@ -487,6 +488,7 @@ test("CLI doctor --fix adds generated Git attributes to an existing project", ()
           ".sqlx-js/** linguist-generated",
           "/sqlx-js-env.d.ts linguist-generated",
           "/db-enums.ts linguist-generated",
+          "/sql-files.generated.ts linguist-generated",
         ],
       },
     });
@@ -495,7 +497,8 @@ test("CLI doctor --fix adds generated Git attributes to an existing project", ()
       "# sqlx-js generated artifacts\n" +
       ".sqlx-js/** linguist-generated\n" +
       "/sqlx-js-env.d.ts linguist-generated\n" +
-      "/db-enums.ts linguist-generated\n",
+      "/db-enums.ts linguist-generated\n" +
+      "/sql-files.generated.ts linguist-generated\n",
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

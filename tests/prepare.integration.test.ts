@@ -256,14 +256,16 @@ if (!haveIntegrationDatabase) {
     const root = isolatedRoot("config-assertions");
     writeRootFile(root, "a.ts", 'import { sql } from "@onreza/sqlx-js";\nawait sql("SELECT 1 AS value");\n');
     writeRootFile(root, "sqlx-js.config.ts", `export default {
-      jsonbTypes: { "public.tmp_config_assertions.missing": "MissingPayload" },
-      columnTypes: { "public.tmp_config_assertions.state": '"ready" | "done"' },
+      columnTypes: {
+        "public.tmp_config_assertions.missing": "MissingPayload",
+        "public.tmp_config_assertions.state": '"ready" | "done"',
+      },
       arrayElementNullability: { "public.tmp_config_assertions.labels": "non-null" },
     };\n`);
 
     const result = prepareRoot(root);
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain("sqlx-js.config.ts jsonbTypes.public.tmp_config_assertions.missing");
+    expect(result.stderr).toContain("sqlx-js.config.ts columnTypes.public.tmp_config_assertions.missing");
     expect(result.stderr).toContain("does not resolve to a PostgreSQL column");
 
     const diagnosis = spawnSync(
@@ -276,17 +278,13 @@ if (!haveIntegrationDatabase) {
     };
     expect(report.checks.find((check) => check.name === "columnAssertions")).toMatchObject({
       status: "error",
-      message: expect.stringContaining("jsonbTypes.public.tmp_config_assertions.missing"),
+      message: expect.stringContaining("columnTypes.public.tmp_config_assertions.missing"),
     });
 
     const invalidShapes = [
       {
-        config: 'jsonbTypes: { "public.tmp_config_assertions.state": "State" }',
-        message: "must reference a PostgreSQL JSON column or JSON array column",
-      },
-      {
-        config: 'columnTypes: { "public.tmp_config_assertions.payload": "Payload" }',
-        message: "must use jsonbTypes for a direct json or jsonb column",
+        config: 'columnTypes: { "public.tmp_config_assertions.labels": "Labels" }',
+        message: "does not support non-JSON PostgreSQL array columns",
       },
       {
         config: 'arrayElementNullability: { "public.tmp_config_assertions.state": "non-null" }',
@@ -435,7 +433,7 @@ if (!haveIntegrationDatabase) {
     expect(r.code).toBe(0);
     expect(r.stdout).toMatch(/a\.ts:2:11/);
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
-    expect(dts).toContain("interface KnownQueries");
+    expect(dts).toContain("interface SqlxJsGeneratedQueries");
     expect(dts).toContain("SELECT id, name FROM tmp_users WHERE id = $1");
     expect(queryCacheFiles().length).toBeGreaterThan(0);
   });
@@ -1475,6 +1473,7 @@ export default {
         DROP SCHEMA IF EXISTS tmp_enum_billing CASCADE;
         CREATE SCHEMA tmp_enum_catalog;
         CREATE SCHEMA tmp_enum_billing;
+        CREATE TYPE tmp_enum_catalog.empty_state AS ENUM ();
         CREATE TYPE tmp_enum_catalog.user_role AS ENUM ('admin', 'in-progress');
         CREATE TYPE tmp_enum_catalog.status AS ENUM ('active', 'disabled');
         CREATE TYPE tmp_enum_billing.status AS ENUM ('pending', 'paid')
@@ -1499,6 +1498,7 @@ export default {
       const outputPath = join(root, "src/db-enums.ts");
       const cachePath = join(root, ".sqlx-js/enums/enums.json");
       const initial = readFileSync(outputPath, "utf8");
+      expect(initial).toContain("export const EmptyState = {\n} as const;");
       expect(initial).toContain("export const UserRole = {");
       expect(initial).toContain("export const AccountStatus = {");
       expect(initial).toContain("export const BillingStatus = {");
@@ -1514,6 +1514,11 @@ export default {
             schema: "tmp_enum_billing",
             name: "status",
             values: ["pending", "paid"],
+          },
+          {
+            schema: "tmp_enum_catalog",
+            name: "empty_state",
+            values: [],
           },
           {
             schema: "tmp_enum_catalog",
@@ -1630,7 +1635,7 @@ export default {
     }
   });
 
-  test("enum catalog cannot overwrite a custom declaration output in any prepare mode", () => {
+  test("generated outputs cannot overwrite each other in any prepare mode", () => {
     const root = isolatedRoot("enum-output-collision");
     const output = join(root, "generated/types.ts");
     writeRootFile(root, "a.ts", "export {};\n");
@@ -1646,10 +1651,66 @@ export default {
       expect(JSON.parse(result.stdout).diagnostics).toEqual([
         expect.objectContaining({
           phase: "config",
-          message: expect.stringContaining("enumCatalog.output must differ"),
+          message: expect.stringContaining("generated declaration, enum catalog, and embedded SQL outputs must be distinct"),
         }),
       ]);
       expect(readFileSync(output, "utf8")).toBe("export const sentinel = true;\n");
+    }
+  });
+
+  test("configured embedded SQL participates in every artifact mode and doctor", () => {
+    const root = isolatedRoot("embedded-sql-artifact-modes");
+    const output = join(root, "src/sql-files.generated.ts");
+    try {
+      writeRootFile(root, "queries/value.sql", "SELECT 42::int4 AS value\n");
+      writeRootFile(
+        root,
+        "a.ts",
+        'import { sql } from "@onreza/sqlx-js";\nawait sql.file.one("queries/value.sql");\n',
+      );
+      writeRootFile(root, "tsconfig.json", JSON.stringify({
+        include: ["a.ts", "sqlx-js-env.d.ts", "src/**/*.ts"],
+      }));
+      writeRootFile(root, "sqlx-js.config.ts", `export default {
+        functionCatalog: false,
+        sqlFiles: { output: "src/sql-files.generated.ts" },
+      };\n`);
+
+      const prepared = prepareRoot(root);
+      expect(prepared.code, prepared.stderr).toBe(0);
+      expect(prepared.stdout).toContain(output);
+      const generated = readFileSync(output, "utf8");
+      expect(generated).toContain('"queries/value.sql": "SELECT 42::int4 AS value\\n"');
+      expect(prepareRoot(root, ["--check"]).code).toBe(0);
+
+      const diagnosis = spawnSync(
+        "bun",
+        [join(repoRoot, "bin/sqlx-js.ts"), "doctor", "--root", root, "--json"],
+        { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
+      );
+      const doctorPayload = JSON.parse(diagnosis.stdout) as {
+        checks: Array<{ name: string; status: string }>;
+      };
+      expect(doctorPayload.checks.find((check) => check.name === "embeddedSql")).toMatchObject({
+        status: "ok",
+      });
+
+      writeRootFile(root, "src/sql-files.generated.ts", "export const stale = true;\n");
+      const staleCheck = prepareRoot(root, ["--check", "--json"]);
+      expect(staleCheck.code).toBe(1);
+      expect(JSON.parse(staleCheck.stdout).diagnostics).toContainEqual(expect.objectContaining({
+        message: "generated embedded SQL module is stale or missing",
+        file: "src/sql-files.generated.ts",
+      }));
+      const staleVerify = prepareRoot(root, ["--verify", "--json"]);
+      expect(staleVerify.code).toBe(1);
+      expect(JSON.parse(staleVerify.stdout).changed).toEqual(["src/sql-files.generated.ts"]);
+
+      expect(prepareRoot(root, ["--offline"]).code).toBe(0);
+      expect(readFileSync(output, "utf8")).toBe(generated);
+      expect(prepareRoot(root, ["--verify"]).code).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -1996,7 +2057,7 @@ export default {
     expect(failed.stderr).toContain("prepare failed — 0 unique queries");
   });
 
-  test("prepare emits KnownFunctions from pg_proc and keeps them in --check", async () => {
+  test("prepare emits generated functions from pg_proc and keeps them in --check", async () => {
     const setup = new PgClient(parseDatabaseUrl(dbUrl));
     await setup.connect();
     try {
@@ -2042,7 +2103,7 @@ export default {
     let r = prepare();
     expect(r.code).toBe(0);
     let dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
-    expect(dts).toContain("interface KnownFunctions");
+    expect(dts).toContain("interface SqlxJsGeneratedFunctions");
     expect(dts).toContain('"public.tmp_catalog_slug(value text)": { kind: "function"; language: "sql"; params: [string | null]; returns: string | null; returnsSet: false;');
     expect(dts).toContain('"public.tmp_catalog_pair(value text)": { kind: "function"; language: "sql"; params: [string | null]; returns: { slug: string | null; score: number | null }; returnsSet: true;');
     expect(dts).toContain('"public.tmp_catalog_json_table(value jsonb)": { kind: "function"; language: "sql"; params: [import("@onreza/sqlx-js").SqlxJson<unknown> | null]; returns: { payload: import("@onreza/sqlx-js").SqlxJson<import("@onreza/sqlx-js").JsonValue> | null }; returnsSet: true;');
@@ -2258,11 +2319,9 @@ export default {
     const root = isolatedRoot("union-column-types");
     writeRootFile(root, "types.ts", "export type UnionPayload = { kind: string };\n");
     writeRootFile(root, "sqlx-js.config.ts", `export default {
-      jsonbTypes: {
+      columnTypes: {
         "public.tmp_union_types.payload_a": 'import("./types").UnionPayload',
         "public.tmp_union_types.payload_b": 'import("./types").UnionPayload',
-      },
-      columnTypes: {
         "public.tmp_union_types.action_a": '"created" | "deleted"',
         "public.tmp_union_types.action_b": '"created" | "deleted"',
       },
@@ -2548,7 +2607,7 @@ export default {
         "await sql(\"SELECT payload FROM tmp_search_path_target\");\n",
       );
       writeRootFile(root, "sqlx-js.config.ts", `export default {
-  jsonbTypes: { "tmp_search_path.tmp_search_path_target.payload": "SearchPathPayload" },
+  columnTypes: { "tmp_search_path.tmp_search_path_target.payload": "SearchPathPayload" },
 };
 `);
       const url = new URL(dbUrl);
@@ -2568,7 +2627,7 @@ export default {
     }
   });
 
-  test("sql.file produces KnownFileQueries entry keyed by path", () => {
+  test("sql.file produces a generated file-query entry keyed by path", () => {
     writeFile("queries/by_id.sql", "SELECT id, name FROM tmp_users WHERE id = $1\n");
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
@@ -2577,7 +2636,7 @@ export default {
     const r = prepare();
     expect(r.code).toBe(0);
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
-    expect(dts).toContain("interface KnownFileQueries");
+    expect(dts).toContain("interface SqlxJsGeneratedFileQueries");
     expect(dts).toContain('"./queries/by_id.sql":');
   });
 
@@ -3388,13 +3447,11 @@ export default {
     const root = isolatedRoot("cte-param-nullability");
     writeRootFile(root, "types.ts", "export type CtePayload = { state: string };\n");
     writeRootFile(root, "sqlx-js.config.ts", `export default {
-      jsonbTypes: {
+      columnTypes: {
         "public.tmp_cte_param_a.payload": 'import("./types").CtePayload',
         "public.tmp_cte_param_b.payload": 'import("./types").CtePayload',
         "public.tmp_cte_param_a.payloads": 'import("./types").CtePayload',
         "public.tmp_cte_param_b.payloads": 'import("./types").CtePayload',
-      },
-      columnTypes: {
         "public.tmp_cte_param_a.value": '"ready" | "done"',
         "public.tmp_cte_param_b.value": '"ready" | "done"',
         "public.tmp_cte_param_required.value": '"ready" | "done"',
@@ -3871,7 +3928,7 @@ export default {
     ]);
   });
 
-  test("sql.with queries reach KnownQueries via the scanner", () => {
+  test("sql.with queries reach the generated registry via the scanner", () => {
     writeFile("a.ts",
       "import { sql } from \"@onreza/sqlx-js\";\n" +
       "const requestSql = sql.with({ timeoutMs: 100 });\n" +
@@ -3885,7 +3942,7 @@ export default {
     expect(dts).toContain("SELECT id FROM tmp_users WHERE email = $1");
   });
 
-  test("sql.file.one and sql.file.optional reach KnownFileQueries via the scanner", () => {
+  test("sql.file.one and sql.file.optional reach the generated registry via the scanner", () => {
     writeFile("queries/by_id.sql", "SELECT id, name FROM tmp_users WHERE id = $1\n");
     writeFile("queries/by_email.sql", "SELECT id FROM tmp_users WHERE email = $1\n");
     writeFile("a.ts",
@@ -3901,9 +3958,9 @@ export default {
   });
 
   test("explicit PostgreSQL array params roundtrip", async () => {
-    const { sql, close } = await import("../src/index");
-    const prev = process.env.DATABASE_URL;
-    process.env.DATABASE_URL = dbUrl;
+    const { createSqlClient } = await import("../src/index");
+    const db = createSqlClient(dbUrl, { execution: "adaptive" });
+    const { sql } = db;
     try {
       const rows = await sql("SELECT $1::text[] AS xs", sql.array(["alpha", "beta,gamma", "with \"quote\""]));
       expect((rows[0] as { xs: string[] }).xs).toEqual(["alpha", "beta,gamma", "with \"quote\""]);
@@ -3920,9 +3977,7 @@ export default {
       expect((dates[0] as { xs: Temporal.Instant[] }).xs.map((value) => value.toString()))
         .toEqual([timestamp.toString()]);
     } finally {
-      await close();
-      if (prev === undefined) delete process.env.DATABASE_URL;
-      else process.env.DATABASE_URL = prev;
+      await db.close();
     }
   });
 
@@ -4130,25 +4185,23 @@ export default {
   });
 
   test("explicit JSON params preserve top-level primitive arrays", async () => {
-    const { sql, close } = await import("../src/index");
-    const prev = process.env.DATABASE_URL;
-    process.env.DATABASE_URL = dbUrl;
+    const { createSqlClient } = await import("../src/index");
+    const db = createSqlClient(dbUrl, { execution: "adaptive" });
+    const { sql } = db;
     try {
       const rows = await sql("SELECT $1::jsonb AS value", sql.json([1, 2, 3]));
       expect((rows[0] as { value: SqlxJson }).value.value).toEqual([1, 2, 3]);
       const jsonNull = await sql("SELECT $1::jsonb AS value", sql.json(null));
       expect((jsonNull[0] as { value: SqlxJson }).value.value).toBeNull();
     } finally {
-      await close();
-      if (prev === undefined) delete process.env.DATABASE_URL;
-      else process.env.DATABASE_URL = prev;
+      await db.close();
     }
   });
 
   test("explicit PostgreSQL jsonb[] params roundtrip", async () => {
-    const { sql, close } = await import("../src/index");
-    const prev = process.env.DATABASE_URL;
-    process.env.DATABASE_URL = dbUrl;
+    const { createSqlClient } = await import("../src/index");
+    const db = createSqlClient(dbUrl, { execution: "adaptive" });
+    const { sql } = db;
     try {
       const rows = await sql(
         "SELECT $1::jsonb[] AS values",
@@ -4169,9 +4222,7 @@ export default {
       expect(values[2]).toBeInstanceOf(SqlxJson);
       expect(values[3]).toBeNull();
     } finally {
-      await close();
-      if (prev === undefined) delete process.env.DATABASE_URL;
-      else process.env.DATABASE_URL = prev;
+      await db.close();
     }
   });
 
@@ -4211,7 +4262,9 @@ export default {
     const db = createSqlClient(dbUrl, {
       operationTimeoutMs: 100,
       cancelGraceMs: 100,
-      onClientStateChange: ({ from, to }) => transitions.push(`${from}->${to}`),
+      onLifecycle: (event) => {
+        if (event.kind === "state-change") transitions.push(`${event.from}->${event.to}`);
+      },
     });
     try {
       await db.ready({ timeoutMs: 1_000 });
@@ -4279,9 +4332,9 @@ export default {
   });
 
   test("sql.execute returns affected row count and command", async () => {
-    const { sql, close } = await import("../src/index");
-    const prev = process.env.DATABASE_URL;
-    process.env.DATABASE_URL = dbUrl;
+    const { createSqlClient } = await import("../src/index");
+    const db = createSqlClient(dbUrl, { execution: "adaptive" });
+    const { sql } = db;
     try {
       const inserted = await sql.execute(
         "INSERT INTO tmp_users (name, email) VALUES ($1, $2)",
@@ -4292,9 +4345,7 @@ export default {
       const updated = await sql.execute("UPDATE tmp_users SET name = $1 WHERE name = $2", "execute-done", "execute-user");
       expect(updated).toEqual({ rowCount: 1, command: "UPDATE" });
     } finally {
-      await close();
-      if (prev === undefined) delete process.env.DATABASE_URL;
-      else process.env.DATABASE_URL = prev;
+      await db.close();
     }
   });
 
@@ -4341,9 +4392,9 @@ export default {
   });
 
   test("transaction timeout cancels work, rolls back, and keeps the pool usable", async () => {
-    const { sql, close, TransactionTimeoutError } = await import("../src/index");
-    const prev = process.env.DATABASE_URL;
-    process.env.DATABASE_URL = dbUrl;
+    const { createSqlClient, TransactionTimeoutError } = await import("../src/index");
+    const db = createSqlClient(dbUrl, { execution: "adaptive" });
+    const { sql } = db;
     try {
       const email = `timeout-${Date.now()}@example.com`;
       let timeoutError: unknown;
@@ -4379,16 +4430,14 @@ export default {
       ) as { count: number };
       expect(lateQuery.count).toBe(0);
     } finally {
-      await close();
-      if (prev === undefined) delete process.env.DATABASE_URL;
-      else process.env.DATABASE_URL = prev;
+      await db.close();
     }
   });
 
   test("bytea[] uses the internal PostgreSQL bytea codec", async () => {
-    const { sql, close, createClient } = await import("../src/index");
-    const prev = process.env.DATABASE_URL;
-    process.env.DATABASE_URL = dbUrl;
+    const { createClient, createSqlClient } = await import("../src/index");
+    const db = createSqlClient(dbUrl, { execution: "adaptive" });
+    const { sql } = db;
     const escapeClient = createClient(dbUrl, {
       max: 1,
       startupOptions: "-c bytea_output=escape",
@@ -4423,9 +4472,7 @@ export default {
       ]);
     } finally {
       await escapeClient.end();
-      await close();
-      if (prev === undefined) delete process.env.DATABASE_URL;
-      else process.env.DATABASE_URL = prev;
+      await db.close();
     }
   });
 

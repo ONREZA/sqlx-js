@@ -55,7 +55,7 @@ export const findJob = defineQuery
   .optional("jobs.find", "SELECT id, state FROM jobs WHERE id = $id");
 ```
 
-`prepare` opens a session for each configured profile, applies its role, and runs the normal `Parse`/`Describe`/generic-plan pipeline in that session. The cache key includes both the SQL fingerprint and profile, so the same SQL can resolve through different `search_path`, RLS, type, and privilege contexts. Generated `KnownProfiles` registries make `createSqlClient(..., { profile })` infer only that profile's query set and require the exact configured role. The runtime sends the role as a startup parameter on every pool connection, including replacement generations. The login in `DATABASE_URL` must be allowed to `SET ROLE` to every configured role.
+`prepare` opens a session for each configured profile, applies its role, and runs the normal `Parse`/`Describe`/generic-plan pipeline in that session. The cache key includes both the SQL fingerprint and profile, so the same SQL can resolve through different `search_path`, RLS, type, and privilege contexts. `SqlxJsGeneratedProfileRegistry<Name>` makes `createSqlClient(..., { profile })` bind only that profile's query set and require the exact configured role. The runtime sends the role as a startup parameter on every pool connection, including replacement generations. The login in `DATABASE_URL` must be allowed to `SET ROLE` to every configured role.
 
 The live `prepare` connection must reach PostgreSQL directly or through a session-pooling proxy: role validation requires `SET ROLE`, `Describe`, and planning to stay on the same backend session. Transaction- or statement-pooling proxies cannot preserve that contract. A runtime proxy must likewise accept and preserve the configured startup role on each pooled connection.
 
@@ -167,7 +167,7 @@ const db = createSqlClient(process.env.DATABASE_URL, {
   // Development-only: re-stat sql.file() files on every call. The default
   // immutable cache avoids synchronous filesystem work in the query hot path.
   reloadSqlFiles: true,
-  // Optional generated map from `sqlx-js queries --embed ...`. When present,
+  // Optional map generated through config.sqlFiles.output during prepare. When present,
   // sql.file() needs no runtime filesystem asset for those paths.
   sqlFiles: sqlxJsEmbeddedSql,
   // Name-based runtime codecs. Schema-qualified keys disambiguate duplicate
@@ -199,44 +199,26 @@ const db = createSqlClient(process.env.DATABASE_URL, {
       logger.warn({ queryId, queryName, executionPath, durationMs, executionDurationMs, rowCount });
     }
   },
-  onQueryStart: ({ queryId, queryName, generation }) => {
-    metrics.databaseStarted.add(1, { queryId, queryName, generation });
-  },
-  onQueryTimeout: ({ queryId, queryName, generation, durationMs, phase, outcome }) => {
-    logger.error({ queryId, queryName, generation, durationMs, phase, outcome });
-  },
-  onQueryError: ({
-    queryId,
-    queryName,
-    generation,
-    durationMs,
-    phase,
-    outcome,
-    errorName,
-    errorCode,
-    databaseError,
-  }) => {
-    logger.error({
-      queryId,
-      queryName,
-      generation,
-      durationMs,
-      phase,
-      outcome,
-      errorName,
-      errorCode,
-      databaseError,
-    });
-  },
-  onClientStateChange: ({ from, to, generation }) => {
-    logger.info({ from, to, generation }, "database client state changed");
+  onLifecycle: (event) => {
+    switch (event.kind) {
+      case "query-start":
+        metrics.databaseStarted.add(1, event);
+        break;
+      case "query-timeout":
+      case "query-error":
+        logger.error(event);
+        break;
+      case "state-change":
+        logger.info(event, "database client state changed");
+        break;
+    }
   },
   onQueryHookError: (error) => logger.error({ error }, "query observer failed"),
   onLifecycleHookError: (error) => logger.error({ error }, "database lifecycle observer failed"),
 });
 ```
 
-The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. `queryId` is the stable prepare/cache fingerprint and is suitable for metric labels; `queryName` is present for named `defineQuery` calls. For parameterized queries, managed PostgreSQL clients add `executionPath` as `descriptor` for a prepared-descriptor hit or `adaptive` when parameter types are described at runtime. Parameterless queries already use one write and leave the field undefined. It is produced only for observers and does not enable hot-path counters. Profiled managed clients also attach the stable `profile` name and PostgreSQL `role` to query, query-start/error/timeout, client-state, and lifecycle-hook-error events, including events emitted by replacement pool generations. The hook is a non-blocking observer: synchronous throws and asynchronous rejections preserve the database result/error and are passed to `onQueryHookError` when configured. The event preserves source-level parameters for direct queries (including the named-parameter object); mapped definitions report the mapper output rather than their application input. Parameters may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
+The `onQuery` hook is the integration point for metrics, tracing, and slow-query logging — sqlx-js does not log queries itself. `queryId` is the stable prepare/cache fingerprint and is suitable for metric labels; `queryName` is present for named `defineQuery` calls. For parameterized queries, managed PostgreSQL clients add `executionPath` as `descriptor` for a prepared-descriptor hit or `adaptive` when parameter types are described at runtime. Parameterless queries already use one write and leave the field undefined. It is produced only for observers and does not enable hot-path counters. Profiled managed clients also attach the stable `profile` name and PostgreSQL `role` to query and lifecycle events, including events emitted by replacement pool generations. Both hooks are non-blocking observers: synchronous throws and asynchronous rejections preserve the database result/error and are passed to the corresponding hook-error callback. The query event preserves source-level parameters for direct queries (including the named-parameter object); mapped definitions report the mapper output rather than their application input. Parameters may contain personal or sensitive data — don't log them blindly; redact or omit `params` in shared sinks. Database errors are normalized to `PgError`; transport and non-database errors pass through unchanged.
 
 `durationMs` remains the end-to-end operation duration. Integrated managed
 clients also report `preDispatchDurationMs` for bootstrap, encoding, and
@@ -249,16 +231,16 @@ remains part of `preDispatchDurationMs`. The split fields are optional for
 custom `RuntimeClient` implementations and for failures whose boundary is not
 known.
 
-Query lifecycle events intentionally omit SQL text and parameters.
-`onQueryStart` fires before codec bootstrap. `onQueryError` reports admitted
+`onLifecycle` receives a discriminated event union and intentionally omits SQL
+text and parameters. `query-start` fires before codec bootstrap. `query-error` reports admitted
 queries, readiness checks, and transactions that fail after lifecycle start,
 with `phase` and `outcome`; transport/TLS failures expose only a safe error name
 and code, while PostgreSQL errors additionally preserve SQLSTATE and severity.
 The server message is omitted because PostgreSQL may include parameter values in it.
 It never includes a connection URL, credentials, SQL parameters, or certificate
-objects. `onQueryTimeout` reports the stable ID,
+objects. `query-timeout` reports the stable ID,
 generation, phase, and outcome while the managed runtime cancels the query and
-retires the poisoned generation. `onClientStateChange` reports `healthy`,
+retires the poisoned generation. `state-change` reports `healthy`,
 `poisoned`, `recycling`, `failed`, `closing`, and `closed` transitions.
 
 `db.snapshot()` synchronously returns `{ generation, state, activeOperations, lastSuccessAt, lastTimeoutAt, recycleCount }`. `db.ready({ timeoutMs })` bounds codec discovery. `db.ping({ timeoutMs })` performs `SELECT 1` through the same bootstrap, deadline, pool, and observer path as application SQL.

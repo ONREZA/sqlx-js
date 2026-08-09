@@ -10,10 +10,8 @@ import { DEFAULT_TEMPORAL_POLICY } from "../temporal";
 const CONFIG_TEMPLATE = `import { defineConfig } from "@onreza/sqlx-js";
 
 export default defineConfig({
-  // Map jsonb columns/params to TypeScript types declared in a .d.ts, e.g.
+  // Map direct columns/params to TypeScript types declared in a .d.ts, e.g.
   //   "users.settings": "SqlxJsJson.UserSettings",
-  jsonbTypes: {},
-  // Assert narrower TypeScript types for direct scalar columns.
   columnTypes: {},
   // Assert application-enforced non-null elements for direct array columns.
   arrayElementNullability: {},
@@ -34,7 +32,6 @@ export default defineConfig({
     file: "schema.sql",
     schemas: ["public"],
   },
-  jsonbTypes: {},
   columnTypes: {},
   arrayElementNullability: {},
   customTypes: {},
@@ -66,6 +63,7 @@ export interface SqlxJsGeneratedRuntimeTypes {}
 export interface SqlxJsGeneratedProfileQueries {}
 export interface SqlxJsGeneratedProfileFileQueries {}
 export interface SqlxJsGeneratedProfiles {}
+export type SqlxJsGeneratedProfileRegistry<Name extends keyof SqlxJsGeneratedProfiles> = SqlxJsGeneratedProfiles[Name];
 export interface SqlxJsGeneratedRegistry {
   queries: SqlxJsGeneratedQueries;
   fileQueries: SqlxJsGeneratedFileQueries;
@@ -79,15 +77,6 @@ export interface SqlxJsGeneratedRegistry {
     readonly sessionTimeZone: "UTC";
   };
 }
-
-declare module "@onreza/sqlx-js" {
-  interface KnownQueries extends SqlxJsGeneratedQueries {}
-  interface KnownFileQueries extends SqlxJsGeneratedFileQueries {}
-  interface KnownFunctions extends SqlxJsGeneratedFunctions {}
-  interface KnownProfiles extends SqlxJsGeneratedProfiles {}
-}
-
-export {};
 `;
 
 const DATABASE_TEMPLATE = `import { createSqlClient } from "@onreza/sqlx-js";

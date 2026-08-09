@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ts from "typescript";
 import {
-  assertDistinctEnumCatalogOutput,
   enumCatalogCacheExists,
   enumCatalogOutputPath,
   readEnumCatalogCache,
@@ -15,6 +14,7 @@ import {
   writeEnumCatalogModule,
   type EnumCatalogEntry,
 } from "../src/enum-catalog";
+import { assertDistinctPrepareGeneratedOutputs } from "../src/prepare-artifacts";
 
 const roots: string[] = [];
 
@@ -191,20 +191,20 @@ test("enum catalog cache rejects duplicate schema-qualified entries", () => {
   expect(() => readEnumCatalogCache(cacheDir)).toThrow(/malformed.*ambiguous key "public\.status"/);
 });
 
-test("enum catalog output cannot overwrite a custom declaration output", () => {
+test("generated outputs cannot overwrite each other", () => {
   const dir = root();
   const config = {
     enumCatalog: { output: "generated/types.ts", schemas: ["public"] },
   };
 
-  expect(() => assertDistinctEnumCatalogOutput(
-    dir,
+  expect(() => assertDistinctPrepareGeneratedOutputs({
+    root: dir,
     config,
-    join(dir, "generated/types.ts"),
-  )).toThrow(/must differ from the declaration output/);
-  expect(() => assertDistinctEnumCatalogOutput(
-    dir,
+    dtsPath: join(dir, "generated/types.ts"),
+  })).toThrow(/must be distinct/);
+  expect(() => assertDistinctPrepareGeneratedOutputs({
+    root: dir,
     config,
-    join(dir, "generated/sqlx-js-env.d.ts"),
-  )).not.toThrow();
+    dtsPath: join(dir, "generated/sqlx-js-env.d.ts"),
+  })).not.toThrow();
 });

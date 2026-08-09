@@ -1,5 +1,6 @@
 import type { ExactDuplicateIgnore, QueryAuditConfig } from "./config";
 import { queryId } from "./query-id";
+import { buildQuerySourceCatalog, compareQuerySourceSites } from "./query-source-catalog";
 import type { QueryExecutionMode, QueryResultAssertions } from "./query";
 import type { QueryCallSite } from "./scan/scanner";
 
@@ -119,10 +120,6 @@ function auditSite(site: QueryCallSite): ExactQueryAuditSite {
   };
 }
 
-function compareSites(left: QueryCallSite, right: QueryCallSite): number {
-  return left.file.localeCompare(right.file) || left.line - right.line || left.column - right.column;
-}
-
 function sourceContract(site: ExactQueryAuditSite): Omit<ExactQuerySourceContract, "occurrences" | "sites"> {
   return {
     cardinality: site.cardinality,
@@ -185,7 +182,7 @@ function queryNameCollisions(sites: readonly QueryCallSite[]): QueryNameCollisio
     return [{
       queryName,
       queryIds: ids,
-      definitions: [...definitions].sort(compareSites).map((site) => ({
+      definitions: [...definitions].sort(compareQuerySourceSites).map((site) => ({
         queryId: queryId(site.query),
         file: site.file,
         line: site.line,
@@ -201,18 +198,12 @@ export function buildExactQueryAudit(
   sites: readonly QueryCallSite[],
   config: QueryAuditConfig = {},
 ): ExactQueryAuditReport {
-  const grouped = new Map<string, QueryCallSite[]>();
-  for (const site of sites) {
-    const id = queryId(site.query);
-    const group = grouped.get(id) ?? [];
-    group.push(site);
-    grouped.set(id, group);
-  }
+  const catalog = buildQuerySourceCatalog(sites);
+  const grouped = new Map(catalog.map((group) => [group.queryId, group.sites]));
   const ignores = config.exactDuplicates?.ignore ?? [];
   const ignoreById = new Map(ignores.map((ignore) => [ignore.queryId, ignore]));
-  const candidates = [...grouped.entries()].flatMap(([id, unsorted]): ExactQueryCandidate[] => {
-    if (unsorted.length < 2) return [];
-    const sourceSites = [...unsorted].sort(compareSites);
+  const candidates = catalog.flatMap(({ queryId: id, sites: sourceSites }): ExactQueryCandidate[] => {
+    if (sourceSites.length < 2) return [];
     const callSites = sourceSites.map(auditSite);
     const contracts = contractGroups(callSites);
     const ignore = ignoreById.get(id);
@@ -232,7 +223,7 @@ export function buildExactQueryAudit(
       contracts,
       callSites,
     }];
-  }).sort((left, right) => left.queryId.localeCompare(right.queryId));
+  });
   const staleIgnores = ignores.flatMap((ignore): StaleExactDuplicateIgnore[] => {
     const actual = grouped.get(ignore.queryId)?.length;
     if (actual === undefined) {

@@ -36,13 +36,11 @@ export default defineConfig({
       args: ["scripts/materialize-shadow.ts"],
     },
   },
-  jsonbTypes: {
+  // Application-owned assertions for direct scalar and JSON columns.
+  columnTypes: {
     "users.settings":     'import("@app/shared/database-json").UserSettings',
     "posts.meta":         'import("@app/shared/database-json").PostMeta',
     "posts.attachments":  'import("@app/shared/database-json").Attachment[]',
-  },
-  // Explicit application-owned assertions for direct scalar columns only.
-  columnTypes: {
     "analytics_event.action": "AnalyticsAction",
   },
   // Assert an application-enforced invariant for a direct array column.
@@ -76,6 +74,10 @@ export default defineConfig({
       "billing.status": "BillingStatus",
     },
     registry: true,
+  },
+  // Optional bundled map for every referenced sql.file(...) asset.
+  sqlFiles: {
+    output: "src/database/sql-files.generated.ts",
   },
 });
 ```
@@ -155,7 +157,7 @@ const db = createSqlClient(process.env.DATABASE_URL, {
 });
 ```
 
-By default the scanner uses the root `tsconfig.json` file list and follows TypeScript project references, so a referenced monorepo is scanned without walking unrelated folders. `scan.include` replaces that source-file universe with TypeScript glob patterns; `scan.exclude` is added to the built-in dependency/build exclusions. `scan.modules` replaces the default `@onreza/sqlx-js` import source list, which lets an application re-export `sql` through a shared database module without requiring arbitrary re-export graph analysis. Include `@onreza/sqlx-js` explicitly when direct imports and application-module imports are both used. If there is no root `tsconfig.json`, the fallback is a recursive TypeScript scan.
+By default the scanner uses the root `tsconfig.json` file list and follows TypeScript project references, so a referenced monorepo is scanned without walking unrelated folders. `scan.include` replaces that source-file universe with TypeScript glob patterns; `scan.exclude` is added to the built-in dependency/build exclusions. `scan.modules` replaces the default `@onreza/sqlx-js` import source list for applications that expose a compatible SQL executor or client factory from another package. Direct imports of an exported local `const` created by `createSqlClient(...)` are followed automatically for one local-module hop. Include `@onreza/sqlx-js` explicitly when direct package imports and configured application-module imports are both used. If there is no root `tsconfig.json`, the fallback is a recursive TypeScript scan.
 
 `queryAudit.exactDuplicates.ignore` acknowledges an intentional repeated query
 fingerprint for `queries audit`. Every entry requires the stable query ID, the
@@ -202,7 +204,7 @@ truth. The runtime validates the versioned Extended JSON transport contract,
 not `T`.
 
 Every live `prepare`, `prepare --verify`, and shadow workflow resolves each
-configured `jsonbTypes`, `columnTypes`, and
+configured `columnTypes` and
 `arrayElementNullability` key against the live database, including keys not
 touched by a query. A key must use `table.column` or `schema.table.column`, name
 a unique application relation and column, and match the assertion's PostgreSQL
@@ -221,9 +223,11 @@ inside `sql.json(...)`; `Date`, functions, non-finite numbers, unsafe integer
 `null` remains SQL `NULL` and is allowed only when every stored-value target for
 that parameter accepts it; use `sql.json(null)` for JSON `null`.
 
-## Direct scalar `columnTypes`
+## Direct-column `columnTypes`
 
-`columnTypes` is an explicit application-owned type assertion for a direct scalar table column. It affects result fields that PostgreSQL attributes to that exact column, compatible set-operation branches reconstructed by sqlx-js, and parameters mapped back through `INSERT`, `UPDATE`, data-modifying CTE, `WHERE`, or `JOIN` analysis. For stored values, sqlx-js aggregates every DML target and accepts one unique configured declaration; when no DML target exists, predicate references provide the parameter declaration instead. Conflicting declarations within the effective target set fail prepare rather than depending on traversal order. It never changes arbitrary expressions such as `upper(action)`, and it does not apply to PostgreSQL/JSON array columns. Use a schema-qualified key when table names can collide. Mapping the same logical column through both `jsonbTypes` and `columnTypes` is rejected.
+`columnTypes` is the single application-owned type assertion for a direct table column. It supports non-array columns, JSON/JSONB columns, domains over those types, and JSON/JSONB arrays. JSON assertions remain wrapped in `SqlxJson<T>`; a JSON-array assertion names the element's `T`. Non-JSON PostgreSQL arrays use their database type plus `arrayElementNullability` and cannot be replaced through `columnTypes`.
+
+The assertion affects result fields that PostgreSQL attributes to the exact column, compatible set-operation branches reconstructed by sqlx-js, and parameters mapped back through `INSERT`, `UPDATE`, data-modifying CTE, `WHERE`, or `JOIN` analysis. For stored values, sqlx-js aggregates every DML target and accepts one unique configured declaration; when no DML target exists, predicate references provide the parameter declaration instead. Conflicting declarations within the effective target set fail prepare rather than depending on traversal order. It never changes arbitrary expressions such as `upper(action)`. Use a schema-qualified key when table names can collide.
 
 This assertion does not validate stored values at runtime. Prefer a PostgreSQL enum/domain when the database truly owns a closed value set; use `columnTypes` when the database deliberately stores a broader scalar such as `text` and the application accepts responsibility for the narrower TypeScript contract.
 
@@ -311,7 +315,7 @@ Arrays of that domain are inferred as `string[]` without config. Ordinary `text[
 
 ## Function catalog scope
 
-Application-owned functions and procedures from non-system schemas are generated into `KnownFunctions`. Each signature records approximate parameter/return types together with `language`, `volatility`, `strict`, `securityDefiner`, `leakproof`, `parallelSafety`, `owner`, `ownerSuperuser`, `publicExecute`, the complete function-local `settings`, derived `searchPath`, and `extensionOwned`. Every input type includes SQL `null`: PostgreSQL accepts null for function arguments even when `strict` is true; strictness means the server returns null without invoking the function body. A `null` `searchPath` means the function has no function-local `SET search_path` clause and inherits the session setting. `publicExecute` reflects the effective PostgreSQL function ACL, including the default `EXECUTE TO PUBLIC` grant when `proacl` is null.
+Application-owned functions and procedures from non-system schemas are generated into `SqlxJsGeneratedFunctions`. Each signature records approximate parameter/return types together with `language`, `volatility`, `strict`, `securityDefiner`, `leakproof`, `parallelSafety`, `owner`, `ownerSuperuser`, `publicExecute`, the complete function-local `settings`, derived `searchPath`, and `extensionOwned`. Every input type includes SQL `null`: PostgreSQL accepts null for function arguments even when `strict` is true; strictness means the server returns null without invoking the function body. A `null` `searchPath` means the function has no function-local `SET search_path` clause and inherits the session setting. `publicExecute` reflects the effective PostgreSQL function ACL, including the default `EXECUTE TO PUBLIC` grant when `proacl` is null.
 
 The same metadata is committed in `.sqlx-js/functions/functions.json`, so `prepare --check` and `prepare --offline` reproduce the live diagnostics from cache, while `prepare --verify` detects database drift without modifying the worktree. Catalog and generator revisions fail closed with regeneration guidance after an incompatible upgrade; run one live `prepare`. Schema snapshots carry the same metadata and likewise require `snapshot dump` when their format changes.
 
@@ -376,7 +380,7 @@ Composite types (`CREATE TYPE foo AS (a int, b text)`) resolve to a struct liter
 Built-in JSON contracts compose through domains, composite attributes, and
 their arrays. Parameter leaves use `SqlxJson<unknown>` while result leaves use
 `SqlxJson<JsonValue>`. A direct built-in JSON column may instead carry the
-application type from `jsonbTypes`; the surrounding PostgreSQL shape never
+application type from `columnTypes`; the surrounding PostgreSQL shape never
 bypasses the branded transport.
 
 PostgreSQL assigns database-local OIDs to enums, domains, composites, and

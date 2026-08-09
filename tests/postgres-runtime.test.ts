@@ -244,21 +244,6 @@ test("raw client validates the complete Temporal provider boundary eagerly", () 
   })).toThrow("temporalApi.PlainTime.from failed its compatibility check");
 });
 
-test("deprecated global client accepts an application-owned Temporal provider", () => {
-  const checked = spawnSync("bun", ["-e", `
-process.env.DATABASE_URL = "postgres://app:secret@127.0.0.1:1/app";
-const { Temporal } = await import("@js-temporal/polyfill");
-const { close, configureDefaultTemporalApi, snapshot } = await import("./src/index.ts");
-configureDefaultTemporalApi(Temporal);
-if (snapshot().state !== "healthy") throw new Error("default client did not initialize");
-await close();
-`], {
-    cwd: resolve(import.meta.dir, ".."),
-    encoding: "utf8",
-  });
-  expect(checked.status, checked.stdout + checked.stderr).toBe(0);
-});
-
 test("raw client rejects millisecond options outside the supported range", () => {
   const url = "postgres://app:secret@127.0.0.1:1/app";
   expect(() => createClient(url, { connectTimeoutMs: 0 })).toThrow("connectTimeoutMs must be an integer");
@@ -410,7 +395,9 @@ test("managed decode errors preserve driver context across observer paths", asyn
   });
   const db = managed(pool, {
     onQuery: (event) => queryEvents.push(event),
-    onQueryError: (event) => lifecycleErrors.push(event),
+    onLifecycle: (event) => {
+      if (event.kind === "query-error") lifecycleErrors.push(event);
+    },
   });
   const query = defineQuery.one(
     "diagnostics.decodeValue",
@@ -1043,7 +1030,9 @@ test("lifecycle observer failures are isolated from successful queries", async (
   const observerError = new Error("observer failed");
   const reported: { error: unknown; generation?: number }[] = [];
   const db = managed(fakePool(async () => [{ value: 1 }]), {
-    onQueryStart: () => { throw observerError; },
+    onLifecycle: (event) => {
+      if (event.kind === "query-start") throw observerError;
+    },
     onLifecycleHookError: (error, event) => {
       reported.push({ error, generation: "generation" in event ? event.generation : undefined });
     },
@@ -1061,8 +1050,8 @@ test("query-error observer failures preserve the database error", async () => {
   const db = managed(fakePool(async () => {
     throw databaseError;
   }), {
-    onQueryError: () => {
-      throw observerError;
+    onLifecycle: (event) => {
+      if (event.kind === "query-error") throw observerError;
     },
     onLifecycleHookError: (error) => reported.push(error),
   });
@@ -1084,7 +1073,9 @@ test("bootstrap failures emit safe not_sent lifecycle details", async () => {
   }), {
     options: { parsers: {}, serializers: {}, types: {} },
   }), {
-    onQueryError: (event) => errors.push(event),
+    onLifecycle: (event) => {
+      if (event.kind === "query-error") errors.push(event);
+    },
   });
 
   await expect(db.ready()).rejects.toBe(lost);
@@ -1110,7 +1101,9 @@ test("lifecycle failures discard unsafe user-controlled names and codes", async 
   const db = managed(fakePool(async () => {
     throw unsafe;
   }), {
-    onQueryError: (event) => errors.push(event),
+    onLifecycle: (event) => {
+      if (event.kind === "query-error") errors.push(event);
+    },
   });
 
   await expect(db.sql("SELECT 1")).rejects.toBe(unsafe);
@@ -1132,7 +1125,9 @@ test("database lifecycle failures preserve safe metadata without the server mess
   const db = managed(fakePool(async () => {
     throw databaseError;
   }), {
-    onQueryError: (event) => errors.push(event),
+    onLifecycle: (event) => {
+      if (event.kind === "query-error") errors.push(event);
+    },
   });
 
   await expect(db.sql("SELECT * FROM accounts")).rejects.toBe(databaseError);
@@ -1157,7 +1152,9 @@ test("profiled clients annotate query and lifecycle events with a stable role", 
   const db = managed(fakePool(async () => [{ value: 1 }]), {
     profile,
     onQuery: (event) => queries.push(event),
-    onQueryStart: (event) => starts.push(event),
+    onLifecycle: (event) => {
+      if (event.kind === "query-start") starts.push(event);
+    },
   });
   profile.role = "changed_after_creation";
 
@@ -1269,9 +1266,11 @@ describe("managed generations", () => {
     }, {
       operationTimeoutMs: 10,
       cancelGraceMs: 0,
-      onQueryStart: (event) => starts.push(event.generation),
-      onQueryTimeout: (event) => timeouts.push(`${event.phase}:${event.outcome}`),
-      onClientStateChange: (event) => states.push(`${event.from}->${event.to}`),
+      onLifecycle: (event) => {
+        if (event.kind === "query-start") starts.push(event.generation);
+        if (event.kind === "query-timeout") timeouts.push(`${event.phase}:${event.outcome}`);
+        if (event.kind === "state-change") states.push(`${event.from}->${event.to}`);
+      },
     });
 
     let timeout: unknown;
@@ -1563,7 +1562,9 @@ describe("managed generations", () => {
     }, {
       operationTimeoutMs: 10,
       cancelGraceMs: 0,
-      onClientStateChange: ({ from, to }) => states.push(`${from}->${to}`),
+      onLifecycle: (event) => {
+        if (event.kind === "state-change") states.push(`${event.from}->${event.to}`);
+      },
     });
     const active = db.sql("SELECT pg_sleep(10)");
     const closing = db.close({ graceMs: 50, forceAfterMs: 100 });
@@ -1587,9 +1588,10 @@ describe("managed generations", () => {
     }, {
       operationTimeoutMs: 10,
       cancelGraceMs: 0,
-      onClientStateChange: ({ from, to }) => {
-        states.push(`${from}->${to}`);
-        if (to === "poisoned") closing = db.close({ graceMs: 0, forceAfterMs: 10 });
+      onLifecycle: (event) => {
+        if (event.kind !== "state-change") return;
+        states.push(`${event.from}->${event.to}`);
+        if (event.to === "poisoned") closing = db.close({ graceMs: 0, forceAfterMs: 10 });
       },
     });
 
@@ -1629,8 +1631,8 @@ describe("managed generations", () => {
     const db = managed(fakePool(async () => [], {
       end: async () => { ended++; },
     }), {
-      onClientStateChange: ({ to }) => {
-        if (to === "closing") nestedClose = db.close();
+      onLifecycle: (event) => {
+        if (event.kind === "state-change" && event.to === "closing") nestedClose = db.close();
       },
     });
 
@@ -1874,8 +1876,8 @@ describe("managed transaction deadline", () => {
       },
     });
     const db = managed(pool, {
-      onQueryStart: ({ queryName }) => {
-        if (queryName !== "sqlx-js.transaction") return;
+      onLifecycle: (event) => {
+        if (event.kind !== "query-start" || event.queryName !== "sqlx-js.transaction") return;
         const until = performance.now() + 15;
         while (performance.now() < until) {}
       },
@@ -1997,7 +1999,9 @@ describe("managed transaction deadline", () => {
     });
     const db = managed(pool, {
       cancelGraceMs: 100,
-      onQueryTimeout: ({ queryName }) => timeouts.push(queryName ?? "query"),
+      onLifecycle: (event) => {
+        if (event.kind === "query-timeout") timeouts.push(event.queryName ?? "query");
+      },
     });
     const controller = new AbortController();
     let entered!: () => void;

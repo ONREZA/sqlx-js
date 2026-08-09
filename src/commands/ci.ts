@@ -32,24 +32,18 @@ export function buildCiSteps(
   const shadowAdmin = opts.shadowAdminUrl ? ["--shadow-admin-url", opts.shadowAdminUrl] : [];
   const migrations = opts.migrationsDir ? ["--migrations", opts.migrationsDir] : [];
   const dts = opts.dtsPath ? ["--dts", opts.dtsPath] : [];
-  return [
-    {
-      name: "verify",
-      args: [
-        "verify",
-        "--strict-inference",
-        ...shadow,
-        ...shadowAdmin,
-        ...migrations,
-        ...dts,
-        ...root,
-      ],
-    },
-    {
-      name: "prepare-offline",
-      args: ["prepare", "--check", "--strict-inference", ...dts, ...root],
-    },
-  ];
+  return [{
+    name: "verify",
+    args: [
+      "verify",
+      "--strict-inference",
+      ...shadow,
+      ...shadowAdmin,
+      ...migrations,
+      ...dts,
+      ...root,
+    ],
+  }];
 }
 
 export function runCi(opts: CiOptions): void {

@@ -1,4 +1,4 @@
-import { createHash, createHmac, pbkdf2Sync, randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Socket, connect as netConnect, isIP } from "node:net";
 import {
@@ -11,12 +11,14 @@ import {
   type FieldDescription,
   type ServerMessage,
 } from "./wire-messages";
+import { computeScramProof, parseScramFields, requireScramField } from "./scram";
 
 export {
   MessageReader,
   type FieldDescription,
   type ServerMessage,
 } from "./wire-messages";
+export { computeScramProof } from "./scram";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -765,11 +767,11 @@ export class PgClient {
     const m1 = await this.nextAuthenticationMessage("SCRAM");
     if (m1.code !== 11) throw new Error(`SCRAM: expected R/11, got ${stringifyMessage(m1)}`);
     const serverFirst = textDecoder.decode(m1.payload);
-    const sf = parseScramKv(serverFirst);
-    const combinedNonce = scramField(sf, "r");
+    const sf = parseScramFields(serverFirst);
+    const combinedNonce = requireScramField(sf, "r");
     if (!combinedNonce.startsWith(clientNonce)) throw new Error("SCRAM: server nonce mismatch");
-    const salt = Buffer.from(scramField(sf, "s"), "base64");
-    const iterations = parseInt(scramField(sf, "i"), 10);
+    const salt = Buffer.from(requireScramField(sf, "s"), "base64");
+    const iterations = parseInt(requireScramField(sf, "i"), 10);
 
     const clientFinalNoProof = `c=biws,r=${combinedNonce}`;
     const authMessage = `${clientFirstBare},${serverFirst},${clientFinalNoProof}`;
@@ -781,7 +783,7 @@ export class PgClient {
     const m2 = await this.nextAuthenticationMessage("SCRAM");
     if (m2.code !== 12) throw new Error(`SCRAM: expected R/12, got ${stringifyMessage(m2)}`);
     const serverFinal = textDecoder.decode(m2.payload);
-    const sfKv = parseScramKv(serverFinal);
+    const sfKv = parseScramFields(serverFinal);
     if (sfKv.e) throw new Error(`SCRAM server error: ${sfKv.e}`);
     if (sfKv.v !== serverSignatureB64) throw new Error("SCRAM: server signature mismatch");
   }
@@ -1118,43 +1120,6 @@ export class PgClient {
     try { this.write(frame("X", new Uint8Array(0))); } catch {}
     try { this.sock.end(); } catch {}
   }
-}
-
-export function computeScramProof(
-  password: string,
-  salt: Uint8Array,
-  iterations: number,
-  authMessage: string,
-): { saltedPassword: Buffer; clientProofB64: string; serverSignatureB64: string } {
-  const saltedPassword = pbkdf2Sync(password, Buffer.from(salt), iterations, 32, "sha256");
-  const clientKey = createHmac("sha256", saltedPassword).update("Client Key").digest();
-  const storedKey = createHash("sha256").update(clientKey).digest();
-  const clientSignature = createHmac("sha256", storedKey).update(authMessage).digest();
-  const clientProof = Buffer.alloc(clientKey.length);
-  for (let i = 0; i < clientKey.length; i++) clientProof[i] = clientKey[i]! ^ clientSignature[i]!;
-  const serverKey = createHmac("sha256", saltedPassword).update("Server Key").digest();
-  const serverSignature = createHmac("sha256", serverKey).update(authMessage).digest();
-  return {
-    saltedPassword,
-    clientProofB64: clientProof.toString("base64"),
-    serverSignatureB64: serverSignature.toString("base64"),
-  };
-}
-
-function parseScramKv(s: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const part of s.split(",")) {
-    const eq = part.indexOf("=");
-    if (eq < 0) continue;
-    out[part.slice(0, eq)] = part.slice(eq + 1);
-  }
-  return out;
-}
-
-function scramField(kv: Record<string, string>, key: string): string {
-  const v = kv[key];
-  if (v === undefined) throw new Error(`SCRAM: missing field "${key}"`);
-  return v;
 }
 
 function stringifyMessage(m: ServerMessage): string {

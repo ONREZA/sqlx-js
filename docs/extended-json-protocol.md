@@ -42,8 +42,10 @@ document and exact-number classes:
 import {
   JsonNumber,
   SqlxJson,
-  sql,
 } from "@onreza/sqlx-js";
+import { db } from "./db.js";
+
+const { sql } = db;
 
 const payload = sql.json({
   eventId: 9_007_199_254_740_993n,
@@ -80,7 +82,7 @@ using `globalThis.Temporal` when the explicit provider is omitted, and
 An application that needs `T` from untrusted text must validate the decoded
 value at its own boundary.
 
-`jsonbTypes` remains an application-owned compile-time assertion. A mapped
+`columnTypes` remains an application-owned compile-time assertion. A mapped
 column would generate `SqlxJson<UserSettings>`, not `UserSettings` directly.
 The protocol validates its own tags and values but does not validate the
 application's `UserSettings` schema.

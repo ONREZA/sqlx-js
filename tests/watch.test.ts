@@ -422,6 +422,7 @@ test("watch reacts to source, SQL, config, and tsconfig graph changes", () => {
   expect(shouldWatchFile("sqlx-js-env.d.ts")).toBe(false);
   expect(shouldWatchFile("types/generated.d.ts", ["types/generated.d.ts"])).toBe(false);
   expect(shouldWatchFile("src/db-enums.ts", ["src/db-enums.ts"])).toBe(false);
+  expect(shouldWatchFile("src/sql-files.generated.ts", ["src/sql-files.generated.ts"])).toBe(false);
 });
 
 test("watch JSONL events are one versioned document per line", () => {

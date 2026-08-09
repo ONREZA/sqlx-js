@@ -15,14 +15,16 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Cache, type CacheEntry, writeCacheManifest } from "./cache";
 import { emitDts } from "./codegen";
-import type { DatabaseProfiles } from "./config";
+import type { DatabaseProfiles, SqlxJsConfig } from "./config";
 import {
   enumCatalogCacheExists,
+  enumCatalogOutputPath,
   removeEnumCatalogCache,
   writeEnumCatalogCache,
   writeEnumCatalogModule,
   type EnumCatalogEntry,
 } from "./enum-catalog";
+import { embeddedSqlOutputPath } from "./embedded-sql";
 import { writeFunctionCache, type FunctionEntry } from "./function-cache";
 import { writeRuntimeDescriptors } from "./runtime-descriptor-artifact";
 import type { TemporalPolicyOptions } from "./temporal";
@@ -32,6 +34,7 @@ type GeneratedOutputPublication = {
   entries: CacheEntry[];
   functions: FunctionEntry[];
   enumModule?: { path: string; content: string };
+  embeddedSqlModule?: { path: string; content: string };
   customTypes?: Readonly<Record<string, string>>;
   profiles?: DatabaseProfiles;
   temporal?: TemporalPolicyOptions;
@@ -82,6 +85,39 @@ type PublicationLock = {
 
 const LOCK_OWNER_FILE = "owner.json";
 const INCOMPLETE_LOCK_GRACE_MS = 30_000;
+
+export function prepareGeneratedOutputPaths(input: {
+  root: string;
+  config: SqlxJsConfig;
+  dtsPath: string;
+  enumOutputPath?: string;
+  sqlFilesOutputPath?: string;
+}): string[] {
+  return [
+    input.dtsPath,
+    enumCatalogOutputPath(input.root, input.config, input.enumOutputPath),
+    embeddedSqlOutputPath(input.root, input.config, input.sqlFilesOutputPath),
+  ].filter((path): path is string => path !== undefined);
+}
+
+export function assertDistinctPrepareGeneratedOutputs(input: {
+  root: string;
+  config: SqlxJsConfig;
+  dtsPath: string;
+  enumOutputPath?: string;
+  sqlFilesOutputPath?: string;
+}): void {
+  const outputs = prepareGeneratedOutputPaths(input).map(resolvePublicationPath);
+  for (let index = 0; index < outputs.length; index++) {
+    for (let other = index + 1; other < outputs.length; other++) {
+      if (samePath(outputs[index]!, outputs[other]!)) {
+        throw new Error(
+          "sqlx-js: generated declaration, enum catalog, and embedded SQL outputs must be distinct",
+        );
+      }
+    }
+  }
+}
 
 export function publishPrepareArtifacts(
   input: PrepareArtifactPublication,
@@ -164,7 +200,10 @@ function stageGeneratedOutputs(
   const enumModule = input.enumModule
     ? { ...input.enumModule, path: resolvePublicationPath(input.enumModule.path) }
     : undefined;
-  assertGeneratedOutputPaths([dtsPath, enumModule?.path], cache);
+  const embeddedSqlModule = input.embeddedSqlModule
+    ? { ...input.embeddedSqlModule, path: resolvePublicationPath(input.embeddedSqlModule.path) }
+    : undefined;
+  assertGeneratedOutputPaths([dtsPath, enumModule?.path, embeddedSqlModule?.path], cache);
   stageOutput(dtsPath, cache, externalTargets, (path) => {
     emitDts(
       path,
@@ -181,6 +220,14 @@ function stageGeneratedOutputs(
       cache,
       externalTargets,
       (path) => writeEnumCatalogModule(path, enumModule.content),
+    );
+  }
+  if (embeddedSqlModule) {
+    stageOutput(
+      embeddedSqlModule.path,
+      cache,
+      externalTargets,
+      (path) => writeFileSync(path, embeddedSqlModule.content),
     );
   }
 }
@@ -206,12 +253,16 @@ function assertGeneratedOutputPaths(
       throw new Error(`sqlx-js: generated output path is a directory: ${output}`);
     }
   }
-  if (outputs.length === 2 && (
-    samePath(outputs[0]!, outputs[1]!)
-    || descendantPath(outputs[0]!, outputs[1]!) !== null
-    || descendantPath(outputs[1]!, outputs[0]!) !== null
-  )) {
-    throw new Error("sqlx-js: generated output paths must not overlap");
+  for (let index = 0; index < outputs.length; index++) {
+    for (let other = index + 1; other < outputs.length; other++) {
+      if (
+        samePath(outputs[index]!, outputs[other]!)
+        || descendantPath(outputs[index]!, outputs[other]!) !== null
+        || descendantPath(outputs[other]!, outputs[index]!) !== null
+      ) {
+        throw new Error("sqlx-js: generated output paths must not overlap");
+      }
+    }
   }
 }
 

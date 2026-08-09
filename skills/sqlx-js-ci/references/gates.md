@@ -10,8 +10,8 @@ bun test tests --timeout 120000
 bun run build
 ```
 
-`sqlx-js ci` runs strict shadow verification and committed offline artifact
-checks. It does not mutate the target database.
+`sqlx-js ci` runs strict provider-aware shadow verification, which includes
+generated-artifact comparison. It does not mutate the target database.
 
 ## Credentials
 

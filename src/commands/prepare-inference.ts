@@ -2,7 +2,6 @@ import type { CacheEntry } from "../cache";
 import {
   lookupArrayElementNullability,
   lookupColumnType,
-  lookupJsonbType,
   type SqlxJsConfig,
 } from "../config";
 import type { ColumnSource } from "../pg/analyze";
@@ -48,7 +47,7 @@ function resolveTs(
   return oidToTs(oid).ts;
 }
 
-function isScalarColumnType(oid: number, schema: SchemaCache): boolean {
+function supportsDirectColumnTypeOverride(oid: number, schema: SchemaCache): boolean {
   if (jsonScalarOid(oid, schema) || schema.arrayElement(oid) !== undefined) return false;
   const custom = schema.customType(oid);
   return custom?.kind !== "enumArray" && custom?.kind !== "scalarArray" && custom?.kind !== "compositeArray";
@@ -131,16 +130,16 @@ function configuredColumnTs(
 ): string | undefined {
   const storedTypeOid = sourceColumnTypeOid(source, schema);
   if (jsonScalarOid(typeOid, schema) || (storedTypeOid && jsonScalarOid(storedTypeOid, schema))) {
-    const declaration = lookupJsonDeclaration(cfg, source, schema);
+    const declaration = lookupColumnType(cfg, source.schema, source.table, source.column);
     return declaration ? sqlxJson(declaration) : undefined;
   }
   const array = schema.arrayElement(typeOid)
     ?? (storedTypeOid === undefined ? undefined : schema.arrayElement(storedTypeOid));
   if (array && jsonScalarOid(array.typeOid, schema)) {
-    const declaration = lookupJsonbType(cfg, source.schema, source.table, source.column);
+    const declaration = lookupColumnType(cfg, source.schema, source.table, source.column);
     return declaration ? arrayTsType(sqlxJson(declaration), nonNullElements ? "non-null" : "unknown") : undefined;
   }
-  if (isScalarColumnType(storedTypeOid ?? typeOid, schema)) {
+  if (supportsDirectColumnTypeOverride(storedTypeOid ?? typeOid, schema)) {
     return lookupColumnType(cfg, source.schema, source.table, source.column);
   }
   return undefined;
@@ -164,7 +163,7 @@ export function resolveParamTs(
       paramLabel,
       "JSON",
       sources,
-      (source) => lookupJsonDeclaration(cfg, source, schema),
+      (source) => lookupColumnType(cfg, source.schema, source.table, source.column),
     );
     if (decl) return sqlxJson(decl);
     return JSON_INPUT_TS;
@@ -173,14 +172,14 @@ export function resolveParamTs(
   if (array && jsonScalarOid(array.typeOid, schema)) {
     const decl = resolveConfiguredParamDeclaration(
       paramLabel,
-      "jsonbTypes",
+      "columnTypes",
       sources,
-      (source) => lookupJsonbType(cfg, source.schema, source.table, source.column),
+      (source) => lookupColumnType(cfg, source.schema, source.table, source.column),
     );
     if (decl) return arrayParameter(sqlxJson(decl), nonNullElements);
     return arrayParameter(JSON_INPUT_TS, nonNullElements);
   }
-  if (isScalarColumnType(paramOid, schema)) {
+  if (supportsDirectColumnTypeOverride(paramOid, schema)) {
     const decl = resolveConfiguredParamDeclaration(
       paramLabel,
       "columnTypes",
@@ -196,18 +195,6 @@ export function resolveParamTs(
 function sourceColumnTypeOid(source: ColumnSource, schema: SchemaCache): number | undefined {
   const tableOid = schema.resolveTable(source.schema, source.table);
   return tableOid === undefined ? undefined : schema.columnsOf(tableOid)?.get(source.column)?.typeOid;
-}
-
-function lookupJsonDeclaration(
-  cfg: SqlxJsConfig,
-  source: ColumnSource,
-  schema: SchemaCache,
-): string | undefined {
-  const declared = lookupJsonbType(cfg, source.schema, source.table, source.column);
-  if (declared) return declared;
-  const typeOid = sourceColumnTypeOid(source, schema);
-  if (typeOid === undefined || JSON_OIDS.has(typeOid) || !jsonScalarOid(typeOid, schema)) return undefined;
-  return lookupColumnType(cfg, source.schema, source.table, source.column);
 }
 
 function resolveParamSources(targets: ParamTarget[], schema: SchemaCache): ColumnSource[] {

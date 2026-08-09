@@ -11,7 +11,7 @@ export type CreateClientOptions = PostgresOptions;
 
 export type ClientState = "healthy" | "poisoned" | "recycling" | "failed" | "closing" | "closed";
 
-export type QueryStartEvent = {
+type QueryLifecycleContext = {
   queryId: string;
   queryName?: string;
   profile?: string;
@@ -19,14 +19,20 @@ export type QueryStartEvent = {
   generation: number;
 };
 
-export type QueryTimeoutEvent = QueryStartEvent & {
+export type QueryStartEvent = QueryLifecycleContext & {
+  kind: "query-start";
+};
+
+export type QueryTimeoutEvent = QueryLifecycleContext & {
+  kind: "query-timeout";
   durationMs: number;
   timeoutMs: number;
   phase: "bootstrap" | "execution";
   outcome: "not_sent" | "unknown";
 };
 
-export type QueryErrorEvent = QueryStartEvent & {
+export type QueryErrorEvent = QueryLifecycleContext & {
+  kind: "query-error";
   durationMs: number;
   phase: "bootstrap" | "execution";
   outcome: "not_sent" | "unknown";
@@ -39,6 +45,7 @@ export type QueryErrorEvent = QueryStartEvent & {
 };
 
 export type ClientStateChangeEvent = {
+  kind: "state-change";
   profile?: string;
   role?: string;
   from: ClientState;
@@ -75,10 +82,7 @@ type ManagedClientOptions = {
   profile?: DatabaseProfile;
   onQuery?: OnQueryHook;
   onQueryHookError?: OnQueryHookError;
-  onQueryStart?: (event: QueryStartEvent) => void | Promise<void>;
-  onQueryTimeout?: (event: QueryTimeoutEvent) => void | Promise<void>;
-  onQueryError?: (event: QueryErrorEvent) => void | Promise<void>;
-  onClientStateChange?: (event: ClientStateChangeEvent) => void | Promise<void>;
+  onLifecycle?: (event: ClientLifecycleEvent) => void | Promise<void>;
   onLifecycleHookError?: (error: unknown, event: ClientLifecycleEvent) => void | Promise<void>;
   operationTimeoutMs?: number;
   cancelGraceMs?: number;
@@ -115,10 +119,7 @@ function postgresClientOptions(options: CreateSqlClientOptions): CreateClientOpt
     profile: _profile,
     onQuery: _onQuery,
     onQueryHookError: _onQueryHookError,
-    onQueryStart: _onQueryStart,
-    onQueryTimeout: _onQueryTimeout,
-    onQueryError: _onQueryError,
-    onClientStateChange: _onClientStateChange,
+    onLifecycle: _onLifecycle,
     onLifecycleHookError: _onLifecycleHookError,
     operationTimeoutMs: _operationTimeoutMs,
     cancelGraceMs: _cancelGraceMs,

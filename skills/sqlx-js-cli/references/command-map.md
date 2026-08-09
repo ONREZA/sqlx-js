@@ -9,9 +9,9 @@ records its ownership boundary.
 | `prepare` | Generate, watch, restore, or check query artifacts | Mode-dependent | Reads only |
 | `dev` | Build configured schema in shadow and regenerate artifacts | Yes | No |
 | `verify` | Build configured schema in shadow and compare artifacts | No | No |
-| `ci` | Strict provider verification plus offline consistency | No | No |
+| `ci` | Strict provider-aware verification | No | No |
 | `doctor` | Audit runtime, config, DB, cache, RLS, and tooling | No | Reads only |
-| `queries` | Query inventory and optional embedded SQL module | With `--embed` | No |
+| `queries` | Read-only query inventory and audits | No | No |
 | `snapshot` | Schema snapshot and manifest dump/check | `dump` | Reads only |
 | `migrate` | Built-in migration source and target history | Subcommand-dependent | Subcommand-dependent |
 | `pgschema` | Managed pgschema install, plan, and apply | Install cache only | `apply` |

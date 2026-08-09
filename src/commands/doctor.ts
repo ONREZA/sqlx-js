@@ -15,7 +15,9 @@ import { mergeExtensionTypes } from "../pg/extensions";
 import { SchemaCache } from "../pg/schema";
 import { validateColumnAssertions } from "../config-column-assertions";
 import { scanProject, type QueryCallSite } from "../scan/scanner";
-import { assertDistinctEnumCatalogOutput, enumCatalogOutputPath } from "../enum-catalog";
+import { embeddedSqlOutputPath } from "../embedded-sql";
+import { enumCatalogOutputPath } from "../enum-catalog";
+import { assertDistinctPrepareGeneratedOutputs } from "../prepare-artifacts";
 import { queryId } from "../query-id";
 import type { PackageIdentityCheck } from "../package-identity";
 import { runtimeDescriptorPath } from "../runtime-descriptor-artifact";
@@ -50,8 +52,10 @@ function configuredGeneratedPaths(
   root: string,
   config: Awaited<ReturnType<typeof loadConfigInfo>>["config"],
 ): string[] {
-  const enumOutput = enumCatalogOutputPath(root, config);
-  return enumOutput ? [enumOutput] : [];
+  return [
+    enumCatalogOutputPath(root, config),
+    embeddedSqlOutputPath(root, config),
+  ].filter((path): path is string => path !== undefined);
 }
 
 function decodeBoolean(value: Uint8Array | null | undefined): boolean {
@@ -365,6 +369,11 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
     const info = await loadConfigInfo(opts.root);
     config = info.config;
     configPath = info.path;
+    assertDistinctPrepareGeneratedOutputs({
+      root: opts.root,
+      config,
+      dtsPath: opts.dtsPath,
+    });
     const nativeTs = nativeTypeScriptEnabled();
     if (info.path && /\.m?ts$/.test(info.path) && nativeTs === false) {
       checks.push({ name: "config", status: "error", message: "native TypeScript execution is disabled" });
@@ -560,7 +569,6 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
 
   if (configLoaded && config.enumCatalog) {
     try {
-      assertDistinctEnumCatalogOutput(opts.root, config, opts.dtsPath);
       const output = enumCatalogOutputPath(opts.root, config)!;
       checks.push(existsSync(output)
         ? {
@@ -576,6 +584,21 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
     } catch (error) {
       checks.push({ name: "enumCatalog", status: "error", message: (error as Error).message });
     }
+  }
+
+  if (configLoaded && config.sqlFiles) {
+    const output = embeddedSqlOutputPath(opts.root, config)!;
+    checks.push(existsSync(output)
+      ? {
+          name: "embeddedSql",
+          status: "ok",
+          message: `generated embedded SQL module exists at ${output}`,
+        }
+      : {
+          name: "embeddedSql",
+          status: "error",
+          message: `generated embedded SQL module not found at ${output}; run sqlx-js prepare`,
+        });
   }
 
   if (!opts.databaseUrl) {

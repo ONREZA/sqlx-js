@@ -174,10 +174,8 @@ generations, end-to-end operation deadlines, runtime type discovery, poisoned
 generation replacement, lifecycle state, and bounded shutdown. Dispatched SQL
 is never replayed after a connection loss because its outcome may be unknown.
 `init` creates a user-owned `db.ts` that binds the generated registry and
-runtime descriptor explicitly. The global `sql` export remains a deprecated
-convenience path for gradual migration. Applications still using it must call
-`configureDefaultTemporalApi(Temporal)` before the first global query or
-lifecycle operation.
+runtime descriptor explicitly. This scoped client is the only typed managed
+query surface; generated declarations never augment process-global types.
 
 PostgreSQL temporal values never cross this boundary as JavaScript `Date`.
 `date`, `time`, `timestamp`, and `timestamptz` map to
@@ -186,9 +184,15 @@ PostgreSQL temporal values never cross this boundary as JavaScript `Date`.
 construction; `init` scaffolds this explicitly:
 
 ```ts
+import { createSqlClient } from "@onreza/sqlx-js";
 import { Temporal } from "@js-temporal/polyfill";
+import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
+import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 
-const db = createSqlClient(databaseUrl, { temporalApi: Temporal });
+const db = createSqlClient<SqlxJsGeneratedRegistry>(databaseUrl, {
+  queryDescriptors,
+  temporalApi: Temporal,
+});
 ```
 
 If a compatible `globalThis.Temporal` exists, the option can be omitted.

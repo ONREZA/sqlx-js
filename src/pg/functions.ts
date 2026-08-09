@@ -7,9 +7,10 @@ import type {
   FunctionVolatility,
 } from "../function-cache";
 import { functionSettingValue, normalizeFunctionSettings } from "../function-cache";
-import { decodeText, type PgClient } from "./wire";
+import type { PgClient } from "./wire";
 import { inputTsType } from "./input-types";
 import { SchemaCache } from "./schema";
+import { loadFunctionCatalogRows } from "./catalog";
 
 type FunctionRow = {
   schema: string;
@@ -45,7 +46,19 @@ export async function introspectFunctions(
   schema: SchemaCache,
   options: { includeExtensionOwned?: boolean } = {},
 ): Promise<FunctionEntry[]> {
-  const rows = await loadFunctionRows(client, options.includeExtensionOwned === true);
+  const rows: FunctionRow[] = (await loadFunctionCatalogRows(client, {
+    includeExtensionOwned: options.includeExtensionOwned === true,
+  })).map((row) => {
+    const settings = normalizeFunctionSettings(row.settings);
+    return {
+      ...row,
+      kind: functionKind(row.kind),
+      volatility: functionVolatility(row.volatility),
+      parallelSafety: functionParallelSafety(row.parallelSafety),
+      settings,
+      searchPath: functionSettingValue(settings, "search_path"),
+    };
+  });
   const typeOids = new Set<number>();
   for (const row of rows) {
     typeOids.add(row.returnOid);
@@ -54,82 +67,6 @@ export async function introspectFunctions(
   }
   await schema.loadCustomTypes([...typeOids]);
   return rows.map((row) => toEntry(row, schema)).sort((a, b) => a.signature.localeCompare(b.signature));
-}
-
-async function loadFunctionRows(client: PgClient, includeExtensionOwned: boolean): Promise<FunctionRow[]> {
-  const result = await client.simpleQueryAll(`
-    SELECT
-      n.nspname,
-      p.proname,
-      p.prokind::text,
-      pg_get_function_identity_arguments(p.oid),
-      to_json(
-        CASE
-          WHEN p.proargtypes::text = '' THEN ARRAY[]::oid[]
-          ELSE string_to_array(p.proargtypes::text, ' ')::oid[]
-        END
-      )::text,
-      to_json(p.proallargtypes)::text,
-      to_json(p.proargmodes)::text,
-      to_json(p.proargnames)::text,
-      p.prorettype::int8,
-      p.proretset,
-      p.provolatile::text,
-      p.proisstrict,
-      p.prosecdef,
-      p.proleakproof,
-      p.proparallel::text,
-      owner.rolname,
-      owner.rolsuper,
-      EXISTS (
-        SELECT 1
-        FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) privilege
-        WHERE privilege.grantee = 0
-          AND privilege.privilege_type = 'EXECUTE'
-      ),
-      to_json(COALESCE(p.proconfig, ARRAY[]::text[]))::text,
-      extension_dependency.objid IS NOT NULL,
-      l.lanname
-    FROM pg_proc p
-    JOIN pg_namespace n ON n.oid = p.pronamespace
-    JOIN pg_language l ON l.oid = p.prolang
-    JOIN pg_roles owner ON owner.oid = p.proowner
-    LEFT JOIN pg_depend extension_dependency
-      ON extension_dependency.classid = 'pg_proc'::regclass
-      AND extension_dependency.objid = p.oid
-      AND extension_dependency.refclassid = 'pg_extension'::regclass
-      AND extension_dependency.deptype = 'e'
-    WHERE ${userSchemaFilter("n")}
-      ${includeExtensionOwned ? "" : "AND extension_dependency.objid IS NULL"}
-    ORDER BY n.nspname, p.proname, pg_get_function_identity_arguments(p.oid)
-  `);
-  return result.rows.map((row) => {
-    const settings = normalizeFunctionSettings(parseNullableStringJsonArray(decodeText(row[18] ?? null)) ?? []);
-    return {
-      schema: decodeText(row[0]!)!,
-      name: decodeText(row[1]!)!,
-      kind: functionKind(decodeText(row[2]!)),
-      identityArguments: decodeText(row[3]!) ?? "",
-      language: decodeText(row[20]!)!,
-      inputArgOids: parseNumberJsonArray(decodeText(row[4]!)),
-      allArgOids: parseNullableNumberJsonArray(decodeText(row[5] ?? null)),
-      argModes: parseNullableStringJsonArray(decodeText(row[6] ?? null)),
-      argNames: parseNullableStringJsonArray(decodeText(row[7] ?? null)),
-      returnOid: Number(decodeText(row[8]!)!),
-      returnsSet: decodeText(row[9]!) === "t",
-      volatility: functionVolatility(decodeText(row[10]!)),
-      strict: decodeText(row[11]!) === "t",
-      securityDefiner: decodeText(row[12]!) === "t",
-      leakproof: decodeText(row[13]!) === "t",
-      parallelSafety: functionParallelSafety(decodeText(row[14]!)),
-      owner: decodeText(row[15]!)!,
-      ownerSuperuser: decodeText(row[16]!) === "t",
-      publicExecute: decodeText(row[17]!) === "t",
-      settings,
-      searchPath: functionSettingValue(settings, "search_path"),
-      extensionOwned: decodeText(row[19]!) === "t",
-    };
-  });
 }
 
 function toEntry(row: FunctionRow, schema: SchemaCache): FunctionEntry {
@@ -204,23 +141,6 @@ function nullableReturn(tsType: string): string {
   return `${tsType} | null`;
 }
 
-function parseNumberJsonArray(raw: string | null): number[] {
-  if (!raw) return [];
-  const parsed = JSON.parse(raw) as unknown;
-  return Array.isArray(parsed) ? parsed.map(Number).filter((n) => Number.isFinite(n)) : [];
-}
-
-function parseNullableNumberJsonArray(raw: string | null): number[] | null {
-  if (raw === null) return null;
-  return parseNumberJsonArray(raw);
-}
-
-function parseNullableStringJsonArray(raw: string | null): string[] | null {
-  if (raw === null) return null;
-  const parsed = JSON.parse(raw) as unknown;
-  return Array.isArray(parsed) ? parsed.map((v) => (typeof v === "string" ? v : "")) : [];
-}
-
 function paramMode(raw: string | undefined): FunctionParamMode {
   switch (raw) {
     case "o": return "out";
@@ -254,8 +174,4 @@ function functionParallelSafety(raw: string | null): FunctionParallelSafety {
     case "r": return "restricted";
     default: return "unsafe";
   }
-}
-
-function userSchemaFilter(alias: string): string {
-  return `${alias}.nspname <> 'information_schema' AND ${alias}.nspname NOT LIKE 'pg\\_%' ESCAPE '\\'`;
 }

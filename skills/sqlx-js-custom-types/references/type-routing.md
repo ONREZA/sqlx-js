@@ -4,8 +4,7 @@
 | --- | --- |
 | Built-in PostgreSQL OID | `src/pg/oids.ts` |
 | Built-in extension name | `src/pg/extensions.ts` and runtime codecs |
-| Direct JSON column | `jsonbTypes` |
-| Direct scalar application assertion | `columnTypes` |
+| Direct JSON or scalar application assertion | `columnTypes` |
 | Direct array non-null element assertion | `arrayElementNullability` |
 | Runtime enum constants | `enumCatalog` |
 | Function security/planner inventory | `functionCatalog` |
@@ -23,7 +22,7 @@
 
 ## Assertions
 
-`jsonbTypes`, `columnTypes`, and `arrayElementNullability` are compile-time
+`columnTypes` and `arrayElementNullability` are compile-time
 application assertions, not runtime validators. Apply them only to direct
 column provenance. Fail on conflicting declarations instead of selecting one
 by traversal order.

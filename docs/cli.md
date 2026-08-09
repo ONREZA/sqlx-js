@@ -8,12 +8,12 @@ The command hierarchy follows ownership rather than implementation details:
 | --- | --- | --- | --- |
 | `dev` | Build the configured schema in shadow and regenerate query artifacts | Yes | No |
 | `verify` | Build in shadow and compare committed query artifacts | No | No |
-| `ci` | Run `verify --strict-inference` plus offline artifact consistency | No | No |
+| `ci` | Run the provider-aware `verify --strict-inference` gate | No | No |
 | `prepare` | Generate, watch, restore, or check query artifacts | Depends on mode | Only reads |
 | `migrate` | Built-in migration files and target history | `add/squash/archive` | `run/revert` |
 | `pgschema` | Managed pgschema tool and target plan/apply | Install cache only | `apply` |
 | `snapshot` | Runtime identifier snapshot and LLM manifest | `dump` | No |
-| `queries` | Database-free query inventory, inference explanation, reuse/similarity audits, and SQL embedding | With `--embed` | No |
+| `queries` | Database-free read-only query inventory, inference explanation, and reuse/similarity audits | No | No |
 | `json audit` | Extended JSON collision, duplicate-key, schema-dependency, and source-usage inventory | No | No |
 | `doctor` | Runtime, descriptor coverage, config, provider, database, RLS, and artifact diagnostics | With `--fix` | No |
 
@@ -28,7 +28,7 @@ sqlx-js migrate add|run|info|check|revert|squash|archive
 sqlx-js pgschema install|plan|apply
 sqlx-js snapshot dump|check
 sqlx-js doctor [--fix]
-sqlx-js queries [--json] [--embed <path>]
+sqlx-js queries [--json]
 sqlx-js queries audit [--json]
 sqlx-js queries similarities [--json] [--functions <path>] [--min-nodes <n>] [--limit <n>]
 sqlx-js queries explain <query-id> [--json]
@@ -57,8 +57,8 @@ artifact.
 
 | Flag                  | Meaning                                                                              |
 |-----------------------|--------------------------------------------------------------------------------------|
-| `--check`             | Read-only offline verification of query/function/enum caches, the runtime descriptor, and generated files. |
-| `--offline`           | Regenerate declarations, the runtime descriptor, and an enabled enum module from committed cache without a database. |
+| `--check`             | Read-only offline verification of query/function/enum caches, the runtime descriptor, and every configured generated file. |
+| `--offline`           | Regenerate declarations, the runtime descriptor, and configured enum/embedded-SQL modules from committed cache without a database. |
 | `--verify`            | Prepare against `DATABASE_URL` and compare generated artifacts without writing.          |
 | `--watch`             | Persistent connection, re-prepare on file change.                                    |
 | `--include <glob>`    | Focus live prepare on matching source files; repeatable and incompatible with check/offline/verify/watch. |
@@ -71,7 +71,6 @@ artifact.
 | `--json`              | Machine-readable prepare diagnostics, doctor/audit output, migration inspection and dry-runs. |
 | `--warnings`          | Show full warning details while keeping compact prepare output. |
 | `--verbose`           | Show per-query prepare progress. Compact human output is the default for prepare/check/offline/verify. |
-| `--embed <path>`      | For `queries`: write a deterministic TypeScript map of referenced external SQL files. |
 | `--functions <path>`  | For `queries similarities`: analyze SQL-language functions from one root-relative file or directory. |
 | `--min-nodes <n>`     | For `queries similarities`: minimum normalized AST fragment size (default: 12). |
 | `--limit <n>`         | For `queries similarities`: maximum ranked candidate families to return (default: 50). |
@@ -113,9 +112,11 @@ names, cardinalities, root-relative call sites, SQL file paths, source-owned
 nullable-parameter, result-assertion, expected-validation, and timestamp-policy
 contracts (including local allow reasons), `current`/`stale`/`missing` cache
 status, and `planned`/`parse-only` validation when cached, plus orphaned cache
-IDs. Config, scan, cache, and embed failures use versioned structured
-diagnostics with source location when available. Adding `--embed` writes the
-external-SQL module only after a successful scan.
+IDs. Config, scan, and cache failures use versioned structured diagnostics with
+source location when available. When `sqlFiles.output` is configured, prepare
+generates the external-SQL module atomically with the declarations, descriptor,
+and cache; offline and verify modes regenerate or compare it through the same
+artifact pipeline.
 
 After adding a new `defineQuery`, run live `sqlx-js prepare` before the ordinary
 TypeScript build. Until then, the generated registry cannot contain that SQL

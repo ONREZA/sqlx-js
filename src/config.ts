@@ -36,6 +36,10 @@ export type QueryAuditConfig = {
   };
 };
 
+export type SqlFilesConfig = {
+  output: string;
+};
+
 export type DatabaseProfile<
   Name extends string = string,
   Role extends string = string,
@@ -52,7 +56,6 @@ export type DatabaseProfile<
 export type DatabaseProfiles = Readonly<Record<string, DatabaseProfile>>;
 
 export type SqlxJsConfig = {
-  jsonbTypes?: Record<string, string>;
   columnTypes?: Record<string, string>;
   arrayElementNullability?: Record<string, "non-null">;
   customTypes?: Record<string, string>;
@@ -60,6 +63,7 @@ export type SqlxJsConfig = {
     includeExtensionOwned?: boolean;
   };
   enumCatalog?: EnumCatalogConfig;
+  sqlFiles?: SqlFilesConfig;
   queryAudit?: QueryAuditConfig;
   profiles?: DatabaseProfiles;
   scan?: ScanConfig;
@@ -346,46 +350,7 @@ function validateEnumCatalog(value: unknown, path: string): void {
     throw new Error(`sqlx-js: ${path} enumCatalog must be an object`);
   }
   const catalog = value as Record<string, unknown>;
-  if (typeof catalog.output !== "string" || catalog.output.trim() === "") {
-    throw new Error(`sqlx-js: ${path} enumCatalog.output must be a non-empty root-relative TypeScript module path`);
-  }
-  const output = catalog.output;
-  const normalized = normalize(output);
-  const isTypeScriptModule = /\.(?:[cm]?ts)$/.test(output) && !/\.d\.(?:[cm]?ts)$/.test(output);
-  if (
-    isAbsolute(output)
-    || normalized === ".."
-    || normalized.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
-    || !isTypeScriptModule
-  ) {
-    throw new Error(`sqlx-js: ${path} enumCatalog.output must be a root-relative .ts, .mts, or .cts path inside the project`);
-  }
-  const outputPath = resolve(dirname(path), output);
-  const configPath = resolve(path);
-  if (
-    outputPath === configPath
-    || (existsSync(outputPath) && realpathSync.native(outputPath) === realpathSync.native(configPath))
-  ) {
-    throw new Error(`sqlx-js: ${path} enumCatalog.output cannot overwrite the config file`);
-  }
-  if (existsSync(outputPath) && !statSync(outputPath).isFile()) {
-    throw new Error(`sqlx-js: ${path} enumCatalog.output must resolve to a file`);
-  }
-  let outputParent = dirname(outputPath);
-  while (!existsSync(outputParent)) outputParent = dirname(outputParent);
-  if (!statSync(outputParent).isDirectory()) {
-    throw new Error(`sqlx-js: ${path} enumCatalog.output parent must resolve to a directory`);
-  }
-  const realParent = realpathSync.native(outputParent);
-  const realRoot = realpathSync.native(dirname(path));
-  const parentFromRoot = relative(realRoot, realParent);
-  if (
-    isAbsolute(parentFromRoot)
-    || parentFromRoot === ".."
-    || parentFromRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
-  ) {
-    throw new Error(`sqlx-js: ${path} enumCatalog.output must stay inside the project after resolving symlinks`);
-  }
+  validateGeneratedModuleOutput(catalog.output, path, "enumCatalog.output");
   validateStringArray(catalog.schemas, "enumCatalog.schemas", path);
   const schemas = catalog.schemas as string[];
   if (schemas.length === 0 || schemas.some((schema) => schema.trim() === "")) {
@@ -421,6 +386,60 @@ function validateEnumCatalog(value: unknown, path: string): void {
   }
 }
 
+function validateSqlFiles(value: unknown, path: string): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`sqlx-js: ${path} sqlFiles must be an object`);
+  }
+  const sqlFiles = value as Record<string, unknown>;
+  if (Object.keys(sqlFiles).some((key) => key !== "output")) {
+    throw new Error(`sqlx-js: ${path} sqlFiles only supports the output option`);
+  }
+  validateGeneratedModuleOutput(sqlFiles.output, path, "sqlFiles.output");
+}
+
+function validateGeneratedModuleOutput(value: unknown, path: string, key: string): void {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`sqlx-js: ${path} ${key} must be a non-empty root-relative TypeScript module path`);
+  }
+  const output = value;
+  const normalized = normalize(output);
+  const isTypeScriptModule = /\.(?:[cm]?ts)$/.test(output) && !/\.d\.(?:[cm]?ts)$/.test(output);
+  if (
+    isAbsolute(output)
+    || normalized === ".."
+    || normalized.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
+    || !isTypeScriptModule
+  ) {
+    throw new Error(`sqlx-js: ${path} ${key} must be a root-relative .ts, .mts, or .cts path inside the project`);
+  }
+  const outputPath = resolve(dirname(path), output);
+  const configPath = resolve(path);
+  if (
+    outputPath === configPath
+    || (existsSync(outputPath) && realpathSync.native(outputPath) === realpathSync.native(configPath))
+  ) {
+    throw new Error(`sqlx-js: ${path} ${key} cannot overwrite the config file`);
+  }
+  if (existsSync(outputPath) && !statSync(outputPath).isFile()) {
+    throw new Error(`sqlx-js: ${path} ${key} must resolve to a file`);
+  }
+  let outputParent = dirname(outputPath);
+  while (!existsSync(outputParent)) outputParent = dirname(outputParent);
+  if (!statSync(outputParent).isDirectory()) {
+    throw new Error(`sqlx-js: ${path} ${key} parent must resolve to a directory`);
+  }
+  const realParent = realpathSync.native(outputParent);
+  const realRoot = realpathSync.native(dirname(path));
+  const parentFromRoot = relative(realRoot, realParent);
+  if (
+    isAbsolute(parentFromRoot)
+    || parentFromRoot === ".."
+    || parentFromRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
+  ) {
+    throw new Error(`sqlx-js: ${path} ${key} must stay inside the project after resolving symlinks`);
+  }
+}
+
 function isSchemaQualifiedEnumName(value: string): boolean {
   const separator = value.indexOf(".");
   return separator > 0 && separator < value.length - 1;
@@ -444,20 +463,9 @@ function validateConfig(value: unknown, path: string): SqlxJsConfig {
     throw new Error(`sqlx-js: ${path} must default-export a config object`);
   }
   const config = value as Record<string, unknown>;
-  if (config.jsonbTypes !== undefined) validateStringRecord(config.jsonbTypes, "jsonbTypes", path);
   if (config.columnTypes !== undefined) validateStringRecord(config.columnTypes, "columnTypes", path);
   if (config.arrayElementNullability !== undefined) validateArrayElementNullability(config.arrayElementNullability, path);
   if (config.customTypes !== undefined) validateCustomTypes(config.customTypes, path);
-  if (config.jsonbTypes && config.columnTypes) {
-    const jsonKeys = Object.keys(config.jsonbTypes as Record<string, string>);
-    const columnKeys = Object.keys(config.columnTypes as Record<string, string>);
-    const conflicts = jsonKeys.filter((jsonKey) => columnKeys.some((columnKey) =>
-      jsonKey === columnKey || jsonKey.endsWith(`.${columnKey}`) || columnKey.endsWith(`.${jsonKey}`)
-    ));
-    if (conflicts.length > 0) {
-      throw new Error(`sqlx-js: ${path} maps the same column in jsonbTypes and columnTypes: ${conflicts.join(", ")}`);
-    }
-  }
   if (config.functionCatalog !== undefined && config.functionCatalog !== false) {
     if (!config.functionCatalog || typeof config.functionCatalog !== "object" || Array.isArray(config.functionCatalog)) {
       throw new Error(`sqlx-js: ${path} functionCatalog must be false or an object`);
@@ -468,6 +476,7 @@ function validateConfig(value: unknown, path: string): SqlxJsConfig {
     }
   }
   if (config.enumCatalog !== undefined) validateEnumCatalog(config.enumCatalog, path);
+  if (config.sqlFiles !== undefined) validateSqlFiles(config.sqlFiles, path);
   if (config.queryAudit !== undefined) validateQueryAudit(config.queryAudit, path);
   if (config.profiles !== undefined) validateProfiles(config.profiles, path);
   if (config.temporal !== undefined) validateTemporal(config.temporal, path);
@@ -515,7 +524,6 @@ function validateConfig(value: unknown, path: string): SqlxJsConfig {
 
 export function prepareConfigHash(cfg: SqlxJsConfig): string {
   const value = stableValue({
-    jsonbTypes: cfg.jsonbTypes ?? {},
     columnTypes: cfg.columnTypes ?? {},
     arrayElementNullability: cfg.arrayElementNullability ?? {},
     customTypes: cfg.customTypes ?? {},
@@ -584,20 +592,6 @@ export function envFilePath(root: string): string {
   return join(root, ".env");
 }
 
-
-export function lookupJsonbType(
-  cfg: SqlxJsConfig,
-  schema: string,
-  table: string,
-  column: string,
-): string | undefined {
-  const types = cfg.jsonbTypes;
-  if (!types) return undefined;
-  return (
-    types[`${schema}.${table}.${column}`] ??
-    types[`${table}.${column}`]
-  );
-}
 
 export function lookupColumnType(
   cfg: SqlxJsConfig,

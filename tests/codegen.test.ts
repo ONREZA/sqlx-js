@@ -85,7 +85,7 @@ test("profile registries contain only queries assigned to that connection profil
   expect(dts).toContain('readonly role: "app_worker"');
   expect(dts).toContain('"SELECT api": { params: []; row: { "api": number } }');
   expect(dts).toContain('"SELECT worker": { params: []; row: { "worker": string } }');
-  expect(dts).toContain("interface KnownProfiles extends SqlxJsGeneratedProfiles");
+  expect(dts).toContain("type SqlxJsGeneratedProfileRegistry<Name extends keyof SqlxJsGeneratedProfiles>");
 });
 
 test("generated registries carry the exact Temporal policy", () => {
@@ -103,8 +103,8 @@ test("generated registries carry the exact Temporal policy", () => {
   expect(dts).toContain(
     '"SELECT $1::timestamptz AS value": { params: [import("@onreza/sqlx-js").PgTimestamptz]; row: { "value": import("@onreza/sqlx-js").PgTimestamptz } }',
   );
-  expect(dts).toContain("interface KnownQueries extends SqlxJsGeneratedQueries");
-  expect(dts).toContain("interface KnownFileQueries extends SqlxJsGeneratedFileQueries");
+  expect(dts).toContain("export interface SqlxJsGeneratedRegistry");
+  expect(dts).not.toContain("declare module");
 });
 
 test("temporal reject registries compile with descriptor and explicit adaptive policies", () => {
@@ -120,12 +120,11 @@ test("temporal reject registries compile with descriptor and explicit adaptive p
     },
   ]), [], {}, {}, { infinity: "reject" });
   writeFileSync(join(root, "consumer.ts"), `
-import { configureDefaultTemporalApi, createClient, createSqlClient, sql } from "@onreza/sqlx-js";
+import { createClient, createSqlClient } from "@onreza/sqlx-js";
 import { Temporal } from "@js-temporal/polyfill";
 import type { SqlxJsGeneratedRegistry } from "./generated";
 
 declare const queryDescriptors: import("@onreza/sqlx-js").RuntimeQueryDescriptors;
-configureDefaultTemporalApi(Temporal);
 const unscopedManaged = createSqlClient(undefined, {
   execution: "adaptive",
   temporal: { infinity: "reject", timestampWithoutTimeZone: "reject", sessionTimeZone: "UTC" },
@@ -149,7 +148,6 @@ const raw = createClient<SqlxJsGeneratedRegistry>(undefined, {
   temporalApi: Temporal,
 });
 const instant = Temporal.Instant.from("2026-01-01T00:00:00Z");
-void sql("SELECT $1::timestamptz AS value", instant);
 void prepared.sql("SELECT $1::timestamptz AS value", instant);
 void adaptive.sql("SELECT $1::timestamptz AS value", instant);
 void unscopedManaged;
@@ -223,29 +221,36 @@ test("profiled mapped queries validate their generated wire parameters", () => {
     worker: { name: "worker", role: "app_worker" },
   });
   writeFileSync(join(root, "consumer.ts"), `
-import { defineQuery } from "@onreza/sqlx-js";
+import { createSqlClient, defineQuery } from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedProfileRegistry } from "./generated";
 
-defineQuery.for("api").one(${JSON.stringify(query)}).mapParams(
+const api = createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, { execution: "adaptive", profile: { name: "api", role: "app_api" } });
+const worker = createSqlClient<SqlxJsGeneratedProfileRegistry<"worker">>(undefined, { execution: "adaptive", profile: { name: "worker", role: "app_worker" } });
+const valid = defineQuery.for("api").one(${JSON.stringify(query)}).mapParams(
   (input: { id: string }) => ({ id: input.id }),
 );
-defineQuery.for("api").one(${JSON.stringify(query)}).mapParams(
-  // @ts-expect-error profiled mappers must return the prepared wire contract
+void valid.run(api.sql, { id: "user-1" });
+const wrongKey = defineQuery.for("api").one(${JSON.stringify(query)}).mapParams(
   (input: { id: string }) => ({ wrong: input.id }),
 );
-defineQuery.for("api", "worker").one(${JSON.stringify(query)}).mapParams(
+// @ts-expect-error mapped wire parameters must match the explicit registry
+void wrongKey.run(api.sql, { id: "user-1" });
+const shared = defineQuery.for("api", "worker").one(${JSON.stringify(query)}).mapParams(
   (input: { id: string }) => ({ id: input.id }),
 );
-defineQuery.for("api", "worker").one(${JSON.stringify(query)}).mapParams(
-  // @ts-expect-error multi-profile mappers must satisfy every prepared wire contract
+void shared.run(api.sql, { id: "user-1" });
+void shared.run(worker.sql, { id: "user-1" });
+const nullable = defineQuery.for("api", "worker").one(${JSON.stringify(query)}).mapParams(
   (input: { id: string | null }) => ({ id: input.id }),
 );
-defineQuery.for("api", "worker").one(${JSON.stringify(positionalQuery)}).mapParams(
+// @ts-expect-error the api registry requires a non-null wire value
+void nullable.run(api.sql, { id: null });
+void nullable.run(worker.sql, { id: null });
+const positional = defineQuery.for("api", "worker").one(${JSON.stringify(positionalQuery)}).mapParams(
   (input: { id: string }) => [input.id] as const,
 );
-defineQuery.for("api", "worker").one(${JSON.stringify(positionalQuery)}).mapParams(
-  // @ts-expect-error positional mappers must satisfy every prepared wire contract
-  (input: { id: string | null }) => [input.id] as const,
-);
+void positional.run(api.sql, { id: "user-1" });
+void positional.run(worker.sql, { id: "user-1" });
 `);
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
@@ -358,7 +363,7 @@ test("non-nullable column stays non-null, nullable stays nullable when no overri
   expect(dts).toContain('"bio": string | null');
 });
 
-test("entries with filePaths emit KnownFileQueries keyed by path", () => {
+test("entries with filePaths emit generated file queries keyed by path", () => {
   const dts = write([
     {
       query: "SELECT 1",
@@ -372,7 +377,7 @@ test("entries with filePaths emit KnownFileQueries keyed by path", () => {
       ],
     },
   ]);
-  expect(dts).toContain("interface KnownFileQueries");
+  expect(dts).toContain("interface SqlxJsGeneratedFileQueries");
   expect(dts).toContain('"queries/one.sql": { params: []');
   expect(dts).not.toContain('"SELECT 1": { params:');
 });
@@ -397,7 +402,7 @@ test("entries with both inline and file usage emit into both interfaces", () => 
   expect(dts).toContain('"queries/users.sql":');
 });
 
-test("KnownQueries emits all inline query variants for a shared fingerprint", () => {
+test("generated queries emit all inline variants for a shared fingerprint", () => {
   const dts = write([
     {
       query: "SELECT id FROM users WHERE id = $1",
@@ -418,7 +423,7 @@ test("KnownQueries emits all inline query variants for a shared fingerprint", ()
   expect(dts).toContain('"SELECT  id  FROM users WHERE id = $1": { params: [bigint]');
 });
 
-test("KnownFileQueries deduplicates paths across entries", () => {
+test("generated file queries deduplicate paths across entries", () => {
   const dts = write([
     {
       query: "SELECT 1",
@@ -477,7 +482,7 @@ test("force flags take precedence over schema-derived nullability", () => {
   expect(dts).not.toContain("string | null");
 });
 
-test("KnownFunctions emits pg_proc catalog entries", () => {
+test("generated functions emit pg_proc catalog entries", () => {
   const dts = write([], [
     {
       schema: "public",
@@ -522,11 +527,11 @@ test("KnownFunctions emits pg_proc catalog entries", () => {
       extensionOwned: false,
     },
   ]);
-  expect(dts).toContain("interface KnownFunctions");
+  expect(dts).toContain("interface SqlxJsGeneratedFunctions");
   expect(dts).toContain('"public.slugify(value text)": { kind: "function"; language: "sql"; params: [string | null]; returns: string | null; returnsSet: false; volatility: "immutable"; strict: false; securityDefiner: false; leakproof: false; parallelSafety: "safe"; owner: "app_owner"; ownerSuperuser: false; publicExecute: true; settings: readonly []; searchPath: null; extensionOwned: false }');
   expect(dts).toContain('"public.search_posts(query text)": { kind: "function"; language: "plpgsql"; params: [string | null]; returns: { slug: string | null; score: number | null }; returnsSet: true; volatility: "stable"; strict: false; securityDefiner: true; leakproof: false; parallelSafety: "restricted"; owner: "reporting_owner"; ownerSuperuser: false; publicExecute: false; settings: readonly ["search_path=reporting, pg_temp", "TimeZone=UTC"]; searchPath: "reporting, pg_temp"; extensionOwned: false }');
   expect(dts).toContain("export interface SqlxJsGeneratedRegistry");
-  expect(dts).toContain("interface KnownQueries extends SqlxJsGeneratedQueries");
+  expect(dts).not.toContain("interface KnownQueries");
 });
 
 test("two generated registries remain independently usable in one TypeScript program", () => {
@@ -589,7 +594,7 @@ void replicaOnly;
   expect(checked.status, checked.stdout + checked.stderr).toBe(0);
 });
 
-test("createSqlClient infers the exact generated profile registry", () => {
+test("createSqlClient binds an explicit generated profile registry", () => {
   const root = join(tmp, "profile-registry");
   mkdirSync(root, { recursive: true });
   emitDts(join(root, "generated.d.ts"), completeEntries([
@@ -615,9 +620,10 @@ test("createSqlClient infers the exact generated profile registry", () => {
   });
   writeFileSync(join(root, "consumer.ts"), `
 import { createSqlClient } from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedProfileRegistry } from "./generated";
 
 declare const queryDescriptors: import("@onreza/sqlx-js").RuntimeQueryDescriptors;
-const preparedApi = createSqlClient(undefined, {
+const preparedApi = createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, {
   queryDescriptors,
   profile: { name: "api", role: "app_api" },
 });
@@ -625,19 +631,19 @@ void preparedApi.sql("SELECT api");
 void preparedApi.sql.with({ timeoutMs: 1_000 })("SELECT api");
 void preparedApi.sql.with({ signal: new AbortController().signal }).with({ timeoutMs: 1_000 })("SELECT api");
 // @ts-expect-error descriptor and adaptive execution modes are mutually exclusive
-createSqlClient(undefined, { queryDescriptors, execution: "adaptive" });
+createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, { queryDescriptors, execution: "adaptive", profile: { name: "api", role: "app_api" } });
 
-const api = createSqlClient(undefined, {
+const api = createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, {
   execution: "adaptive",
   profile: { name: "api", role: "app_api" },
 });
 void api.sql("SELECT api");
 // @ts-expect-error generated clients require queryDescriptors or an explicit adaptive opt-out
-createSqlClient(undefined, { profile: { name: "api", role: "app_api" } });
+createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, { profile: { name: "api", role: "app_api" } });
 // @ts-expect-error worker queries are not available through the api profile
 void api.sql("SELECT worker");
 // @ts-expect-error the generated api profile requires the app_api PostgreSQL role
-createSqlClient(undefined, { execution: "adaptive", profile: { name: "api", role: "wrong" } });
+createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, { execution: "adaptive", profile: { name: "api", role: "wrong" } });
 `);
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
@@ -692,9 +698,9 @@ test("profile transaction settings are required and typed", () => {
   });
   writeFileSync(join(root, "consumer.ts"), `
 import { createSqlClient, type SqlClient } from "@onreza/sqlx-js";
-import type { SqlxJsGeneratedProfiles } from "./generated";
+import type { SqlxJsGeneratedProfileRegistry, SqlxJsGeneratedProfiles } from "./generated";
 
-const api = createSqlClient(undefined, {
+const api = createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, {
   execution: "adaptive",
   profile: {
     name: "api",
@@ -723,7 +729,7 @@ void api.sql.transaction({
   settings: { "app.tenant_id": "tenant-1" },
 }, async () => {});
 
-const worker = createSqlClient(undefined, {
+const worker = createSqlClient<SqlxJsGeneratedProfileRegistry<"worker">>(undefined, {
   execution: "adaptive",
   profile: { name: "worker", role: "app_worker" },
 });
@@ -961,7 +967,6 @@ import {
   array,
   defineQuery,
   json,
-  sql,
   type ExecuteResult,
   type QueryParams,
   type QueryRegistry,
@@ -985,23 +990,16 @@ const assertedItems = defineQuery.one(${JSON.stringify(jsonArrayQuery)}, {
 void resultAssertionsShape;
 void assertedItems;
 type Params = QueryParams<typeof findUser, SqlxJsGeneratedRegistry>;
-type AmbientParams = QueryParams<typeof findUser>;
 type Row = QueryRow<typeof findUser, SqlxJsGeneratedRegistry>;
 type Result = QueryResult<typeof findUser, SqlxJsGeneratedRegistry>;
 const params: Params = { id: "00000000-0000-0000-0000-000000000000" };
-const ambientParams: AmbientParams = params;
 const row: Row = { id: params.id, email: "user@example.com" };
 const result: Result = row;
 declare const executor: SqlExecutor<SqlxJsGeneratedRegistry>;
 void findUser.run(executor, params);
-void ambientParams;
 void result;
 
 export function runScoped(executor: SqlExecutor<SqlxJsGeneratedRegistry>, params: Params) {
-  return findUser.run(executor, params);
-}
-
-export function runAmbient(executor: SqlExecutor, params: AmbientParams) {
   return findUser.run(executor, params);
 }
 
@@ -1010,16 +1008,8 @@ export function runOneScoped(executor: SqlExecutor<SqlxJsGeneratedRegistry>, par
   return findUserOne.run(executor, params);
 }
 
-export function runOneAmbient(executor: SqlExecutor, params: AmbientParams) {
-  return findUserOne.run(executor, params);
-}
-
 const findUsers = defineQuery(${JSON.stringify(query)});
 export function runMany(executor: SqlExecutor<SqlxJsGeneratedRegistry>, params: Params) {
-  return findUsers.run(executor, params);
-}
-
-export function runManyAmbient(executor: SqlExecutor, params: AmbientParams) {
   return findUsers.run(executor, params);
 }
 
@@ -1040,11 +1030,6 @@ export function runExecute(executor: SqlExecutor<SqlxJsGeneratedRegistry>, param
   return updateUser.run(executor, params);
 }
 
-type AmbientUpdateParams = QueryParams<typeof updateUser>;
-export function runExecuteAmbient(executor: SqlExecutor, params: AmbientUpdateParams) {
-  return updateUser.run(executor, params);
-}
-
 export function runClient(client: SqlClient<SqlxJsGeneratedRegistry>, params: Params) {
   return findUserOne.run(client.sql, params);
 }
@@ -1061,8 +1046,8 @@ export function runWithSignal(
   return findUserOne.run(client.sql, params, { signal, timeoutMs: 2_000 });
 }
 
-export function runTransaction(params: AmbientParams) {
-  return sql.transaction((tx) => findUserOne.run(tx, params));
+export function runTransaction(client: SqlClient<SqlxJsGeneratedRegistry>, params: Params) {
+  return client.sql.transaction((tx) => findUserOne.run(tx, params));
 }
 
 export function runRaw(executor: SqlExecutor<SqlxJsGeneratedRegistry>, params: Params) {
@@ -1167,17 +1152,6 @@ export function runMappedPayload(
 void mappedPayload;
 void mappedPayloadWire;
 
-type MappedPayloadEntry = SqlxJsGeneratedRegistry["queries"][typeof mappedPayloadQuery.query];
-type CompatibleMappedRegistry = QueryRegistry & {
-  queries: Record<typeof mappedPayloadQuery.query, MappedPayloadEntry>;
-};
-export function runMappedRegistryGeneric<Registry extends CompatibleMappedRegistry>(
-  executor: SqlExecutor<Registry>,
-  input: QueryParams<typeof mappedPayloadQuery, Registry>,
-) {
-  return mappedPayloadQuery.run(executor, input);
-}
-
 const mappedJsonArrayQuery = defineQuery.one(
   "payload.selectArray",
   ${JSON.stringify(jsonArrayQuery)},
@@ -1247,11 +1221,11 @@ defineQuery("SELECT 1", { temporal: {} });
 const nonNullArray: PgArrayParameter<string, false> = array(["one", "two"]);
 const nullableArray: PgArrayParameter<string, boolean> = array(["one", null]);
 const widenedArray: PgArrayParameter<string, boolean> = nonNullArray;
-const typedNonNullArray: PgArrayParameter<string, false> = sql.array(["one"]);
+const typedNonNullArray: PgArrayParameter<string, false> = array(["one"]);
 // @ts-expect-error a nullable element cannot satisfy a non-null element contract
-const invalidNonNullArray: PgArrayParameter<string, false> = sql.array(["one", null]);
+const invalidNonNullArray: PgArrayParameter<string, false> = array(["one", null]);
 // @ts-expect-error multidimensional arrays need an explicit result-shape contract
-const invalidNestedNonNullArray: PgArrayParameter<number, false> = sql.array([[1, null]]);
+const invalidNestedNonNullArray: PgArrayParameter<number, false> = array([[1, null]]);
 void nullableArray;
 void widenedArray;
 void typedNonNullArray;
@@ -1290,16 +1264,16 @@ void invalidNestedNonNullArray;
     const next = declaration.indexOf("export declare function ", start + 1);
     return declaration.slice(start, next === -1 ? undefined : next);
   };
-  for (const name of ["runScoped", "runAmbient"]) {
+  for (const name of ["runScoped"]) {
     expect(emittedFunction(name)).toContain("email: string;");
     expect(emittedFunction(name)).toContain("} | null>;");
   }
-  for (const name of ["runOneScoped", "runOneAmbient"]) {
+  for (const name of ["runOneScoped"]) {
     expect(emittedFunction(name)).toContain("email: string;");
     expect(emittedFunction(name)).toContain("}>;");
     expect(emittedFunction(name)).not.toContain("null");
   }
-  for (const name of ["runMany", "runManyAmbient"]) {
+  for (const name of ["runMany"]) {
     expect(emittedFunction(name)).toContain("email: string;");
     expect(emittedFunction(name)).toContain("}[]>;");
   }
@@ -1326,7 +1300,7 @@ void invalidNestedNonNullArray;
     expect(emittedFunction(name)).not.toContain("unknown");
   }
   expect(emittedFunction("runZeroParams")).toContain("count: number;");
-  for (const name of ["runExecute", "runExecuteAmbient"]) {
+  for (const name of ["runExecute"]) {
     expect(emittedFunction(name)).toContain("ExecuteResult");
   }
 });

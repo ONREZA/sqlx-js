@@ -34,7 +34,7 @@ map to their runtime representation. Database-local metadata then resolves:
 - composites to object types with nullable attributes;
 - arrays to the corresponding element contract;
 - supported extension types to their built-in application representation;
-- configured `customTypes`, `jsonbTypes`, and `columnTypes` to
+- configured `customTypes` and `columnTypes` to
   application-owned declarations.
 
 Configuration assertions and runtime codec requirements are documented in
@@ -165,7 +165,7 @@ metadata. All SQL function inputs can receive SQL `NULL`; `proisstrict` only
 changes whether PostgreSQL executes the body. Use a `defineQuery` source
 contract such as `{ nullableParams: ["operationId"] }` when the application
 allows null but the call expression itself does not prove that fact. The
-generated `KnownFunctions` inventory therefore includes `null` in every input
+generated `SqlxJsGeneratedFunctions` inventory therefore includes `null` in every input
 parameter type, independently of the stricter call-site query contract.
 
 Named parameters are rewritten to positional parameters in first-use order.

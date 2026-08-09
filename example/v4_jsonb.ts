@@ -1,12 +1,12 @@
-import { sql } from "@onreza/sqlx-js";
+import { db } from "./database";
 
-const u = await sql(`SELECT id, name, settings FROM users WHERE id = $1`, 1n);
+const u = await db.sql(`SELECT id, name, settings FROM users WHERE id = $1`, 1n);
 if (u.length > 0) {
   const theme = u[0]!.settings.value.theme;
   console.log("user theme:", theme);
 }
 
-const p = await sql(
+const p = await db.sql(
   `SELECT id, title, meta, attachments FROM posts WHERE id = $1`,
   1n,
 );

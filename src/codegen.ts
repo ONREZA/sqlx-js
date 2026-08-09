@@ -39,10 +39,6 @@ export function emitDts(
   lines.push("");
   const temporalPolicy = resolveTemporalPolicy(temporal);
   emitRegistry(lines, entries, functions, runtimeTypes, profiles, temporalPolicy);
-  lines.push("");
-  emitModuleAugmentation(lines, "@onreza/sqlx-js");
-  lines.push("");
-  lines.push("export {};");
   const tmp = `${outPath}.tmp-${randomBytes(4).toString("hex")}`;
   writeFileSync(tmp, lines.join("\n") + "\n");
   try {
@@ -114,18 +110,6 @@ function emitRegistry(
   lines.push("}");
 }
 
-function emitModuleAugmentation(
-  lines: string[],
-  moduleName: string,
-): void {
-  lines.push(`declare module ${JSON.stringify(moduleName)} {`);
-  lines.push("  interface KnownQueries extends SqlxJsGeneratedQueries {}");
-  lines.push("  interface KnownFileQueries extends SqlxJsGeneratedFileQueries {}");
-  lines.push("  interface KnownFunctions extends SqlxJsGeneratedFunctions {}");
-  lines.push("  interface KnownProfiles extends SqlxJsGeneratedProfiles {}");
-  lines.push("}");
-}
-
 function emitProfileRegistries(
   lines: string[],
   entries: CacheEntry[],
@@ -167,6 +151,8 @@ function emitProfileRegistries(
     lines.push("  };");
   }
   lines.push("}");
+  lines.push("");
+  lines.push("export type SqlxJsGeneratedProfileRegistry<Name extends keyof SqlxJsGeneratedProfiles> = SqlxJsGeneratedProfiles[Name];");
 }
 
 function temporalTypeLiteral(temporal: TemporalPolicy): string {

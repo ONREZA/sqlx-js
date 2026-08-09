@@ -4,8 +4,8 @@ Detailed contracts for typed queries, reusable definitions, SQL files, cardinali
 
 ## `sql(query, ...params)`
 
-The typed query function. New applications obtain it from the generated
-client boundary; the package-level `sql` export is deprecated:
+The typed query function comes from the generated client boundary. There is no
+package-level managed `sql` export:
 
 ```ts
 import { db } from "./db.js";
@@ -21,7 +21,7 @@ const rows = await sql(`SELECT id FROM users WHERE name = $1`, "alice");
 //                      ^ literal — checked at compile time
 ```
 
-Unknown queries, wrong parameter types, and dynamic strings are compile errors. For genuinely dynamic SQL, use `unsafe`.
+Unknown queries, wrong parameter types, and dynamic strings are compile errors. For genuinely dynamic SQL, use `db.unsafe`.
 
 ## `defineQuery`
 
@@ -36,20 +36,24 @@ import {
   type SqlExecutor,
 } from "@onreza/sqlx-js";
 import { db } from "./db.js";
+import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
 
 export const findUser = defineQuery.optional(
   "users.findById",
   `SELECT id, email FROM users WHERE id = $id`,
 );
 
-type FindUserParams = QueryParams<typeof findUser>;
-type FindUserRow = QueryRow<typeof findUser>;
-type FindUserResult = QueryResult<typeof findUser>; // FindUserRow | null
+type FindUserParams = QueryParams<typeof findUser, SqlxJsGeneratedRegistry>;
+type FindUserRow = QueryRow<typeof findUser, SqlxJsGeneratedRegistry>;
+type FindUserResult = QueryResult<typeof findUser, SqlxJsGeneratedRegistry>; // FindUserRow | null
 
 await findUser.run(db.sql, { id: userId });
 await db.sql.transaction((tx) => findUser.run(tx, { id: userId }));
 
-async function loadUser(executor: SqlExecutor, params: FindUserParams) {
+async function loadUser(
+  executor: SqlExecutor<SqlxJsGeneratedRegistry>,
+  params: FindUserParams,
+) {
   return findUser.run(executor, params);
 }
 ```
@@ -110,6 +114,7 @@ Use `mapParams` when the application input is intentionally narrower or more exp
 
 ```ts
 import { defineQuery, type QueryParams, type QueryWireParams } from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
 
 type AnalyticsEvent = { id: string; action: "created" | "deleted" };
 
@@ -121,11 +126,11 @@ export const insertEvents = defineQuery.execute(
   events: json(events),
 }));
 
-type InsertEventsInput = QueryParams<typeof insertEvents>;       // readonly AnalyticsEvent[]
-type InsertEventsWire = QueryWireParams<typeof insertEvents>;    // { events: SqlxJson<unknown> }
+type InsertEventsInput = QueryParams<typeof insertEvents, SqlxJsGeneratedRegistry>;
+type InsertEventsWire = QueryWireParams<typeof insertEvents, SqlxJsGeneratedRegistry>;
 ```
 
-The mapper receives only `json` and `array` parameter helpers. Once `prepare` has emitted `KnownQueries`, its output is checked exactly at the definition against the generated wire contract: missing, extra, and incompatible fields are compile errors. An application input can therefore narrow or reorganize the API without widening PostgreSQL parameters. The mapper executes once per call before named-parameter binding; root, generic scoped, and transaction executors keep the same result, observer, and query-ID behavior. This is the intended boundary for discriminated unions such as `preserve | clear | set`: the application owns the union and maps it to the physical flags and nullable values required by SQL.
+The mapper receives only `json` and `array` parameter helpers. Once `prepare` has emitted the explicit registry, its output is checked when the definition runs through that executor: missing, extra, and incompatible fields are compile errors. An application input can therefore narrow or reorganize the API without widening PostgreSQL parameters. The mapper executes once per call before named-parameter binding; root and transaction executors keep the same result, observer, and query-ID behavior. This is the intended boundary for discriminated unions such as `preserve | clear | set`: the application owns the union and maps it to the physical flags and nullable values required by SQL.
 
 ## Typed database functions for reusable filtered reads
 
@@ -149,32 +154,38 @@ export const listFilteredUsers = defineQuery(
 );
 ```
 
-The example migration owns the function, while application code depends only on the prepared call. The null-aware wrappers make optional filter inputs explicit to sqlx-js without parsing the function body. PostgreSQL does not expose `NOT NULL` metadata for `RETURNS TABLE` fields, so the `!` aliases explicitly assert the non-null contract implemented by this function; keep those assertions aligned with its SQL. `KnownFunctions` remains useful inventory metadata; the executable call contract above comes from PostgreSQL `Describe` of the literal `SELECT`. See [the complete example](../example/v12_database_function.ts) and [its migration](../example/migrations/0004_add_filtered_user_function.up.sql).
+The example migration owns the function, while application code depends only on the prepared call. The null-aware wrappers make optional filter inputs explicit to sqlx-js without parsing the function body. PostgreSQL does not expose `NOT NULL` metadata for `RETURNS TABLE` fields, so the `!` aliases explicitly assert the non-null contract implemented by this function; keep those assertions aligned with its SQL. `SqlxJsGeneratedFunctions` remains useful inventory metadata; the executable call contract above comes from PostgreSQL `Describe` of the literal `SELECT`. See [the complete example](../example/v12_database_function.ts) and [its migration](../example/migrations/0004_add_filtered_user_function.up.sql).
 
 This is a sqlx-js usage pattern, not a universal PostgreSQL design. A real workload may need different indexes, keyset pagination, plan inspection, a security model, or a materialized view with an explicit refresh strategy. Choose that database design for the workload rather than hiding it behind dynamic application SQL. Relevant PostgreSQL references: [table functions](https://www.postgresql.org/docs/current/queries-table-expressions.html#QUERIES-TABLEFUNCTIONS), [`EXPLAIN`](https://www.postgresql.org/docs/current/sql-explain.html), [materialized views and refresh](https://www.postgresql.org/docs/current/rules-materializedviews.html), and [function security](https://www.postgresql.org/docs/current/sql-createfunction.html#SQL-CREATEFUNCTION-SECURITY).
 
 ## `sql.file(path, ...params)`
 
-Load SQL from an external file. The path is root-relative everywhere: prepare resolves it against `--root`, codegen keeps the exact string literal as the `KnownFileQueries` key, and runtime resolves it against `fileRoot` (default: `process.cwd()`). Absolute paths and paths escaping the root are rejected.
+Load SQL from an external file. The path is root-relative everywhere: prepare resolves it against `--root`, codegen keeps the exact string literal as the `SqlxJsGeneratedFileQueries` key, and runtime resolves it against `fileRoot` (default: `process.cwd()`). Absolute paths and paths escaping the root are rejected.
 
 ```ts
 // queries/top_admins.sql
 // SELECT id AS "id!", name AS "name!" FROM users WHERE role = $1 ORDER BY id LIMIT $2::int
 
-import { sql } from "@onreza/sqlx-js";
+import { db } from "./db.js";
 
-const admins = await sql.file("queries/top_admins.sql", "admin", 5);
+const admins = await db.sql.file("queries/top_admins.sql", "admin", 5);
 //                                                       ^ string  ^ number
 // admins: { id: bigint; name: string }[]
 ```
 
-File-backed queries are emitted into a separate `KnownFileQueries` interface. A call from any nested source directory still uses the same project-root-relative literal.
+File-backed queries are emitted into `SqlxJsGeneratedFileQueries`. A call from any nested source directory still uses the same project-root-relative literal.
 
-For a compiled or bundled application, emit a TypeScript asset module and pass it to the client:
+For a compiled or bundled application, configure the generated TypeScript asset module:
 
-```bash
-sqlx-js queries --embed src/sqlx-js-files.generated.ts
+```ts
+export default defineConfig({
+  sqlFiles: { output: "src/sqlx-js-files.generated.ts" },
+});
 ```
+
+Live `prepare`, `prepare --offline`, and `prepare --verify` publish or compare
+the module in the same atomic artifact workflow as declarations, descriptors,
+and enum output. `queries` remains read-only.
 
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
@@ -231,7 +242,7 @@ const maybe = await sql.optional(`SELECT id FROM users WHERE email = $1`, "x@y")
 // maybe: { id: bigint } | null
 ```
 
-Both forms also exist on `sql.file` (`sql.file.one("queries/by_id.sql", ...)`) and inside transactions (`tx.one(...)`, `tx.optional(...)`, `tx.file.one(...)`, `tx.file.optional(...)`). The scanner recognizes every chain — these call sites are added to `KnownQueries` / `KnownFileQueries` just like a plain `sql(...)`.
+Both forms also exist on `db.sql.file` (`db.sql.file.one("queries/by_id.sql", ...)`) and inside transactions (`tx.one(...)`, `tx.optional(...)`, `tx.file.one(...)`, `tx.file.optional(...)`). The scanner recognizes every chain and emits those call sites into the explicit generated query registries.
 
 ## `sql.execute(query, ...params)`
 
@@ -329,7 +340,7 @@ canonicalization, JSONB operator consequences, and the reader-first rollout.
 Low-level numeric `types` cannot replace them; application-owned custom types
 remain configurable through their ordinary codec contract.
 
-Both helpers also work with `unsafe(...)`. `encodePgArrayLiteral(arr)` remains exported for code that explicitly needs a PostgreSQL array literal string.
+Both helpers also work with `db.unsafe(...)`. `encodePgArrayLiteral(arr)` remains exported for code that explicitly needs a PostgreSQL array literal string.
 
 PostgreSQL `date`, `time`, `timestamp`, and `timestamptz` use
 `Temporal.PlainDate`, `Temporal.PlainTime`, `Temporal.PlainDateTime`, and
