@@ -140,6 +140,24 @@ test("loadConfig rejects malformed JavaScript config with an actionable path", a
   await expect(loadConfig(dir)).rejects.toThrow(/sqlx-js\.config\.mjs columnTypes\.users\.settings must be a non-empty string/);
 });
 
+test("loadConfig rejects removed and unsupported top-level options", async () => {
+  const removed = root();
+  writeFileSync(join(removed, "sqlx-js.config.mjs"), `export default {
+    jsonbTypes: { "users.settings": "UserSettings" },
+  };\n`);
+  await expect(loadConfig(removed)).rejects.toThrow(
+    /jsonbTypes was removed; move its entries to columnTypes/,
+  );
+
+  const unsupported = root();
+  writeFileSync(join(unsupported, "sqlx-js.config.mjs"), `export default {
+    columnType: { "users.settings": "UserSettings" },
+  };\n`);
+  await expect(loadConfig(unsupported)).rejects.toThrow(
+    /has unsupported top-level option "columnType"/,
+  );
+});
+
 test("loadConfig rejects empty declarations and qualified custom type keys", async () => {
   const empty = root();
   writeFileSync(join(empty, "sqlx-js.config.mjs"), `export default {

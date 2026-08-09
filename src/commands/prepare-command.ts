@@ -12,7 +12,7 @@ import {
   selectedEnumCatalogCount,
   type EnumCatalogEntry,
 } from "../enum-catalog";
-import { embeddedSqlOutputPath, renderEmbeddedSqlModule } from "../embedded-sql";
+import { embeddedSqlOutputPath, renderEmbeddedSqlModuleFromSites } from "../embedded-sql";
 import { functionCacheExists, readFunctionCache, type FunctionEntry } from "../function-cache";
 import {
   assertDistinctPrepareGeneratedOutputs,
@@ -330,7 +330,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
             }
           }
           if (embeddedOutput) {
-            const generatedSqlFiles = renderEmbeddedSqlModule(entries);
+            const generatedSqlFiles = renderEmbeddedSqlModuleFromSites(sites);
             if (!existsSync(embeddedOutput) || readFileSync(embeddedOutput, "utf8") !== generatedSqlFiles) {
               diagnostics.push({
                 severity: "error",
@@ -390,7 +390,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
             ? { path: enumOutput, content: renderEnumCatalog(enums, userCfg.enumCatalog) }
             : undefined,
           embeddedSqlModule: embeddedOutput
-            ? { path: embeddedOutput, content: renderEmbeddedSqlModule(entries) }
+            ? { path: embeddedOutput, content: renderEmbeddedSqlModuleFromSites(sites) }
             : undefined,
           configHash: prepareConfigHash(userCfg),
           customTypes: userCfg.customTypes,

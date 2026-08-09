@@ -1679,7 +1679,7 @@ export default {
       const prepared = prepareRoot(root);
       expect(prepared.code, prepared.stderr).toBe(0);
       expect(prepared.stdout).toContain(output);
-      const generated = readFileSync(output, "utf8");
+      let generated = readFileSync(output, "utf8");
       expect(generated).toContain('"queries/value.sql": "SELECT 42::int4 AS value\\n"');
       expect(prepareRoot(root, ["--check"]).code).toBe(0);
 
@@ -1694,6 +1694,19 @@ export default {
       expect(doctorPayload.checks.find((check) => check.name === "embeddedSql")).toMatchObject({
         status: "ok",
       });
+
+      writeRootFile(root, "queries/value.sql", "-- preserve this comment\nSELECT 42::int4 AS value\n");
+      const sourceStaleCheck = prepareRoot(root, ["--check", "--json"]);
+      expect(sourceStaleCheck.code).toBe(1);
+      expect(JSON.parse(sourceStaleCheck.stdout).diagnostics).toContainEqual(expect.objectContaining({
+        message: "generated embedded SQL module is stale or missing",
+        file: "src/sql-files.generated.ts",
+      }));
+      expect(prepareRoot(root, ["--offline"]).code).toBe(0);
+      generated = readFileSync(output, "utf8");
+      expect(generated).toContain("-- preserve this comment\\nSELECT 42::int4 AS value\\n");
+      expect(prepareRoot(root, ["--check"]).code).toBe(0);
+      expect(prepareRoot(root).code).toBe(0);
 
       writeRootFile(root, "src/sql-files.generated.ts", "export const stale = true;\n");
       const staleCheck = prepareRoot(root, ["--check", "--json"]);

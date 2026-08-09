@@ -458,11 +458,32 @@ export function isTypeScriptExportName(value: string): boolean {
     && !RESERVED_BINDING_NAMES.has(value);
 }
 
+const CONFIG_KEYS: ReadonlySet<string> = new Set([
+  "columnTypes",
+  "arrayElementNullability",
+  "customTypes",
+  "functionCatalog",
+  "enumCatalog",
+  "sqlFiles",
+  "queryAudit",
+  "profiles",
+  "scan",
+  "temporal",
+  "schema",
+]);
+
 function validateConfig(value: unknown, path: string): SqlxJsConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`sqlx-js: ${path} must default-export a config object`);
   }
   const config = value as Record<string, unknown>;
+  if (Object.hasOwn(config, "jsonbTypes")) {
+    throw new Error(`sqlx-js: ${path} jsonbTypes was removed; move its entries to columnTypes`);
+  }
+  const unsupported = Object.keys(config).find((key) => !CONFIG_KEYS.has(key));
+  if (unsupported) {
+    throw new Error(`sqlx-js: ${path} has unsupported top-level option ${JSON.stringify(unsupported)}`);
+  }
   if (config.columnTypes !== undefined) validateStringRecord(config.columnTypes, "columnTypes", path);
   if (config.arrayElementNullability !== undefined) validateArrayElementNullability(config.arrayElementNullability, path);
   if (config.customTypes !== undefined) validateCustomTypes(config.customTypes, path);
