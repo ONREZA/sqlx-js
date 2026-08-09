@@ -8,6 +8,8 @@ RETURNS text
 LANGUAGE sql
 IMMUTABLE
 STRICT
+SET search_path = public, pg_catalog, pg_temp
+SET TimeZone = 'UTC'
 AS $$
   SELECT lower(value)
 $$;

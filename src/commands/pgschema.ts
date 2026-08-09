@@ -20,7 +20,7 @@ import { runSchemaWorkflow } from "./schema-workflow";
 
 export type PgschemaSubcommand = "plan" | "apply";
 
-export const PGSCHEMA_VERSION = "1.12.0";
+export const PGSCHEMA_VERSION = "1.12.2";
 
 const PGSCHEMA_BASE_URL = `https://github.com/pgplex/pgschema/releases/download/v${PGSCHEMA_VERSION}`;
 const WINDOWS_UNSUPPORTED =
@@ -36,22 +36,22 @@ const PGSCHEMA_ASSETS: Record<string, PgschemaAsset> = {
   "darwin:x64": {
     key: "darwin-amd64",
     name: `pgschema-${PGSCHEMA_VERSION}-darwin-amd64`,
-    sha256: "c64b2ac24c4246344908910e892c4123be282bbb449f0b535079ff41d0f47c8f",
+    sha256: "6e43b853595ace6b6ef042f58301e2398d5c52bf7908dd6263e1b55b3bb5d123",
   },
   "darwin:arm64": {
     key: "darwin-arm64",
     name: `pgschema-${PGSCHEMA_VERSION}-darwin-arm64`,
-    sha256: "f01ea488f21700752d5747bc013c406daa583a68b631739f33af430d5d3ec449",
+    sha256: "5671bb75b1d66ca5a65efa04ac7bf4a1047da00c2612ce44e8ed1a640925fb0a",
   },
   "linux:x64": {
     key: "linux-amd64",
     name: `pgschema-${PGSCHEMA_VERSION}-linux-amd64`,
-    sha256: "12610adf748b0dafe4e488ee7e9e68e6ffbef1f4e0f038dda36cf0138eede598",
+    sha256: "6b864bd497ab312f131512f1aca8b2b329931fe25097a4a195a1dc3b5d88e7b8",
   },
   "linux:arm64": {
     key: "linux-arm64",
     name: `pgschema-${PGSCHEMA_VERSION}-linux-arm64`,
-    sha256: "58ec57023954a0239cf9d607c4e5432da6dd0b279399d1c318204120619a221d",
+    sha256: "94f47bb57501b5efb7a19087b6074acb0fc2002fdff9fe6b203fc065a993abd9",
   },
 };
 
@@ -401,7 +401,7 @@ export async function runPgschemaVerify(opts: PgschemaWorkflowOptions): Promise<
 function pgschemaSchemas(config: NonNullable<SqlxJsConfig["schema"]>): string[] {
   const schemas = config.schemas?.length ? config.schemas : ["public"];
   if (schemas.length > 1) {
-    throw new Error("sqlx-js pgschema: pgschema 1.12.0 supports exactly one --schema value; split plan/apply per schema or use a single schema in sqlx-js.config.ts");
+    throw new Error(`sqlx-js pgschema: pgschema ${PGSCHEMA_VERSION} supports exactly one --schema value; split plan/apply per schema or use a single schema in sqlx-js.config.ts`);
   }
   return schemas;
 }

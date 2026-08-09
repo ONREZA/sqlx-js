@@ -24,8 +24,11 @@
       "owner": "postgres",
       "ownerSuperuser": true,
       "publicExecute": true,
-      "settings": [],
-      "searchPath": null,
+      "settings": [
+        "search_path=public, pg_catalog, pg_temp",
+        "TimeZone=UTC"
+      ],
+      "searchPath": "public, pg_catalog, pg_temp",
       "extensionOwned": false
     }
   ]

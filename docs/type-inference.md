@@ -31,7 +31,7 @@ map to their runtime representation. Database-local metadata then resolves:
 
 - PostgreSQL enums to exact string-literal unions;
 - domains to their base type;
-- composites to object types with nullable attributes;
+- composites to field-name-ordered object types with nullable attributes;
 - arrays to the corresponding element contract;
 - supported extension types to their built-in application representation;
 - configured `customTypes` and `columnTypes` to
@@ -164,9 +164,11 @@ For a PostgreSQL function call, `pg_proc` does not contain per-input nullability
 metadata. All SQL function inputs can receive SQL `NULL`; `proisstrict` only
 changes whether PostgreSQL executes the body. Use a `defineQuery` source
 contract such as `{ nullableParams: ["operationId"] }` when the application
-allows null but the call expression itself does not prove that fact. The
-generated `SqlxJsGeneratedFunctions` inventory therefore includes `null` in every input
+allows null but the call expression itself does not prove that fact. The generated
+`SqlxJsGeneratedFunctions` inventory therefore includes `null` in every input
 parameter type, independently of the stricter call-site query contract.
+Object-shaped `RETURNS TABLE` / OUT results use canonical field-name order while
+the catalog keeps the PostgreSQL parameter order.
 
 Named parameters are rewritten to positional parameters in first-use order.
 Repeated names reuse one position. The rewriter understands quoted strings,

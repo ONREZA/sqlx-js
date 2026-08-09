@@ -54,7 +54,7 @@
           "name": "created_at"
         }
       ],
-      "returns": "{ id: bigint | null; name: string | null; email: string | null; role: \"admin\" | \"editor\" | \"viewer\" | null; created_at: import(\"@onreza/sqlx-js\").PgTimestamptz | null }",
+      "returns": "{ created_at: import(\"@onreza/sqlx-js\").PgTimestamptz | null; email: string | null; id: bigint | null; name: string | null; role: \"admin\" | \"editor\" | \"viewer\" | null }",
       "returnsSet": true,
       "volatility": "stable",
       "strict": false,

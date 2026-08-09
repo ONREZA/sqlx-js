@@ -9,7 +9,7 @@ import type {
 import { functionSettingValue, normalizeFunctionSettings } from "../function-cache";
 import type { PgClient } from "./wire";
 import { inputTsType } from "./input-types";
-import { SchemaCache } from "./schema";
+import { canonicalCompositeFields, SchemaCache, typeScriptPropertyName } from "./schema";
 import { loadFunctionCatalogRows } from "./catalog";
 
 type FunctionRow = {
@@ -125,10 +125,10 @@ function returnTsType(row: FunctionRow, output: CatalogParamEntry[], schema: Sch
 }
 
 function outputObject(output: CatalogParamEntry[]): string {
-  const fields = output.map((p, i) => {
-    const name = p.name && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(p.name) ? p.name : JSON.stringify(p.name ?? `column${i + 1}`);
-    return `${name}: ${nullableReturn(p.resultTsType ?? p.tsType)}`;
-  });
+  const fields = canonicalCompositeFields(output.map((param, index) => ({
+    name: param.name ?? `column${index + 1}`,
+    type: nullableReturn(param.resultTsType ?? param.tsType),
+  }))).map((field) => `${typeScriptPropertyName(field.name)}: ${field.type}`);
   return `{ ${fields.join("; ")} }`;
 }
 

@@ -30,12 +30,18 @@ export type CustomTypeInfo =
   | CompositeInfo
   | CompositeArrayInfo;
 
+export function canonicalCompositeFields<T extends { name: string }>(fields: readonly T[]): T[] {
+  return [...fields].sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+}
+
+export function typeScriptPropertyName(name: string): string {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) ? name : JSON.stringify(name);
+}
+
 export function compositeLiteral(info: CompositeInfo): string {
   if (info.fields.length === 0) return "Record<string, unknown>";
-  const parts = info.fields.map((f) => {
-    const name = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(f.name) ? f.name : JSON.stringify(f.name);
-    return `${name}: ${f.tsType}${f.nullable ? " | null" : ""}`;
-  });
+  const parts = canonicalCompositeFields(info.fields)
+    .map((field) => `${typeScriptPropertyName(field.name)}: ${field.tsType}${field.nullable ? " | null" : ""}`);
   return `{ ${parts.join("; ")} }`;
 }
 
@@ -267,7 +273,7 @@ export class SchemaCache {
     for (const oid of need) this.typesProbed.add(oid);
 
     const list1 = [...new Set(need)].join(",");
-    const sql1 = `SELECT t.oid::int8, t.typname, t.typtype, t.typcategory, t.typelem::int8, t.typbasetype::int8, t.typrelid::int8, t.typnotnull, n.nspname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.oid IN (${list1})`;
+    const sql1 = `SELECT t.oid::int8, t.typname, t.typtype, t.typcategory, t.typelem::int8, t.typbasetype::int8, t.typrelid::int8, t.typnotnull, n.nspname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.oid IN (${list1}) ORDER BY t.oid`;
     const r1 = await this.client.simpleQueryAll(sql1);
 
     const enumOids: number[] = [];

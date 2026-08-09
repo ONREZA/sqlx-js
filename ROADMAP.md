@@ -56,6 +56,17 @@ generator, and runtime descriptor revisions is published.
 | Separate runtime package | Deferred | The audited root import already excludes compile-time modules. Making TypeScript an optional peer reduced a clean production install from about 33 MB to 2.4 MB; a second public package and release boundary is not justified for the remaining analyzer dependency unless production consumers demonstrate measurable pressure. |
 | Editor integration / LSP | Deferred | Keep the versioned batch JSON, incremental `prepare --watch --jsonl`, and `sqlx-js-diagnostics` transport stable, but do not build or maintain a VS Code extension or full LSP until real consumer demand justifies the separate editor clients and release lifecycle. |
 
+## Deferred architecture and validation work
+
+These items are intentionally not part of the current release. Their ROI scores
+measure current consumer pain closed, not architectural elegance.
+
+| Feature | ROI | User benefit | Architectural improvement | Why deferred |
+|---------|-----|--------------|---------------------------|--------------|
+| Optional `plpgsql_check` workflow | 3 | Catches invalid deferred PL/pgSQL statements and assignments before changed function paths reach production. | Keeps execution-enabled function validation in an explicit disposable-database gate instead of weakening the non-executing `prepare` contract. | Requires an application-provisioned extension and function-aware setup; execution smoke remains simpler for many projects. |
+| Composite column-order drift diagnostic | 3 | Reports the affected composite, moved fields, and dependent function/query context when physical order matters. | Keeps structural TypeScript equality separate from PostgreSQL's positional composite layout without discarding physical drift evidence. | Canonical TypeScript rendering removes type-only churn; implement after another recurring consumer case justifies a dedicated explanation for snapshot or runtime-layout drift. |
+| Contract, layout, and security-posture artifact split | 2 | Lets portable TypeScript contracts remain stable while target-specific owner, ACL, capability, and physical-layout changes stay independently reviewable. | Establishes explicit authorities for semantic API, runtime layout, and environment posture instead of encoding all three in one generated function artifact. | Requires cache/generator migration, new verification semantics, and policy design; the current consumer already enforces canonical ownership at the schema source. |
+
 ## Permanent boundaries
 
 - PostgreSQL remains the only backend. MySQL and SQLite would replace the

@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { decodeText, PgClient, parseDatabaseUrl } from "../src/pg/wire";
 import { validateAll } from "../src/commands/prepare";
+import { inputTsType } from "../src/pg/input-types";
 import { SchemaCache, compositeLiteral } from "../src/pg/schema";
 import { mergeExtensionTypes } from "../src/pg/extensions";
 import { fingerprint, readCacheManifest } from "../src/cache";
@@ -2118,7 +2119,7 @@ export default {
     let dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain("interface SqlxJsGeneratedFunctions");
     expect(dts).toContain('"public.tmp_catalog_slug(value text)": { kind: "function"; language: "sql"; params: [string | null]; returns: string | null; returnsSet: false;');
-    expect(dts).toContain('"public.tmp_catalog_pair(value text)": { kind: "function"; language: "sql"; params: [string | null]; returns: { slug: string | null; score: number | null }; returnsSet: true;');
+    expect(dts).toContain('"public.tmp_catalog_pair(value text)": { kind: "function"; language: "sql"; params: [string | null]; returns: { score: number | null; slug: string | null }; returnsSet: true;');
     expect(dts).toContain('"public.tmp_catalog_json_table(value jsonb)": { kind: "function"; language: "sql"; params: [import("@onreza/sqlx-js").SqlxJson<unknown> | null]; returns: { payload: import("@onreza/sqlx-js").SqlxJson<import("@onreza/sqlx-js").JsonValue> | null }; returnsSet: true;');
     expect(dts).toContain('"public.tmp_catalog_json_out(value text, OUT payload jsonb)": { kind: "function"; language: "sql"; params: [string | null]; returns: { payload: import("@onreza/sqlx-js").SqlxJson<import("@onreza/sqlx-js").JsonValue> | null }; returnsSet: false;');
     expect(dts).toMatch(/"public\.tmp_catalog_json_inout\([^"]*jsonb\)": \{ kind: "function"; language: "sql"; params: \[import\("@onreza\/sqlx-js"\)\.SqlxJson<unknown> \| null\]; returns: \{ payload: import\("@onreza\/sqlx-js"\)\.SqlxJson<import\("@onreza\/sqlx-js"\)\.JsonValue> \| null \}; returnsSet: false;/);
@@ -2127,11 +2128,26 @@ export default {
     expect(dts).toMatch(/"public\.tmp_catalog_slug\(value text\)".*volatility: "immutable"; strict: true; securityDefiner: false; leakproof: false; parallelSafety: "unsafe"; owner: "[^"]+"; ownerSuperuser: (?:true|false); publicExecute: true; settings: readonly \["TimeZone=UTC"\]; searchPath: null; extensionOwned: false/);
     const functionCache = JSON.parse(readFileSync(join(tmp, ".sqlx-js/functions/functions.json"), "utf8")) as {
       version: number;
-      functions: Array<{ signature: string; strict: boolean; settings: string[] }>;
+      functions: Array<{
+        signature: string;
+        strict: boolean;
+        settings: string[];
+        returns: string;
+        params: { name?: string }[];
+      }>;
     };
     expect(functionCache.version).toBe(3);
     expect(functionCache.functions.find((fn) => fn.signature === "public.tmp_catalog_slug(value text)"))
       .toMatchObject({ strict: true, settings: ["TimeZone=UTC"] });
+    const pair = functionCache.functions.find((fn) => fn.signature === "public.tmp_catalog_pair(value text)");
+    expect(pair?.returns).toBe("{ score: number | null; slug: string | null }");
+    expect(pair?.params.map((param) => param.name)).toEqual(["value", "slug", "score"]);
+    expect(snapshot(["dump"]).code).toBe(0);
+    const schemaSnapshot = JSON.parse(readFileSync(join(tmp, ".sqlx-js/schema/schema.json"), "utf8")) as {
+      functions: { name: string; returnType: string }[];
+    };
+    expect(schemaSnapshot.functions.find((fn) => fn.name === "tmp_catalog_pair")?.returnType)
+      .toBe("TABLE(slug text, score integer)");
     expect(dts).not.toContain('"public.hstore(');
 
     r = prepare(["--check"]);
@@ -2435,7 +2451,9 @@ export default {
     try {
       await setup.simpleQuery("DROP TABLE IF EXISTS tmp_comp CASCADE");
       await setup.simpleQuery("DROP TYPE IF EXISTS tmp_addr CASCADE");
-      await setup.simpleQuery("CREATE TYPE tmp_addr AS (street text, zip int)");
+      await setup.simpleQuery("DROP TYPE IF EXISTS tmp_location CASCADE");
+      await setup.simpleQuery("CREATE TYPE tmp_location AS (zip int, street text)");
+      await setup.simpleQuery("CREATE TYPE tmp_addr AS (zip int, street text, location tmp_location)");
       await setup.simpleQuery("CREATE TABLE tmp_comp (id bigserial primary key, addr tmp_addr)");
       const d = await setup.describe("SELECT addr FROM tmp_comp");
       const addrOid = d.fields[0]!.typeOid;
@@ -2445,11 +2463,15 @@ export default {
       const info = schema.customType(addrOid);
       expect(info?.kind).toBe("composite");
       if (info?.kind === "composite") {
-        expect(compositeLiteral(info)).toBe("{ street: string | null; zip: number | null }");
+        const expected = "{ location: { street: string | null; zip: number | null } | null; street: string | null; zip: number | null }";
+        expect(info.fields.map((field) => field.name)).toEqual(["zip", "street", "location"]);
+        expect(compositeLiteral(info)).toBe(expected);
+        expect(inputTsType(addrOid, schema)).toBe(expected);
       }
     } finally {
       await setup.simpleQuery("DROP TABLE IF EXISTS tmp_comp CASCADE").catch(() => {});
       await setup.simpleQuery("DROP TYPE IF EXISTS tmp_addr CASCADE").catch(() => {});
+      await setup.simpleQuery("DROP TYPE IF EXISTS tmp_location CASCADE").catch(() => {});
       await setup.end();
     }
   });
