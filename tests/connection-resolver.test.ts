@@ -96,14 +96,32 @@ describe("connection resolver", () => {
     });
   });
 
+  test("preserves literal plus signs in URI query values", () => {
+    const config = parseDatabaseUrl(
+      "postgresql://authority.internal/default"
+        + "?host=query+internal&user=app+reader&password=a+b&dbname=data+set&application_name=worker%20one",
+      { env: {} },
+    );
+
+    expect(config).toMatchObject({
+      host: "query+internal",
+      user: "app+reader",
+      password: "a+b",
+      database: "data+set",
+      applicationName: "worker one",
+    });
+  });
+
   test("replaces query-style database names for shadow connections", () => {
     const rewritten = replaceDatabaseInUrl(
-      "postgresql://app@db.internal/?dbname=application&sslmode=require",
+      "postgresql://app@db.internal/?dbname=application&password=space%20value&application_name=a+b&sslmode=require",
       "sqlx_js_shadow",
     );
 
     expect(parseDatabaseUrl(rewritten, { env: {} })).toMatchObject({
       database: "sqlx_js_shadow",
+      password: "space value",
+      applicationName: "a+b",
       sslmode: "require",
     });
     expect(new URL(rewritten).searchParams.has("dbname")).toBe(false);
@@ -149,9 +167,13 @@ describe("connection resolver", () => {
     const root = temporaryDirectory();
     const passfile = join(root, ".pgpass");
     writeFileSync(passfile, "db.internal:5432:app:app:from-default\n", { mode: 0o600 });
-    const config = parseDatabaseUrl("postgresql://app@db.internal/app", { env: {} });
+    const config = parseDatabaseUrl("postgresql://app@db.internal/app", {
+      env: { HOME: root },
+      platform: "linux",
+    });
 
-    expect(resolveConnectionPassword(config, { env: { HOME: root }, platform: "linux" }))
+    expect(config.passfile).toBe(passfile);
+    expect(resolveConnectionPassword(config, { env: { HOME: "/changed" }, platform: "linux" }))
       .toBe("from-default");
   });
 
@@ -165,14 +187,24 @@ describe("connection resolver", () => {
       "db.internal:5432:app:app:from-windows-default\n",
     );
     writeFileSync(join(root, ".pgpass"), "*:*:*:*:wrong-home\n", { mode: 0o600 });
-    const config = parseDatabaseUrl("postgresql://app@db.internal/app", { env: {} });
-
-    expect(resolveConnectionPassword(config, {
+    const config = parseDatabaseUrl("postgresql://app@db.internal/app", {
       env: { APPDATA: appData, HOME: root },
       platform: "win32",
-    })).toBe("from-windows-default");
+    });
+
+    expect(config.passfile).toBe(join(passfileDirectory, "pgpass.conf"));
     expect(resolveConnectionPassword(config, {
+      env: { APPDATA: "C:\\changed", HOME: "C:\\changed" },
+      platform: "win32",
+    })).toBe("from-windows-default");
+
+    const unavailable = parseDatabaseUrl("postgresql://app@db.internal/app", {
       env: { HOME: root },
+      platform: "win32",
+    });
+    expect(unavailable.passfile).toBe("");
+    expect(resolveConnectionPassword(unavailable, {
+      env: { APPDATA: appData },
       platform: "win32",
     })).toBe("");
   });

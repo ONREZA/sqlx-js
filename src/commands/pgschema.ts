@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   accessSync,
@@ -16,8 +16,7 @@ import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import type { SqlxJsConfig } from "../config";
 import {
   parseDatabaseUrl,
-  postgresConnectionEnvironment,
-  resolveConnectionPassword,
+  postgresResolvedPasswordEnvironment,
   type ConnConfig,
 } from "../pg/wire";
 import { withWorkflowShadowDatabase } from "./shadow";
@@ -294,18 +293,6 @@ function assertPgschemaConnectionBoundary(db: ConnConfig): void {
   }
 }
 
-function pgschemaEnv(db: ConnConfig): NodeJS.ProcessEnv {
-  const env = postgresConnectionEnvironment(db);
-  const password = resolveConnectionPassword(db);
-  // A non-empty sentinel prevents pgx from repeating password-file lookup
-  // with its provider-owned endpoint identity.
-  env.PGPASSWORD = password === ""
-    ? `sqlx-js-no-password-${randomBytes(16).toString("hex")}`
-    : password;
-  delete env.PGPASSFILE;
-  return env;
-}
-
 function sha256(data: Buffer | Uint8Array): string {
   return createHash("sha256").update(data).digest("hex");
 }
@@ -381,7 +368,7 @@ export function runPgschemaCommand(opts: PgschemaCommandOptions): void {
   args.push("--schema", schemas[0]!);
   args.push(...opts.passthrough ?? []);
 
-  run(command, args, pgschemaEnv(db));
+  run(command, args, postgresResolvedPasswordEnvironment(db));
 }
 
 function validatePgschemaWorkflow(opts: PgschemaWorkflowOptions): void {

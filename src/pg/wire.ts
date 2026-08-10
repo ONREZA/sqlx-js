@@ -30,6 +30,7 @@ export {
   parseDatabaseUrl,
   effectiveConnectTimeoutMs,
   postgresConnectionEnvironment,
+  postgresResolvedPasswordEnvironment,
   replaceDatabaseInUrl,
   resolveConnectionPassword,
   resolveConnectionPasswordAsync,
@@ -200,6 +201,65 @@ async function readCertFile(kind: string, path: string, signal: AbortSignal): Pr
   }
 }
 
+async function readTlsFiles(
+  sock: Socket,
+  cfg: ConnConfig,
+  signal: AbortSignal,
+): Promise<{
+  files: [Buffer | undefined, Buffer | undefined, Buffer | undefined];
+  release: () => void;
+}> {
+  return await new Promise((resolve, reject) => {
+    const readAbort = new AbortController();
+    let settled = false;
+    const cleanup = () => {
+      sock.removeListener("error", onError);
+      sock.removeListener("close", onClose);
+      signal.removeEventListener("abort", onAbort);
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      readAbort.abort(error);
+      reject(error);
+    };
+    const onError = (error: Error) => fail(new ConnectionLostError(error));
+    const onClose = () => fail(
+      new ConnectionLostError(
+        new Error("sqlx-js: connection closed while loading TLS files"),
+      ),
+    );
+    const onAbort = () => {
+      sock.destroy();
+      fail(signal.reason instanceof Error
+        ? signal.reason
+        : new Error("sqlx-js: PostgreSQL connection aborted"));
+    };
+    sock.once("error", onError);
+    sock.once("close", onClose);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    void Promise.all([
+      cfg.sslRootCert && cfg.sslRootCert !== "system"
+        ? readCertFile("sslrootcert", cfg.sslRootCert, readAbort.signal)
+        : undefined,
+      cfg.sslCert ? readCertFile("sslcert", cfg.sslCert, readAbort.signal) : undefined,
+      cfg.sslKey ? readCertFile("sslkey", cfg.sslKey, readAbort.signal) : undefined,
+    ]).then(
+      (files) => {
+        if (settled) return;
+        settled = true;
+        resolve({ files, release: cleanup });
+      },
+      (error) => fail(error instanceof Error ? error : new Error(String(error))),
+    );
+  });
+}
+
 async function openPlainSocket(
   host: string,
   port: number,
@@ -314,27 +374,27 @@ async function performSslHandshake(
     const verifyCertificate = mode === "verify-full"
       || mode === "verify-ca"
       || (mode === "require" && cfg.sslRootCert !== undefined);
-    const [ca, cert, key] = await Promise.all([
-      cfg.sslRootCert && cfg.sslRootCert !== "system"
-        ? readCertFile("sslrootcert", cfg.sslRootCert, signal)
-        : undefined,
-      cfg.sslCert ? readCertFile("sslcert", cfg.sslCert, signal) : undefined,
-      cfg.sslKey ? readCertFile("sslkey", cfg.sslKey, signal) : undefined,
-    ]);
+    const tlsFiles = await readTlsFiles(sock, cfg, signal);
+    const [ca, cert, key] = tlsFiles.files;
     const tlsSock = await new Promise<TLSSocket>((resolve, reject) => {
-      const t = tlsConnect({
-        socket: sock,
-        ...(isIP(tlsServerName) === 0 ? { servername: tlsServerName } : {}),
-        rejectUnauthorized: verifyCertificate,
-        ...(mode === "verify-full"
-          ? { checkServerIdentity: (_hostname, cert) => checkServerIdentity(tlsServerName, cert) }
-          : verifyCertificate
-            ? { checkServerIdentity: () => undefined }
-            : {}),
-        ...(ca ? { ca } : {}),
-        ...(cert ? { cert } : {}),
-        ...(key ? { key } : {}),
-      });
+      let t!: TLSSocket;
+      try {
+        t = tlsConnect({
+          socket: sock,
+          ...(isIP(tlsServerName) === 0 ? { servername: tlsServerName } : {}),
+          rejectUnauthorized: verifyCertificate,
+          ...(mode === "verify-full"
+            ? { checkServerIdentity: (_hostname, cert) => checkServerIdentity(tlsServerName, cert) }
+            : verifyCertificate
+              ? { checkServerIdentity: () => undefined }
+              : {}),
+          ...(ca ? { ca } : {}),
+          ...(cert ? { cert } : {}),
+          ...(key ? { key } : {}),
+        });
+      } finally {
+        tlsFiles.release();
+      }
       claim(t);
       let settled = false;
       const finish = (result: { socket: TLSSocket } | { error: Error }) => {

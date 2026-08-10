@@ -13,7 +13,6 @@ import {
   type DatabaseTargetSummary,
 } from "../pg/target-summary";
 import { analyzeQuery } from "../pg/analyze";
-import { assertProfileConnection } from "../postgres-client-options";
 import { classifyPlanValidation } from "../pg/plan-classification";
 import { isBuiltinOid } from "../pg/oids";
 import { scanProject, type QueryCallSite } from "../scan/scanner";
@@ -221,9 +220,6 @@ export async function openSession(opts: PrepareOptions): Promise<PrepareSession>
   let cfg: ConnConfig;
   try {
     cfg = parseDatabaseUrl(opts.databaseUrl);
-    for (const profile of Object.values(userCfg.profiles ?? {})) {
-      assertProfileConnection(profile, cfg);
-    }
   } catch (error) {
     throw fatal("connect", error);
   }

@@ -6,7 +6,11 @@ import type {
 import type { PostgresOptions } from "./pg/driver";
 import type { RuntimeTypeCodecs } from "./postgres-codecs";
 import type { RuntimeQueryDescriptors } from "./runtime-descriptors";
-import { parseDatabaseUrl, type ConnConfig } from "./pg/connection-resolver";
+import {
+  parseDatabaseUrl,
+  removeDatabaseUrlParameter,
+  type ConnConfig,
+} from "./pg/connection-resolver";
 
 export type CreateClientOptions = PostgresOptions;
 
@@ -108,10 +112,7 @@ export type CreateSqlClientOptions =
 
 export function normalizeRuntimeDatabaseUrl(url: string): string {
   if (!/^postgres(?:ql)?:\/\//i.test(url)) return url;
-  const parsed = new URL(url);
-  if (!parsed.searchParams.has("schema")) return url;
-  parsed.searchParams.delete("schema");
-  return parsed.toString();
+  return removeDatabaseUrlParameter(url, "schema");
 }
 
 function postgresClientOptions(options: CreateSqlClientOptions): CreateClientOptions {
@@ -171,7 +172,7 @@ function hasRoleStartupOption(value: string): boolean {
   });
 }
 
-export function assertProfileConnection(
+function assertRuntimeProfileConnection(
   profile: Pick<DatabaseProfile, "name" | "role">,
   connection: ConnConfig,
 ): void {
@@ -225,7 +226,7 @@ export function profileClientOptions(
     throw new Error(`sqlx-js: profile ${profile.name} cannot be combined with a role in startupOptions`);
   }
   const resolvedConnection = connection ?? parseDatabaseUrl(url);
-  assertProfileConnection(profile, resolvedConnection);
+  assertRuntimeProfileConnection(profile, resolvedConnection);
   return {
     ...clientOptions,
     role: profile.role,

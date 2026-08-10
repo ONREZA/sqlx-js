@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
-import { PgClient, PgError } from "../src/pg/wire";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ConnectionLostError, PgClient, PgError } from "../src/pg/wire";
 
 const SSL_REQUEST = Buffer.from("0000000804d2162f", "hex");
 const STARTUP_PROTOCOL = 196_608;
@@ -164,6 +167,33 @@ describe("TLS fail-closed negotiation", () => {
     expect(Buffer.concat(negotiation)).toEqual(SSL_REQUEST);
     expect(encrypted.length).toBeGreaterThan(0);
     expect(encrypted[0]![0]).toBe(0x16);
+  });
+
+  test("a socket reset while TLS files are loading rejects the connection", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sqlx-js-tls-files-"));
+    const rootCert = join(root, "root.crt");
+    writeFileSync(rootCert, Buffer.alloc(4 * 1024 * 1024, 0x20));
+    try {
+      const port = await listen((socket) => {
+        socket.once("data", () => {
+          socket.write("S", () => socket.resetAndDestroy());
+        });
+      });
+      const connection = new PgClient({
+        host: "127.0.0.1",
+        port,
+        user: "test",
+        password: "test",
+        database: "test",
+        sslmode: "require",
+        sslRootCert: rootCert,
+        connectTimeoutMs: 1_000,
+      }).connect();
+
+      await expect(connection).rejects.toBeInstanceOf(ConnectionLostError);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("a stalled TLS handshake reaches the connect deadline without startup", async () => {

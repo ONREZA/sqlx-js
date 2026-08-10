@@ -21,7 +21,6 @@ import { assertDistinctPrepareGeneratedOutputs } from "../prepare-artifacts";
 import { queryId } from "../query-id";
 import type { PackageIdentityCheck } from "../package-identity";
 import { runtimeDescriptorPath } from "../runtime-descriptor-artifact";
-import { assertProfileConnection } from "../postgres-client-options";
 import {
   prepareRuntimeDescriptors,
   type RuntimeQueryDescriptors,
@@ -659,7 +658,6 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
         for (const profile of Object.values(config.profiles)) {
           let phase: "profile" | "rls" = "profile";
           try {
-            assertProfileConnection(profile, connection);
             await client.simpleQuery(`SET ROLE ${quoteIdentifier(profile.role)}`);
             const roleResult = await client.simpleQuery("SELECT current_user");
             const currentRole = decodeText(roleResult.rows[0]![0]!);

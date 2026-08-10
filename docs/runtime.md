@@ -152,7 +152,8 @@ All pool generations use the same connection resolver as the CLI. Typed
 password options override URL and environment credentials; an async password
 provider is called for each new connection. When no password is supplied, the
 resolver checks `PGPASSFILE`, URL `passfile`, or the platform default password
-file. `hostaddr` controls the TCP endpoint and cancellation socket while the
+file. The selected default path is snapshotted when the connection is
+resolved. `hostaddr` controls the TCP endpoint and cancellation socket while the
 URL host remains the `verify-full` certificate and password-file identity.
 The URL and supported environment fallbacks are resolved once when the managed
 client is created, so a replacement generation cannot silently move to a new
