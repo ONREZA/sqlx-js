@@ -6,7 +6,13 @@ const ROOT_OPTIONS: ParseArgsOptionsConfig = {
 };
 
 export function optionsFor(command: string, subcommand?: string): ParseArgsOptionsConfig {
-  if (command === "init") return { ...ROOT_OPTIONS, "schema-provider": { type: "string" } };
+  if (command === "init") {
+    return {
+      ...ROOT_OPTIONS,
+      "schema-provider": { type: "string" },
+      "temporal-provider": { type: "string" },
+    };
+  }
   if (command === "dev" || command === "verify") {
     return {
       ...ROOT_OPTIONS,

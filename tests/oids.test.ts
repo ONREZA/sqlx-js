@@ -1,17 +1,26 @@
 import { test, expect } from "bun:test";
-import { arrayElementOid, oidToTs, isBuiltinOid } from "../src/pg/oids";
+import {
+  arrayElementOid,
+  isBuiltinOid,
+  oidToTs,
+  TEMPORAL_PROVIDER_TYPE_MARKER,
+} from "../src/pg/oids";
 
 const JSON_VALUE = 'import("@onreza/sqlx-js").SqlxJson<import("@onreza/sqlx-js").JsonValue>';
+const PG_DATE = `import("@onreza/sqlx-js").PgDate<${TEMPORAL_PROVIDER_TYPE_MARKER}>`;
+const PG_TIME = `import("@onreza/sqlx-js").PgTime<${TEMPORAL_PROVIDER_TYPE_MARKER}>`;
+const PG_TIMESTAMP = `import("@onreza/sqlx-js").PgTimestamp<${TEMPORAL_PROVIDER_TYPE_MARKER}>`;
+const PG_TIMESTAMPTZ = `import("@onreza/sqlx-js").PgTimestamptz<${TEMPORAL_PROVIDER_TYPE_MARKER}>`;
 
 test("scalar OIDs map to expected TS types", () => {
   expect(oidToTs(16).ts).toBe("boolean");
   expect(oidToTs(20).ts).toBe("bigint");
   expect(oidToTs(23).ts).toBe("number");
   expect(oidToTs(25).ts).toBe("string");
-  expect(oidToTs(1082).ts).toBe('import("@onreza/sqlx-js").PgDate<TemporalProvider>');
-  expect(oidToTs(1083).ts).toBe('import("@onreza/sqlx-js").PgTime<TemporalProvider>');
-  expect(oidToTs(1114).ts).toBe('import("@onreza/sqlx-js").PgTimestamp<TemporalProvider>');
-  expect(oidToTs(1184).ts).toBe('import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>');
+  expect(oidToTs(1082).ts).toBe(PG_DATE);
+  expect(oidToTs(1083).ts).toBe(PG_TIME);
+  expect(oidToTs(1114).ts).toBe(PG_TIMESTAMP);
+  expect(oidToTs(1184).ts).toBe(PG_TIMESTAMPTZ);
   expect(oidToTs(2249).ts).toBe("string");
   expect(oidToTs(2278).ts).toBe("void");
   expect(oidToTs(2950).ts).toBe("string");
@@ -26,12 +35,12 @@ test("array OIDs include nullable elements by default", () => {
 });
 
 test("temporal OIDs always generate their exact Temporal types", () => {
-  expect(oidToTs(1082).ts).toBe('import("@onreza/sqlx-js").PgDate<TemporalProvider>');
-  expect(oidToTs(1114).ts).toBe('import("@onreza/sqlx-js").PgTimestamp<TemporalProvider>');
-  expect(oidToTs(1184).ts).toBe('import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>');
-  expect(oidToTs(1182).ts).toBe('(import("@onreza/sqlx-js").PgDate<TemporalProvider> | null)[]');
-  expect(oidToTs(1115).ts).toBe('(import("@onreza/sqlx-js").PgTimestamp<TemporalProvider> | null)[]');
-  expect(oidToTs(1185).ts).toBe('(import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider> | null)[]');
+  expect(oidToTs(1082).ts).toBe(PG_DATE);
+  expect(oidToTs(1114).ts).toBe(PG_TIMESTAMP);
+  expect(oidToTs(1184).ts).toBe(PG_TIMESTAMPTZ);
+  expect(oidToTs(1182).ts).toBe(`(${PG_DATE} | null)[]`);
+  expect(oidToTs(1115).ts).toBe(`(${PG_TIMESTAMP} | null)[]`);
+  expect(oidToTs(1185).ts).toBe(`(${PG_TIMESTAMPTZ} | null)[]`);
 });
 
 test("unknown OID falls back to unknown", () => {

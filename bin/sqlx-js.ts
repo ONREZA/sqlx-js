@@ -412,8 +412,13 @@ if (cmd === "init") {
     console.error("--schema-provider must be builtin or pgschema");
     process.exit(2);
   }
+  const temporalProvider = arg("--temporal-provider", "polyfill");
+  if (temporalProvider !== "native" && temporalProvider !== "polyfill") {
+    console.error("--temporal-provider must be native or polyfill");
+    process.exit(2);
+  }
   try {
-    runInit({ root, schemaProvider: provider });
+    runInit({ root, schemaProvider: provider, temporalProvider });
   } catch (error) {
     failCommand(error);
   }

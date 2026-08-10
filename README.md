@@ -90,6 +90,9 @@ bun add --dev "typescript@>=6 <7"
 ```
 
 Omit `@js-temporal/polyfill` when every target runtime exposes native Temporal.
+`sqlx-js init` scaffolds the polyfill fallback by default; native-only projects
+pass `--temporal-provider native`, which also adds `ESNext.Temporal` to the
+project's TypeScript libs.
 
 Scaffold a project using built-in migrations:
 
@@ -97,6 +100,9 @@ Scaffold a project using built-in migrations:
 sqlx-js init
 sqlx-js migrate add init
 ```
+
+For a native-only Temporal runtime, initialize with
+`sqlx-js init --temporal-provider native` instead.
 
 Add a PostgreSQL connection:
 

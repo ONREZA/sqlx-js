@@ -232,7 +232,9 @@ type RawClientOptionsFor<Registry extends QueryRegistry> =
   & TemporalApiOptionsFor<Registry>;
 type CreateRawClientArgs<Registry extends QueryRegistry> =
   keyof RegistryRuntimeTypes<Registry> extends never
-    ? [url?: string, options?: RawClientOptionsFor<Registry>]
+    ? {} extends RawClientOptionsFor<Registry>
+      ? [url?: string, options?: RawClientOptionsFor<Registry>]
+      : [url: string | undefined, options: RawClientOptionsFor<Registry>]
     : [
       url: string | undefined,
       options: Omit<RawClientOptionsFor<Registry>, "types"> & {

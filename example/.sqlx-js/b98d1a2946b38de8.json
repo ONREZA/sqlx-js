@@ -72,7 +72,7 @@
     {
       "name": "createdAt",
       "typeOid": 1184,
-      "tsType": "import(\"@onreza/sqlx-js\").PgTimestamptz<TemporalProvider>",
+      "tsType": "import(\"@onreza/sqlx-js\").PgTimestamptz<import(\"@onreza/sqlx-js\").SqlxJsGeneratedTemporalProvider>",
       "nullable": true,
       "override": "non-null"
     }

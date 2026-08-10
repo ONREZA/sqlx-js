@@ -27,6 +27,7 @@ test("CLI help prints package metadata version", () => {
   expect(r.stdout).toContain("sqlx-js snapshot dump|check");
   expect(r.stdout).toContain("sqlx-js doctor");
   expect(r.stdout).toContain("--schema-provider");
+  expect(r.stdout).toContain("--temporal-provider");
   expect(r.stdout).toContain("sqlx-js queries");
   expect(r.stdout).toContain("sqlx-js json audit");
   expect(r.stdout).toContain("<subcommand> --help");
@@ -438,6 +439,68 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
     expect(r2.status).toBe(0);
     expect(r2.stdout).toContain("left unchanged");
     expect(readFileSync(join(root, ".gitattributes"), "utf8").match(/linguist-generated/g)).toHaveLength(2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI init scaffolds a native Temporal boundary without a polyfill package", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-init-native-temporal-"));
+  try {
+    writeFileSync(join(root, "package.json"), JSON.stringify({
+      name: "fixture",
+      type: "module",
+    }, null, 2));
+    writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
+      compilerOptions: {
+        module: "NodeNext",
+        moduleResolution: "NodeNext",
+        target: "ES2024",
+        lib: ["ES2024"],
+        strict: true,
+        noEmit: true,
+      },
+      include: ["src/**/*.ts"],
+    }, null, 2));
+    const packageDir = join(root, "node_modules/@onreza/sqlx-js");
+    mkdirSync(packageDir, { recursive: true });
+    writeFileSync(join(packageDir, "package.json"), JSON.stringify({
+      name: "@onreza/sqlx-js",
+      version: pkg.version,
+      type: "module",
+      exports: { ".": { types: "./index.d.ts" } },
+    }));
+    writeFileSync(join(packageDir, "index.d.ts"), `
+      export interface QueryRegistry {
+        queries: object;
+        fileQueries: object;
+        runtimeDescriptors?: true;
+        jsonProtocol: 1;
+      }
+      export interface TemporalApi {}
+      export type GlobalTemporalApi = typeof Temporal;
+      export declare function createSqlClient<Registry extends QueryRegistry>(
+        url: string | undefined,
+        options: { queryDescriptors: unknown },
+      ): { sql: unknown };
+    `);
+
+    const result = spawnSync(
+      "bun",
+      [binPath, "init", "--temporal-provider", "native", "--root", root],
+      { encoding: "utf8", env: { ...process.env, DATABASE_URL: "" } },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(join(root, "db.ts"), "utf8")).toContain(
+      "GeneratedRegistry<typeof Temporal>",
+    );
+    const tsconfig = JSON.parse(readFileSync(join(root, "tsconfig.json"), "utf8"));
+    expect(tsconfig.compilerOptions.lib).toEqual(["ES2024", "ESNext.Temporal"]);
+    const typecheck = spawnSync(join(repoRoot, "node_modules/.bin/tsc"), ["-p", root], {
+      encoding: "utf8",
+    });
+    expect(typecheck.stderr + typecheck.stdout).toBe("");
+    expect(typecheck.status).toBe(0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
