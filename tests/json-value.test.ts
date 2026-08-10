@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Temporal } from "@js-temporal/polyfill";
+import { Temporal } from "temporal-polyfill";
 import { isDeepStrictEqual } from "node:util";
 import {
   EXTENDED_JSON_PROTOCOL_VERSION,
@@ -13,6 +13,19 @@ import {
 import { canonicalJsonNumber, canonicalJsonNumberBytes } from "../src/json-number";
 import { JsonEncodingBudget, JSON_RESOURCE_LIMITS } from "../src/json-limits";
 import { serializeExtendedJson } from "../src/json-encoding";
+
+function temporalApiFixture() {
+  return {
+    Duration: Temporal.Duration,
+    Instant: Temporal.Instant,
+    PlainDate: Temporal.PlainDate,
+    PlainDateTime: Temporal.PlainDateTime,
+    PlainMonthDay: Temporal.PlainMonthDay,
+    PlainTime: Temporal.PlainTime,
+    PlainYearMonth: Temporal.PlainYearMonth,
+    ZonedDateTime: Temporal.ZonedDateTime,
+  };
+}
 
 describe("SqlxJson documents", () => {
   test("snapshot and deeply freeze plain values", () => {
@@ -228,7 +241,7 @@ describe("Extended JSON parsing", () => {
   });
 
   test("validate an explicit Temporal provider before decoding tags", () => {
-    const brokenTemporal = { ...Temporal, Instant: {} } as never;
+    const brokenTemporal = { ...temporalApiFixture(), Instant: {} } as never;
     expect(() => SqlxJson.parse(
       '{"$sqlx":{"type":"temporal.Instant","v":1},"value":"2026-08-04T10:15:30Z"}',
       { temporalApi: brokenTemporal },
@@ -236,7 +249,7 @@ describe("Extended JSON parsing", () => {
   });
 
   test("reuse an immutable snapshot of a validated Temporal provider", () => {
-    const provider = { ...Temporal } as unknown as Record<string, unknown>;
+    const provider = temporalApiFixture() as unknown as Record<string, unknown>;
     const encoded = '{"$sqlx":{"type":"temporal.Instant","v":1},"value":"2026-08-04T10:15:30Z"}';
     expect(String(SqlxJson.parse(encoded, { temporalApi: provider as never }).value))
       .toBe("2026-08-04T10:15:30Z");

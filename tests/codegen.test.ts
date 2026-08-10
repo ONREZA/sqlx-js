@@ -145,7 +145,7 @@ test("temporal reject registries compile with descriptor and explicit adaptive p
   ]), [], {}, {}, { infinity: "reject" });
   writeFileSync(join(root, "consumer.ts"), `
 import { createClient, createSqlClient } from "@onreza/sqlx-js";
-import { Temporal } from "@js-temporal/polyfill";
+import { Temporal } from "temporal-polyfill";
 import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./generated";
 
 type SqlxJsGeneratedRegistry = GeneratedRegistry<typeof Temporal>;
@@ -153,6 +153,16 @@ const rawFactory = createClient<SqlxJsGeneratedRegistry>;
 type RawClientArgs = Parameters<typeof rawFactory>;
 type RawOptionsAreRequired = RawClientArgs extends [string | undefined, object] ? true : false;
 const rawOptionsAreRequired: RawOptionsAreRequired = true;
+type ManualRegistry = {
+  queries: {};
+  fileQueries: {};
+  jsonProtocol: 1;
+  temporalApi: typeof Temporal;
+};
+const managedFactory = createSqlClient<ManualRegistry>;
+type ManagedClientArgs = Parameters<typeof managedFactory>;
+type ManagedOptionsAreRequired = ManagedClientArgs extends [string | undefined, object] ? true : false;
+const managedOptionsAreRequired: ManagedOptionsAreRequired = true;
 
 declare const queryDescriptors: import("@onreza/sqlx-js").RuntimeQueryDescriptors;
 const unscopedManaged = createSqlClient(undefined, {
@@ -185,6 +195,7 @@ void unscopedManaged;
 void unscopedRaw;
 void raw;
 void rawOptionsAreRequired;
+void managedOptionsAreRequired;
 `);
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
@@ -230,7 +241,7 @@ import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./generated";
 
 type Registry = GeneratedRegistry<typeof Temporal>;
 declare const queryDescriptors: import("@onreza/sqlx-js").RuntimeQueryDescriptors;
-const client = createSqlClient<Registry>(undefined, { queryDescriptors });
+const client = createSqlClient<Registry>(undefined, { queryDescriptors, temporalApi: Temporal });
 const instant = Temporal.Instant.from("2026-01-01T00:00:00Z");
 const result: Promise<{ value: Temporal.Instant }[]> = client.sql(
   "SELECT $1::timestamptz AS value",
@@ -327,8 +338,8 @@ function runGenericMapped<
   return definition.run(executor, input);
 }
 
-const api = createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, { execution: "adaptive", profile: { name: "api", role: "app_api" } });
-const worker = createSqlClient<SqlxJsGeneratedProfileRegistry<"worker">>(undefined, { execution: "adaptive", profile: { name: "worker", role: "app_worker" } });
+const api = createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, { execution: "adaptive", profile: { name: "api", role: "app_api" }, temporalApi: Temporal });
+const worker = createSqlClient<SqlxJsGeneratedProfileRegistry<"worker">>(undefined, { execution: "adaptive", profile: { name: "worker", role: "app_worker" }, temporalApi: Temporal });
 const valid = defineQuery.for("api").one(${JSON.stringify(query)}).mapParams(
   (input: { id: string }) => ({ id: input.id }),
 );
@@ -677,10 +688,12 @@ const replicaOnly: "SELECT replica" = null as unknown as keyof ReplicaRegistry["
 
 const primary = createSqlClient<PrimaryRegistry>(undefined, {
   execution: "adaptive",
+  temporalApi: Temporal,
   typeCodecs: { shared_type: { parse: Number, serialize: String } },
 });
 const replica = createSqlClient<ReplicaRegistry>(undefined, {
   execution: "adaptive",
+  temporalApi: Temporal,
   typeCodecs: { shared_type: { parse: String, serialize: String } },
 });
 void primary.sql(primaryKey);
@@ -740,24 +753,26 @@ declare const queryDescriptors: import("@onreza/sqlx-js").RuntimeQueryDescriptor
 const preparedApi = createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, {
   queryDescriptors,
   profile: { name: "api", role: "app_api" },
+  temporalApi: Temporal,
 });
 void preparedApi.sql("SELECT api");
 void preparedApi.sql.with({ timeoutMs: 1_000 })("SELECT api");
 void preparedApi.sql.with({ signal: new AbortController().signal }).with({ timeoutMs: 1_000 })("SELECT api");
 // @ts-expect-error descriptor and adaptive execution modes are mutually exclusive
-createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, { queryDescriptors, execution: "adaptive", profile: { name: "api", role: "app_api" } });
+createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, { queryDescriptors, execution: "adaptive", profile: { name: "api", role: "app_api" }, temporalApi: Temporal });
 
 const api = createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, {
   execution: "adaptive",
   profile: { name: "api", role: "app_api" },
+  temporalApi: Temporal,
 });
 void api.sql("SELECT api");
 // @ts-expect-error generated clients require queryDescriptors or an explicit adaptive opt-out
-createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, { profile: { name: "api", role: "app_api" } });
+createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, { profile: { name: "api", role: "app_api" }, temporalApi: Temporal });
 // @ts-expect-error worker queries are not available through the api profile
 void api.sql("SELECT worker");
 // @ts-expect-error the generated api profile requires the app_api PostgreSQL role
-createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, { execution: "adaptive", profile: { name: "api", role: "wrong" } });
+createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, { execution: "adaptive", profile: { name: "api", role: "wrong" }, temporalApi: Temporal });
 `);
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
@@ -816,6 +831,7 @@ import type { SqlxJsGeneratedProfileRegistry, SqlxJsGeneratedProfiles } from "./
 
 const api = createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, {
   execution: "adaptive",
+  temporalApi: Temporal,
   profile: {
     name: "api",
     role: "app_api",
@@ -846,6 +862,7 @@ void api.sql.transaction({
 const worker = createSqlClient<SqlxJsGeneratedProfileRegistry<"worker">>(undefined, {
   execution: "adaptive",
   profile: { name: "worker", role: "app_worker" },
+  temporalApi: Temporal,
 });
 void worker.sql("SELECT api");
 
@@ -887,6 +904,7 @@ import type { SqlxJsGeneratedRegistry } from "./generated";
 
 const client = createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
   execution: "adaptive",
+  temporalApi: Temporal,
   typeCodecs: {
     geometry: {
       parse: (value) => ({ x: Number(value), y: Number(value) }),
@@ -897,6 +915,7 @@ const client = createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
 void client;
 
 const rawClient = createClient<SqlxJsGeneratedRegistry>(undefined, {
+  temporalApi: Temporal,
   types: {
     geometry: {
       to: 50_000,
@@ -916,6 +935,7 @@ void rawClient;
 
 const numericClient = createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
   execution: "adaptive",
+  temporalApi: Temporal,
   types: {
     geometry: {
       to: 50_000,
@@ -930,6 +950,7 @@ void numericClient;
 // @ts-expect-error numeric parser output must match the configured customTypes representation
 createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
   execution: "adaptive",
+  temporalApi: Temporal,
   types: {
     geometry: {
       to: 50_000,
@@ -942,6 +963,7 @@ createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
 
 createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
   execution: "adaptive",
+  temporalApi: Temporal,
   typeCodecs: {
     geometry: {
       // @ts-expect-error parser output must match the configured customTypes representation
@@ -953,6 +975,7 @@ createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
 
 createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
   execution: "adaptive",
+  temporalApi: Temporal,
   typeCodecs: {
     geometry: {
       parse: (value) => ({ x: Number(value), y: Number(value) }),
@@ -1095,7 +1118,7 @@ import {
   type SqlxJson,
   type SqlTransactionOptions,
 } from "@onreza/sqlx-js";
-import { Temporal } from "@js-temporal/polyfill";
+import { Temporal } from "temporal-polyfill";
 import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./generated";
 
 type SqlxJsGeneratedRegistry = GeneratedRegistry<typeof Temporal>;

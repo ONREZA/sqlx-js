@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import process from "node:process";
-import { Temporal } from "@js-temporal/polyfill";
+import { Temporal } from "temporal-polyfill";
 import { createClient, createSqlClient } from "../dist/src/index.js";
 
 const databaseUrl = process.env.SQLX_JS_SOAK_DATABASE_URL;

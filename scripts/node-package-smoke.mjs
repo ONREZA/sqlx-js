@@ -92,6 +92,7 @@ try {
     declare const nativeDescriptors: import("@onreza/sqlx-js").RuntimeQueryDescriptors;
     const nativeClient = createSqlClient<NativeRegistry>(undefined, {
       queryDescriptors: nativeDescriptors,
+      temporalApi: Temporal,
     });
     const nativeResult: Promise<{ value: Temporal.Instant }[]> = nativeClient.sql(
       temporalStatement,
@@ -111,8 +112,8 @@ try {
       skipLibCheck: false,
       module: "NodeNext",
       moduleResolution: "NodeNext",
-      target: "ES2024",
-      lib: ["ES2024", "ESNext.Temporal"],
+      target: "ES2025",
+      lib: ["ES2025", "ESNext.Temporal"],
       types: ["node"],
       typeRoots: [join(root, "node_modules/@types")],
     },
@@ -121,7 +122,7 @@ try {
   run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "-p", join(temp, "tsconfig.json")], temp);
   run("npm", [
     "install",
-    "@js-temporal/polyfill@0.5.1",
+    "temporal-polyfill@1.0.3",
     "--ignore-scripts",
     "--no-package-lock",
     "--no-audit",
@@ -129,7 +130,7 @@ try {
   ], temp);
   writeFileSync(join(temp, "app.mjs"), `
     import assert from "node:assert/strict";
-    import { Temporal } from "@js-temporal/polyfill";
+    import { Temporal } from "temporal-polyfill";
     import {
       createSqlClient,
       defineQuery,
@@ -249,7 +250,7 @@ try {
   process.stdout.write(`node ${run("node", ["app.mjs"], temp)}`);
   process.stdout.write(`bun ${run("bun", ["app.mjs"], temp)}`);
   writeFileSync(join(temp, "idle-exit.mjs"), `
-    import { Temporal } from "@js-temporal/polyfill";
+    import { Temporal } from "temporal-polyfill";
     import { createClient } from "@onreza/sqlx-js";
 
     const client = createClient(process.env.DATABASE_URL, { max: 1, temporalApi: Temporal });

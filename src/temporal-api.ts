@@ -56,7 +56,7 @@ export function resolveTemporalApi(api: TemporalApi | undefined): TemporalApi {
   if (!resolved) {
     throw new Error(
       "sqlx-js: Temporal API is unavailable; use a runtime with globalThis.Temporal or install "
-        + "@js-temporal/polyfill and pass { temporalApi: Temporal } to createClient/createSqlClient",
+        + "temporal-polyfill and pass { temporalApi: Temporal } to createClient/createSqlClient",
     );
   }
   const cacheKey = (typeof resolved === "object" && resolved !== null) || typeof resolved === "function"
