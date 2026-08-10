@@ -5,6 +5,7 @@ import { parseArgs } from "node:util";
 import type { JsonAuditReport } from "../src/commands/json-audit";
 import type { PgschemaSubcommand } from "../src/commands/pgschema";
 import type { PrepareDiagnosticPhase } from "../src/commands/prepare";
+import type { DatabaseTargetSummary } from "../src/pg/target-summary";
 import { JSON_PROTOCOL_VERSION } from "../src/artifact-versions";
 import { assertSupportedRuntime, loadConfig, loadRootEnv } from "../src/config";
 import { inspectPackageIdentity, runningPackageIdentity } from "../src/package-identity";
@@ -208,12 +209,15 @@ function printPrepareFailure(
   message: string,
   phase: PrepareDiagnosticPhase,
   location: { file?: string; line?: number; column?: number } = {},
+  target?: DatabaseTargetSummary,
+  targetText?: string,
 ): void {
   if (flag("--jsonl")) {
     console.log(JSON.stringify({
       formatVersion: 1,
       event: "error",
       timestamp: new Date().toISOString(),
+      ...(target === undefined ? {} : { target }),
       diagnostic: { severity: "error", phase, message, ...location },
     }));
   } else if (flag("--json")) {
@@ -221,6 +225,7 @@ function printPrepareFailure(
       formatVersion: 1,
       ok: false,
       mode: prepareMode(),
+      ...(target === undefined ? {} : { target }),
       sites: 0,
       entries: 0,
       failures: 1,
@@ -230,6 +235,7 @@ function printPrepareFailure(
       diagnostics: [{ severity: "error", phase, message, ...location }],
     }, null, 2));
   } else if (!flag("--verbose")) {
+    if (targetText !== undefined) console.log(targetText);
     const locationText = location.file
       ? `${location.file}${location.line ? `:${location.line}:${location.column ?? 1}` : ""}`
       : "";
@@ -240,6 +246,7 @@ function printPrepareFailure(
     console.error(`${phase} failed: ${locationText ? `${locationText} — ` : ""}${detail}`);
     console.error(`summary: 0 warnings, 1 error (${phase}: 1)`);
   } else {
+    if (targetText !== undefined) console.log(targetText);
     console.error(message);
   }
 }
@@ -576,8 +583,10 @@ if (cmd === "init") {
     phase: PrepareDiagnosticPhase,
     exitCode = 2,
     location: { file?: string; line?: number; column?: number } = {},
+    target?: DatabaseTargetSummary,
+    targetText?: string,
   ): never => {
-    printPrepareFailure(message, phase, location);
+    printPrepareFailure(message, phase, location, target, targetText);
     process.exit(exitCode);
   };
   if ([prepareCheck, prepareOffline, prepareVerify, prepareWatch].filter(Boolean).length > 1) {
@@ -644,6 +653,10 @@ if (cmd === "init") {
         : prepareVerify
           ? "verify"
           : "scan";
+      const target = e instanceof PrepareFatalError ? e.target : undefined;
+      const targetText = target === undefined
+        ? undefined
+        : (await import("../src/pg/target-summary")).formatDatabaseTarget(target);
       failPrepare(
         message,
         phase,
@@ -651,6 +664,8 @@ if (cmd === "init") {
         e instanceof PrepareFatalError
           ? { file: e.file, line: e.line, column: e.column }
           : {},
+        target,
+        targetText,
       );
     }
   }

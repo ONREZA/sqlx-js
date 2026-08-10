@@ -5,6 +5,7 @@ import { compareArtifacts } from "../artifacts";
 import { embeddedSqlOutputPath } from "../embedded-sql";
 import { enumCatalogOutputPath } from "../enum-catalog";
 import { prepareGeneratedOutputPaths } from "../prepare-artifacts";
+import { formatDatabaseTarget } from "../pg/target-summary";
 import { fatal } from "./prepare-diagnostics";
 import {
   closePrepareSession,
@@ -22,6 +23,7 @@ export async function writePrepareArtifacts(
 ): Promise<boolean> {
   const session = await openSession(opts);
   try {
+    log(formatDatabaseTarget(session.target));
     const result = await prepareOnce(opts, session, log, err);
     if (result.failures > 0) {
       err(`\n${result.failures} query/queries failed to prepare`);
@@ -33,6 +35,8 @@ export async function writePrepareArtifacts(
       + `→ ${outputs}`,
     );
     return true;
+  } catch (error) {
+    throw fatal("cache", error, session.target);
   } finally {
     await closePrepareSession(session);
   }
@@ -66,6 +70,7 @@ export async function verifyPrepareArtifacts(
   let session: PrepareSession | undefined;
   try {
     session = await openSession(opts);
+    log(formatDatabaseTarget(session.target));
     const expectedEnumOutput = enumCatalogOutputPath(opts.root, session.userCfg, opts.enumOutputPath);
     const generatedEnumOutput = expectedEnumOutput ? join(tmp, "sqlx-js-enums.ts") : undefined;
     verifyOpts.enumOutputPath = generatedEnumOutput;
@@ -112,7 +117,7 @@ export async function verifyPrepareArtifacts(
         },
       );
     } catch (error) {
-      throw fatal("verify", error);
+      throw fatal("verify", error, session.target);
     }
     if (!comparison.ok) {
       err(`${messages.command}: generated artifacts are stale:`);
@@ -125,6 +130,9 @@ export async function verifyPrepareArtifacts(
       + "generated artifacts are current",
     );
     return { ok: true, result, changed: [] };
+  } catch (error) {
+    if (session) throw fatal("verify", error, session.target);
+    throw error;
   } finally {
     if (session) await closePrepareSession(session);
     rmSync(tmp, { recursive: true, force: true });

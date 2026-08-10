@@ -24,6 +24,7 @@ import {
   type QueryErrorEvent,
 } from "../src/index";
 import { _internal, normalizeRuntimeDatabaseUrl } from "../src/postgres-runtime";
+import { profileClientOptions } from "../src/postgres-client-options";
 import { EXECUTE_KNOWN_PARAMS } from "../src/pg/driver";
 import { defineQuery } from "../src/query";
 import {
@@ -77,6 +78,27 @@ test("Prisma schema parameters remain compatible with the internal runtime", () 
   )).toBe(
     "postgres://app:secret@db.example.com/app?statement_timeout=5000",
   );
+});
+
+test("profile validation rejects a role injected through resolved PGOPTIONS", () => {
+  const previous = process.env.PGOPTIONS;
+  try {
+    for (const options of [
+      "-c role=ambient_role",
+      "-crole=ambient_role",
+      "--role=ambient_role",
+      "--role\\=ambient_role",
+    ]) {
+      process.env.PGOPTIONS = options;
+      expect(() => profileClientOptions(
+        "postgresql://app@db.internal/app",
+        { execution: "adaptive", profile: { name: "api", role: "app_api" } },
+      )).toThrow("cannot be combined with a role in resolved PostgreSQL options");
+    }
+  } finally {
+    if (previous === undefined) delete process.env.PGOPTIONS;
+    else process.env.PGOPTIONS = previous;
+  }
 });
 
 test("statementTimeoutMs configures only the PostgreSQL session parameter", async () => {

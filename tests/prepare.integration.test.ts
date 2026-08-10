@@ -266,8 +266,23 @@ if (!haveIntegrationDatabase) {
 
     const result = prepareRoot(root);
     expect(result.code).toBe(1);
+    const expectedTarget = parseDatabaseUrl(dbUrl);
+    expect(result.stdout).toContain(
+      `target: database ${expectedTarget.database} as ${expectedTarget.user}`,
+    );
     expect(result.stderr).toContain("sqlx-js.config.ts columnTypes.public.tmp_config_assertions.missing");
     expect(result.stderr).toContain("does not resolve to a PostgreSQL column");
+
+    const jsonResult = prepareRoot(root, ["--json"]);
+    expect(jsonResult.code).toBe(1);
+    expect(JSON.parse(jsonResult.stdout)).toMatchObject({
+      ok: false,
+      target: {
+        database: expectedTarget.database,
+        user: expectedTarget.user,
+      },
+      diagnostics: [{ phase: "config" }],
+    });
 
     const diagnosis = spawnSync(
       "bun",
@@ -1988,9 +2003,29 @@ export default {
     expect(result.stderr).toBe("");
     const payload = JSON.parse(result.stdout) as {
       ok: boolean;
+      target: {
+        database: string;
+        user: string;
+        serverVersion: string;
+        searchPath: string;
+        catalogFunctions: number;
+        catalogEnums: number;
+      };
       diagnostics: { phase: string; file: string; line: number; queryId?: string; code?: string }[];
     };
+    const expectedTarget = parseDatabaseUrl(dbUrl);
     expect(payload.ok).toBe(false);
+    expect(payload.target).toMatchObject({
+      database: expectedTarget.database,
+      user: expectedTarget.user,
+      serverVersion: expect.any(String),
+      searchPath: expect.any(String),
+      catalogFunctions: expect.any(Number),
+      catalogEnums: expect.any(Number),
+    });
+    expect(payload.target).not.toHaveProperty("host");
+    expect(payload.target).not.toHaveProperty("password");
+    expect(result.stdout).not.toContain(dbUrl);
     expect(payload.diagnostics[0]).toMatchObject({ phase: "describe", file: "a.ts", line: 2, code: "42P01" });
     expect(payload.diagnostics[0]!.queryId).toMatch(/^[0-9a-f]{16}$/);
   });
@@ -2017,6 +2052,10 @@ export default {
       expect(result.stdout).toContain("1 warning (intent: 1), 0 errors");
       expect(result.stdout).toContain("use --warnings to show warning details");
       expect(result.stdout).toContain("use --verbose for per-query progress");
+      if (args.length === 0 || args.includes("--verify")) {
+        const target = parseDatabaseUrl(dbUrl);
+        expect(result.stdout).toContain(`target: database ${target.database} as ${target.user}`);
+      }
       expect(result.stderr).not.toMatch(
         /intent warning: queries\.ts:3:\d+ \[query:[0-9a-f]{16}\] — sql\.execute\(\) is discarding rows/,
       );
@@ -2033,6 +2072,8 @@ export default {
     const verbose = prepareRoot(root, ["--verbose"]);
     expect(verbose.code, verbose.stderr).toBe(0);
     expect(verbose.stdout).toContain("scanned: found");
+    const target = parseDatabaseUrl(dbUrl);
+    expect(verbose.stdout).toContain(`target: database ${target.database} as ${target.user}`);
     expect(verbose.stdout).toContain("✓");
     expect(verbose.stderr).toMatch(
       /intent warning: queries\.ts:3:\d+ \[query:[0-9a-f]{16}\] — sql\.execute\(\) is discarding rows/,
@@ -2069,6 +2110,7 @@ export default {
     expect(failed.stderr).toContain("code 42P01");
     expect(failed.stderr).toContain("query: SELECT * FROM tmp_summary_missing_relation");
     expect(failed.stderr).toContain("prepare failed — 0 unique queries");
+    expect(failed.stdout).toContain(`target: database ${target.database} as ${target.user}`);
   });
 
   test("prepare emits generated functions from pg_proc and keeps them in --check", async () => {

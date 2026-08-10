@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { decodeText, parseDatabaseUrl, PgClient } from "../pg/wire";
+import { decodeText, parseDatabaseUrl, PgClient, replaceDatabaseInUrl } from "../pg/wire";
 
 export type ShadowDatabaseOptions = {
   databaseUrl: string;
@@ -16,14 +16,8 @@ function quoteIdent(ident: string): string {
   return `"${ident.replace(/"/g, '""')}"`;
 }
 
-function databaseUrlWithDatabase(databaseUrl: string, database: string): string {
-  const url = new URL(databaseUrl);
-  url.pathname = `/${database}`;
-  return url.toString();
-}
-
 function maintenanceDatabaseUrl(databaseUrl: string): string {
-  return databaseUrlWithDatabase(databaseUrl, "postgres");
+  return replaceDatabaseInUrl(databaseUrl, "postgres");
 }
 
 function generatedShadowDatabaseName(): string {
@@ -70,7 +64,7 @@ async function createDisposableShadowDatabase(
   }
   const name = generatedShadowDatabaseName();
   const adminUrl = shadowAdminUrl ?? maintenanceDatabaseUrl(databaseUrl);
-  const shadowUrl = databaseUrlWithDatabase(databaseUrl, name);
+  const shadowUrl = replaceDatabaseInUrl(databaseUrl, name);
   const owner = parseDatabaseUrl(databaseUrl).user;
   const admin = new PgClient(parseDatabaseUrl(adminUrl));
   await admin.connect();

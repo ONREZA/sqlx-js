@@ -6,6 +6,7 @@ import type {
 import type { PostgresOptions } from "./pg/driver";
 import type { RuntimeTypeCodecs } from "./postgres-codecs";
 import type { RuntimeQueryDescriptors } from "./runtime-descriptors";
+import { parseDatabaseUrl, type ConnConfig } from "./pg/connection-resolver";
 
 export type CreateClientOptions = PostgresOptions;
 
@@ -133,8 +134,58 @@ function postgresClientOptions(options: CreateSqlClientOptions): CreateClientOpt
   return clientOptions;
 }
 
+function postgresOptionTokens(value: string): string[] {
+  const tokens: string[] = [];
+  let token = "";
+  let escaped = false;
+  for (const character of value) {
+    if (escaped) {
+      token += character;
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    } else if (/\s/.test(character)) {
+      if (token !== "") tokens.push(token);
+      token = "";
+    } else {
+      token += character;
+    }
+  }
+  if (escaped) token += "\\";
+  if (token !== "") tokens.push(token);
+  return tokens;
+}
+
+function roleSetting(value: string | undefined): boolean {
+  return value !== undefined && /^(?:"|')?role(?:=|$)/i.test(value.trimStart());
+}
+
 function hasRoleStartupOption(value: string): boolean {
-  return /(?:^|\s)-c\s*(?:"|')?role(?:\s*=|\s+)/i.test(value);
+  const tokens = postgresOptionTokens(value);
+  return tokens.some((token, index) => {
+    const lower = token.toLowerCase();
+    return lower === "--role"
+      || lower.startsWith("--role=")
+      || (lower === "-c" && roleSetting(tokens[index + 1]))
+      || (lower.startsWith("-c") && roleSetting(token.slice(2)));
+  });
+}
+
+export function assertProfileConnection(
+  profile: Pick<DatabaseProfile, "name" | "role">,
+  connection: ConnConfig,
+): void {
+  const resolvedRole = connection.startupParameters?.role;
+  if (resolvedRole !== undefined && resolvedRole !== profile.role) {
+    throw new Error(
+      `sqlx-js: profile ${profile.name} requires role ${profile.role}, but DATABASE_URL uses role ${resolvedRole}`,
+    );
+  }
+  if (connection.startupOptions && hasRoleStartupOption(connection.startupOptions)) {
+    throw new Error(
+      `sqlx-js: profile ${profile.name} cannot be combined with a role in resolved PostgreSQL options`,
+    );
+  }
 }
 
 export function validateRuntimeProfile(profile: NonNullable<CreateSqlClientOptions["profile"]>): void {
@@ -172,17 +223,8 @@ export function profileClientOptions(
   if (typeof clientOptions.startupOptions === "string" && hasRoleStartupOption(clientOptions.startupOptions)) {
     throw new Error(`sqlx-js: profile ${profile.name} cannot be combined with a role in startupOptions`);
   }
-  if (/^postgres(?:ql)?:\/\//i.test(url)) {
-    const parsed = new URL(url);
-    const urlRole = parsed.searchParams.get("role");
-    if (urlRole !== null && urlRole !== profile.role) {
-      throw new Error(`sqlx-js: profile ${profile.name} requires role ${profile.role}, but DATABASE_URL uses role ${urlRole}`);
-    }
-    const urlOptions = parsed.searchParams.get("options");
-    if (urlOptions && hasRoleStartupOption(urlOptions)) {
-      throw new Error(`sqlx-js: profile ${profile.name} cannot be combined with a role in DATABASE_URL options`);
-    }
-  }
+  const resolvedConnection = parseDatabaseUrl(url);
+  assertProfileConnection(profile, resolvedConnection);
   return {
     ...clientOptions,
     role: profile.role,

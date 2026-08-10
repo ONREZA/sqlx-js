@@ -37,6 +37,9 @@ guides contain the complete contracts, operational details, and edge cases.
 
 ## Architecture and compatibility
 
+- [Unified connection resolution](./connection-resolution.md) defines the P0
+  target, credential precedence, security invariants, consumer matrix, and
+  completion tracker.
 - [sqlx-js Extended JSON protocol](./extended-json-protocol.md) defines the
   branded, immutable, versioned `json`/`jsonb` value and transport contract.
 - [Postgres.js compatibility matrix](./postgres-js-feature-matrix.md) defines

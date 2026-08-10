@@ -8,7 +8,12 @@ import {
   type PlanValidation,
 } from "../pg/wire";
 import { SchemaCache } from "../pg/schema";
+import {
+  inspectDatabaseTarget,
+  type DatabaseTargetSummary,
+} from "../pg/target-summary";
 import { analyzeQuery } from "../pg/analyze";
+import { assertProfileConnection } from "../postgres-client-options";
 import { classifyPlanValidation } from "../pg/plan-classification";
 import { isBuiltinOid } from "../pg/oids";
 import { scanProject, type QueryCallSite } from "../scan/scanner";
@@ -121,6 +126,7 @@ export type PrepareOptions = {
 };
 
 export type PrepareResult = {
+  target: DatabaseTargetSummary;
   sites: number;
   entries: number;
   failures: number;
@@ -178,6 +184,7 @@ export function siteUsage(sites: QueryCallSite[]): Pick<CacheEntry, "hasInline" 
 
 export type PrepareSession = {
   client: PgClient;
+  target: DatabaseTargetSummary;
   schema: SchemaCache;
   userCfg: SqlxJsConfig;
   profiles: Map<string, {
@@ -213,6 +220,9 @@ export async function openSession(opts: PrepareOptions): Promise<PrepareSession>
   let cfg: ConnConfig;
   try {
     cfg = parseDatabaseUrl(opts.databaseUrl);
+    for (const profile of Object.values(userCfg.profiles ?? {})) {
+      assertProfileConnection(profile, cfg);
+    }
   } catch (error) {
     throw fatal("connect", error);
   }
@@ -223,6 +233,16 @@ export async function openSession(opts: PrepareOptions): Promise<PrepareSession>
     await client.end().catch(() => {});
     throw fatal("connect", error);
   }
+  let target: DatabaseTargetSummary;
+  try {
+    target = await inspectDatabaseTarget(client, {
+      includeExtensionOwnedFunctions: userCfg.functionCatalog !== false
+        && userCfg.functionCatalog?.includeExtensionOwned === true,
+    });
+  } catch (error) {
+    await client.end().catch(() => {});
+    throw fatal("introspect", error);
+  }
   const schema = new SchemaCache(client);
   schema.setTypeRegistry(mergeExtensionTypes(userCfg.customTypes), userCfg.customTypes);
   try {
@@ -230,7 +250,7 @@ export async function openSession(opts: PrepareOptions): Promise<PrepareSession>
     await validateColumnAssertions(userCfg, userConfigPath, schema);
   } catch (error) {
     await client.end().catch(() => {});
-    throw fatal("config", error);
+    throw fatal("config", error, target);
   }
   const profiles = new Map<string, {
     profile: DatabaseProfile;
@@ -258,9 +278,9 @@ export async function openSession(opts: PrepareOptions): Promise<PrepareSession>
   } catch (error) {
     await Promise.all([...profiles.values()].map((profile) => profile.client.end().catch(() => {})));
     await client.end().catch(() => {});
-    throw fatal("connect", error);
+    throw fatal("connect", error, target);
   }
-  return { client, schema, userCfg, profiles };
+  return { client, target, schema, userCfg, profiles };
 }
 
 function quoteIdentifier(value: string): string {
@@ -383,7 +403,7 @@ export async function prepareOnce(
     try {
       sites = scanProject(opts.root, session.userCfg.scan, session.userCfg.profiles ?? {});
     } catch (error) {
-      throw fatal("scan", error);
+      throw fatal("scan", error, session.target);
     }
   }
   log(`scanned: found ${sites.length} sql() call site(s)`);
@@ -590,7 +610,7 @@ export async function prepareOnce(
       await schema.loadCustomTypes([...unknownOids]);
     }
   } catch (error) {
-    throw fatal("introspect", error);
+    throw fatal("introspect", error, session.target);
   }
 
   const analyses = new Map<string, Awaited<ReturnType<typeof analyzeQuery>>>();
@@ -663,7 +683,7 @@ export async function prepareOnce(
       ));
     }
   } catch (error) {
-    throw fatal("introspect", error);
+    throw fatal("introspect", error, session.target);
   }
 
   const entries: CacheEntry[] = [...reusedEntries];
@@ -802,7 +822,16 @@ export async function prepareOnce(
   }
 
   if (failures > 0) {
-    return { sites: sites.length, entries: entries.length, failures, pruned: 0, functions: 0, enums: 0, diagnostics };
+    return {
+      target: session.target,
+      sites: sites.length,
+      entries: entries.length,
+      failures,
+      pruned: 0,
+      functions: 0,
+      enums: 0,
+      diagnostics,
+    };
   }
 
   let functions: FunctionEntry[];
@@ -816,7 +845,7 @@ export async function prepareOnce(
         includeExtensionOwned: userCfg.functionCatalog?.includeExtensionOwned === true,
       });
     } catch (error) {
-      throw fatal("introspect", error);
+      throw fatal("introspect", error, session.target);
     }
   }
   addFunctionContractDiagnostics(functions, diagnostics, err);
@@ -830,7 +859,7 @@ export async function prepareOnce(
       try {
         enums = await introspectEnumCatalog(client, userCfg.enumCatalog.schemas);
       } catch (error) {
-        throw fatal("introspect", error);
+        throw fatal("introspect", error, session.target);
       }
     }
     const path = enumCatalogOutputPath(opts.root, userCfg, opts.enumOutputPath)!;
@@ -838,7 +867,7 @@ export async function prepareOnce(
       enumModule = { path, content: renderEnumCatalog(enums, userCfg.enumCatalog) };
       enumCount = selectedEnumCatalogCount(enums, userCfg.enumCatalog);
     } catch (error) {
-      throw fatal("introspect", error);
+      throw fatal("introspect", error, session.target);
     }
   }
   let pruned: number;
@@ -871,9 +900,10 @@ export async function prepareOnce(
       log(message);
     }
   } catch (error) {
-    throw fatal("cache", error);
+    throw fatal("cache", error, session.target);
   }
   return {
+    target: session.target,
     sites: sites.length,
     entries: entries.length,
     failures,

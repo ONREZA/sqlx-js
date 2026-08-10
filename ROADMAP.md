@@ -4,6 +4,31 @@ Future work, ordered by ROI (0–10) — how much real-world pain each item clos
 
 Items already shipped live in the [README](./README.md) feature list; this file tracks what's still ahead.
 
+## P0 — unified connection resolver
+
+The next release must complete one connection-resolution contract across every
+sqlx-js-owned database path. This is a P0 release gate, not a prepare-only
+improvement and not a partial libpq emulation.
+
+- Resolve typed runtime overrides, URL values, supported `PG*` environment
+  settings, password files, and defaults in one documented precedence order.
+- Keep the TCP endpoint (`hostaddr`), logical PostgreSQL host, TLS certificate
+  identity, and password-file matching identity distinct. `verify-full` must
+  remain usable through an SSH tunnel without embedding a password in the URL.
+- Apply the same resolved contract to prepare, doctor, schema snapshots, JSON
+  audits, built-in migrations, runtime startup migrations, shadow databases,
+  cancellation, `pg_dump`, and provider adapters. An external provider that
+  cannot preserve the contract must fail before execution with an actionable
+  boundary instead of silently changing security semantics.
+- Print a sanitized live target summary from prepare and verify so wrong-schema
+  failures identify the database, role, PostgreSQL version, `search_path`, and
+  application catalog size without exposing hosts or credentials.
+
+Implementation and release evidence are tracked in
+[Unified connection resolution](./docs/connection-resolution.md). The item
+remains P0 until every in-scope consumer and verification gate in that document
+is complete.
+
 ## Current implementation target
 
 The current release target combines one breaking contract slice with additive

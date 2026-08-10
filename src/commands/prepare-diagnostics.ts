@@ -6,6 +6,7 @@ import {
 } from "../function-cache";
 import { ScanError, type QueryCallSite } from "../scan/scanner";
 import { resolveTemporalPolicy, type TemporalPolicyOptions } from "../temporal";
+import type { DatabaseTargetSummary } from "../pg/target-summary";
 
 export type PrepareDiagnosticPhase =
   | "config"
@@ -34,6 +35,7 @@ export class PrepareFatalError extends Error {
     message: string,
     location: { file?: string; line?: number; column?: number } = {},
     options?: ErrorOptions,
+    public target?: DatabaseTargetSummary,
   ) {
     super(message, options);
     this.name = "PrepareFatalError";
@@ -43,13 +45,20 @@ export class PrepareFatalError extends Error {
   }
 }
 
-export function fatal(phase: PrepareDiagnosticPhase, error: unknown): PrepareFatalError {
-  if (error instanceof PrepareFatalError) return error;
+export function fatal(
+  phase: PrepareDiagnosticPhase,
+  error: unknown,
+  target?: DatabaseTargetSummary,
+): PrepareFatalError {
+  if (error instanceof PrepareFatalError) {
+    error.target ??= target;
+    return error;
+  }
   const message = error instanceof Error ? error.message : String(error);
   const location = error instanceof ScanError
     ? { file: error.file, line: error.line, column: error.column }
     : {};
-  return new PrepareFatalError(phase, message, location, { cause: error });
+  return new PrepareFatalError(phase, message, location, { cause: error }, target);
 }
 
 export type PrepareDiagnostic = {

@@ -85,6 +85,7 @@ function connectionUrl(
   url.username = user;
   url.password = password;
   url.searchParams.set("sslmode", mode);
+  if (host === "localhost") url.searchParams.set("hostaddr", "127.0.0.1");
   if (mode === "verify-ca" || mode === "verify-full") {
     url.searchParams.set("sslrootcert", join(temp, rootCertificate));
   }
@@ -93,6 +94,24 @@ function connectionUrl(
     url.searchParams.set("sslkey", join(temp, "client.key"));
   }
   return url.toString();
+}
+
+function routedConnectionUrl(url, hostaddr) {
+  const routed = new URL(url);
+  routed.searchParams.set("hostaddr", hostaddr);
+  return routed.toString();
+}
+
+function connectionUrlWithRoot(url, rootCertificate) {
+  const configured = new URL(url);
+  configured.searchParams.set("sslrootcert", join(temp, rootCertificate));
+  return configured.toString();
+}
+
+function connectionUrlWithPassfile(url, passfile) {
+  const configured = new URL(url);
+  configured.searchParams.set("passfile", passfile);
+  return configured.toString();
 }
 
 function runClients(name, config) {
@@ -265,6 +284,12 @@ EOF
     "clear-secret",
     "verify-full",
   );
+  const passfile = join(temp, "runtime.pgpass");
+  writeFileSync(
+    passfile,
+    `localhost:${port}:sqlx_js_compat:clear_user:clear-secret\n`,
+    { mode: 0o600 },
+  );
   runClients("valid-server", {
     managedUrl,
     cases: [
@@ -291,6 +316,15 @@ EOF
         user: "clear_user",
         tls: true,
         url: connectionUrl(port, "clear_user", "clear-secret", "verify-full"),
+      },
+      {
+        name: "password-file-verify-full",
+        user: "clear_user",
+        tls: true,
+        url: connectionUrlWithPassfile(
+          connectionUrl(port, "clear_user", "", "verify-full"),
+          passfile,
+        ),
       },
       {
         name: "cleartext-tls-verify-full-ip",
@@ -327,6 +361,14 @@ EOF
         ),
       },
       {
+        name: "require-verifies-explicit-root",
+        failure: true,
+        url: connectionUrlWithRoot(
+          connectionUrl(port, "clear_user", "clear-secret", "require"),
+          "wrong-ca.crt",
+        ),
+      },
+      {
         name: "wrong-ca-verify-full",
         failure: true,
         url: connectionUrl(
@@ -345,6 +387,22 @@ EOF
   installServerCertificate("server-wrong-host");
   runClients("wrong-host-server", {
     cases: [
+      {
+        name: "verify-full-routes-through-hostaddr",
+        user: "clear_user",
+        tls: true,
+        url: routedConnectionUrl(
+          connectionUrl(
+            port,
+            "clear_user",
+            "clear-secret",
+            "verify-full",
+            false,
+            "wrong.example",
+          ),
+          "127.0.0.1",
+        ),
+      },
       {
         name: "verify-ca-ignores-hostname",
         user: "clear_user",

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createServer, type Server } from "node:net";
-import { ConnectionLostError, PgClient, PgError } from "../src/pg/wire";
+import { ConnectionLostError, parseDatabaseUrl, PgClient, PgError } from "../src/pg/wire";
 
 let server: Server | null = null;
 afterEach(async () => {
@@ -113,6 +113,22 @@ describe("ConnectionLostError", () => {
     });
     await expect(client.connect()).rejects.toBeInstanceOf(ConnectionLostError);
     await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(attempts).toBe(1);
+  });
+
+  test("hostaddr selects the TCP endpoint independently from the logical host", async () => {
+    let attempts = 0;
+    const port = await startSrv((socket) => {
+      attempts++;
+      socket.once("data", () => socket.destroy());
+    });
+    const config = parseDatabaseUrl(
+      `postgresql://x:x@does-not-resolve.invalid:${port}/x?hostaddr=127.0.0.1&sslmode=disable`,
+      { env: {} },
+    );
+    const client = new PgClient(config);
+
+    await expect(client.connect()).rejects.toBeInstanceOf(ConnectionLostError);
     expect(attempts).toBe(1);
   });
 

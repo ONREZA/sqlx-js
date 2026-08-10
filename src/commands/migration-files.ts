@@ -10,7 +10,7 @@ import {
   type SquashMetadata,
   type SquashReplacement,
 } from "../migration-core";
-import { parseDatabaseUrl } from "../pg/wire";
+import { parseDatabaseUrl, postgresConnectionEnvironment } from "../pg/wire";
 
 const FILE_RE = /^(\d+)_(.+)\.up\.sql$/;
 const DOWN_FILE_RE = /^(\d+)_(.+)\.down\.sql$/;
@@ -225,23 +225,7 @@ export function createSquashMigration(opts: {
 
 function pgDumpEnv(databaseUrl: string): NodeJS.ProcessEnv {
   const cfg = parseDatabaseUrl(databaseUrl);
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  env.PGHOST = cfg.host;
-  env.PGPORT = String(cfg.port);
-  env.PGUSER = cfg.user;
-  env.PGDATABASE = cfg.database;
-  if (cfg.password) env.PGPASSWORD = cfg.password;
-  else delete env.PGPASSWORD;
-  if (cfg.sslmode) env.PGSSLMODE = cfg.sslmode;
-  else delete env.PGSSLMODE;
-  if (cfg.applicationName) env.PGAPPNAME = cfg.applicationName;
-  else delete env.PGAPPNAME;
-  if (cfg.connectTimeoutMs) env.PGCONNECT_TIMEOUT = String(cfg.connectTimeoutMs / 1000);
-  else delete env.PGCONNECT_TIMEOUT;
-  delete env.PGSERVICE;
-  delete env.PGSERVICEFILE;
-  delete env.PGPASSFILE;
-  return env;
+  return postgresConnectionEnvironment(cfg);
 }
 
 export function dumpSchema(databaseUrl: string, pgDumpPath = "pg_dump"): string {

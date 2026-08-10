@@ -25,12 +25,13 @@ Status values are intentionally explicit:
 | Deno runtime | Yes | Yes | Deno 2.9 or newer; covered by a built-package database smoke test. |
 | Cloudflare Workers | Yes | No | Requires a separate socket/TLS adapter; the current driver uses Node-compatible sockets. |
 | PostgreSQL version floor | Partial | Yes | sqlx-js deliberately requires PostgreSQL 16 or newer. |
-| URL and environment connection settings | Yes | Partial | URL configuration is supported; sqlx-js does not reproduce every libpq/Postgres.js option. |
+| URL and environment connection settings | Yes | Partial | One shared resolver covers the documented URL and `PG*` settings, `hostaddr`, and password files across CLI/runtime consumers; full libpq option parity is not a goal. |
 | TCP connections | Yes | Yes | Shared by prepare, migrations, and runtime. |
 | Unix-domain sockets | Yes | No | Add only with a concrete deployment need. |
 | TLS modes and client certificates | Yes | Yes | `disable`, `prefer`, `require`, `verify-ca`, and `verify-full`; required modes fail closed before PostgreSQL startup on negotiation or certificate failure. |
 | Cleartext, MD5, and SCRAM-SHA-256 authentication | Yes | Yes | Covered by the shared wire client. |
 | Dynamic password providers | Yes | Yes | A string or async `password` provider is resolved for every new connection. |
+| Password files | Yes | Yes | `passfile`, `PGPASSFILE`, and platform defaults use first-match PostgreSQL semantics and reject unsafe Unix permissions. |
 | Multiple hosts and `target_session_attrs` | Yes | No | Candidate only for deployments that cannot delegate failover to their endpoint or proxy. |
 | Custom socket factory | Yes | No | A future runtime adapter boundary, not a generic public hook. |
 | Startup application name and options | Yes | Yes | URL and typed client options are supported. |

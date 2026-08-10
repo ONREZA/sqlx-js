@@ -31,6 +31,7 @@ import {
 import {
   ConnectionLostError,
   decodeTextRange,
+  effectiveConnectTimeoutMs,
   parseDatabaseUrl,
   PgClient,
   type PgNotice,
@@ -200,7 +201,10 @@ class PostgresPool implements PostgresClient {
     const maxLifetimeMs = optionalMilliseconds(options.maxLifetimeMs, "maxLifetimeMs", true);
     const statementTimeoutMs = optionalMilliseconds(options.statementTimeoutMs, "statementTimeoutMs", true);
     const config = parseDatabaseUrl(url);
-    if (typeof options.password === "string") config.password = options.password;
+    if (typeof options.password === "string") {
+      config.password = options.password;
+      config.passwordSource = "option";
+    }
     this.passwordProvider = typeof options.password === "function" ? options.password : undefined;
     if (connectTimeoutMs !== undefined) config.connectTimeoutMs = connectTimeoutMs;
     if (keepAliveMs !== undefined) config.keepAliveMs = keepAliveMs;
@@ -689,11 +693,12 @@ class ConnectionSlot {
 
   private async readyClient(allowReconnect: boolean, operationSignal: AbortSignal): Promise<PgClient> {
     if (this.client && !this.client.isClosed) return this.client;
-    const timeoutMs = this.config.connectTimeoutMs ?? 15_000;
+    const timeoutMs = effectiveConnectTimeoutMs(this.config);
+    const connectHost = this.config.hostaddr ?? this.config.host;
     const deadline = new AbortController();
     const timer = setTimeout(() => {
       deadline.abort(new Error(
-        `sqlx-js: connect timeout to ${this.config.host}:${this.config.port} after ${timeoutMs}ms `
+        `sqlx-js: connect timeout to ${connectHost}:${this.config.port} after ${timeoutMs}ms `
         + "(includes password + TCP + TLS + authentication)",
       ));
     }, timeoutMs);
@@ -714,6 +719,7 @@ class ConnectionSlot {
           throw new Error("sqlx-js: password provider must resolve to a string");
         }
         config.password = password;
+        config.passwordSource = "option";
       }
       if (signal.aborted) throw abortReason(signal);
       const client = new PgClient(config);
