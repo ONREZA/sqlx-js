@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   accessSync,
@@ -14,7 +14,12 @@ import {
 } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import type { SqlxJsConfig } from "../config";
-import { parseDatabaseUrl, type ConnConfig } from "../pg/wire";
+import {
+  parseDatabaseUrl,
+  postgresConnectionEnvironment,
+  resolveConnectionPassword,
+  type ConnConfig,
+} from "../pg/wire";
 import { withWorkflowShadowDatabase } from "./shadow";
 import { runSchemaWorkflow } from "./schema-workflow";
 
@@ -248,15 +253,60 @@ function run(command: string, args: string[], env: NodeJS.ProcessEnv): void {
   if (child.status !== null && child.status !== 0) throw new PgschemaCommandError(child.status, command);
 }
 
+const OWNED_PGSCHEMA_OPTIONS = new Set([
+  "--host",
+  "--port",
+  "--db",
+  "--user",
+  "--password",
+  "--sslmode",
+  "--application-name",
+  "--schema",
+  "--file",
+  "--plan-host",
+  "--plan-port",
+  "--plan-db",
+  "--plan-user",
+  "--plan-password",
+  "--plan-sslmode",
+]);
+
+function assertPgschemaPassthrough(args: readonly string[]): void {
+  for (const argument of args) {
+    const equals = argument.indexOf("=");
+    const name = equals === -1 ? argument : argument.slice(0, equals);
+    if (OWNED_PGSCHEMA_OPTIONS.has(name)) {
+      throw new Error(
+        `sqlx-js pgschema: ${name} is owned by the sqlx-js connection and schema configuration`,
+      );
+    }
+  }
+}
+
+const PGSCHEMA_PLAN_CONNECTION_ENVIRONMENT = [
+  "PGSCHEMA_PLAN_HOST",
+  "PGSCHEMA_PLAN_PORT",
+  "PGSCHEMA_PLAN_DB",
+  "PGSCHEMA_PLAN_USER",
+  "PGSCHEMA_PLAN_PASSWORD",
+  "PGSCHEMA_PLAN_SSLMODE",
+] as const;
+
 function pgschemaEnv(db: ConnConfig): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
-    ...(db.password ? { PGPASSWORD: db.password } : {}),
-    ...(db.sslmode ? { PGSSLMODE: db.sslmode } : {}),
-    ...(db.sslRootCert ? { PGSSLROOTCERT: db.sslRootCert } : {}),
-    ...(db.sslCert ? { PGSSLCERT: db.sslCert } : {}),
-    ...(db.sslKey ? { PGSSLKEY: db.sslKey } : {}),
-  };
+  const env = postgresConnectionEnvironment(db);
+  for (const name of PGSCHEMA_PLAN_CONNECTION_ENVIRONMENT) {
+    if (env[name]) {
+      throw new Error(`sqlx-js pgschema: ${name} is not supported by the unified connection adapter`);
+    }
+    delete env[name];
+  }
+  const password = resolveConnectionPassword(db);
+  // Empty PGPASSWORD lets pgx retry .pgpass with its own endpoint identity.
+  env.PGPASSWORD = password === ""
+    ? `sqlx-js-no-password-${randomBytes(16).toString("hex")}`
+    : password;
+  delete env.PGPASSFILE;
+  return env;
 }
 
 function sha256(data: Buffer | Uint8Array): string {
@@ -310,14 +360,21 @@ export function runPgschemaCommand(opts: PgschemaCommandOptions): void {
   const command = commandName(opts.root, config);
 
   if (!opts.databaseUrl) throw new Error("DATABASE_URL is required for sqlx-js pgschema commands");
+  assertPgschemaPassthrough(opts.passthrough ?? []);
   const file = appliesPlan(opts.subcommand, opts.passthrough) ? undefined : schemaFile(opts.root, config);
   if (file && !existsSync(file)) throw new Error(`sqlx-js pgschema: schema file not found: ${file}`);
 
   const db = parseDatabaseUrl(opts.databaseUrl);
+  const sslmode = db.sslmode ?? "prefer";
+  if (db.hostaddr !== undefined && db.hostaddr !== db.host && sslmode !== "disable") {
+    throw new Error(
+      `sqlx-js pgschema: pgschema cannot preserve the TLS server name when hostaddr differs from host with sslmode=${sslmode}; use sslmode=disable only on a trusted path, the built-in migration workflow, or a hostname-preserving network path`,
+    );
+  }
   const schemas = pgschemaSchemas(config);
   const args = [
     opts.subcommand,
-    "--host", db.host,
+    "--host", db.hostaddr ?? db.host,
     "--port", String(db.port),
     "--db", db.database,
     "--user", db.user,

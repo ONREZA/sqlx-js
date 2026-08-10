@@ -56,6 +56,7 @@ import {
   siteUsage,
   type PrepareOptions,
 } from "./prepare";
+import { formatDatabaseTarget } from "../pg/target-summary";
 import { verifyPrepareArtifacts } from "./prepare-verification";
 
 export async function runPrepare(opts: PrepareOptions): Promise<void> {
@@ -75,6 +76,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         changed: verification.changed,
       }, null, 2));
     } else if (!opts.verbose) {
+      console.log(formatDatabaseTarget(verification.result.target));
       reportPrepareDiagnostics(verification.result.diagnostics, opts.warnings);
       if (verification.changed.length > 0) {
         console.error("sqlx-js prepare --verify: generated artifacts are stale:");
@@ -438,6 +440,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
 
   const session = await openSession(opts);
   try {
+    if (opts.verbose && !opts.json) console.log(formatDatabaseTarget(session.target));
     let focused: import("./prepare-focus").FocusedPrepareSelection | undefined;
     if (opts.focus) {
       try {
@@ -447,7 +450,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
           { allowIncomplete: true },
         );
       } catch (error) {
-        throw fatal("cache", error);
+        throw fatal("cache", error, session.target);
       }
       const {
         assertFocusedPrepareCatalogs,
@@ -456,7 +459,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
       try {
         assertFocusedPrepareCatalogs(session.userCfg, opts.cacheDir);
       } catch (error) {
-        throw fatal("cache", error);
+        throw fatal("cache", error, session.target);
       }
       try {
         focused = selectFocusedPrepareInput(
@@ -466,7 +469,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
           opts.focus,
         );
       } catch (error) {
-        throw fatal("scan", error);
+        throw fatal("scan", error, session.target);
       }
     }
     const compact = opts.json || !opts.verbose;
@@ -500,6 +503,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         ...r,
       }, null, 2));
     } else if (!opts.verbose) {
+      console.log(formatDatabaseTarget(r.target));
       reportPrepareDiagnostics(r.diagnostics, opts.warnings);
     }
     if (r.failures > 0) {
@@ -535,6 +539,8 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         : `\nprepared ${r.entries} unique query/queries, ${r.functions} function(s), ${r.enums} enum(s) `
           + `→ ${outputs}`);
     }
+  } catch (error) {
+    throw fatal("scan", error, session.target);
   } finally {
     await closePrepareSession(session);
   }

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { Socket, connect as netConnect, isIP } from "node:net";
 import {
   TLSSocket,
@@ -12,6 +12,13 @@ import {
   type ServerMessage,
 } from "./wire-messages";
 import { computeScramProof, parseScramFields, requireScramField } from "./scram";
+import {
+  effectiveConnectTimeoutMs,
+  resolveConnectionPasswordAsync,
+  type ConnConfig,
+  type PgNotice,
+  type SslMode,
+} from "./connection-resolver";
 
 export {
   MessageReader,
@@ -19,6 +26,22 @@ export {
   type ServerMessage,
 } from "./wire-messages";
 export { computeScramProof } from "./scram";
+export {
+  parseDatabaseUrl,
+  effectiveConnectTimeoutMs,
+  postgresConnectionEnvironment,
+  replaceDatabaseInUrl,
+  resolveConnectionPassword,
+  resolveConnectionPasswordAsync,
+  DEFAULT_CONNECT_TIMEOUT_MS,
+  SSL_MODES,
+  type ConnectionCredentialSource,
+  type ConnectionEnvironment,
+  type ConnConfig,
+  type PgNotice,
+  type ResolveDatabaseUrlOptions,
+  type SslMode,
+} from "./connection-resolver";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -38,82 +61,6 @@ export function assertSupportedPostgresVersion(version: string | undefined): num
   throw new Error(
     `sqlx-js requires PostgreSQL ${MIN_POSTGRES_MAJOR_VERSION} or newer; server reports ${version ?? "unknown"}`,
   );
-}
-
-export const SSL_MODES = ["disable", "prefer", "require", "verify-ca", "verify-full"] as const;
-export type SslMode = (typeof SSL_MODES)[number];
-
-export type ConnConfig = {
-  host: string;
-  port: number;
-  user: string;
-  password: string;
-  database: string;
-  sslmode?: SslMode;
-  applicationName?: string;
-  startupOptions?: string;
-  connectTimeoutMs?: number;
-  keepAliveMs?: number;
-  statementTimeoutMs?: number;
-  sslRootCert?: string;
-  sslCert?: string;
-  sslKey?: string;
-  startupParameters?: Readonly<Record<string, string>>;
-  onNotice?: (notice: PgNotice) => void | Promise<void>;
-};
-
-export type PgNotice = {
-  message: string;
-  severity?: string;
-  code?: string;
-  detail?: string;
-  hint?: string;
-};
-
-export function parseDatabaseUrl(url: string): ConnConfig {
-  const u = new URL(url);
-  if (u.protocol !== "postgres:" && u.protocol !== "postgresql:") {
-    throw new Error(`unsupported scheme: ${u.protocol}`);
-  }
-  const params = u.searchParams;
-  const hostname = decodeURIComponent(u.hostname);
-  const sslmodeRaw = params.get("sslmode") ?? undefined;
-  if (sslmodeRaw !== undefined && !(SSL_MODES as readonly string[]).includes(sslmodeRaw)) {
-    throw new Error(`unsupported sslmode: ${sslmodeRaw}`);
-  }
-  const cfg: ConnConfig = {
-    host: hostname.startsWith("[") && hostname.endsWith("]")
-      ? hostname.slice(1, -1)
-      : hostname || "localhost",
-    port: u.port ? Number(u.port) : 5432,
-    user: decodeURIComponent(u.username || "postgres"),
-    password: decodeURIComponent(u.password || ""),
-    database: decodeURIComponent(u.pathname.replace(/^\//, "")) || decodeURIComponent(u.username || "postgres"),
-  };
-  if (sslmodeRaw !== undefined) cfg.sslmode = sslmodeRaw as SslMode;
-  const appName = params.get("application_name");
-  if (appName) cfg.applicationName = appName;
-  const startupOptions = params.get("options");
-  if (startupOptions) cfg.startupOptions = startupOptions;
-  const role = params.get("role");
-  if (role) cfg.startupParameters = { role };
-  const ct = params.get("connect_timeout");
-  if (ct) {
-    const n = Number(ct);
-    if (Number.isFinite(n) && n > 0) cfg.connectTimeoutMs = n * 1000;
-  }
-  const st = params.get("statement_timeout");
-  if (st) {
-    const n = Number(st);
-    if (Number.isFinite(n) && n >= 0) cfg.statementTimeoutMs = n;
-  }
-  const sslRootCert = params.get("sslrootcert");
-  if (sslRootCert) cfg.sslRootCert = sslRootCert;
-  const sslCert = params.get("sslcert");
-  if (sslCert) cfg.sslCert = sslCert;
-  const sslKey = params.get("sslkey");
-  if (sslKey) cfg.sslKey = sslKey;
-  return cfg;
 }
 
 export type PgRawRow = (Uint8Array | null)[];
@@ -240,10 +187,15 @@ function isTlsRequired(mode: SslMode): boolean {
 
 type AnySocket = Socket | TLSSocket;
 
-function readCertFile(kind: string, path: string): Buffer {
+async function readCertFile(kind: string, path: string, signal: AbortSignal): Promise<Buffer> {
   try {
-    return readFileSync(path);
+    return await readFile(path, { signal });
   } catch (e) {
+    if (signal.aborted) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new Error("sqlx-js: PostgreSQL connection aborted");
+    }
     throw new Error(`sqlx-js: cannot read ${kind} at ${path}: ${(e as Error).message}`);
   }
 }
@@ -305,6 +257,7 @@ async function performSslHandshake(
   signal: AbortSignal,
   claim: (socket: AnySocket) => void,
 ): Promise<{ sock: AnySocket; tls: boolean }> {
+  const tlsServerName = cfg.host;
   const reply: number = await new Promise<number>((resolve, reject) => {
     let settled = false;
     const finish = (result: { reply: number } | { error: Error }) => {
@@ -354,19 +307,33 @@ async function performSslHandshake(
     sock.write(frame(null, writeInt32(80877103)));
   });
   if (reply === "S".charCodeAt(0)) {
+    if (cfg.sslRootCert === "system" && mode !== "verify-full") {
+      sock.destroy();
+      throw new Error("sqlx-js: sslrootcert=system requires sslmode=verify-full");
+    }
+    const verifyCertificate = mode === "verify-full"
+      || mode === "verify-ca"
+      || (mode === "require" && cfg.sslRootCert !== undefined);
+    const [ca, cert, key] = await Promise.all([
+      cfg.sslRootCert && cfg.sslRootCert !== "system"
+        ? readCertFile("sslrootcert", cfg.sslRootCert, signal)
+        : undefined,
+      cfg.sslCert ? readCertFile("sslcert", cfg.sslCert, signal) : undefined,
+      cfg.sslKey ? readCertFile("sslkey", cfg.sslKey, signal) : undefined,
+    ]);
     const tlsSock = await new Promise<TLSSocket>((resolve, reject) => {
       const t = tlsConnect({
         socket: sock,
-        ...(isIP(cfg.host) === 0 ? { servername: cfg.host } : {}),
-        rejectUnauthorized: mode === "verify-full" || mode === "verify-ca",
+        ...(isIP(tlsServerName) === 0 ? { servername: tlsServerName } : {}),
+        rejectUnauthorized: verifyCertificate,
         ...(mode === "verify-full"
-          ? { checkServerIdentity: (_hostname, cert) => checkServerIdentity(cfg.host, cert) }
-          : mode === "verify-ca"
+          ? { checkServerIdentity: (_hostname, cert) => checkServerIdentity(tlsServerName, cert) }
+          : verifyCertificate
             ? { checkServerIdentity: () => undefined }
             : {}),
-        ...(cfg.sslRootCert ? { ca: readCertFile("sslrootcert", cfg.sslRootCert) } : {}),
-        ...(cfg.sslCert ? { cert: readCertFile("sslcert", cfg.sslCert) } : {}),
-        ...(cfg.sslKey ? { key: readCertFile("sslkey", cfg.sslKey) } : {}),
+        ...(ca ? { ca } : {}),
+        ...(cert ? { cert } : {}),
+        ...(key ? { key } : {}),
       });
       claim(t);
       let settled = false;
@@ -402,6 +369,7 @@ async function performSslHandshake(
       };
       const onAbort = () => {
         t.destroy();
+        sock.destroy();
         finish({
           error: signal.reason instanceof Error
             ? signal.reason
@@ -479,12 +447,13 @@ export class PgClient {
   }
 
   async connect(): Promise<void> {
-    const timeoutMs = this.cfg.connectTimeoutMs ?? 15000;
+    const timeoutMs = effectiveConnectTimeoutMs(this.cfg);
+    const connectHost = this.cfg.hostaddr ?? this.cfg.host;
     const connectAbort = new AbortController();
     this.connectAbort = connectAbort;
     const timer = setTimeout(() => {
       this.destroy(new Error(
-        `sqlx-js: connect timeout to ${this.cfg.host}:${this.cfg.port} after ${timeoutMs}ms `
+        `sqlx-js: connect timeout to ${connectHost}:${this.cfg.port} after ${timeoutMs}ms `
         + "(includes TCP + TLS + authentication)",
       ));
     }, timeoutMs);
@@ -508,12 +477,14 @@ export class PgClient {
     signal: AbortSignal,
   ): Promise<void> {
     const mode: SslMode = this.cfg.sslmode ?? "prefer";
+    const connectHost = this.cfg.hostaddr ?? this.cfg.host;
+    const password = await resolveConnectionPasswordAsync(this.cfg, { signal });
     const claim = (socket: AnySocket) => {
       this.sock = socket;
       if (signal.aborted || this.closed) socket.destroy();
     };
     const plain = await openPlainSocket(
-      this.cfg.host,
+      connectHost,
       this.cfg.port,
       timeoutMs,
       { signal, claim, keepAliveMs: this.cfg.keepAliveMs },
@@ -530,7 +501,7 @@ export class PgClient {
     this.attachHandlers();
 
     await this.startup();
-    await this.authenticate();
+    await this.authenticate(password);
     await this.awaitReady();
     try {
       assertSupportedPostgresVersion(this.serverVersionText);
@@ -704,12 +675,12 @@ export class PgClient {
     this.write(frame(null, body));
   }
 
-  private async authenticate(): Promise<void> {
+  private async authenticate(password: string): Promise<void> {
     while (true) {
       const m = await this.nextAuthenticationMessage("authentication");
       if (m.code === 0) return;
       if (m.code === 3) {
-        const body = cstr(this.cfg.password);
+        const body = cstr(password);
         this.write(frame("p", body));
         continue;
       }
@@ -717,14 +688,14 @@ export class PgClient {
         const salt = m.payload.subarray(0, 4);
         const md5 = (data: Uint8Array | string) =>
           createHash("md5").update(typeof data === "string" ? Buffer.from(data) : data).digest("hex");
-        const inner = md5(this.cfg.password + this.cfg.user);
+        const inner = md5(password + this.cfg.user);
         const combined = Buffer.concat([Buffer.from(inner, "utf8"), Buffer.from(salt)]);
         const outer = "md5" + md5(combined);
         this.write(frame("p", cstr(outer)));
         continue;
       }
       if (m.code === 10) {
-        await this.scramAuth(m.payload);
+        await this.scramAuth(m.payload, password);
         continue;
       }
       throw new Error(`unsupported auth code ${m.code}`);
@@ -742,7 +713,7 @@ export class PgClient {
     return message;
   }
 
-  private async scramAuth(initialPayload: Uint8Array): Promise<void> {
+  private async scramAuth(initialPayload: Uint8Array, password: string): Promise<void> {
     const mechs: string[] = [];
     let off = 0;
     while (off < initialPayload.length) {
@@ -775,7 +746,7 @@ export class PgClient {
 
     const clientFinalNoProof = `c=biws,r=${combinedNonce}`;
     const authMessage = `${clientFirstBare},${serverFirst},${clientFinalNoProof}`;
-    const { clientProofB64, serverSignatureB64 } = computeScramProof(this.cfg.password, salt, iterations, authMessage);
+    const { clientProofB64, serverSignatureB64 } = computeScramProof(password, salt, iterations, authMessage);
     const clientFinal = `${clientFinalNoProof},p=${clientProofB64}`;
 
     this.write(frame("p", textEncoder.encode(clientFinal)));
@@ -803,8 +774,9 @@ export class PgClient {
 
   async cancel(): Promise<void> {
     if (this.backendPid === undefined || this.backendSecret === undefined || this.closed) return;
-    const timeoutMs = this.cfg.connectTimeoutMs ?? 15000;
-    const socket = await openPlainSocket(this.cfg.host, this.cfg.port, timeoutMs);
+    const timeoutMs = effectiveConnectTimeoutMs(this.cfg);
+    const connectHost = this.cfg.hostaddr ?? this.cfg.host;
+    const socket = await openPlainSocket(connectHost, this.cfg.port, timeoutMs);
     const request = frame(null, concat([
       writeInt32(80877102),
       writeInt32(this.backendPid),
@@ -813,7 +785,7 @@ export class PgClient {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         socket.destroy();
-        reject(new Error(`sqlx-js: cancel timeout to ${this.cfg.host}:${this.cfg.port} after ${timeoutMs}ms`));
+        reject(new Error(`sqlx-js: cancel timeout to ${connectHost}:${this.cfg.port} after ${timeoutMs}ms`));
       }, timeoutMs);
       socket.once("error", (error) => {
         clearTimeout(timer);

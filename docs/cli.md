@@ -90,7 +90,7 @@ artifact.
 
 Flags that take a value accept both `--flag value` and `--flag=value` forms.
 
-Prepare and doctor JSON use `formatVersion: 1`. Prepare diagnostics include a stable phase plus root-relative file, 1-based line/column, query ID/name, connection profile, PostgreSQL code/position/hint when available, and the query text. Doctor's `rls` check contains per-profile role flags, accessible RLS tables, grants, applicable policies, owner-bypass state, missing permissive-policy commands, and structured issues. Degraded inference and generated `unknown` query types appear as warnings by default; `--strict-inference` promotes them to errors. This is intended for CI annotations and editor integrations; stdout contains one JSON document and human progress is suppressed. `prepare --watch --jsonl` emits one `start`, `diagnostic`, `prepared`, `error`, `watching`, or `stopping` event per line so an editor can consume diagnostics without waiting for the watch process to exit. Fatal `error` events include the same structured `diagnostic` object as CLI preflight failures, preserving the prepare phase and source location when available.
+Prepare and doctor JSON use `formatVersion: 1`. Prepare diagnostics include a stable phase plus root-relative file, 1-based line/column, query ID/name, connection profile, PostgreSQL code/position/hint when available, and the query text. Doctor's `rls` check contains per-profile role flags, accessible RLS tables, grants, applicable policies, owner-bypass state, missing permissive-policy commands, and structured issues. Degraded inference and generated `unknown` query types appear as warnings by default; `--strict-inference` promotes them to errors. This is intended for CI annotations and editor integrations; stdout contains one JSON document and human progress is suppressed. `prepare --watch --jsonl` emits one `start`, `diagnostic`, `prepared`, `error`, `watching`, or `stopping` event per line so an editor can consume diagnostics without waiting for the watch process to exit. Fatal `error` events include the same structured `diagnostic` object as CLI preflight failures, preserving the prepare phase and source location when available. Once live target inspection succeeds, later fatal JSON and JSONL errors also retain the sanitized target object.
 
 Prepare uses compact human output by default. It omits per-query success/reuse
 lines and warning details, while errors remain expanded. Completed runs end
@@ -221,7 +221,19 @@ built-in migration workflow, but that operational default is not presented as
 declared DDL ownership. Structured details expose the configured provider,
 declared ownership, and effective `dev`/`verify` provider separately.
 
-`DATABASE_URL` must be set for any command that touches the application database or auto-creates a shadow database. `SHADOW_ADMIN_DATABASE_URL` can point at a maintenance/admin database when the application user cannot `CREATE DATABASE`; `SHADOW_DATABASE_URL` can point at a pre-created disposable shadow database. The internal wire client understands `sslmode`, `sslrootcert`, `sslcert`, `sslkey`, `application_name`, `options` (PostgreSQL startup options such as `-c search_path=app,public`), `connect_timeout` (seconds), and `statement_timeout` (milliseconds). Unqualified relations are resolved using the prepare session's real `search_path`; they are not assumed to live in `public`.
+`DATABASE_URL` must be set for any command that touches the application database or auto-creates a shadow database. `SHADOW_ADMIN_DATABASE_URL` can point at a maintenance/admin database when the application user cannot `CREATE DATABASE`; `SHADOW_DATABASE_URL` can point at a pre-created disposable shadow database. The shared resolver understands `hostaddr`, `passfile`, `sslmode`, `sslrootcert`, `sslcert`, `sslkey`, `application_name`, `options` (PostgreSQL startup options such as `-c search_path=app,public`), `connect_timeout` (seconds), and `statement_timeout` (milliseconds), plus the documented `PG*` environment fallbacks. `hostaddr` selects the numeric TCP endpoint without replacing the URL host used for `verify-full` or password-file matching. Unqualified relations are resolved using the prepare session's real `search_path`; they are not assumed to live in `public`.
+
+URI query keywords override matching authority values. The default connection
+deadline is 15 seconds for both the wire client and libpq subprocesses.
+`sslrootcert=system` requires `verify-full` and uses the active runtime's trust
+store instead of a file named `system`.
+
+Live `prepare` and `prepare --verify` output starts with a sanitized target
+summary: database, effective user, PostgreSQL version, current schema,
+`search_path`, and application function/enum counts. Human and structured JSON
+output deliberately omit the host, URL, and credentials. The full resolver and
+consumer matrix is tracked in
+[Unified connection resolution](./connection-resolution.md).
 
 ## Development and deployment flows
 
@@ -260,6 +272,8 @@ them.
 configured; otherwise they prefer the managed binary under
 `node_modules/.cache/sqlx-js/pgschema/` and fall back to `pgschema` on `PATH`.
 Arguments after `--` are forwarded only by `plan` and `apply`.
+Connection, credential, target-schema, desired-file, and external plan-database
+flags remain owned by sqlx-js and are rejected in passthrough arguments.
 `pgschema apply -- --plan plan.json` applies a reviewed plan without requiring
 the local `schema.sql`. The pinned pgschema 1.12.2 CLI accepts one `--schema`
 value, so multi-schema configurations fail explicitly. This version preserves

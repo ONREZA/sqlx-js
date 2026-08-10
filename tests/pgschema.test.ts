@@ -10,6 +10,7 @@ import {
   PGSCHEMA_VERSION,
   probeSchemaMaterializer,
   resolvePgschemaAsset,
+  runPgschemaCommand,
   runPgschemaInstall,
   runSchemaMaterializer,
   SchemaMaterializerCommandError,
@@ -123,7 +124,9 @@ printf 'args=%s\n' "$*" >> "$CAPTURE"
 `);
     chmodSync(command, 0o755);
     const previousCapture = process.env.CAPTURE;
+    const previousPassword = process.env.PGPASSWORD;
     process.env.CAPTURE = capture;
+    delete process.env.PGPASSWORD;
     try {
       runSchemaMaterializer({
         root,
@@ -142,6 +145,8 @@ printf 'args=%s\n' "$*" >> "$CAPTURE"
     } finally {
       if (previousCapture === undefined) delete process.env.CAPTURE;
       else process.env.CAPTURE = previousCapture;
+      if (previousPassword === undefined) delete process.env.PGPASSWORD;
+      else process.env.PGPASSWORD = previousPassword;
     }
     expect(readFileSync(capture, "utf8")).toBe(
       `cwd=${root}\n`
@@ -178,6 +183,136 @@ test("schema materializer preserves its command exit status", () => {
     expect(failure).toBeInstanceOf(SchemaMaterializerCommandError);
     expect(failure).toMatchObject({ exitCode: 7 });
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("pgschema uses the resolved endpoint and password-file identity", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-resolver-"));
+  const command = join(root, "pgschema.sh");
+  const capture = join(root, "capture.txt");
+  const passfile = join(root, "pgpass");
+  try {
+    writeFileSync(join(root, "schema.sql"), "SELECT 1;\n");
+    writeFileSync(passfile, "db.internal:5544:app:app:from-pgpass\n", { mode: 0o600 });
+    writeFileSync(command, `#!/bin/sh
+printf 'args=%s\n' "$*" > "$CAPTURE"
+printf 'password=%s\n' "$PGPASSWORD" >> "$CAPTURE"
+printf 'passfile=%s\n' "$PGPASSFILE" >> "$CAPTURE"
+printf 'options=%s\n' "$PGOPTIONS" >> "$CAPTURE"
+`);
+    chmodSync(command, 0o755);
+    const previousCapture = process.env.CAPTURE;
+    process.env.CAPTURE = capture;
+    try {
+      runPgschemaCommand({
+        root,
+        databaseUrl: `postgresql://app@db.internal:5544/app?hostaddr=127.0.0.1&passfile=${encodeURIComponent(passfile)}&sslmode=disable&role=app_reader`,
+        config: { schema: { provider: "pgschema", command } },
+        subcommand: "plan",
+      });
+    } finally {
+      if (previousCapture === undefined) delete process.env.CAPTURE;
+      else process.env.CAPTURE = previousCapture;
+    }
+    expect(readFileSync(capture, "utf8")).toContain(
+      "args=plan --host 127.0.0.1 --port 5544 --db app --user app",
+    );
+    expect(readFileSync(capture, "utf8")).toContain("password=from-pgpass");
+    expect(readFileSync(capture, "utf8")).toContain("passfile=\n");
+    expect(readFileSync(capture, "utf8")).toContain("options=-c role=app_reader");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("pgschema fails before execution when TLS cannot preserve the logical host", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-hostaddr-"));
+  const command = join(root, "pgschema.sh");
+  const marker = join(root, "executed");
+  try {
+    writeFileSync(join(root, "schema.sql"), "SELECT 1;\n");
+    writeFileSync(command, `#!/bin/sh\nprintf executed > ${JSON.stringify(marker)}\n`);
+    chmodSync(command, 0o755);
+
+    for (const sslmode of ["require", "verify-ca", "verify-full"]) {
+      expect(() => runPgschemaCommand({
+        root,
+        databaseUrl: `postgresql://app@db.internal/app?hostaddr=127.0.0.1&sslmode=${sslmode}`,
+        config: { schema: { provider: "pgschema", command } },
+        subcommand: "plan",
+      })).toThrow("cannot preserve the TLS server name");
+    }
+    expect(existsSync(marker)).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("pgschema seals an unresolved empty password against another password-file lookup", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-empty-password-"));
+  const command = join(root, "pgschema.sh");
+  const capture = join(root, "capture.txt");
+  const passfile = join(root, "pgpass");
+  try {
+    writeFileSync(join(root, "schema.sql"), "SELECT 1;\n");
+    writeFileSync(passfile, "other.internal:5432:other:other:wrong\n", { mode: 0o600 });
+    writeFileSync(command, `#!/bin/sh
+printf 'password=%s\n' "$PGPASSWORD" > "$CAPTURE"
+printf 'passfile=%s\n' "$PGPASSFILE" >> "$CAPTURE"
+`);
+    chmodSync(command, 0o755);
+    const previousCapture = process.env.CAPTURE;
+    process.env.CAPTURE = capture;
+    try {
+      runPgschemaCommand({
+        root,
+        databaseUrl: `postgresql://app@db.internal/app?passfile=${encodeURIComponent(passfile)}&sslmode=disable`,
+        config: { schema: { provider: "pgschema", command } },
+        subcommand: "plan",
+      });
+    } finally {
+      if (previousCapture === undefined) delete process.env.CAPTURE;
+      else process.env.CAPTURE = previousCapture;
+    }
+    expect(readFileSync(capture, "utf8")).toMatch(
+      /^password=sqlx-js-no-password-[0-9a-f]{32}\npassfile=\n$/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("pgschema passthrough cannot replace sqlx-js-owned targets or credentials", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-passthrough-"));
+  const command = join(root, "pgschema.sh");
+  const marker = join(root, "executed");
+  const previousPlanHost = process.env.PGSCHEMA_PLAN_HOST;
+  try {
+    writeFileSync(join(root, "schema.sql"), "SELECT 1;\n");
+    writeFileSync(command, `#!/bin/sh\nprintf executed > ${JSON.stringify(marker)}\n`);
+    chmodSync(command, 0o755);
+
+    for (const argument of ["--host=other.invalid", "--password", "--plan-host"]) {
+      expect(() => runPgschemaCommand({
+        root,
+        databaseUrl: "postgresql://app@db.internal/app?sslmode=disable",
+        config: { schema: { provider: "pgschema", command } },
+        subcommand: "plan",
+        passthrough: [argument],
+      })).toThrow("is owned by the sqlx-js connection and schema configuration");
+    }
+    process.env.PGSCHEMA_PLAN_HOST = "wrong-plan.invalid";
+    expect(() => runPgschemaCommand({
+      root,
+      databaseUrl: "postgresql://app@db.internal/app?sslmode=disable",
+      config: { schema: { provider: "pgschema", command } },
+      subcommand: "plan",
+    })).toThrow("PGSCHEMA_PLAN_HOST is not supported by the unified connection adapter");
+    expect(existsSync(marker)).toBe(false);
+  } finally {
+    if (previousPlanHost === undefined) delete process.env.PGSCHEMA_PLAN_HOST;
+    else process.env.PGSCHEMA_PLAN_HOST = previousPlanHost;
     rmSync(root, { recursive: true, force: true });
   }
 });

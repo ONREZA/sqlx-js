@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { parseDatabaseUrl } from "../src/pg/wire";
+import { parseDatabaseUrl as resolveDatabaseUrl } from "../src/pg/wire";
+
+const parseDatabaseUrl = (url: string) => resolveDatabaseUrl(url, { env: {} });
 
 describe("parseDatabaseUrl", () => {
   test("rejects unknown protocol", () => {
@@ -61,6 +63,8 @@ describe("parseDatabaseUrl", () => {
     expect(parseDatabaseUrl("postgres://u@h/db?connect_timeout=0").connectTimeoutMs).toBeUndefined();
     expect(parseDatabaseUrl("postgres://u@h/db?connect_timeout=abc").connectTimeoutMs).toBeUndefined();
     expect(parseDatabaseUrl("postgres://u@h/db?connect_timeout=-3").connectTimeoutMs).toBeUndefined();
+    expect(parseDatabaseUrl("postgres://u@h/db?connect_timeout=0.5").connectTimeoutMs).toBeUndefined();
+    expect(parseDatabaseUrl("postgres://u@h/db?connect_timeout=2147484").connectTimeoutMs).toBeUndefined();
   });
 
   test("postgresql:// alias works", () => {

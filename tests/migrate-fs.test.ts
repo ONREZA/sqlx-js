@@ -321,7 +321,7 @@ describe("pg_dump baseline output", () => {
     }
   });
 
-  test("runs pg_dump with the same resolved connection defaults as the wire client", () => {
+  test("runs pg_dump with the same environment fallbacks as the wire client", () => {
     const d = newDir();
     const script = join(d, "default-env-pg-dump");
     const captureEnv = join(d, "env.txt");
@@ -330,8 +330,9 @@ describe("pg_dump baseline output", () => {
       "set -euo pipefail\n" +
       "out=''\n" +
       "for arg in \"$@\"; do case \"$arg\" in --file=*) out=\"${arg#--file=}\" ;; esac; done\n" +
-      "printf 'host=%s\\nport=%s\\nuser=%s\\npassword=%s\\ndatabase=%s\\nsslmode=%s\\nservice=%s\\npassfile=%s\\n' " +
-      "\"${PGHOST-}\" \"${PGPORT-}\" \"${PGUSER-}\" \"${PGPASSWORD-}\" \"${PGDATABASE-}\" \"${PGSSLMODE-}\" \"${PGSERVICE-}\" \"${PGPASSFILE-}\" > \"$CAPTURE_ENV\"\n" +
+      "printf 'host=%s\\nhostaddr=%s\\nport=%s\\nuser=%s\\npassword=%s\\ndatabase=%s\\nsslmode=%s\\nservice=%s\\npassfile=%s\\n' " +
+      "\"${PGHOST-}\" \"${PGHOSTADDR-}\" \"${PGPORT-}\" \"${PGUSER-}\" \"${PGPASSWORD-}\" \"${PGDATABASE-}\" \"${PGSSLMODE-}\" \"${PGSERVICE-}\" \"${PGPASSFILE-}\" > \"$CAPTURE_ENV\"\n" +
+      "printf 'connect_timeout=%s\\n' \"${PGCONNECT_TIMEOUT-}\" >> \"$CAPTURE_ENV\"\n" +
       "printf 'CREATE TABLE dump_users (id int);\\n' > \"$out\"\n",
     );
     chmodSync(script, 0o755);
@@ -339,6 +340,7 @@ describe("pg_dump baseline output", () => {
     const saved = {
       CAPTURE_ENV: process.env.CAPTURE_ENV,
       PGHOST: process.env.PGHOST,
+      PGHOSTADDR: process.env.PGHOSTADDR,
       PGPORT: process.env.PGPORT,
       PGUSER: process.env.PGUSER,
       PGPASSWORD: process.env.PGPASSWORD,
@@ -349,25 +351,28 @@ describe("pg_dump baseline output", () => {
     };
     process.env.CAPTURE_ENV = captureEnv;
     process.env.PGHOST = "wrong-host";
+    process.env.PGHOSTADDR = "127.0.0.1";
     process.env.PGPORT = "6543";
     process.env.PGUSER = "wrong-user";
     process.env.PGPASSWORD = "wrong-password";
     process.env.PGDATABASE = "wrong-db";
     process.env.PGSSLMODE = "require";
-    process.env.PGSERVICE = "wrong-service";
+    delete process.env.PGSERVICE;
     process.env.PGPASSFILE = "/tmp/wrong-passfile";
     try {
       const sql = dumpSchema("postgres:///target_db", script);
       expect(sql).toBe("CREATE TABLE dump_users (id int);\n");
       expect(readFileSync(captureEnv, "utf8")).toBe(
-        "host=localhost\n" +
-        "port=5432\n" +
-        "user=postgres\n" +
-        "password=\n" +
+        "host=wrong-host\n" +
+        "hostaddr=127.0.0.1\n" +
+        "port=6543\n" +
+        "user=wrong-user\n" +
+        "password=wrong-password\n" +
         "database=target_db\n" +
-        "sslmode=\n" +
+        "sslmode=require\n" +
         "service=\n" +
-        "passfile=\n",
+        "passfile=/tmp/wrong-passfile\n" +
+        "connect_timeout=15\n",
       );
     } finally {
       for (const [key, value] of Object.entries(saved)) {

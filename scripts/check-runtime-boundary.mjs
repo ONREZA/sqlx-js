@@ -30,6 +30,7 @@ const allowedRuntimeFiles = new Set([
   "dist/src/temporal.js",
   "dist/src/temporal-api.js",
   "dist/src/migration-core.js",
+  "dist/src/pg/connection-resolver.js",
   "dist/src/pg/driver.js",
   "dist/src/pg/oids.js",
   "dist/src/pg/scram.js",

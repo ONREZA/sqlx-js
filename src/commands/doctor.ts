@@ -21,6 +21,7 @@ import { assertDistinctPrepareGeneratedOutputs } from "../prepare-artifacts";
 import { queryId } from "../query-id";
 import type { PackageIdentityCheck } from "../package-identity";
 import { runtimeDescriptorPath } from "../runtime-descriptor-artifact";
+import { assertProfileConnection } from "../postgres-client-options";
 import {
   prepareRuntimeDescriptors,
   type RuntimeQueryDescriptors,
@@ -606,7 +607,8 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
   } else {
     let client: PgClient | undefined;
     try {
-      client = new PgClient(parseDatabaseUrl(opts.databaseUrl));
+      const connection = parseDatabaseUrl(opts.databaseUrl);
+      client = new PgClient(connection);
       await client.connect();
       await client.describe("SELECT 1");
       const result = await client.simpleQueryAll(`
@@ -615,6 +617,8 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
           COALESCE(has_schema_privilege(current_user, current_schema(), 'USAGE'), false)::text
       `);
       const row = result.rows[0]!;
+      const databaseRole = decodeText(row[1]!);
+      if (!databaseRole) throw new Error("PostgreSQL returned an empty current_user");
       const canCreateDatabase = decodeBoolean(row[3]);
       const hasSchemaUsage = decodeBoolean(row[4]);
       const shadowDatabaseUrl = process.env.SHADOW_DATABASE_URL;
@@ -655,6 +659,7 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
         for (const profile of Object.values(config.profiles)) {
           let phase: "profile" | "rls" = "profile";
           try {
+            assertProfileConnection(profile, connection);
             await client.simpleQuery(`SET ROLE ${quoteIdentifier(profile.role)}`);
             const roleResult = await client.simpleQuery("SELECT current_user");
             const currentRole = decodeText(roleResult.rows[0]![0]!);
@@ -676,7 +681,7 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
               );
             }
           } finally {
-            await client.simpleQuery("RESET ROLE").catch(() => {});
+            await client.simpleQuery(`SET ROLE ${quoteIdentifier(databaseRole)}`).catch(() => {});
           }
         }
         checks.push(profileError

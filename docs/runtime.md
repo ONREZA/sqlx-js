@@ -148,6 +148,18 @@ TLS succeeds; they never downgrade after a negotiation or certificate failure.
 A failed or timed-out operation is not replayed during slot replacement or
 managed generation recycling.
 
+All pool generations use the same connection resolver as the CLI. Typed
+password options override URL and environment credentials; an async password
+provider is called for each new connection. When no password is supplied, the
+resolver checks `PGPASSFILE`, URL `passfile`, or the platform default password
+file. `hostaddr` controls the TCP endpoint and cancellation socket while the
+URL host remains the `verify-full` certificate and password-file identity.
+See [Unified connection resolution](./connection-resolution.md) for the exact
+precedence and supported `PG*` settings.
+Password-file and TLS credential reads are asynchronous and covered by the
+same connection deadline as TCP, TLS, and authentication. `sslrootcert=system`
+selects `verify-full` and delegates CA roots to the active runtime.
+
 `createClient(...)` is the explicit raw wire-client escape hatch. It preserves
 sqlx-js's built-in bigint and PostgreSQL array codecs, reconnects subsequent
 operations after a broken connection, and exposes the integrated pool directly.

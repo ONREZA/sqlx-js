@@ -57,10 +57,29 @@ DATABASE_URL=postgres://user:password@localhost:5432/your_db
 ```
 
 CLI commands load `<root>/.env`; variables already present in the process
-environment take precedence. Supported `sslmode` values are `disable`,
-`prefer`, `require`, `verify-ca`, and `verify-full`. Certificate paths,
-`application_name`, `options`, `connect_timeout`, and `statement_timeout` can
-also be supplied in the URL.
+environment take precedence over the file. Within the database connection,
+non-empty URL values take precedence over supported `PG*` environment
+fallbacks. Supported `sslmode` values are `disable`, `prefer`, `require`,
+`verify-ca`, and `verify-full`. Certificate paths, `application_name`,
+`options`, `connect_timeout`, and `statement_timeout` can also be supplied in
+the URL.
+
+For a TLS connection through an SSH tunnel, keep the certificate identity in
+the URL and route TCP separately. The password does not need to be embedded in
+either the URL or `PGPASSWORD`:
+
+```bash
+export DATABASE_URL='postgresql://app@db.internal/app?sslmode=verify-full'
+export PGHOSTADDR=127.0.0.1
+export PGPASSFILE=/run/secrets/app.pgpass
+sqlx-js prepare
+```
+
+The resolver uses `PGHOSTADDR` for TCP and cancellation, while `db.internal`
+remains the TLS and password-file matching identity. See
+[Unified connection resolution](./connection-resolution.md) for the exact
+precedence, supported environment settings, password-file permissions, and
+provider boundaries.
 
 Automatic shadow databases require `CREATEDB`. Use `--shadow-admin-url` for a
 separate admin connection or `--shadow-url` for a pre-created disposable

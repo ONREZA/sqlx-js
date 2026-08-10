@@ -13,6 +13,10 @@ import { configHash, loadConfig } from "../config";
 import { profileFingerprint } from "../cache";
 import { embeddedSqlOutputPath } from "../embedded-sql";
 import { enumCatalogOutputPath } from "../enum-catalog";
+import {
+  formatDatabaseTarget,
+  type DatabaseTargetSummary,
+} from "../pg/target-summary";
 import { findSourceFiles, scanFile, scanProject, type QueryCallSite } from "../scan/scanner";
 
 const EXT_RE = /\.(ts|tsx|mts|cts|sql)$/;
@@ -57,10 +61,17 @@ export function formatWatchEvent(
   return JSON.stringify({ formatVersion: 1, event: name, timestamp, ...data });
 }
 
-export function watchErrorData(error: unknown): Record<string, unknown> {
+export function watchErrorData(
+  error: unknown,
+  target?: DatabaseTargetSummary,
+): Record<string, unknown> {
   const message = error instanceof Error ? error.message : String(error);
-  if (!(error instanceof PrepareFatalError)) return { message };
+  const resolvedTarget = error instanceof PrepareFatalError ? error.target ?? target : target;
+  if (!(error instanceof PrepareFatalError)) {
+    return { ...(resolvedTarget === undefined ? {} : { target: resolvedTarget }), message };
+  }
   return {
+    ...(resolvedTarget === undefined ? {} : { target: resolvedTarget }),
     diagnostic: {
       severity: "error",
       phase: error.phase,
@@ -104,7 +115,10 @@ export async function prepareWatchedOnce(
     await closeSession(state.session);
     state.session = null;
   }
-  if (!state.session) state.session = await active.openSession(opts);
+  if (!state.session) {
+    state.session = await active.openSession(opts);
+    log(formatDatabaseTarget(state.session.target));
+  }
 
   const clientBindingChanged = changedFiles.some((file) => {
     const projectFile = projectPath(opts.root, file);
@@ -267,6 +281,7 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
     for (const diagnostic of result.diagnostics) event("diagnostic", { diagnostic });
     event("prepared", {
       ok: result.failures === 0,
+      target: result.target,
       sites: result.sites,
       entries: result.entries,
       failures: result.failures,
@@ -284,8 +299,13 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
     if (opts.jsonl) report(r);
     else log(`watch: ready — ${r.entries} queries, ${r.failures} failures`);
   } catch (e) {
-    if (opts.jsonl) event("error", watchErrorData(e));
-    else err(`watch: initial prepare failed — ${(e as Error).message}`);
+    if (opts.jsonl) event("error", watchErrorData(e, state.session?.target));
+    else {
+      if (e instanceof PrepareFatalError && e.target !== undefined && state.session === null) {
+        log(formatDatabaseTarget(e.target));
+      }
+      err(`watch: initial prepare failed — ${(e as Error).message}`);
+    }
   }
   if (opts.jsonl) event("watching", { root: opts.root });
   else log(`watch: monitoring ${opts.root}`);
@@ -313,8 +333,13 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
           if (opts.jsonl) report(r, durationMs);
           else log(`watch: re-prepared in ${durationMs}ms (${r.entries} queries, ${r.failures} failures)`);
         } catch (e) {
-          if (opts.jsonl) event("error", watchErrorData(e));
-          else err(`watch: prepare error — ${(e as Error).message}`);
+          if (opts.jsonl) event("error", watchErrorData(e, state.session?.target));
+          else {
+            if (e instanceof PrepareFatalError && e.target !== undefined && state.session === null) {
+              log(formatDatabaseTarget(e.target));
+            }
+            err(`watch: prepare error — ${(e as Error).message}`);
+          }
         }
       })();
       await running;

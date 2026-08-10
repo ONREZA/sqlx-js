@@ -12,14 +12,26 @@ import {
 } from "../src/commands/watch";
 import { PrepareFatalError, type PrepareIncrementalInput, type PrepareResult, type PrepareSession } from "../src/commands/prepare";
 import { profileFingerprint } from "../src/cache";
+import { formatDatabaseTarget } from "../src/pg/target-summary";
+
+const target = {
+  database: "watch",
+  user: "watch",
+  serverVersion: "18.0",
+  searchPath: "public",
+  currentSchema: "public",
+  catalogFunctions: 0,
+  catalogEnums: 0,
+};
 
 function result(entries = 1): PrepareResult {
-  return { sites: entries, entries, failures: 0, pruned: 0, functions: 0, enums: 0, diagnostics: [] };
+  return { target, sites: entries, entries, failures: 0, pruned: 0, functions: 0, enums: 0, diagnostics: [] };
 }
 
 function session(name: string, closed: string[]): PrepareSession {
   return {
     client: { end: async () => { closed.push(name); } } as unknown as PrepareSession["client"],
+    target,
     schema: {} as PrepareSession["schema"],
     userCfg: {},
     profiles: new Map(),
@@ -39,6 +51,7 @@ function opts(): WatchOptions {
 test("prepareWatchedOnce reuses its session when config is unchanged", async () => {
   const closed: string[] = [];
   const opened: string[] = [];
+  const logs: string[] = [];
   let prepares = 0;
   const state: WatchState = { session: null };
   const currentOpts = opts();
@@ -57,12 +70,13 @@ test("prepareWatchedOnce reuses its session when config is unchanged", async () 
     },
   };
 
-  await prepareWatchedOnce(currentOpts, state, () => {}, () => {}, deps);
-  await prepareWatchedOnce(currentOpts, state, () => {}, () => {}, deps);
+  await prepareWatchedOnce(currentOpts, state, (message) => logs.push(message), () => {}, deps);
+  await prepareWatchedOnce(currentOpts, state, (message) => logs.push(message), () => {}, deps);
 
   expect(prepares).toBe(2);
   expect(opened).toEqual(["s1"]);
   expect(closed).toEqual([]);
+  expect(logs.filter((message) => message.startsWith("target:"))).toHaveLength(1);
 });
 
 test("prepareWatchedOnce resets the session when config changes", async () => {
@@ -434,6 +448,8 @@ test("watch JSONL events are one versioned document per line", () => {
     entries: 2,
   });
   expect(formatWatchEvent("error", { message: "broken" })).not.toContain("\n");
+  expect(formatDatabaseTarget({ ...target, database: "watch\nspoof", searchPath: "public\u001b[31m" }))
+    .toBe("target: database watch\\nspoof as watch; PostgreSQL 18.0; schema public; search_path public\\u001b[31m; 0 function(s), 0 enum(s)");
   expect(watchErrorData(new PrepareFatalError("scan", "broken", {
     file: "src/a.ts",
     line: 4,
@@ -448,4 +464,11 @@ test("watch JSONL events are one versioned document per line", () => {
       column: 7,
     },
   });
+  expect(watchErrorData(new PrepareFatalError(
+    "config",
+    "wrong target",
+    {},
+    undefined,
+    target,
+  ))).toMatchObject({ target });
 });
