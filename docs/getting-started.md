@@ -5,22 +5,24 @@ Install sqlx-js, choose a schema workflow, connect PostgreSQL, and generate the 
 ## Install
 
 ```bash
-npm install @onreza/sqlx-js @js-temporal/polyfill
+npm install @onreza/sqlx-js temporal-polyfill
 npm install --save-dev "typescript@>=6 <7"
 # or
-bun add @onreza/sqlx-js @js-temporal/polyfill
+bun add @onreza/sqlx-js temporal-polyfill
 bun add --dev "typescript@>=6 <7"
 ```
 
-The polyfill is optional when the target runtime exposes native Temporal.
-Polyfill projects should use an explicit base such as `lib: ["ES2024"]`;
-native TypeScript projects can add `ESNext.Temporal` to that list.
-The default `sqlx-js init` scaffold uses the polyfill fallback. Pass
-`--temporal-provider native` to generate a native-only `db.ts` and add the
-native declaration lib to `tsconfig.json`.
+The adaptive fallback is optional when every target runtime exposes native
+Temporal. The `temporal-polyfill` root import uses native Temporal when present
+and otherwise supplies the polyfill without mutating `globalThis`. Fallback
+projects should use an explicit base such as `lib: ["ES2025"]`. Native
+TypeScript projects can add `ESNext.Temporal` to that list. The default
+`sqlx-js init` scaffold uses the polyfill fallback. Pass
+`--temporal-provider native` to generate a native-only `db.ts` with a targeted
+Temporal lib reference that preserves the project's implicit libraries.
 
 Node.js 24, Bun 1.3, or Deno 2.9 and PostgreSQL 16 or newer are required. The
-package ships ESM only, targets ES2024, and does not support CommonJS consumers.
+package ships ESM only, targets ES2025, and does not support CommonJS consumers.
 TypeScript 6.x is an optional peer so production-only installs do not pull the
 compiler into the application image; source scanning commands (`prepare`,
 `queries`, `doctor`, `ci`, `dev`, and `verify`) require it in development
@@ -193,8 +195,9 @@ The declaration is written to `sqlx-js-env.d.ts` by default. Add it to
 
 The generated registry makes descriptor and Temporal-provider ownership
 explicit. The scaffold exports a provider-bound `SqlxJsRegistry`; a scoped
-`createSqlClient<SqlxJsRegistry>(...)` must receive
-`queryDescriptors`, or opt out deliberately with `execution: "adaptive"`.
+`createSqlClient<SqlxJsRegistry>(...)` must receive the exact `temporalApi` and
+`queryDescriptors`, or opt out of descriptors deliberately with
+`execution: "adaptive"`.
 There is no runtime artifact discovery.
 
 [Documentation index](./README.md)

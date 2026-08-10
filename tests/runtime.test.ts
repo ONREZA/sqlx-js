@@ -20,7 +20,7 @@ import {
 } from "../src/runtime";
 import { PgError } from "../src/pg/wire";
 import { defineQuery } from "../src/query";
-import { Temporal } from "@js-temporal/polyfill";
+import { Temporal } from "temporal-polyfill";
 import { SQLSTATE, isPgError } from "../src/runtime";
 
 describe("renameRows", () => {

@@ -382,11 +382,11 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
         options?: { queryDescriptors: unknown; temporalApi?: unknown },
       ): { sql: unknown };
     `);
-    const temporalDir = join(root, "node_modules/@js-temporal/polyfill");
+    const temporalDir = join(root, "node_modules/temporal-polyfill");
     mkdirSync(temporalDir, { recursive: true });
     writeFileSync(join(temporalDir, "package.json"), JSON.stringify({
-      name: "@js-temporal/polyfill",
-      version: "0.5.1",
+      name: "temporal-polyfill",
+      version: "1.0.3",
       type: "module",
       exports: { ".": { types: "./index.d.ts" } },
     }));
@@ -456,12 +456,13 @@ test("CLI init scaffolds a native Temporal boundary without a polyfill package",
         module: "NodeNext",
         moduleResolution: "NodeNext",
         target: "ES2024",
-        lib: ["ES2024"],
         strict: true,
         noEmit: true,
       },
       include: ["src/**/*.ts"],
     }, null, 2));
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src/dom.ts"), "document.title = 'sqlx-js';\n");
     const packageDir = join(root, "node_modules/@onreza/sqlx-js");
     mkdirSync(packageDir, { recursive: true });
     writeFileSync(join(packageDir, "package.json"), JSON.stringify({
@@ -481,7 +482,7 @@ test("CLI init scaffolds a native Temporal boundary without a polyfill package",
       export type GlobalTemporalApi = typeof Temporal;
       export declare function createSqlClient<Registry extends QueryRegistry>(
         url: string | undefined,
-        options: { queryDescriptors: unknown },
+        options: { queryDescriptors: unknown; temporalApi: unknown },
       ): { sql: unknown };
     `);
 
@@ -495,7 +496,7 @@ test("CLI init scaffolds a native Temporal boundary without a polyfill package",
       "GeneratedRegistry<typeof Temporal>",
     );
     const tsconfig = JSON.parse(readFileSync(join(root, "tsconfig.json"), "utf8"));
-    expect(tsconfig.compilerOptions.lib).toEqual(["ES2024", "ESNext.Temporal"]);
+    expect(tsconfig.compilerOptions.lib).toBeUndefined();
     const typecheck = spawnSync(join(repoRoot, "node_modules/.bin/tsc"), ["-p", root], {
       encoding: "utf8",
     });

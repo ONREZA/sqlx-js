@@ -111,9 +111,7 @@ export type TemporalApiFor<Registry extends QueryRegistry> =
     : import("./temporal-api").TemporalApi;
 type TemporalApiOptionsFor<Registry extends QueryRegistry> =
   Registry extends { temporalApi: infer Api extends import("./temporal-api").TemporalApi }
-    ? Api extends import("./temporal-api").GlobalTemporalApi
-      ? { temporalApi?: Api }
-      : { temporalApi: Api }
+    ? { temporalApi: Api }
     : { temporalApi?: import("./temporal-api").TemporalApi };
 
 type ProfileTransactionSetting<Profile> =
@@ -224,7 +222,9 @@ type CreateClientArgs<Registry extends QueryRegistry> =
     : keyof RegistryRuntimeTypes<Registry> extends never
       ? Registry extends { runtimeDescriptors: true }
         ? [url: string | undefined, options: PlainClientOptionsFor<Registry>]
-        : [url?: string, options?: PlainClientOptionsFor<Registry>]
+        : {} extends PlainClientOptionsFor<Registry>
+          ? [url?: string, options?: PlainClientOptionsFor<Registry>]
+          : [url: string | undefined, options: PlainClientOptionsFor<Registry>]
       : [url: string | undefined, options: GeneratedClientOptionsFor<Registry>];
 type RawClientOptionsFor<Registry extends QueryRegistry> =
   Omit<import("./postgres-runtime").CreateClientOptions, "temporal" | "temporalApi">

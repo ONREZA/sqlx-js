@@ -149,7 +149,7 @@ Use native `globalThis.Temporal` when the runtime exposes it, or pass the
 optional polyfill fallback explicitly:
 
 ```ts
-import { Temporal } from "@js-temporal/polyfill";
+import { Temporal } from "temporal-polyfill";
 import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./sqlx-js-env.js";
 
 type SqlxJsRegistry = GeneratedRegistry<typeof Temporal>;
@@ -400,7 +400,7 @@ For an application-defined `customTypes` representation, provide the matching na
 
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
-import { Temporal } from "@js-temporal/polyfill";
+import { Temporal } from "temporal-polyfill";
 import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./sqlx-js-env.js";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 import { parseGeometry, serializeGeometry } from "./geometry-codec.js";
@@ -434,7 +434,7 @@ to explicit numeric `types` when raw access is required:
 
 ```ts
 import { createClient } from "@onreza/sqlx-js";
-import { Temporal } from "@js-temporal/polyfill";
+import { Temporal } from "temporal-polyfill";
 import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./sqlx-js-env.js";
 
 type SqlxJsRegistry = GeneratedRegistry<typeof Temporal>;

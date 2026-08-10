@@ -81,7 +81,7 @@ export interface SqlxJsGeneratedRegistry<TemporalProvider extends import("@onrez
 `;
 
 const POLYFILL_DATABASE_TEMPLATE = `import { createSqlClient } from "@onreza/sqlx-js";
-import { Temporal } from "@js-temporal/polyfill";
+import { Temporal } from "temporal-polyfill";
 import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./sqlx-js-env.js";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 
@@ -93,7 +93,9 @@ export const db = createSqlClient<SqlxJsRegistry>(undefined, {
 });
 `;
 
-const NATIVE_DATABASE_TEMPLATE = `import { createSqlClient } from "@onreza/sqlx-js";
+const NATIVE_DATABASE_TEMPLATE = `/// <reference lib="esnext.temporal" />
+
+import { createSqlClient } from "@onreza/sqlx-js";
 import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./sqlx-js-env.js";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 
@@ -101,6 +103,7 @@ export type SqlxJsRegistry = GeneratedRegistry<typeof Temporal>;
 
 export const db = createSqlClient<SqlxJsRegistry>(undefined, {
   queryDescriptors,
+  temporalApi: Temporal,
 });
 `;
 
@@ -208,18 +211,6 @@ export function runInit(opts: InitOptions): void {
     }
     const options = (value.compilerOptions ??= {}) as Record<string, unknown>;
     let changed = false;
-    if (temporalProvider === "native") {
-      const lib = options.lib;
-      if (lib === undefined) {
-        options.lib = ["ES2024", "ESNext.Temporal"];
-        changed = true;
-      } else if (!Array.isArray(lib) || !lib.every((item) => typeof item === "string")) {
-        notes.push("tsconfig.json: add ESNext.Temporal to compilerOptions.lib for native Temporal");
-      } else if (!lib.some((item) => item.toLowerCase() === "esnext.temporal")) {
-        lib.push("ESNext.Temporal");
-        changed = true;
-      }
-    }
     if (options.resolveJsonModule === undefined) {
       options.resolveJsonModule = true;
       changed = true;

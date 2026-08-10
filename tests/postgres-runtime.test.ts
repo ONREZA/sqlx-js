@@ -34,7 +34,20 @@ import {
   RUNTIME_DESCRIPTOR_FORMAT_VERSION,
 } from "../src/artifact-versions";
 import { queryId } from "../src/query-id";
-import { Temporal } from "@js-temporal/polyfill";
+import { Temporal } from "temporal-polyfill";
+
+function temporalApiFixture() {
+  return {
+    Duration: Temporal.Duration,
+    Instant: Temporal.Instant,
+    PlainDate: Temporal.PlainDate,
+    PlainDateTime: Temporal.PlainDateTime,
+    PlainMonthDay: Temporal.PlainMonthDay,
+    PlainTime: Temporal.PlainTime,
+    PlainYearMonth: Temporal.PlainYearMonth,
+    ZonedDateTime: Temporal.ZonedDateTime,
+  };
+}
 
 function managed(client: PostgresClient, options: CreateSqlClientOptions = {}) {
   return _internal.createManagedClient(() => client, options);
@@ -261,7 +274,7 @@ test("raw client requires an explicit Temporal provider when the runtime has non
   Reflect.deleteProperty(target, "Temporal");
   try {
     expect(() => createClient("postgres://app:secret@127.0.0.1:1/app")).toThrow(
-      "install @js-temporal/polyfill and pass { temporalApi: Temporal }",
+      "install temporal-polyfill and pass { temporalApi: Temporal }",
     );
   } finally {
     if (descriptor) Object.defineProperty(target, "Temporal", descriptor);
@@ -270,7 +283,7 @@ test("raw client requires an explicit Temporal provider when the runtime has non
 
 test("raw client validates the complete Temporal provider boundary eagerly", () => {
   const invalid = {
-    ...Temporal,
+    ...temporalApiFixture(),
     Instant: { prototype: Temporal.Instant.prototype, from: Temporal.Instant.from },
   };
   expect(() => createClient(
@@ -284,7 +297,7 @@ test("raw client validates the complete Temporal provider boundary eagerly", () 
     }
   }
   expect(() => createClient("postgres://app:secret@127.0.0.1:1/app", {
-    temporalApi: { ...Temporal, Instant: BrokenInstant } as never,
+    temporalApi: { ...temporalApiFixture(), Instant: BrokenInstant } as never,
   }))
     .toThrow("temporalApi.Instant.from returned an incompatible value");
 
@@ -294,7 +307,7 @@ test("raw client validates the complete Temporal provider boundary eagerly", () 
     }
   }
   expect(() => createClient("postgres://app:secret@127.0.0.1:1/app", {
-    temporalApi: { ...Temporal, PlainTime: ThrowingPlainTime } as never,
+    temporalApi: { ...temporalApiFixture(), PlainTime: ThrowingPlainTime } as never,
   })).toThrow("temporalApi.PlainTime.from failed its compatibility check");
 });
 

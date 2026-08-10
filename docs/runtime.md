@@ -180,7 +180,7 @@ For dependency injection, read replicas, tests, or several independent pools in 
 
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
-import { Temporal } from "@js-temporal/polyfill";
+import { Temporal } from "temporal-polyfill";
 import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./sqlx-js-env.js";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 
@@ -224,7 +224,7 @@ each managed client that should use the one-write parameter path:
 
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
-import { Temporal } from "@js-temporal/polyfill";
+import { Temporal } from "temporal-polyfill";
 import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./sqlx-js-env.js";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 

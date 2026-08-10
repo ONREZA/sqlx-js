@@ -16,7 +16,7 @@ import { array, json, QueryTimeoutError, ResultDecodeError, type OnQueryEvent } 
 import { JsonNumber, SqlxJson } from "../src/json-value";
 import { queryId } from "../src/query-id";
 import type { RuntimeQueryDescriptors } from "../src/runtime-descriptors";
-import { Temporal } from "@js-temporal/polyfill";
+import { Temporal } from "temporal-polyfill";
 import { inspectJsonAudit } from "../src/commands/json-audit";
 import {
   renderCanonicalJsonbNumberAnalysis,

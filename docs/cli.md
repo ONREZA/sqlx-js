@@ -251,8 +251,8 @@ sqlx-js pgschema apply -- --plan plan.json --auto-approve
 ```
 
 `init` uses the explicit polyfill fallback by default. Native-only runtimes can
-scaffold `db.ts` without that dependency and add `ESNext.Temporal` to the
-project TypeScript libs with:
+scaffold `db.ts` without that dependency and with a targeted
+`ESNext.Temporal` reference that preserves implicit project libs:
 
 ```bash
 sqlx-js init --temporal-provider native

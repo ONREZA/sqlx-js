@@ -25,7 +25,7 @@ export default defineConfig({
 
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
-import { Temporal } from "@js-temporal/polyfill";
+import { Temporal } from "temporal-polyfill";
 import type { SqlxJsGeneratedProfileRegistry } from "./sqlx-js-env.js";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 import { databaseProfiles } from "../sqlx-js.config.js";

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { Temporal } from "npm:@js-temporal/polyfill@0.5.1";
+import { Temporal } from "npm:temporal-polyfill@1.0.3";
 import {
   createSqlClient,
   JsonNumber,
