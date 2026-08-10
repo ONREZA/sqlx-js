@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.31.0](https://github.com/ONREZA/sqlx-js/compare/v0.30.0...v0.31.0) (2026-08-10)
+
+
+### Features
+
+* **connection:** unify connection resolution ([91ad325](https://github.com/ONREZA/sqlx-js/commit/91ad325153da690c9ec2da877bf05a07a5d08a49))
+* **temporal:** bind provider-specific types ([b7987fc](https://github.com/ONREZA/sqlx-js/commit/b7987fc3cc297a0f3e1d2d901168a8c7d673c720))
+
+
+### Bug Fixes
+
+* **connection:** harden resolver boundaries ([538ef01](https://github.com/ONREZA/sqlx-js/commit/538ef0151b9e43380c5175278498b7053bb2e141))
+* **connection:** preserve resolved ownership ([46ff40b](https://github.com/ONREZA/sqlx-js/commit/46ff40b9107b7f699f773074d539edd26e50fd6a))
+* **deps:** support typescript 6 ([91e5c9b](https://github.com/ONREZA/sqlx-js/commit/91e5c9b1619adc65982368d0c6d0b5255dfe7546))
+* **skills:** install temporal fallback ([eb53e73](https://github.com/ONREZA/sqlx-js/commit/eb53e73581dccfb094631711754cd5af8c8a277b))
+* **temporal:** adopt adaptive fallback ([333bd58](https://github.com/ONREZA/sqlx-js/commit/333bd5832845e719e7f2f3dc923f421933937eb7))
+* **temporal:** close provider type gaps ([8748b97](https://github.com/ONREZA/sqlx-js/commit/8748b97ffd553a9249d8266195da5bb8489b75c3))
+
 ## [0.30.0](https://github.com/ONREZA/sqlx-js/compare/v0.29.0...v0.30.0) (2026-08-09)
 
 
