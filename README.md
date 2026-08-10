@@ -67,7 +67,7 @@ See the [documentation index](./docs/README.md) for the complete guide set.
 
 - PostgreSQL 16 or newer
 - Node.js 24 or newer, Bun 1.3 or newer, or Deno 2.9 or newer
-- TypeScript 5.4 through 5.9 for source-scanning commands
+- TypeScript 5.4 through 6.x for source-scanning commands
 - `@js-temporal/polyfill` 0.5.x as the canonical Temporal type/provider peer
 
 The package is ESM-only. TypeScript is an optional peer dependency so it does
@@ -81,11 +81,11 @@ Install the package and TypeScript:
 
 ```bash
 npm install @onreza/sqlx-js @js-temporal/polyfill
-npm install --save-dev "typescript@>=5.4 <6"
+npm install --save-dev "typescript@>=5.4 <7"
 
 # or
 bun add @onreza/sqlx-js @js-temporal/polyfill
-bun add --dev "typescript@>=5.4 <6"
+bun add --dev "typescript@>=5.4 <7"
 ```
 
 Scaffold a project using built-in migrations:

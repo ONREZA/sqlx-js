@@ -78,7 +78,7 @@
   },
   "peerDependencies": {
     "@js-temporal/polyfill": "^0.5.1",
-    "typescript": ">=5.4 <6"
+    "typescript": ">=5.4 <7"
   },
   "peerDependenciesMeta": {
     "typescript": {
