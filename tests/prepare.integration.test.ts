@@ -476,10 +476,10 @@ if (!haveIntegrationDatabase) {
       const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");
       expect(dts).toContain(
         '"SELECT $1::timestamptz AS value, $2::timestamptz[] AS values": '
-        + '{ params: [import("@onreza/sqlx-js").PgTimestamptz, '
-        + 'import("@onreza/sqlx-js").PgArrayParameter<import("@onreza/sqlx-js").PgTimestamptz, boolean>]; '
-        + 'row: { "value": import("@onreza/sqlx-js").PgTimestamptz | null; '
-        + '"values": (import("@onreza/sqlx-js").PgTimestamptz | null)[] | null } }',
+        + '{ params: [import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>, '
+        + 'import("@onreza/sqlx-js").PgArrayParameter<import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>, boolean>]; '
+        + 'row: { "value": import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider> | null; '
+        + '"values": (import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider> | null)[] | null } }',
       );
       expect(dts).toContain('temporal: { readonly infinity: "reject"; readonly timestampWithoutTimeZone: "reject"; readonly sessionTimeZone: "UTC" };');
       const descriptors = JSON.parse(
@@ -3315,7 +3315,7 @@ export default {
       const result = prepare();
       expect(result.code, result.stderr).toBe(0);
       const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
-      expect(dts).toMatch(/"at": import\("@onreza\/sqlx-js"\)\.PgTimestamptz \| null; "operationId": string \| null/);
+      expect(dts).toMatch(/"at": import\("@onreza\/sqlx-js"\)\.PgTimestamptz<TemporalProvider> \| null; "operationId": string \| null/);
       const entry = queryCacheFiles().map((file) =>
         JSON.parse(readFileSync(join(tmp, ".sqlx-js", file), "utf8")) as {
           nullableParamOverrides: number[];
@@ -3649,10 +3649,10 @@ export default {
     expect(r.code, r.stderr).toBe(0);
     const dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toMatch(
-      /"setConditionalAt": boolean; "clearConditionalAt": boolean; "conditionalAt": import\("@onreza\/sqlx-js"\)\.PgTimestamptz \| null; "conditionalCount": number \| null; "setName": boolean; "name": string; "id": bigint/,
+      /"setConditionalAt": boolean; "clearConditionalAt": boolean; "conditionalAt": import\("@onreza\/sqlx-js"\)\.PgTimestamptz<TemporalProvider> \| null; "conditionalCount": number \| null; "setName": boolean; "name": string; "id": bigint/,
     );
     expect(dts).toMatch(
-      /SET \(conditional_at, conditional_count\).*"conditionalAt": import\("@onreza\/sqlx-js"\)\.PgTimestamptz \| null; "conditionalCount": number \| null; "id": bigint/,
+      /SET \(conditional_at, conditional_count\).*"conditionalAt": import\("@onreza\/sqlx-js"\)\.PgTimestamptz<TemporalProvider> \| null; "conditionalCount": number \| null; "id": bigint/,
     );
     expect(dts).toMatch(
       /UNION ALL SELECT.*"name": string; "email": string; "note": string \| null; "otherName": string; "otherEmail": string; "otherNote": string \| null/,

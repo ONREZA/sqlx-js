@@ -10,10 +10,10 @@ export function arrayTsType(elementTs: string, nullability: ArrayElementNullabil
 }
 
 const JSON_VALUE = 'import("@onreza/sqlx-js").SqlxJson<import("@onreza/sqlx-js").JsonValue>';
-const PG_DATE = 'import("@onreza/sqlx-js").PgDate';
-const PG_TIME = 'import("@onreza/sqlx-js").PgTime';
-const PG_TIMESTAMP = 'import("@onreza/sqlx-js").PgTimestamp';
-const PG_TIMESTAMPTZ = 'import("@onreza/sqlx-js").PgTimestamptz';
+const PG_DATE = 'import("@onreza/sqlx-js").PgDate<TemporalProvider>';
+const PG_TIME = 'import("@onreza/sqlx-js").PgTime<TemporalProvider>';
+const PG_TIMESTAMP = 'import("@onreza/sqlx-js").PgTimestamp<TemporalProvider>';
+const PG_TIMESTAMPTZ = 'import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>';
 
 const SCALAR: Record<number, TsTypeInfo> = {
   16: { ts: "boolean" },

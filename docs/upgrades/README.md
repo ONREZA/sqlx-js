@@ -5,6 +5,8 @@ main README can stay focused on the current API.
 
 ## Guides
 
+- [0.31.0](./0.31.0.md) — provider-bound native/polyfill Temporal types,
+  TypeScript 6, and ES2024
 - [0.30.0](./0.30.0.md) — Temporal-only SQL I/O, query-local timestamp
   policy, Extended JSON protocol v1, explicit generated registries, unified
   column assertions and lifecycle events, prepare-owned embedded SQL,

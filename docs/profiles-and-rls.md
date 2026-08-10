@@ -25,18 +25,19 @@ export default defineConfig({
 
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
+import { Temporal } from "@js-temporal/polyfill";
 import type { SqlxJsGeneratedProfileRegistry } from "./sqlx-js-env.js";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 import { databaseProfiles } from "../sqlx-js.config.js";
 
-export const apiDb = createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(
+export const apiDb = createSqlClient<SqlxJsGeneratedProfileRegistry<"api", typeof Temporal>>(
   process.env.DATABASE_URL,
-  { profile: databaseProfiles.api, queryDescriptors },
+  { profile: databaseProfiles.api, queryDescriptors, temporalApi: Temporal },
 );
 
-export const workerDb = createSqlClient<SqlxJsGeneratedProfileRegistry<"worker">>(
+export const workerDb = createSqlClient<SqlxJsGeneratedProfileRegistry<"worker", typeof Temporal>>(
   process.env.DATABASE_URL,
-  { profile: databaseProfiles.worker, queryDescriptors },
+  { profile: databaseProfiles.worker, queryDescriptors, temporalApi: Temporal },
 );
 
 const users = await apiDb.sql.transaction({
@@ -56,7 +57,7 @@ export const findJob = defineQuery
   .optional("jobs.find", "SELECT id, state FROM jobs WHERE id = $id");
 ```
 
-`prepare` opens a session for each configured profile, applies its role, and runs the normal `Parse`/`Describe`/generic-plan pipeline in that session. The cache key includes both the SQL fingerprint and profile, so the same SQL can resolve through different `search_path`, RLS, type, and privilege contexts. `SqlxJsGeneratedProfileRegistry<Name>` makes `createSqlClient(..., { profile })` bind only that profile's query set and require the exact configured role. The runtime sends the role as a startup parameter on every pool connection, including replacement generations. The login in `DATABASE_URL` must be allowed to `SET ROLE` to every configured role.
+`prepare` opens a session for each configured profile, applies its role, and runs the normal `Parse`/`Describe`/generic-plan pipeline in that session. The cache key includes both the SQL fingerprint and profile, so the same SQL can resolve through different `search_path`, RLS, type, and privilege contexts. `SqlxJsGeneratedProfileRegistry<Name, TemporalProvider>` makes `createSqlClient(..., { profile })` bind that profile's query set, Temporal provider, and exact configured role. The runtime sends the role as a startup parameter on every pool connection, including replacement generations. The login in `DATABASE_URL` must be allowed to `SET ROLE` to every configured role.
 
 Prepare and doctor may start under a distinct base role selected by the URL or
 resolved `PGOPTIONS`; that role is the delegation session and is not required

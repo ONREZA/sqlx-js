@@ -374,6 +374,8 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
         runtimeDescriptors?: true;
         jsonProtocol: 1;
       }
+      export interface TemporalApi {}
+      export type GlobalTemporalApi = TemporalApi;
       export declare function createSqlClient<Registry extends QueryRegistry>(
         url?: string,
         options?: { queryDescriptors: unknown; temporalApi?: unknown },

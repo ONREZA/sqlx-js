@@ -1,5 +1,5 @@
-export const CACHE_FORMAT_VERSION = 11;
-export const GENERATOR_REVISION = 29;
+export const CACHE_FORMAT_VERSION = 12;
+export const GENERATOR_REVISION = 30;
 export const RUNTIME_DESCRIPTOR_FORMAT_VERSION = 4;
 export const JSON_PROTOCOL_VERSION = 1;
 export const RUNTIME_DESCRIPTOR_VERSION_FENCE = Object.freeze({

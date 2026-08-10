@@ -29,7 +29,11 @@ export type {
   PgTime,
   PgTimestamp,
   PgTimestamptz,
+  GlobalTemporalApi,
   TemporalApi,
+  TemporalRuntimeValue,
+  TemporalTypeName,
+  TemporalValue,
 } from "./temporal-api";
 export type JsonInput = import("./json-value").JsonInputValue;
 
@@ -98,7 +102,19 @@ export type QueryRegistry = {
   runtimeDescriptors?: true;
   jsonProtocol: typeof import("./json-value").EXTENDED_JSON_PROTOCOL_VERSION;
   temporal?: import("./temporal").TemporalPolicy;
+  temporalApi?: import("./temporal-api").TemporalApi;
 };
+
+export type TemporalApiFor<Registry extends QueryRegistry> =
+  Registry extends { temporalApi: infer Api extends import("./temporal-api").TemporalApi }
+    ? Api
+    : import("./temporal-api").TemporalApi;
+type TemporalApiOptionsFor<Registry extends QueryRegistry> =
+  Registry extends { temporalApi: infer Api extends import("./temporal-api").TemporalApi }
+    ? Api extends import("./temporal-api").GlobalTemporalApi
+      ? { temporalApi?: Api }
+      : { temporalApi: Api }
+    : { temporalApi?: import("./temporal-api").TemporalApi };
 
 type ProfileTransactionSetting<Profile> =
   Profile extends {
@@ -173,8 +189,8 @@ type ExecutionOptionsFor<Registry extends QueryRegistry> =
 type GeneratedClientOptionsFor<Registry extends QueryRegistry> =
   Omit<
     import("./postgres-runtime").CreateSqlClientOptions,
-    "typeCodecs" | "types" | "profile" | "queryDescriptors" | "execution" | "temporal"
-  > & ExecutionOptionsFor<Registry> & (
+    "typeCodecs" | "types" | "profile" | "queryDescriptors" | "execution" | "temporal" | "temporalApi"
+  > & ExecutionOptionsFor<Registry> & TemporalApiOptionsFor<Registry> & (
     | {
       typeCodecs: RuntimeTypeCodecsFor<Registry>;
       types?: import("./postgres-runtime").CreateSqlClientOptions["types"];
@@ -191,8 +207,8 @@ type GeneratedClientOptionsFor<Registry extends QueryRegistry> =
 type PlainClientOptionsFor<Registry extends QueryRegistry> =
   Omit<
     import("./postgres-runtime").CreateSqlClientOptions,
-    "profile" | "queryDescriptors" | "execution" | "temporal"
-  > & ExecutionOptionsFor<Registry> & (
+    "profile" | "queryDescriptors" | "execution" | "temporal" | "temporalApi"
+  > & ExecutionOptionsFor<Registry> & TemporalApiOptionsFor<Registry> & (
     Registry extends { profile: infer Profile extends import("./config").DatabaseProfile }
       ? { profile: Profile }
       : { profile?: never }
@@ -211,8 +227,9 @@ type CreateClientArgs<Registry extends QueryRegistry> =
         : [url?: string, options?: PlainClientOptionsFor<Registry>]
       : [url: string | undefined, options: GeneratedClientOptionsFor<Registry>];
 type RawClientOptionsFor<Registry extends QueryRegistry> =
-  Omit<import("./postgres-runtime").CreateClientOptions, "temporal">
-  & ExplicitTemporalOptionsFor<Registry>;
+  Omit<import("./postgres-runtime").CreateClientOptions, "temporal" | "temporalApi">
+  & ExplicitTemporalOptionsFor<Registry>
+  & TemporalApiOptionsFor<Registry>;
 type CreateRawClientArgs<Registry extends QueryRegistry> =
   keyof RegistryRuntimeTypes<Registry> extends never
     ? [url?: string, options?: RawClientOptionsFor<Registry>]

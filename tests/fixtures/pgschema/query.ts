@@ -1,9 +1,9 @@
 import { Temporal } from "@js-temporal/polyfill";
 import { createSqlClient } from "@onreza/sqlx-js";
-import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env";
+import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./sqlx-js-env";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 
-const db = createSqlClient<SqlxJsGeneratedRegistry>(undefined, {
+const db = createSqlClient<GeneratedRegistry<typeof Temporal>>(undefined, {
   queryDescriptors,
   temporalApi: Temporal,
 });

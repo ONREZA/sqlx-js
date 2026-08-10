@@ -36,22 +36,22 @@ import {
   type SqlExecutor,
 } from "@onreza/sqlx-js";
 import { db } from "./db.js";
-import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
+import type { SqlxJsRegistry } from "./db.js";
 
 export const findUser = defineQuery.optional(
   "users.findById",
   `SELECT id, email FROM users WHERE id = $id`,
 );
 
-type FindUserParams = QueryParams<typeof findUser, SqlxJsGeneratedRegistry>;
-type FindUserRow = QueryRow<typeof findUser, SqlxJsGeneratedRegistry>;
-type FindUserResult = QueryResult<typeof findUser, SqlxJsGeneratedRegistry>; // FindUserRow | null
+type FindUserParams = QueryParams<typeof findUser, SqlxJsRegistry>;
+type FindUserRow = QueryRow<typeof findUser, SqlxJsRegistry>;
+type FindUserResult = QueryResult<typeof findUser, SqlxJsRegistry>; // FindUserRow | null
 
 await findUser.run(db.sql, { id: userId });
 await db.sql.transaction((tx) => findUser.run(tx, { id: userId }));
 
 async function loadUser(
-  executor: SqlExecutor<SqlxJsGeneratedRegistry>,
+  executor: SqlExecutor<SqlxJsRegistry>,
   params: FindUserParams,
 ) {
   return findUser.run(executor, params);
@@ -114,7 +114,7 @@ Use `mapParams` when the application input is intentionally narrower or more exp
 
 ```ts
 import { defineQuery, type QueryParams, type QueryWireParams } from "@onreza/sqlx-js";
-import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
+import type { SqlxJsRegistry } from "./db.js";
 
 type AnalyticsEvent = { id: string; action: "created" | "deleted" };
 
@@ -126,8 +126,8 @@ export const insertEvents = defineQuery.execute(
   events: json(events),
 }));
 
-type InsertEventsInput = QueryParams<typeof insertEvents, SqlxJsGeneratedRegistry>;
-type InsertEventsWire = QueryWireParams<typeof insertEvents, SqlxJsGeneratedRegistry>;
+type InsertEventsInput = QueryParams<typeof insertEvents, SqlxJsRegistry>;
+type InsertEventsWire = QueryWireParams<typeof insertEvents, SqlxJsRegistry>;
 ```
 
 The mapper receives only `json` and `array` parameter helpers. Once `prepare` has emitted the explicit registry, its output is checked when the definition runs through that executor: missing, extra, and incompatible fields are compile errors. An application input can therefore narrow or reorganize the API without widening PostgreSQL parameters. The mapper executes once per call before named-parameter binding; root and transaction executors keep the same result, observer, and query-ID behavior. This is the intended boundary for discriminated unions such as `preserve | clear | set`: the application owns the union and maps it to the physical flags and nullable values required by SQL.
@@ -189,12 +189,16 @@ and enum output. `queries` remains read-only.
 
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
-import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
+import { Temporal } from "@js-temporal/polyfill";
+import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./sqlx-js-env.js";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 import { sqlxJsEmbeddedSql } from "./sqlx-js-files.generated.js";
 
-const db = createSqlClient<SqlxJsGeneratedRegistry>(databaseUrl, {
+type SqlxJsRegistry = GeneratedRegistry<typeof Temporal>;
+
+const db = createSqlClient<SqlxJsRegistry>(databaseUrl, {
   queryDescriptors,
+  temporalApi: Temporal,
   sqlFiles: sqlxJsEmbeddedSql,
 });
 ```

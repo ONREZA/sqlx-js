@@ -1,12 +1,23 @@
 import { isDateValue } from "../sql-value";
 import type {
-  PgDate,
-  PgTime,
-  PgTimestamp,
-  PgTimestamptz,
   TemporalApi,
   TemporalFactory,
 } from "../temporal-api";
+
+type RuntimeDate = { calendarId: string; year: number; month: number; day: number };
+type RuntimeTime = {
+  hour: number;
+  minute: number;
+  second: number;
+  millisecond: number;
+  microsecond: number;
+  nanosecond: number;
+};
+type RuntimeTimestamp = RuntimeDate & RuntimeTime;
+type RuntimeTimestamptz = {
+  epochNanoseconds: bigint;
+  toString(options?: { fractionalSecondDigits?: number | "auto" }): string;
+};
 
 export class TemporalInfinityError extends Error {
   readonly decodeHint = "Normalize PostgreSQL infinity sentinels in SQL with isfinite(...) before decoding";
@@ -38,8 +49,8 @@ export function postgresTemporalSerializers(
   };
 }
 
-function parseDate(value: string, temporalApi: TemporalApi): PgDate {
-  return parseTemporalValue<PgDate>(
+function parseDate(value: string, temporalApi: TemporalApi): RuntimeDate {
+  return parseTemporalValue<RuntimeDate>(
     temporalApi.PlainDate,
     postgresTemporalIso(value, "date"),
     "date",
@@ -47,16 +58,16 @@ function parseDate(value: string, temporalApi: TemporalApi): PgDate {
   );
 }
 
-function parseTime(value: string, temporalApi: TemporalApi): PgTime {
+function parseTime(value: string, temporalApi: TemporalApi): RuntimeTime {
   rejectTemporalInfinity(value, "time");
   if (/^24:00(?::00(?:[.,]0+)?)?$/.test(value)) {
     throw new Error("sqlx-js: PostgreSQL time 24:00 has no lossless Temporal.PlainTime representation");
   }
-  return parseTemporalValue<PgTime>(temporalApi.PlainTime, value, "time", "Temporal.PlainTime");
+  return parseTemporalValue<RuntimeTime>(temporalApi.PlainTime, value, "time", "Temporal.PlainTime");
 }
 
-function parseTimestamp(value: string, temporalApi: TemporalApi): PgTimestamp {
-  return parseTemporalValue<PgTimestamp>(
+function parseTimestamp(value: string, temporalApi: TemporalApi): RuntimeTimestamp {
+  return parseTemporalValue<RuntimeTimestamp>(
     temporalApi.PlainDateTime,
     postgresTemporalIso(value, "timestamp"),
     "timestamp",
@@ -64,8 +75,8 @@ function parseTimestamp(value: string, temporalApi: TemporalApi): PgTimestamp {
   );
 }
 
-function parseTimestamptz(value: string, temporalApi: TemporalApi): PgTimestamptz {
-  return parseTemporalValue<PgTimestamptz>(
+function parseTimestamptz(value: string, temporalApi: TemporalApi): RuntimeTimestamptz {
+  return parseTemporalValue<RuntimeTimestamptz>(
     temporalApi.Instant,
     postgresTemporalIso(value, "timestamptz"),
     "timestamptz",
@@ -118,32 +129,32 @@ function postgresTemporalIso(
 }
 
 function serializeDate(value: unknown, temporalApi: TemporalApi): string {
-  assertTemporalInstance<PgDate>(value, temporalApi.PlainDate, "Temporal.PlainDate", "date");
+  assertTemporalInstance<RuntimeDate>(value, temporalApi.PlainDate, "Temporal.PlainDate", "date");
   assertIsoCalendar(value, "date");
   return formatPostgresDate(value);
 }
 
 function serializeTime(value: unknown, temporalApi: TemporalApi): string {
-  assertTemporalInstance<PgTime>(value, temporalApi.PlainTime, "Temporal.PlainTime", "time");
+  assertTemporalInstance<RuntimeTime>(value, temporalApi.PlainTime, "Temporal.PlainTime", "time");
   return formatPostgresTime(value, "time");
 }
 
 function serializeTimestamp(value: unknown, temporalApi: TemporalApi): string {
-  assertTemporalInstance<PgTimestamp>(value, temporalApi.PlainDateTime, "Temporal.PlainDateTime", "timestamp");
+  assertTemporalInstance<RuntimeTimestamp>(value, temporalApi.PlainDateTime, "Temporal.PlainDateTime", "timestamp");
   assertIsoCalendar(value, "timestamp");
   const { date, era } = postgresDate(value);
   return `${date}T${formatPostgresTime(value, "timestamp")}${era}`;
 }
 
 function serializeTimestamptz(value: unknown, temporalApi: TemporalApi): string {
-  assertTemporalInstance<PgTimestamptz>(value, temporalApi.Instant, "Temporal.Instant", "timestamptz");
+  assertTemporalInstance<RuntimeTimestamptz>(value, temporalApi.Instant, "Temporal.Instant", "timestamptz");
   if (value.epochNanoseconds % 1_000n !== 0n) {
     throw new Error("sqlx-js: Temporal.Instant has sub-microsecond precision that PostgreSQL cannot preserve");
   }
   return formatPostgresInstant(value);
 }
 
-function formatPostgresInstant(value: PgTimestamptz): string {
+function formatPostgresInstant(value: RuntimeTimestamptz): string {
   const iso = value.toString({ fractionalSecondDigits: 6 });
   const match = /^([+-]?\d+)(.*)$/.exec(iso);
   if (!match) throw new Error("sqlx-js: Temporal.Instant produced an invalid ISO value");
