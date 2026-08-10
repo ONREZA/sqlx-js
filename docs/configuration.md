@@ -144,14 +144,17 @@ return a value are outside this I/O gate. Their column types remain schema/DDL
 policy owned by migrations or pgschema; sqlx-js does not turn query validation
 into a second schema authority.
 
-The current release uses `@js-temporal/polyfill` as its canonical type peer.
-The runtime uses a compatible `globalThis.Temporal` when present; on the
-currently supported runtimes, pass the installed polyfill namespace explicitly:
+Generated registries bind PostgreSQL date/time types to the selected provider.
+Use native `globalThis.Temporal` when the runtime exposes it, or pass the
+optional polyfill fallback explicitly:
 
 ```ts
 import { Temporal } from "@js-temporal/polyfill";
+import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./sqlx-js-env.js";
 
-const db = createSqlClient(process.env.DATABASE_URL, {
+type SqlxJsRegistry = GeneratedRegistry<typeof Temporal>;
+
+const db = createSqlClient<SqlxJsRegistry>(process.env.DATABASE_URL, {
   queryDescriptors,
   temporalApi: Temporal,
 });
@@ -393,16 +396,20 @@ TypeScript table above. Existing numeric `types` entries remain authoritative.
 Apply migrations before creating the application pool; recreate the client
 after adding or replacing database types so discovery sees the new catalog.
 
-For an application-defined `customTypes` representation, provide the matching name-based runtime codec. Explicit mappings can override non-system base/extension, enum, range, and composite representations. Every configured `customTypes` entry is emitted into `SqlxJsGeneratedRegistry["runtimeTypes"]`; binding that registry to `createSqlClient<SqlxJsGeneratedRegistry>(...)` makes missing codecs and incompatible parser/serializer values TypeScript errors:
+For an application-defined `customTypes` representation, provide the matching name-based runtime codec. Explicit mappings can override non-system base/extension, enum, range, and composite representations. Every configured `customTypes` entry is emitted into `SqlxJsGeneratedRegistry["runtimeTypes"]`; binding a provider-specific registry alias to `createSqlClient<...>(...)` makes missing codecs and incompatible parser/serializer values TypeScript errors:
 
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
-import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
+import { Temporal } from "@js-temporal/polyfill";
+import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./sqlx-js-env.js";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 import { parseGeometry, serializeGeometry } from "./geometry-codec.js";
 
-const db = createSqlClient<SqlxJsGeneratedRegistry>(process.env.DATABASE_URL, {
+type SqlxJsRegistry = GeneratedRegistry<typeof Temporal>;
+
+const db = createSqlClient<SqlxJsRegistry>(process.env.DATABASE_URL, {
   queryDescriptors,
+  temporalApi: Temporal,
   typeCodecs: {
     vector: {
       parse: (value) => new Float32Array(
@@ -427,9 +434,13 @@ to explicit numeric `types` when raw access is required:
 
 ```ts
 import { createClient } from "@onreza/sqlx-js";
-import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
+import { Temporal } from "@js-temporal/polyfill";
+import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./sqlx-js-env.js";
 
-const raw = createClient<SqlxJsGeneratedRegistry>(process.env.DATABASE_URL, {
+type SqlxJsRegistry = GeneratedRegistry<typeof Temporal>;
+
+const raw = createClient<SqlxJsRegistry>(process.env.DATABASE_URL, {
+  temporalApi: Temporal,
   types: {
     geometry: {
       to: 50_000,

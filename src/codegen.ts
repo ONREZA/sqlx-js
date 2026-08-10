@@ -7,6 +7,9 @@ import type { DatabaseProfiles } from "./config";
 import { resolveTemporalPolicy, type TemporalPolicy, type TemporalPolicyOptions } from "./temporal";
 import { JSON_PROTOCOL_VERSION } from "./artifact-versions";
 
+const TEMPORAL_PROVIDER_GENERIC =
+  'TemporalProvider extends import("@onreza/sqlx-js").TemporalApi = import("@onreza/sqlx-js").GlobalTemporalApi';
+
 function entrySignature(e: CacheEntry): { params: string; row: string } {
   const paramTypes = e.paramTsTypes.map((t, i) => {
     const nullable = e.paramNullable[i] === true;
@@ -60,15 +63,15 @@ function emitRegistry(
   const defaultEntries = Object.keys(profiles).length === 0
     ? entries
     : entries.filter((entry) => entry.profile === undefined);
-  lines.push("export interface SqlxJsGeneratedQueries {");
+  lines.push(`export interface SqlxJsGeneratedQueries<${TEMPORAL_PROVIDER_GENERIC}> {`);
   emitInlineProperties(lines, defaultEntries, "  ");
   lines.push("}");
   lines.push("");
-  lines.push("export interface SqlxJsGeneratedFileQueries {");
+  lines.push(`export interface SqlxJsGeneratedFileQueries<${TEMPORAL_PROVIDER_GENERIC}> {`);
   emitFileProperties(lines, defaultEntries, "  ");
   lines.push("}");
   lines.push("");
-  lines.push("export interface SqlxJsGeneratedFunctions {");
+  lines.push(`export interface SqlxJsGeneratedFunctions<${TEMPORAL_PROVIDER_GENERIC}> {`);
 
   const functionSeen = new Set<string>();
   for (const fn of functions.slice().sort((a, b) => a.signature.localeCompare(b.signature))) {
@@ -99,14 +102,15 @@ function emitRegistry(
   lines.push("");
   emitProfileRegistries(lines, entries, profiles, temporal);
   lines.push("");
-  lines.push("export interface SqlxJsGeneratedRegistry {");
-  lines.push("  queries: SqlxJsGeneratedQueries;");
-  lines.push("  fileQueries: SqlxJsGeneratedFileQueries;");
-  lines.push("  functions: SqlxJsGeneratedFunctions;");
+  lines.push(`export interface SqlxJsGeneratedRegistry<${TEMPORAL_PROVIDER_GENERIC}> {`);
+  lines.push("  queries: SqlxJsGeneratedQueries<TemporalProvider>;");
+  lines.push("  fileQueries: SqlxJsGeneratedFileQueries<TemporalProvider>;");
+  lines.push("  functions: SqlxJsGeneratedFunctions<TemporalProvider>;");
   lines.push("  runtimeTypes: SqlxJsGeneratedRuntimeTypes;");
   lines.push("  runtimeDescriptors: true;");
   lines.push(`  jsonProtocol: ${JSON_PROTOCOL_VERSION};`);
   lines.push(`  temporal: ${temporalTypeLiteral(temporal)};`);
+  lines.push("  temporalApi: TemporalProvider;");
   lines.push("}");
 }
 
@@ -116,7 +120,7 @@ function emitProfileRegistries(
   profiles: DatabaseProfiles,
   temporal: TemporalPolicy,
 ): void {
-  lines.push("export interface SqlxJsGeneratedProfileQueries {");
+  lines.push(`export interface SqlxJsGeneratedProfileQueries<${TEMPORAL_PROVIDER_GENERIC}> {`);
   for (const [name] of Object.entries(profiles).sort(([a], [b]) => a.localeCompare(b))) {
     lines.push(`  ${JSON.stringify(name)}: {`);
     emitInlineProperties(lines, entries.filter((entry) => entry.profile === name), "    ");
@@ -124,7 +128,7 @@ function emitProfileRegistries(
   }
   lines.push("}");
   lines.push("");
-  lines.push("export interface SqlxJsGeneratedProfileFileQueries {");
+  lines.push(`export interface SqlxJsGeneratedProfileFileQueries<${TEMPORAL_PROVIDER_GENERIC}> {`);
   for (const [name] of Object.entries(profiles).sort(([a], [b]) => a.localeCompare(b))) {
     lines.push(`  ${JSON.stringify(name)}: {`);
     emitFileProperties(lines, entries.filter((entry) => entry.profile === name), "    ");
@@ -132,16 +136,17 @@ function emitProfileRegistries(
   }
   lines.push("}");
   lines.push("");
-  lines.push("export interface SqlxJsGeneratedProfiles {");
+  lines.push(`export interface SqlxJsGeneratedProfiles<${TEMPORAL_PROVIDER_GENERIC}> {`);
   for (const [name, profile] of Object.entries(profiles).sort(([a], [b]) => a.localeCompare(b))) {
     lines.push(`  ${JSON.stringify(name)}: {`);
-    lines.push(`    queries: SqlxJsGeneratedProfileQueries[${JSON.stringify(name)}];`);
-    lines.push(`    fileQueries: SqlxJsGeneratedProfileFileQueries[${JSON.stringify(name)}];`);
-    lines.push("    functions: SqlxJsGeneratedFunctions;");
+    lines.push(`    queries: SqlxJsGeneratedProfileQueries<TemporalProvider>[${JSON.stringify(name)}];`);
+    lines.push(`    fileQueries: SqlxJsGeneratedProfileFileQueries<TemporalProvider>[${JSON.stringify(name)}];`);
+    lines.push("    functions: SqlxJsGeneratedFunctions<TemporalProvider>;");
     lines.push("    runtimeTypes: SqlxJsGeneratedRuntimeTypes;");
     lines.push("    runtimeDescriptors: true;");
     lines.push(`    jsonProtocol: ${JSON_PROTOCOL_VERSION};`);
     lines.push(`    temporal: ${temporalTypeLiteral(temporal)};`);
+    lines.push("    temporalApi: TemporalProvider;");
     const transactionSettings = profile.transactionSettings
       ? ` readonly transactionSettings: readonly [${profile.transactionSettings.map((setting) => JSON.stringify(setting)).join(", ")}];`
       : "";
@@ -152,7 +157,11 @@ function emitProfileRegistries(
   }
   lines.push("}");
   lines.push("");
-  lines.push("export type SqlxJsGeneratedProfileRegistry<Name extends keyof SqlxJsGeneratedProfiles> = SqlxJsGeneratedProfiles[Name];");
+  lines.push(
+    `export type SqlxJsGeneratedProfileRegistry<`
+      + `Name extends keyof SqlxJsGeneratedProfiles, ${TEMPORAL_PROVIDER_GENERIC}`
+      + `> = SqlxJsGeneratedProfiles<TemporalProvider>[Name];`,
+  );
 }
 
 function temporalTypeLiteral(temporal: TemporalPolicy): string {

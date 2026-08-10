@@ -85,7 +85,7 @@ test("profile registries contain only queries assigned to that connection profil
   expect(dts).toContain('readonly role: "app_worker"');
   expect(dts).toContain('"SELECT api": { params: []; row: { "api": number } }');
   expect(dts).toContain('"SELECT worker": { params: []; row: { "worker": string } }');
-  expect(dts).toContain("type SqlxJsGeneratedProfileRegistry<Name extends keyof SqlxJsGeneratedProfiles>");
+  expect(dts).toContain("type SqlxJsGeneratedProfileRegistry<Name extends keyof SqlxJsGeneratedProfiles, TemporalProvider extends");
 });
 
 test("generated registries carry the exact Temporal policy", () => {
@@ -93,15 +93,15 @@ test("generated registries carry the exact Temporal policy", () => {
     {
       query: "SELECT $1::timestamptz AS value",
       paramOids: [1184],
-      paramTsTypes: ['import("@onreza/sqlx-js").PgTimestamptz'],
+      paramTsTypes: ['import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>'],
       hasResultSet: true,
-      columns: [{ name: "value", typeOid: 1184, tsType: 'import("@onreza/sqlx-js").PgTimestamptz', nullable: false }],
+      columns: [{ name: "value", typeOid: 1184, tsType: 'import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>', nullable: false }],
     },
   ], [], {}, {}, { infinity: "reject" });
 
   expect(dts).toContain('temporal: { readonly infinity: "reject"; readonly timestampWithoutTimeZone: "reject"; readonly sessionTimeZone: "UTC" };');
   expect(dts).toContain(
-    '"SELECT $1::timestamptz AS value": { params: [import("@onreza/sqlx-js").PgTimestamptz]; row: { "value": import("@onreza/sqlx-js").PgTimestamptz } }',
+    '"SELECT $1::timestamptz AS value": { params: [import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>]; row: { "value": import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider> } }',
   );
   expect(dts).toContain("export interface SqlxJsGeneratedRegistry");
   expect(dts).not.toContain("declare module");
@@ -114,15 +114,17 @@ test("temporal reject registries compile with descriptor and explicit adaptive p
     {
       query: "SELECT $1::timestamptz AS value",
       paramOids: [1184],
-      paramTsTypes: ['import("@onreza/sqlx-js").PgTimestamptz'],
+      paramTsTypes: ['import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>'],
       hasResultSet: true,
-      columns: [{ name: "value", typeOid: 1184, tsType: 'import("@onreza/sqlx-js").PgTimestamptz', nullable: false }],
+      columns: [{ name: "value", typeOid: 1184, tsType: 'import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>', nullable: false }],
     },
   ]), [], {}, {}, { infinity: "reject" });
   writeFileSync(join(root, "consumer.ts"), `
 import { createClient, createSqlClient } from "@onreza/sqlx-js";
 import { Temporal } from "@js-temporal/polyfill";
-import type { SqlxJsGeneratedRegistry } from "./generated";
+import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./generated";
+
+type SqlxJsGeneratedRegistry = GeneratedRegistry<typeof Temporal>;
 
 declare const queryDescriptors: import("@onreza/sqlx-js").RuntimeQueryDescriptors;
 const unscopedManaged = createSqlClient(undefined, {
@@ -148,8 +150,9 @@ const raw = createClient<SqlxJsGeneratedRegistry>(undefined, {
   temporalApi: Temporal,
 });
 const instant = Temporal.Instant.from("2026-01-01T00:00:00Z");
-void prepared.sql("SELECT $1::timestamptz AS value", instant);
+const preparedResult: Promise<{ value: Temporal.Instant }[]> = prepared.sql("SELECT $1::timestamptz AS value", instant);
 void adaptive.sql("SELECT $1::timestamptz AS value", instant);
+void preparedResult;
 void unscopedManaged;
 void unscopedRaw;
 void raw;
@@ -161,6 +164,59 @@ void raw;
       module: "Preserve",
       moduleResolution: "Bundler",
       target: "ESNext",
+      lib: ["ES2024"],
+      types: ["bun-types"],
+      paths: { "@onreza/sqlx-js": [resolve(import.meta.dir, "../src/index.ts")] },
+    },
+    files: ["consumer.ts", "generated.d.ts"],
+  }));
+
+  const checked = spawnSync("bunx", ["tsc", "-p", join(root, "tsconfig.json")], {
+    cwd: resolve(import.meta.dir, ".."),
+    encoding: "utf8",
+  });
+  expect(checked.status, checked.stdout + checked.stderr).toBe(0);
+});
+
+test("native Temporal registries bind the global provider exactly", () => {
+  const root = join(tmp, "temporal-native");
+  mkdirSync(root, { recursive: true });
+  emitDts(join(root, "generated.d.ts"), completeEntries([
+    {
+      query: "SELECT $1::timestamptz AS value",
+      paramOids: [1184],
+      paramTsTypes: ['import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>'],
+      hasResultSet: true,
+      columns: [{
+        name: "value",
+        typeOid: 1184,
+        tsType: 'import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>',
+        nullable: false,
+      }],
+    },
+  ]));
+  writeFileSync(join(root, "consumer.ts"), `
+import { createSqlClient } from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./generated";
+
+type Registry = GeneratedRegistry<typeof Temporal>;
+declare const queryDescriptors: import("@onreza/sqlx-js").RuntimeQueryDescriptors;
+const client = createSqlClient<Registry>(undefined, { queryDescriptors });
+const instant = Temporal.Instant.from("2026-01-01T00:00:00Z");
+const result: Promise<{ value: Temporal.Instant }[]> = client.sql(
+  "SELECT $1::timestamptz AS value",
+  instant,
+);
+void result;
+`);
+  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
+    compilerOptions: {
+      strict: true,
+      noEmit: true,
+      module: "Preserve",
+      moduleResolution: "Bundler",
+      target: "ES2024",
+      lib: ["ES2024", "ESNext.Temporal"],
       types: ["bun-types"],
       paths: { "@onreza/sqlx-js": [resolve(import.meta.dir, "../src/index.ts")] },
     },
@@ -1011,7 +1067,9 @@ import {
   type SqlTransactionOptions,
 } from "@onreza/sqlx-js";
 import { Temporal } from "@js-temporal/polyfill";
-import type { SqlxJsGeneratedRegistry } from "./generated";
+import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./generated";
+
+type SqlxJsGeneratedRegistry = GeneratedRegistry<typeof Temporal>;
 
 const findUser = defineQuery.optional("users.findById", ${JSON.stringify(query)});
 const resultAssertionsShape: QueryResultAssertions = { items: { elements: "non-null" } };
@@ -1276,6 +1334,7 @@ void invalidNestedNonNullArray;
       module: "Preserve",
       moduleResolution: "Bundler",
       target: "ESNext",
+      lib: ["ES2024"],
       types: ["bun-types"],
       paths: { "@onreza/sqlx-js": [resolve(import.meta.dir, "../src/index.ts")] },
     },

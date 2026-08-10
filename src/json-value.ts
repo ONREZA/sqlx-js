@@ -1,4 +1,9 @@
-import type { TemporalApi, TemporalFactory, TemporalJsonValue } from "./temporal-api";
+import type {
+  TemporalApi,
+  TemporalFactory,
+  TemporalRuntimeValue,
+  TemporalTypeName,
+} from "./temporal-api";
 import { isTemporalValue, resolveTemporalApi } from "./temporal-api";
 import { isDateValue, markDateFreeSqlValue } from "./sql-value";
 import { JSON_PROTOCOL_VERSION } from "./artifact-versions";
@@ -29,7 +34,7 @@ let createCanonicalJsonNumber: (value: string) => JsonNumber;
 let exactJsonNumberText: (value: unknown) => string | undefined;
 
 export type JsonPrimitive = string | number | boolean | null;
-export type JsonValue = JsonPrimitive | bigint | JsonNumber | TemporalJsonValue | JsonObject | JsonArray;
+export type JsonValue = JsonPrimitive | bigint | JsonNumber | TemporalRuntimeValue | JsonObject | JsonArray;
 export type JsonObject = { readonly [key: string]: JsonValue };
 export type JsonArray = readonly JsonValue[];
 export type JsonInputValue = JsonValue;
@@ -39,7 +44,7 @@ export type JsonInputArray = readonly JsonInputValue[];
 type NonJsonValue = symbol | Date | Uint8Array | ((...args: never[]) => unknown);
 
 export type JsonCompatible<T> =
-  T extends JsonPrimitive | bigint | JsonNumber | TemporalJsonValue ? T
+  T extends JsonPrimitive | bigint | JsonNumber | TemporalRuntimeValue ? T
     : T extends NonJsonValue ? never
       : T extends readonly unknown[] ? T extends JsonInputArray
         ? T
@@ -52,7 +57,7 @@ export type JsonCompatible<T> =
           : never;
 
 export type ImmutableJson<T> =
-  T extends JsonPrimitive | bigint | JsonNumber | TemporalJsonValue ? T
+  T extends JsonPrimitive | bigint | JsonNumber | TemporalRuntimeValue ? T
     : T extends readonly (infer Item)[] ? readonly ImmutableJson<Item>[]
       : T extends object ? { readonly [K in keyof T]: ImmutableJson<T[K]> }
         : T;
@@ -285,7 +290,7 @@ function snapshotObject(value: object, state: SnapshotState, depth: number): Jso
   return Object.freeze(result);
 }
 
-function snapshotTemporal(value: TemporalJsonValue, state: SnapshotState): TemporalJsonValue {
+function snapshotTemporal(value: TemporalRuntimeValue, state: SnapshotState): TemporalRuntimeValue {
   const name = temporalTypeName(value);
   const prototype = Object.getPrototypeOf(value) as { constructor?: unknown } | null;
   const factory = prototype?.constructor;
@@ -304,7 +309,7 @@ function snapshotTemporal(value: TemporalJsonValue, state: SnapshotState): Tempo
     throw new Error(`sqlx-js: ${name} provider returned an incompatible value`);
   }
   assertSnapshotUtf8Limit(canonical, state, `${name} value`);
-  return Object.freeze(restored) as TemporalJsonValue;
+  return Object.freeze(restored) as TemporalRuntimeValue;
 }
 
 function isTemporalFactory(value: unknown): value is TemporalFactory {
@@ -326,15 +331,7 @@ function temporalTypeName(value: unknown): SupportedTemporalName {
   throw new Error("sqlx-js: malformed Extended JSON Temporal value");
 }
 
-type SupportedTemporalName =
-  | "Temporal.Duration"
-  | "Temporal.Instant"
-  | "Temporal.PlainDate"
-  | "Temporal.PlainDateTime"
-  | "Temporal.PlainMonthDay"
-  | "Temporal.PlainTime"
-  | "Temporal.PlainYearMonth"
-  | "Temporal.ZonedDateTime";
+type SupportedTemporalName = TemporalTypeName;
 
 const SUPPORTED_TEMPORAL_NAMES = new Set<SupportedTemporalName>([
   "Temporal.Duration",
@@ -426,7 +423,7 @@ function decodeTaggedValue(
     if (!(restored instanceof factory) || temporalTypeName(restored) !== temporalName) {
       throw new Error(`sqlx-js: temporalApi.${TEMPORAL_FACTORIES[temporalName]}.from returned an incompatible value`);
     }
-    return Object.freeze(restored) as TemporalJsonValue;
+    return Object.freeze(restored) as TemporalRuntimeValue;
   }
   throw new Error(`sqlx-js: unknown Extended JSON tag type ${quotedForError(control.type)}`);
 }

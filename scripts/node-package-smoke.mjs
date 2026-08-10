@@ -36,8 +36,10 @@ try {
   writeFileSync(join(temp, "types.ts"), `
     import {
       defineQuery,
+      createSqlClient,
       EXTENDED_JSON_PROTOCOL_VERSION,
       type JsonValue,
+      type PgTimestamptz,
       type PgNotice,
       type PostgresType,
       type QueryParams,
@@ -77,11 +79,30 @@ try {
       serialize: String,
     } satisfies PostgresType<bigint>;
     const notice: PgNotice = { message: "smoke", code: "00000" };
+    const temporalStatement = "SELECT $1::timestamptz AS value";
+    type NativeRegistry = QueryRegistry & {
+      queries: Record<typeof temporalStatement, {
+        params: [PgTimestamptz<typeof Temporal>];
+        row: { value: PgTimestamptz<typeof Temporal> };
+      }>;
+      fileQueries: {};
+      jsonProtocol: typeof EXTENDED_JSON_PROTOCOL_VERSION;
+      temporalApi: typeof Temporal;
+    };
+    declare const nativeDescriptors: import("@onreza/sqlx-js").RuntimeQueryDescriptors;
+    const nativeClient = createSqlClient<NativeRegistry>(undefined, {
+      queryDescriptors: nativeDescriptors,
+    });
+    const nativeResult: Promise<{ value: Temporal.Instant }[]> = nativeClient.sql(
+      temporalStatement,
+      Temporal.Instant.from("2026-01-01T00:00:00Z"),
+    );
     void codec;
     void notice;
     void wire;
     void boundedExecutor;
     void result;
+    void nativeResult;
   `);
   writeFileSync(join(temp, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
@@ -90,13 +111,22 @@ try {
       skipLibCheck: false,
       module: "NodeNext",
       moduleResolution: "NodeNext",
-      target: "ES2023",
+      target: "ES2024",
+      lib: ["ES2024", "ESNext.Temporal"],
       types: ["node"],
       typeRoots: [join(root, "node_modules/@types")],
     },
     files: ["types.ts"],
   }));
   run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "-p", join(temp, "tsconfig.json")], temp);
+  run("npm", [
+    "install",
+    "@js-temporal/polyfill@0.5.1",
+    "--ignore-scripts",
+    "--no-package-lock",
+    "--no-audit",
+    "--no-fund",
+  ], temp);
   writeFileSync(join(temp, "app.mjs"), `
     import assert from "node:assert/strict";
     import { Temporal } from "@js-temporal/polyfill";

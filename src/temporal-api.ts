@@ -1,5 +1,3 @@
-import type { Temporal as TemporalTypes } from "@js-temporal/polyfill";
-
 export type TemporalFactory = {
   readonly prototype: object;
   from(value: string): unknown;
@@ -16,19 +14,40 @@ export type TemporalApi = {
   readonly ZonedDateTime: TemporalFactory;
 };
 
-export type PgDate = TemporalTypes.PlainDate;
-export type PgTime = TemporalTypes.PlainTime;
-export type PgTimestamp = TemporalTypes.PlainDateTime;
-export type PgTimestamptz = TemporalTypes.Instant;
-export type TemporalJsonValue =
-  | TemporalTypes.Duration
-  | TemporalTypes.Instant
-  | TemporalTypes.PlainDate
-  | TemporalTypes.PlainDateTime
-  | TemporalTypes.PlainMonthDay
-  | TemporalTypes.PlainTime
-  | TemporalTypes.PlainYearMonth
-  | TemporalTypes.ZonedDateTime;
+export type GlobalTemporalApi = typeof globalThis extends {
+  readonly Temporal: infer Api extends TemporalApi;
+} ? Api : never;
+export type TemporalValue<
+  Api extends TemporalApi,
+  Name extends keyof TemporalApi,
+> = Api[Name]["prototype"];
+
+export type PgDate<Api extends TemporalApi = GlobalTemporalApi> = TemporalValue<Api, "PlainDate">;
+export type PgTime<Api extends TemporalApi = GlobalTemporalApi> = TemporalValue<Api, "PlainTime">;
+export type PgTimestamp<Api extends TemporalApi = GlobalTemporalApi> = TemporalValue<Api, "PlainDateTime">;
+export type PgTimestamptz<Api extends TemporalApi = GlobalTemporalApi> = TemporalValue<Api, "Instant">;
+export type TemporalJsonValue<Api extends TemporalApi = GlobalTemporalApi> =
+  | TemporalValue<Api, "Duration">
+  | TemporalValue<Api, "Instant">
+  | TemporalValue<Api, "PlainDate">
+  | TemporalValue<Api, "PlainDateTime">
+  | TemporalValue<Api, "PlainMonthDay">
+  | TemporalValue<Api, "PlainTime">
+  | TemporalValue<Api, "PlainYearMonth">
+  | TemporalValue<Api, "ZonedDateTime">;
+export type TemporalTypeName =
+  | "Temporal.Duration"
+  | "Temporal.Instant"
+  | "Temporal.PlainDate"
+  | "Temporal.PlainDateTime"
+  | "Temporal.PlainMonthDay"
+  | "Temporal.PlainTime"
+  | "Temporal.PlainYearMonth"
+  | "Temporal.ZonedDateTime";
+export type TemporalRuntimeValue = object & {
+  readonly [Symbol.toStringTag]: TemporalTypeName;
+  toString(): string;
+};
 
 const RESOLVED_TEMPORAL_APIS = new WeakMap<object, TemporalApi>();
 
@@ -88,7 +107,7 @@ export function resolveTemporalApi(api: TemporalApi | undefined): TemporalApi {
   return snapshot;
 }
 
-export function isTemporalValue(value: unknown): value is TemporalJsonValue {
+export function isTemporalValue(value: unknown): value is TemporalRuntimeValue {
   if (!value || typeof value !== "object") return false;
   const tag = (value as { readonly [Symbol.toStringTag]?: unknown })[Symbol.toStringTag];
   return tag === "Temporal.Duration"

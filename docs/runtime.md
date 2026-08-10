@@ -163,16 +163,19 @@ For dependency injection, read replicas, tests, or several independent pools in 
 
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
-import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
+import { Temporal } from "@js-temporal/polyfill";
+import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./sqlx-js-env.js";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 
-const primary = createSqlClient<SqlxJsGeneratedRegistry>(
+type SqlxJsRegistry = GeneratedRegistry<typeof Temporal>;
+
+const primary = createSqlClient<SqlxJsRegistry>(
   process.env.DATABASE_URL,
-  { queryDescriptors },
+  { queryDescriptors, temporalApi: Temporal },
 );
-const replica = createSqlClient<SqlxJsGeneratedRegistry>(
+const replica = createSqlClient<SqlxJsRegistry>(
   process.env.REPLICA_DATABASE_URL,
-  { execution: "adaptive" },
+  { execution: "adaptive", temporalApi: Temporal },
 );
 
 await Promise.all([
@@ -189,9 +192,9 @@ await Promise.all([
 ]);
 ```
 
-Each generated `sqlx-js-env.d.ts` exports its own `SqlxJsGeneratedRegistry`. Passing it to `createSqlClient<...>()` keeps a scoped client on that project's query contract even when a monorepo TypeScript program includes declarations for several databases. There is no ambient registry or global managed client; the application owns each client and its Temporal provider explicitly.
+Each generated `sqlx-js-env.d.ts` exports its own generic `SqlxJsGeneratedRegistry`. Bind it to the selected Temporal namespace and export one application alias such as `SqlxJsRegistry`; passing that alias to `createSqlClient<...>()` keeps a scoped client on that project's query and provider contract even when a monorepo TypeScript program includes declarations for several databases. There is no ambient registry or global managed client; the application owns each client and its Temporal provider explicitly.
 
-When a workspace package exports database source to other TypeScript programs, bind and export the client with that package's `SqlxJsGeneratedRegistry` at the database boundary.
+When a workspace package exports database source to other TypeScript programs, bind and export the client with that package's provider-specific registry alias at the database boundary.
 
 The scanner recognizes clients assigned directly from an imported `createSqlClient(...)` (including aliased and namespace imports), so `client.sql(...)`, its cardinality helpers, file queries, and transactions participate in `prepare`.
 
@@ -204,12 +207,15 @@ each managed client that should use the one-write parameter path:
 
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
-import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
+import { Temporal } from "@js-temporal/polyfill";
+import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./sqlx-js-env.js";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 
-const db = createSqlClient<SqlxJsGeneratedRegistry>(
+type SqlxJsRegistry = GeneratedRegistry<typeof Temporal>;
+
+const db = createSqlClient<SqlxJsRegistry>(
   process.env.DATABASE_URL,
-  { queryDescriptors },
+  { queryDescriptors, temporalApi: Temporal },
 );
 await db.ready({ timeoutMs: 5_000 });
 ```

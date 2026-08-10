@@ -67,13 +67,14 @@ See the [documentation index](./docs/README.md) for the complete guide set.
 
 - PostgreSQL 16 or newer
 - Node.js 24 or newer, Bun 1.3 or newer, or Deno 2.9 or newer
-- TypeScript 5.4 through 6.x for source-scanning commands
-- `@js-temporal/polyfill` 0.5.x as the canonical Temporal type/provider peer
+- TypeScript 6.x for source-scanning commands
+- ES2024 or newer runtime semantics
+- Optional `@js-temporal/polyfill` 0.5.x fallback when native Temporal is unavailable
 
-The package is ESM-only. TypeScript is an optional peer dependency so it does
-not have to be installed in production-only images. The Temporal polyfill is a
-peer rather than a runtime dependency: the application owns the provider and
-sqlx-js never mutates `globalThis`.
+The package is ESM-only. TypeScript and the Temporal polyfill are optional peer
+dependencies, so native production runtimes do not install either one merely
+for sqlx-js. The application owns the provider and sqlx-js never mutates
+`globalThis`.
 
 ## Quick start
 
@@ -81,12 +82,14 @@ Install the package and TypeScript:
 
 ```bash
 npm install @onreza/sqlx-js @js-temporal/polyfill
-npm install --save-dev "typescript@>=5.4 <7"
+npm install --save-dev "typescript@>=6 <7"
 
 # or
 bun add @onreza/sqlx-js @js-temporal/polyfill
-bun add --dev "typescript@>=5.4 <7"
+bun add --dev "typescript@>=6 <7"
 ```
+
+Omit `@js-temporal/polyfill` when every target runtime exposes native Temporal.
 
 Scaffold a project using built-in migrations:
 
@@ -186,16 +189,20 @@ construction; `init` scaffolds this explicitly:
 ```ts
 import { createSqlClient } from "@onreza/sqlx-js";
 import { Temporal } from "@js-temporal/polyfill";
-import type { SqlxJsGeneratedRegistry } from "./sqlx-js-env.js";
+import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./sqlx-js-env.js";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
 
-const db = createSqlClient<SqlxJsGeneratedRegistry>(databaseUrl, {
+type SqlxJsRegistry = GeneratedRegistry<typeof Temporal>;
+
+const db = createSqlClient<SqlxJsRegistry>(databaseUrl, {
   queryDescriptors,
   temporalApi: Temporal,
 });
 ```
 
-If a compatible `globalThis.Temporal` exists, the option can be omitted.
+For native Temporal, bind the same generated registry to `typeof Temporal` and
+omit `temporalApi`. The generated SQL parameter and row types then use that
+native provider's exact `Temporal.*` instances instead of polyfill aliases.
 PostgreSQL sessions are pinned to UTC; infinity, `time` 24:00, and
 sub-microsecond inputs are rejected; and the codec preserves microseconds
 returned by PostgreSQL. Attempts to change

@@ -6,15 +6,19 @@ Install sqlx-js, choose a schema workflow, connect PostgreSQL, and generate the 
 
 ```bash
 npm install @onreza/sqlx-js @js-temporal/polyfill
-npm install --save-dev "typescript@>=5.4 <7"
+npm install --save-dev "typescript@>=6 <7"
 # or
 bun add @onreza/sqlx-js @js-temporal/polyfill
-bun add --dev "typescript@>=5.4 <7"
+bun add --dev "typescript@>=6 <7"
 ```
 
+The polyfill is optional when the target runtime exposes native Temporal.
+Polyfill projects should use an explicit base such as `lib: ["ES2024"]`;
+native TypeScript projects can add `ESNext.Temporal` to that list.
+
 Node.js 24, Bun 1.3, or Deno 2.9 and PostgreSQL 16 or newer are required. The
-package ships ESM only; CommonJS consumers are not supported. TypeScript
-5.4–6.x is an optional peer so production-only installs do not pull the
+package ships ESM only, targets ES2024, and does not support CommonJS consumers.
+TypeScript 6.x is an optional peer so production-only installs do not pull the
 compiler into the application image; source scanning commands (`prepare`,
 `queries`, `doctor`, `ci`, `dev`, and `verify`) require it in development
 dependencies.
@@ -162,8 +166,9 @@ sqlx-js prepare --check  # database-free committed-artifact check
 The declaration is written to `sqlx-js-env.d.ts` by default. Add it to
 `tsconfig.json` when it is not already included.
 
-The generated registry makes descriptor ownership explicit. A scoped
-`createSqlClient<SqlxJsGeneratedRegistry>(...)` must receive
+The generated registry makes descriptor and Temporal-provider ownership
+explicit. The scaffold exports a provider-bound `SqlxJsRegistry`; a scoped
+`createSqlClient<SqlxJsRegistry>(...)` must receive
 `queryDescriptors`, or opt out deliberately with `execution: "adaptive"`.
 There is no runtime artifact discovery.
 
