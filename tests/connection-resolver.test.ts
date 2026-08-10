@@ -239,6 +239,10 @@ describe("connection resolver", () => {
       { env: { PGSERVICE: "production" } },
     )).toThrow("PGSERVICE is not supported");
     expect(() => parseDatabaseUrl(
+      "postgresql://app@db.internal/app",
+      { env: { PGSSLPASSWORD: "certificate-secret" } },
+    )).toThrow("PGSSLPASSWORD is not supported");
+    expect(() => parseDatabaseUrl(
       "postgresql://app@db.internal/app?channel_binding=require",
       { env: {} },
     )).toThrow("connection parameter channel_binding is not supported");
@@ -325,7 +329,7 @@ describe("connection resolver", () => {
 
   test("renders the same resolved identity for libpq subprocesses", () => {
     const config = parseDatabaseUrl(
-      "postgresql://app@db.internal:5544/app?hostaddr=127.0.0.1&passfile=%2Frun%2Fsecrets%2Fpgpass&sslmode=verify-full&role=app_reader",
+      "postgresql://app@db.internal:5544/app?hostaddr=127.0.0.1&passfile=%2Frun%2Fsecrets%2Fpgpass&sslmode=verify-full&role=app_reader&statement_timeout=2500",
       { env: {} },
     );
     const env = postgresConnectionEnvironment(config, {
@@ -344,7 +348,7 @@ describe("connection resolver", () => {
       PGDATABASE: "app",
       PGPASSFILE: "/run/secrets/pgpass",
       PGSSLMODE: "verify-full",
-      PGOPTIONS: "-c role=app_reader",
+      PGOPTIONS: "-c statement_timeout=2500 -c role=app_reader -c client_encoding=UTF8 -c DateStyle=ISO -c TimeZone=UTC",
       PGCONNECT_TIMEOUT: "15",
       PGSCHEMA_PLAN_HOST: "keep-for-provider",
     });

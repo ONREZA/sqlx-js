@@ -391,6 +391,7 @@ const UNSUPPORTED_LIBPQ_CONNECTION_ENVIRONMENT = [
   "PGREQUIRESSL",
   "PGSSLCOMPRESSION",
   "PGSSLCERTMODE",
+  "PGSSLPASSWORD",
   "PGSSLCRL",
   "PGSSLCRLDIR",
   "PGSSLSNI",
@@ -458,7 +459,15 @@ function pgOption(value: string): string {
 }
 
 function postgresStartupOptions(config: ConnConfig): string | undefined {
-  const parameters = Object.entries(config.startupParameters ?? {})
+  const parameters = [
+    ...(config.statementTimeoutMs === undefined
+      ? []
+      : [["statement_timeout", String(config.statementTimeoutMs)] as const]),
+    ...Object.entries(config.startupParameters ?? {}),
+    ["client_encoding", "UTF8"] as const,
+    ["DateStyle", "ISO"] as const,
+    ["TimeZone", "UTC"] as const,
+  ]
     .map(([name, value]) => `-c ${pgOption(name)}=${pgOption(value)}`);
   const options = [config.startupOptions, ...parameters].filter((value) => value !== undefined);
   return options.length === 0 ? undefined : options.join(" ");

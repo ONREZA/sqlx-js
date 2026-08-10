@@ -209,6 +209,7 @@ export function validateRuntimeProfile(profile: NonNullable<CreateSqlClientOptio
 export function profileClientOptions(
   url: string,
   options: CreateSqlClientOptions,
+  connection?: ConnConfig,
 ): CreateClientOptions {
   const clientOptions = postgresClientOptions(options);
   const profile = options.profile;
@@ -223,7 +224,7 @@ export function profileClientOptions(
   if (typeof clientOptions.startupOptions === "string" && hasRoleStartupOption(clientOptions.startupOptions)) {
     throw new Error(`sqlx-js: profile ${profile.name} cannot be combined with a role in startupOptions`);
   }
-  const resolvedConnection = parseDatabaseUrl(url);
+  const resolvedConnection = connection ?? parseDatabaseUrl(url);
   assertProfileConnection(profile, resolvedConnection);
   return {
     ...clientOptions,

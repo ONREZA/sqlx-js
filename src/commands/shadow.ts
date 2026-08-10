@@ -66,7 +66,8 @@ async function createDisposableShadowDatabase(
   const adminUrl = shadowAdminUrl ?? maintenanceDatabaseUrl(databaseUrl);
   const shadowUrl = replaceDatabaseInUrl(databaseUrl, name);
   const owner = parseDatabaseUrl(databaseUrl).user;
-  const admin = new PgClient(parseDatabaseUrl(adminUrl));
+  const adminConnection = parseDatabaseUrl(adminUrl);
+  const admin = new PgClient(adminConnection);
   await admin.connect();
   try {
     await admin.simpleQuery(`CREATE DATABASE ${quoteIdent(name)} OWNER ${quoteIdent(owner)}`);
@@ -85,7 +86,7 @@ async function createDisposableShadowDatabase(
     cleanup: async () => {
       if (dropped) return;
       dropped = true;
-      const dropAdmin = new PgClient(parseDatabaseUrl(adminUrl));
+      const dropAdmin = new PgClient(adminConnection);
       await dropAdmin.connect();
       try {
         await dropAdmin.simpleQuery(`DROP DATABASE IF EXISTS ${quoteIdent(name)}`);

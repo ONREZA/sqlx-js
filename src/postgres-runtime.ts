@@ -47,7 +47,7 @@ import {
 } from "./temporal";
 import type { TemporalApi } from "./temporal-api";
 import type { SqlxJson } from "./json-value";
-import { ConnectionLostError, PgError } from "./pg/wire";
+import { ConnectionLostError, parseDatabaseUrl, PgError } from "./pg/wire";
 import {
   createTransactionRuntimeClient,
   type PendingQuery,
@@ -1304,9 +1304,10 @@ export function createClient(url = process.env.DATABASE_URL, options: CreateClie
 
 function createManagedClient(url: string | undefined, options: CreateSqlClientOptions): ManagedPostgresRuntime {
   if (!url) throw new Error("sqlx-js: DATABASE_URL is not set");
-  const clientOptions = profileClientOptions(url, options);
+  const connection = parseDatabaseUrl(normalizeRuntimeDatabaseUrl(url));
+  const clientOptions = profileClientOptions(url, options, connection);
   return new ManagedPostgresRuntime(
-    (temporal) => createClient(url, { ...clientOptions, temporal }),
+    (temporal) => createPostgresClient(connection, { ...clientOptions, temporal }),
     options,
   );
 }

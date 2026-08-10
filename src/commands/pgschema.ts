@@ -263,12 +263,6 @@ const OWNED_PGSCHEMA_OPTIONS = new Set([
   "--application-name",
   "--schema",
   "--file",
-  "--plan-host",
-  "--plan-port",
-  "--plan-db",
-  "--plan-user",
-  "--plan-password",
-  "--plan-sslmode",
 ]);
 
 function assertPgschemaPassthrough(args: readonly string[]): void {
@@ -283,25 +277,28 @@ function assertPgschemaPassthrough(args: readonly string[]): void {
   }
 }
 
-const PGSCHEMA_PLAN_CONNECTION_ENVIRONMENT = [
-  "PGSCHEMA_PLAN_HOST",
-  "PGSCHEMA_PLAN_PORT",
-  "PGSCHEMA_PLAN_DB",
-  "PGSCHEMA_PLAN_USER",
-  "PGSCHEMA_PLAN_PASSWORD",
-  "PGSCHEMA_PLAN_SSLMODE",
-] as const;
+function assertPgschemaConnectionBoundary(db: ConnConfig): void {
+  const unsupported = db.startupOptions !== undefined
+    ? "options"
+    : db.startupParameters?.role !== undefined
+      ? "role"
+      : db.statementTimeoutMs !== undefined
+        ? "statement_timeout"
+        : db.applicationName !== undefined
+          ? "application_name"
+          : undefined;
+  if (unsupported !== undefined) {
+    throw new Error(
+      `sqlx-js pgschema: ${unsupported} cannot be preserved independently from pgschema's plan database; remove it from the target connection or use the built-in schema workflow`,
+    );
+  }
+}
 
 function pgschemaEnv(db: ConnConfig): NodeJS.ProcessEnv {
   const env = postgresConnectionEnvironment(db);
-  for (const name of PGSCHEMA_PLAN_CONNECTION_ENVIRONMENT) {
-    if (env[name]) {
-      throw new Error(`sqlx-js pgschema: ${name} is not supported by the unified connection adapter`);
-    }
-    delete env[name];
-  }
   const password = resolveConnectionPassword(db);
-  // Empty PGPASSWORD lets pgx retry .pgpass with its own endpoint identity.
+  // A non-empty sentinel prevents pgx from repeating password-file lookup
+  // with its provider-owned endpoint identity.
   env.PGPASSWORD = password === ""
     ? `sqlx-js-no-password-${randomBytes(16).toString("hex")}`
     : password;
@@ -365,6 +362,7 @@ export function runPgschemaCommand(opts: PgschemaCommandOptions): void {
   if (file && !existsSync(file)) throw new Error(`sqlx-js pgschema: schema file not found: ${file}`);
 
   const db = parseDatabaseUrl(opts.databaseUrl);
+  assertPgschemaConnectionBoundary(db);
   const sslmode = db.sslmode ?? "prefer";
   if (db.hostaddr !== undefined && db.hostaddr !== db.host && sslmode !== "disable") {
     throw new Error(

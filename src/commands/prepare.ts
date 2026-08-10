@@ -184,6 +184,7 @@ export function siteUsage(sites: QueryCallSite[]): Pick<CacheEntry, "hasInline" 
 
 export type PrepareSession = {
   client: PgClient;
+  connection: ConnConfig;
   target: DatabaseTargetSummary;
   schema: SchemaCache;
   userCfg: SqlxJsConfig;
@@ -280,7 +281,7 @@ export async function openSession(opts: PrepareOptions): Promise<PrepareSession>
     await client.end().catch(() => {});
     throw fatal("connect", error, target);
   }
-  return { client, target, schema, userCfg, profiles };
+  return { client, connection: cfg, target, schema, userCfg, profiles };
 }
 
 function quoteIdentifier(value: string): string {
@@ -501,7 +502,7 @@ export async function prepareOnce(
   for (const [profile, group] of byProfile) {
     const context = prepareContext(session, profile);
     const results = await validateAll(
-      parseDatabaseUrl(opts.databaseUrl),
+      session.connection,
       context.client,
       [...group.values()].map((item) => ({ fp: item.fp, query: item.query })),
       concurrency,
