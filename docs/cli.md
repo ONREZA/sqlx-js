@@ -250,6 +250,17 @@ sqlx-js pgschema plan -- --output-json plan.json
 sqlx-js pgschema apply -- --plan plan.json --auto-approve
 ```
 
+`init` uses the explicit polyfill fallback by default. Native-only runtimes can
+scaffold `db.ts` without that dependency and add `ESNext.Temporal` to the
+project TypeScript libs with:
+
+```bash
+sqlx-js init --temporal-provider native
+```
+
+`--schema-provider` and `--temporal-provider` are independent and may be used
+together.
+
 With `schema.provider = "pgschema"`, `dev` creates a disposable shadow
 database, applies `schema.sql`, prepares project SQL, writes `.sqlx-js/`,
 `sqlx-js-env.d.ts`, and any configured enum catalog, then drops the shadow.

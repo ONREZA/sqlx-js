@@ -20,7 +20,7 @@ export function helpText(version: string, scope: HelpScope, args: string[] = [])
     root: `sqlx-js — compile-time-checked SQL for TypeScript + Postgres (v${VERSION})
 
   common workflows:
-    sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]
+    sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema] [--temporal-provider polyfill|native]
     sqlx-js dev [--strict-inference] [--shadow-url <url>]
     sqlx-js verify [--strict-inference] [--shadow-url <url>]
     sqlx-js prepare [--watch | --check | --offline | --verify]
@@ -44,10 +44,11 @@ export function helpText(version: string, scope: HelpScope, args: string[] = [])
   Run \`sqlx-js <command> --help\` or
   \`sqlx-js <command> <subcommand> --help\` for exact behavior and flags.
   `,
-    init: `usage: sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema]
+    init: `usage: sqlx-js init [--root <dir>] [--schema-provider builtin|pgschema] [--temporal-provider polyfill|native]
 
   Scaffold config, a descriptor-bound db.ts, generated artifact placeholders,
-  package scripts, and the selected schema source without replacing existing files.`,
+  package scripts, and the selected schema and Temporal provider boundaries
+  without replacing existing files.`,
     dev: `usage: sqlx-js dev [--root <dir>] [--dts <path>] [--migrations <dir>] [--shadow-admin-url <url> | --shadow-url <url>] [--lock-timeout <ms>] [--strict-inference] [--no-prune]
 
   Build the configured schema source in a disposable shadow database and

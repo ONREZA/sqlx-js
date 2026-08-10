@@ -80,7 +80,7 @@ export interface SqlxJsGeneratedRegistry<TemporalProvider extends import("@onrez
 }
 `;
 
-const DATABASE_TEMPLATE = `import { createSqlClient } from "@onreza/sqlx-js";
+const POLYFILL_DATABASE_TEMPLATE = `import { createSqlClient } from "@onreza/sqlx-js";
 import { Temporal } from "@js-temporal/polyfill";
 import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./sqlx-js-env.js";
 import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
@@ -90,6 +90,17 @@ export type SqlxJsRegistry = GeneratedRegistry<typeof Temporal>;
 export const db = createSqlClient<SqlxJsRegistry>(undefined, {
   queryDescriptors,
   temporalApi: Temporal,
+});
+`;
+
+const NATIVE_DATABASE_TEMPLATE = `import { createSqlClient } from "@onreza/sqlx-js";
+import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./sqlx-js-env.js";
+import queryDescriptors from "./.sqlx-js/runtime-descriptors.json" with { type: "json" };
+
+export type SqlxJsRegistry = GeneratedRegistry<typeof Temporal>;
+
+export const db = createSqlClient<SqlxJsRegistry>(undefined, {
+  queryDescriptors,
 });
 `;
 
@@ -105,6 +116,7 @@ const RUNTIME_DESCRIPTOR_TEMPLATE = `${JSON.stringify({
 export type InitOptions = {
   root: string;
   schemaProvider?: "builtin" | "pgschema";
+  temporalProvider?: "native" | "polyfill";
   log?: (msg: string) => void;
 };
 
@@ -137,12 +149,16 @@ export function runInit(opts: InitOptions): void {
   };
 
   const schemaProvider = opts.schemaProvider ?? "builtin";
+  const temporalProvider = opts.temporalProvider ?? "polyfill";
   ensureFile("sqlx-js.config.ts", schemaProvider === "pgschema" ? PGSCHEMA_CONFIG_TEMPLATE : CONFIG_TEMPLATE);
   if (schemaProvider === "pgschema") ensureFile("schema.sql", PGSCHEMA_TEMPLATE);
   else ensureDir("migrations");
   ensureFile(".env.example", ENV_TEMPLATE);
   ensureFile("sqlx-js-env.d.ts", DTS_TEMPLATE);
-  ensureFile("db.ts", DATABASE_TEMPLATE);
+  ensureFile(
+    "db.ts",
+    temporalProvider === "native" ? NATIVE_DATABASE_TEMPLATE : POLYFILL_DATABASE_TEMPLATE,
+  );
   ensureFile(".sqlx-js/runtime-descriptors.json", RUNTIME_DESCRIPTOR_TEMPLATE);
   const gitAttributes = ensureGeneratedGitAttributes(opts.root);
   const gitAttributesLabel = relative(opts.root, gitAttributes.path).replaceAll("\\", "/")
@@ -192,6 +208,18 @@ export function runInit(opts: InitOptions): void {
     }
     const options = (value.compilerOptions ??= {}) as Record<string, unknown>;
     let changed = false;
+    if (temporalProvider === "native") {
+      const lib = options.lib;
+      if (lib === undefined) {
+        options.lib = ["ES2024", "ESNext.Temporal"];
+        changed = true;
+      } else if (!Array.isArray(lib) || !lib.every((item) => typeof item === "string")) {
+        notes.push("tsconfig.json: add ESNext.Temporal to compilerOptions.lib for native Temporal");
+      } else if (!lib.some((item) => item.toLowerCase() === "esnext.temporal")) {
+        lib.push("ESNext.Temporal");
+        changed = true;
+      }
+    }
     if (options.resolveJsonModule === undefined) {
       options.resolveJsonModule = true;
       changed = true;

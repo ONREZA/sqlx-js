@@ -50,11 +50,11 @@
         },
         {
           "mode": "table",
-          "tsType": "import(\"@onreza/sqlx-js\").PgTimestamptz<TemporalProvider>",
+          "tsType": "import(\"@onreza/sqlx-js\").PgTimestamptz<import(\"@onreza/sqlx-js\").SqlxJsGeneratedTemporalProvider>",
           "name": "created_at"
         }
       ],
-      "returns": "{ created_at: import(\"@onreza/sqlx-js\").PgTimestamptz<TemporalProvider> | null; email: string | null; id: bigint | null; name: string | null; role: \"admin\" | \"editor\" | \"viewer\" | null }",
+      "returns": "{ created_at: import(\"@onreza/sqlx-js\").PgTimestamptz<import(\"@onreza/sqlx-js\").SqlxJsGeneratedTemporalProvider> | null; email: string | null; id: bigint | null; name: string | null; role: \"admin\" | \"editor\" | \"viewer\" | null }",
       "returnsSet": true,
       "volatility": "stable",
       "strict": false,

@@ -7,8 +7,11 @@ import type { CacheEntry } from "../src/cache";
 import type { FunctionEntry } from "../src/function-cache";
 import type { DatabaseProfiles } from "../src/config";
 import type { TemporalPolicy } from "../src/temporal";
+import { TEMPORAL_PROVIDER_TYPE_MARKER } from "../src/pg/oids";
 
 const tmp = join(import.meta.dir, ".tmp-codegen");
+const GENERATED_PG_TIMESTAMPTZ =
+  `import("@onreza/sqlx-js").PgTimestamptz<${TEMPORAL_PROVIDER_TYPE_MARKER}>`;
 
 afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
@@ -93,9 +96,9 @@ test("generated registries carry the exact Temporal policy", () => {
     {
       query: "SELECT $1::timestamptz AS value",
       paramOids: [1184],
-      paramTsTypes: ['import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>'],
+      paramTsTypes: [GENERATED_PG_TIMESTAMPTZ],
       hasResultSet: true,
-      columns: [{ name: "value", typeOid: 1184, tsType: 'import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>', nullable: false }],
+      columns: [{ name: "value", typeOid: 1184, tsType: GENERATED_PG_TIMESTAMPTZ, nullable: false }],
     },
   ], [], {}, {}, { infinity: "reject" });
 
@@ -107,6 +110,27 @@ test("generated registries carry the exact Temporal policy", () => {
   expect(dts).not.toContain("declare module");
 });
 
+test("generated Temporal generics do not shadow application type expressions", () => {
+  const dts = write([{
+    query: "SELECT application_value, now() AS at",
+    paramOids: [],
+    paramTsTypes: [],
+    hasResultSet: true,
+    columns: [
+      { name: "application_value", typeOid: 0, tsType: "TemporalProvider", nullable: false },
+      { name: "at", typeOid: 1184, tsType: GENERATED_PG_TIMESTAMPTZ, nullable: false },
+    ],
+  }]);
+
+  expect(dts).toContain(
+    "interface SqlxJsGeneratedQueries<TemporalProvider2 extends",
+  );
+  expect(dts).toContain(
+    'row: { "application_value": TemporalProvider; '
+      + '"at": import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider2> }',
+  );
+});
+
 test("temporal reject registries compile with descriptor and explicit adaptive policies", () => {
   const root = join(tmp, "temporal-reject");
   mkdirSync(root, { recursive: true });
@@ -114,9 +138,9 @@ test("temporal reject registries compile with descriptor and explicit adaptive p
     {
       query: "SELECT $1::timestamptz AS value",
       paramOids: [1184],
-      paramTsTypes: ['import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>'],
+      paramTsTypes: [GENERATED_PG_TIMESTAMPTZ],
       hasResultSet: true,
-      columns: [{ name: "value", typeOid: 1184, tsType: 'import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>', nullable: false }],
+      columns: [{ name: "value", typeOid: 1184, tsType: GENERATED_PG_TIMESTAMPTZ, nullable: false }],
     },
   ]), [], {}, {}, { infinity: "reject" });
   writeFileSync(join(root, "consumer.ts"), `
@@ -125,6 +149,10 @@ import { Temporal } from "@js-temporal/polyfill";
 import type { SqlxJsGeneratedRegistry as GeneratedRegistry } from "./generated";
 
 type SqlxJsGeneratedRegistry = GeneratedRegistry<typeof Temporal>;
+const rawFactory = createClient<SqlxJsGeneratedRegistry>;
+type RawClientArgs = Parameters<typeof rawFactory>;
+type RawOptionsAreRequired = RawClientArgs extends [string | undefined, object] ? true : false;
+const rawOptionsAreRequired: RawOptionsAreRequired = true;
 
 declare const queryDescriptors: import("@onreza/sqlx-js").RuntimeQueryDescriptors;
 const unscopedManaged = createSqlClient(undefined, {
@@ -156,6 +184,7 @@ void preparedResult;
 void unscopedManaged;
 void unscopedRaw;
 void raw;
+void rawOptionsAreRequired;
 `);
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
@@ -185,12 +214,12 @@ test("native Temporal registries bind the global provider exactly", () => {
     {
       query: "SELECT $1::timestamptz AS value",
       paramOids: [1184],
-      paramTsTypes: ['import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>'],
+      paramTsTypes: [GENERATED_PG_TIMESTAMPTZ],
       hasResultSet: true,
       columns: [{
         name: "value",
         typeOid: 1184,
-        tsType: 'import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>',
+        tsType: GENERATED_PG_TIMESTAMPTZ,
         nullable: false,
       }],
     },

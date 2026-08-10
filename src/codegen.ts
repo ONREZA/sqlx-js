@@ -6,12 +6,15 @@ import type { FunctionEntry } from "./function-cache";
 import type { DatabaseProfiles } from "./config";
 import { resolveTemporalPolicy, type TemporalPolicy, type TemporalPolicyOptions } from "./temporal";
 import { JSON_PROTOCOL_VERSION } from "./artifact-versions";
+import { TEMPORAL_PROVIDER_TYPE_MARKER } from "./pg/oids";
 
-const TEMPORAL_PROVIDER_GENERIC =
-  'TemporalProvider extends import("@onreza/sqlx-js").TemporalApi = import("@onreza/sqlx-js").GlobalTemporalApi';
+function temporalProviderGeneric(name: string): string {
+  return `${name} extends import("@onreza/sqlx-js").TemporalApi = import("@onreza/sqlx-js").GlobalTemporalApi`;
+}
 
-function entrySignature(e: CacheEntry): { params: string; row: string } {
+function entrySignature(e: CacheEntry, temporalProvider: string): { params: string; row: string } {
   const paramTypes = e.paramTsTypes.map((t, i) => {
+    t = bindTemporalProvider(t, temporalProvider);
     const nullable = e.paramNullable[i] === true;
     return nullable ? `${t} | null` : t;
   });
@@ -21,7 +24,8 @@ function entrySignature(e: CacheEntry): { params: string; row: string } {
   if (!e.hasResultSet) return { params, row: "never" };
   const cols = e.columns.map((c) => {
     const nullable = effectiveNullable(c);
-    const t = nullable ? `${c.tsType} | null` : c.tsType;
+    const columnType = bindTemporalProvider(c.tsType, temporalProvider);
+    const t = nullable ? `${columnType} | null` : columnType;
     return `${JSON.stringify(c.name)}: ${t}`;
   });
   return { params, row: `{ ${cols.join("; ")} }` };
@@ -41,7 +45,16 @@ export function emitDts(
   lines.push("// Run `sqlx-js prepare` to regenerate.");
   lines.push("");
   const temporalPolicy = resolveTemporalPolicy(temporal);
-  emitRegistry(lines, entries, functions, runtimeTypes, profiles, temporalPolicy);
+  const temporalProvider = temporalProviderName(entries, functions, runtimeTypes);
+  emitRegistry(
+    lines,
+    entries,
+    functions,
+    runtimeTypes,
+    profiles,
+    temporalPolicy,
+    temporalProvider,
+  );
   const tmp = `${outPath}.tmp-${randomBytes(4).toString("hex")}`;
   writeFileSync(tmp, lines.join("\n") + "\n");
   try {
@@ -59,30 +72,32 @@ function emitRegistry(
   runtimeTypes: Readonly<Record<string, string>>,
   profiles: DatabaseProfiles,
   temporal: TemporalPolicy,
+  temporalProvider: string,
 ): void {
   const defaultEntries = Object.keys(profiles).length === 0
     ? entries
     : entries.filter((entry) => entry.profile === undefined);
-  lines.push(`export interface SqlxJsGeneratedQueries<${TEMPORAL_PROVIDER_GENERIC}> {`);
-  emitInlineProperties(lines, defaultEntries, "  ");
+  lines.push(`export interface SqlxJsGeneratedQueries<${temporalProviderGeneric(temporalProvider)}> {`);
+  emitInlineProperties(lines, defaultEntries, "  ", temporalProvider);
   lines.push("}");
   lines.push("");
-  lines.push(`export interface SqlxJsGeneratedFileQueries<${TEMPORAL_PROVIDER_GENERIC}> {`);
-  emitFileProperties(lines, defaultEntries, "  ");
+  lines.push(`export interface SqlxJsGeneratedFileQueries<${temporalProviderGeneric(temporalProvider)}> {`);
+  emitFileProperties(lines, defaultEntries, "  ", temporalProvider);
   lines.push("}");
   lines.push("");
-  lines.push(`export interface SqlxJsGeneratedFunctions<${TEMPORAL_PROVIDER_GENERIC}> {`);
+  lines.push(`export interface SqlxJsGeneratedFunctions<${temporalProviderGeneric(temporalProvider)}> {`);
 
   const functionSeen = new Set<string>();
   for (const fn of functions.slice().sort((a, b) => a.signature.localeCompare(b.signature))) {
     if (functionSeen.has(fn.signature)) continue;
     functionSeen.add(fn.signature);
-    const params = inputParams(fn);
+    const params = inputParams(fn, temporalProvider);
+    const returns = bindTemporalProvider(fn.returns, temporalProvider);
     const searchPath = fn.searchPath === null ? "null" : JSON.stringify(fn.searchPath);
     const settings = `readonly [${fn.settings.map((setting) => JSON.stringify(setting)).join(", ")}]`;
     lines.push(
       `  ${JSON.stringify(fn.signature)}: { kind: ${JSON.stringify(fn.kind)}; language: ${JSON.stringify(fn.language)}; params: ${params}; `
-      + `returns: ${fn.returns}; returnsSet: ${fn.returnsSet}; volatility: ${JSON.stringify(fn.volatility)}; `
+      + `returns: ${returns}; returnsSet: ${fn.returnsSet}; volatility: ${JSON.stringify(fn.volatility)}; `
       + `strict: ${fn.strict}; securityDefiner: ${fn.securityDefiner}; leakproof: ${fn.leakproof}; `
       + `parallelSafety: ${JSON.stringify(fn.parallelSafety)}; owner: ${JSON.stringify(fn.owner)}; `
       + `ownerSuperuser: ${fn.ownerSuperuser}; publicExecute: ${fn.publicExecute}; `
@@ -95,22 +110,22 @@ function emitRegistry(
   lines.push("export interface SqlxJsGeneratedRuntimeTypes {");
 
   for (const [name, type] of Object.entries(runtimeTypes).sort(([a], [b]) => a.localeCompare(b))) {
-    lines.push(`  ${JSON.stringify(name)}: ${type};`);
+    lines.push(`  ${JSON.stringify(name)}: ${bindTemporalProvider(type, temporalProvider)};`);
   }
 
   lines.push("}");
   lines.push("");
-  emitProfileRegistries(lines, entries, profiles, temporal);
+  emitProfileRegistries(lines, entries, profiles, temporal, temporalProvider);
   lines.push("");
-  lines.push(`export interface SqlxJsGeneratedRegistry<${TEMPORAL_PROVIDER_GENERIC}> {`);
-  lines.push("  queries: SqlxJsGeneratedQueries<TemporalProvider>;");
-  lines.push("  fileQueries: SqlxJsGeneratedFileQueries<TemporalProvider>;");
-  lines.push("  functions: SqlxJsGeneratedFunctions<TemporalProvider>;");
+  lines.push(`export interface SqlxJsGeneratedRegistry<${temporalProviderGeneric(temporalProvider)}> {`);
+  lines.push(`  queries: SqlxJsGeneratedQueries<${temporalProvider}>;`);
+  lines.push(`  fileQueries: SqlxJsGeneratedFileQueries<${temporalProvider}>;`);
+  lines.push(`  functions: SqlxJsGeneratedFunctions<${temporalProvider}>;`);
   lines.push("  runtimeTypes: SqlxJsGeneratedRuntimeTypes;");
   lines.push("  runtimeDescriptors: true;");
   lines.push(`  jsonProtocol: ${JSON_PROTOCOL_VERSION};`);
   lines.push(`  temporal: ${temporalTypeLiteral(temporal)};`);
-  lines.push("  temporalApi: TemporalProvider;");
+  lines.push(`  temporalApi: ${temporalProvider};`);
   lines.push("}");
 }
 
@@ -119,34 +134,45 @@ function emitProfileRegistries(
   entries: CacheEntry[],
   profiles: DatabaseProfiles,
   temporal: TemporalPolicy,
+  temporalProvider: string,
 ): void {
-  lines.push(`export interface SqlxJsGeneratedProfileQueries<${TEMPORAL_PROVIDER_GENERIC}> {`);
+  lines.push(`export interface SqlxJsGeneratedProfileQueries<${temporalProviderGeneric(temporalProvider)}> {`);
   for (const [name] of Object.entries(profiles).sort(([a], [b]) => a.localeCompare(b))) {
     lines.push(`  ${JSON.stringify(name)}: {`);
-    emitInlineProperties(lines, entries.filter((entry) => entry.profile === name), "    ");
+    emitInlineProperties(
+      lines,
+      entries.filter((entry) => entry.profile === name),
+      "    ",
+      temporalProvider,
+    );
     lines.push("  };");
   }
   lines.push("}");
   lines.push("");
-  lines.push(`export interface SqlxJsGeneratedProfileFileQueries<${TEMPORAL_PROVIDER_GENERIC}> {`);
+  lines.push(`export interface SqlxJsGeneratedProfileFileQueries<${temporalProviderGeneric(temporalProvider)}> {`);
   for (const [name] of Object.entries(profiles).sort(([a], [b]) => a.localeCompare(b))) {
     lines.push(`  ${JSON.stringify(name)}: {`);
-    emitFileProperties(lines, entries.filter((entry) => entry.profile === name), "    ");
+    emitFileProperties(
+      lines,
+      entries.filter((entry) => entry.profile === name),
+      "    ",
+      temporalProvider,
+    );
     lines.push("  };");
   }
   lines.push("}");
   lines.push("");
-  lines.push(`export interface SqlxJsGeneratedProfiles<${TEMPORAL_PROVIDER_GENERIC}> {`);
+  lines.push(`export interface SqlxJsGeneratedProfiles<${temporalProviderGeneric(temporalProvider)}> {`);
   for (const [name, profile] of Object.entries(profiles).sort(([a], [b]) => a.localeCompare(b))) {
     lines.push(`  ${JSON.stringify(name)}: {`);
-    lines.push(`    queries: SqlxJsGeneratedProfileQueries<TemporalProvider>[${JSON.stringify(name)}];`);
-    lines.push(`    fileQueries: SqlxJsGeneratedProfileFileQueries<TemporalProvider>[${JSON.stringify(name)}];`);
-    lines.push("    functions: SqlxJsGeneratedFunctions<TemporalProvider>;");
+    lines.push(`    queries: SqlxJsGeneratedProfileQueries<${temporalProvider}>[${JSON.stringify(name)}];`);
+    lines.push(`    fileQueries: SqlxJsGeneratedProfileFileQueries<${temporalProvider}>[${JSON.stringify(name)}];`);
+    lines.push(`    functions: SqlxJsGeneratedFunctions<${temporalProvider}>;`);
     lines.push("    runtimeTypes: SqlxJsGeneratedRuntimeTypes;");
     lines.push("    runtimeDescriptors: true;");
     lines.push(`    jsonProtocol: ${JSON_PROTOCOL_VERSION};`);
     lines.push(`    temporal: ${temporalTypeLiteral(temporal)};`);
-    lines.push("    temporalApi: TemporalProvider;");
+    lines.push(`    temporalApi: ${temporalProvider};`);
     const transactionSettings = profile.transactionSettings
       ? ` readonly transactionSettings: readonly [${profile.transactionSettings.map((setting) => JSON.stringify(setting)).join(", ")}];`
       : "";
@@ -159,16 +185,45 @@ function emitProfileRegistries(
   lines.push("");
   lines.push(
     `export type SqlxJsGeneratedProfileRegistry<`
-      + `Name extends keyof SqlxJsGeneratedProfiles, ${TEMPORAL_PROVIDER_GENERIC}`
-      + `> = SqlxJsGeneratedProfiles<TemporalProvider>[Name];`,
+      + `Name extends keyof SqlxJsGeneratedProfiles, ${temporalProviderGeneric(temporalProvider)}`
+      + `> = SqlxJsGeneratedProfiles<${temporalProvider}>[Name];`,
   );
+}
+
+function temporalProviderName(
+  entries: readonly CacheEntry[],
+  functions: readonly FunctionEntry[],
+  runtimeTypes: Readonly<Record<string, string>>,
+): string {
+  const expressions = [
+    ...entries.flatMap((entry) => [
+      ...entry.paramTsTypes,
+      ...entry.columns.map((column) => column.tsType),
+    ]),
+    ...functions.flatMap((fn) => [fn.returns, ...fn.params.map((param) => param.tsType)]),
+    ...Object.values(runtimeTypes),
+  ];
+  for (let suffix = 1;; suffix++) {
+    const candidate = suffix === 1 ? "TemporalProvider" : `TemporalProvider${suffix}`;
+    const identifier = new RegExp(`(^|[^A-Za-z0-9_$])${candidate}($|[^A-Za-z0-9_$])`);
+    if (!expressions.some((expression) => identifier.test(expression))) return candidate;
+  }
+}
+
+function bindTemporalProvider(type: string, temporalProvider: string): string {
+  return type.replaceAll(TEMPORAL_PROVIDER_TYPE_MARKER, temporalProvider);
 }
 
 function temporalTypeLiteral(temporal: TemporalPolicy): string {
   return `{ readonly infinity: ${JSON.stringify(temporal.infinity)}; readonly timestampWithoutTimeZone: ${JSON.stringify(temporal.timestampWithoutTimeZone)}; readonly sessionTimeZone: ${JSON.stringify(temporal.sessionTimeZone)} }`;
 }
 
-function emitInlineProperties(lines: string[], entries: CacheEntry[], indent: string): void {
+function emitInlineProperties(
+  lines: string[],
+  entries: CacheEntry[],
+  indent: string,
+  temporalProvider: string,
+): void {
   const seen = new Set<string>();
   const pairs: { query: string; entry: CacheEntry }[] = [];
   for (const entry of entries) {
@@ -183,7 +238,7 @@ function emitInlineProperties(lines: string[], entries: CacheEntry[], indent: st
   for (const { query, entry } of pairs.sort((a, b) => a.query.localeCompare(b.query))) {
     if (seen.has(query)) continue;
     seen.add(query);
-    const { params, row } = entrySignature(entry);
+    const { params, row } = entrySignature(entry, temporalProvider);
     if (entry.degraded) {
       lines.push(
         `${indent}/** Nullability inference degraded: ${entry.degraded.reason}. All result columns conservatively typed as nullable. */`,
@@ -193,7 +248,12 @@ function emitInlineProperties(lines: string[], entries: CacheEntry[], indent: st
   }
 }
 
-function emitFileProperties(lines: string[], entries: CacheEntry[], indent: string): void {
+function emitFileProperties(
+  lines: string[],
+  entries: CacheEntry[],
+  indent: string,
+  temporalProvider: string,
+): void {
   const pairs: { path: string; entry: CacheEntry }[] = [];
   for (const entry of entries) {
     for (const path of entry.filePaths ?? []) pairs.push({ path, entry });
@@ -202,7 +262,7 @@ function emitFileProperties(lines: string[], entries: CacheEntry[], indent: stri
   for (const { path, entry } of pairs.sort((a, b) => a.path.localeCompare(b.path))) {
     if (seen.has(path)) continue;
     seen.add(path);
-    const { params, row } = entrySignature(entry);
+    const { params, row } = entrySignature(entry, temporalProvider);
     if (entry.degraded) {
       lines.push(`${indent}/** Nullability inference degraded: ${entry.degraded.reason}. */`);
     }
@@ -210,9 +270,9 @@ function emitFileProperties(lines: string[], entries: CacheEntry[], indent: stri
   }
 }
 
-function inputParams(fn: FunctionEntry): string {
+function inputParams(fn: FunctionEntry, temporalProvider: string): string {
   const params = fn.params
     .filter((p) => p.mode === "in" || p.mode === "inout" || p.mode === "variadic")
-    .map((p) => p.tsType);
+    .map((p) => bindTemporalProvider(p.tsType, temporalProvider));
   return params.length === 0 ? "[]" : `[${params.join(", ")}]`;
 }

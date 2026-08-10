@@ -15,6 +15,9 @@ bun add --dev "typescript@>=6 <7"
 The polyfill is optional when the target runtime exposes native Temporal.
 Polyfill projects should use an explicit base such as `lib: ["ES2024"]`;
 native TypeScript projects can add `ESNext.Temporal` to that list.
+The default `sqlx-js init` scaffold uses the polyfill fallback. Pass
+`--temporal-provider native` to generate a native-only `db.ts` and add the
+native declaration lib to `tsconfig.json`.
 
 Node.js 24, Bun 1.3, or Deno 2.9 and PostgreSQL 16 or newer are required. The
 package ships ESM only, targets ES2024, and does not support CommonJS consumers.
@@ -37,6 +40,9 @@ sqlx-js supports two complete schema workflows. Pick one source of truth:
 | --- | --- | --- | --- | --- |
 | Built-in linear migrations | `sqlx-js init` | `sqlx-js dev` | `sqlx-js verify` | `sqlx-js migrate run` |
 | Declarative pgschema | `sqlx-js init --schema-provider pgschema` | `sqlx-js dev` | `sqlx-js verify` | `sqlx-js pgschema plan/apply` |
+
+The schema and Temporal choices are independent, so they can be combined, for
+example `sqlx-js init --schema-provider pgschema --temporal-provider native`.
 
 `dev` and `verify` read `sqlx-js.config.*` and dispatch to the configured
 provider. Both build the proposed schema in a disposable shadow database, so

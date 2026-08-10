@@ -5,15 +5,18 @@ export type TsTypeInfo = {
 
 export type ArrayElementNullability = "non-null" | "nullable" | "unknown";
 
+export const TEMPORAL_PROVIDER_TYPE_MARKER =
+  'import("@onreza/sqlx-js").SqlxJsGeneratedTemporalProvider';
+
 export function arrayTsType(elementTs: string, nullability: ArrayElementNullability = "unknown"): string {
   return `(${elementTs}${nullability === "non-null" ? "" : " | null"})[]`;
 }
 
 const JSON_VALUE = 'import("@onreza/sqlx-js").SqlxJson<import("@onreza/sqlx-js").JsonValue>';
-const PG_DATE = 'import("@onreza/sqlx-js").PgDate<TemporalProvider>';
-const PG_TIME = 'import("@onreza/sqlx-js").PgTime<TemporalProvider>';
-const PG_TIMESTAMP = 'import("@onreza/sqlx-js").PgTimestamp<TemporalProvider>';
-const PG_TIMESTAMPTZ = 'import("@onreza/sqlx-js").PgTimestamptz<TemporalProvider>';
+const PG_DATE = `import("@onreza/sqlx-js").PgDate<${TEMPORAL_PROVIDER_TYPE_MARKER}>`;
+const PG_TIME = `import("@onreza/sqlx-js").PgTime<${TEMPORAL_PROVIDER_TYPE_MARKER}>`;
+const PG_TIMESTAMP = `import("@onreza/sqlx-js").PgTimestamp<${TEMPORAL_PROVIDER_TYPE_MARKER}>`;
+const PG_TIMESTAMPTZ = `import("@onreza/sqlx-js").PgTimestamptz<${TEMPORAL_PROVIDER_TYPE_MARKER}>`;
 
 const SCALAR: Record<number, TsTypeInfo> = {
   16: { ts: "boolean" },
