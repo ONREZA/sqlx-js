@@ -112,6 +112,34 @@ if (skillDirectories.length === 0) {
   errors.push("no skills found");
 }
 
+const setupChecklistPath = join(
+  skillsRoot,
+  "sqlx-js-project-setup",
+  "references",
+  "setup-checklist.md",
+);
+if (existsSync(setupChecklistPath)) {
+  const setupChecklist = readFileSync(setupChecklistPath, "utf8");
+  const initSource = readFileSync(resolve("src/commands/init.ts"), "utf8");
+  const fallbackProvider = initSource.match(
+    /const POLYFILL_DATABASE_TEMPLATE[\s\S]*?import \{ Temporal \} from "([^"]+)";/,
+  )?.[1];
+  const packageMetadata = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
+  const typescriptPeer = packageMetadata.peerDependencies?.typescript;
+
+  if (!fallbackProvider) {
+    errors.push("src/commands/init.ts: default Temporal provider is not discoverable");
+  } else if (!setupChecklist.includes(`npm install @onreza/sqlx-js ${fallbackProvider}`)) {
+    errors.push(`${setupChecklistPath}: default install must include ${fallbackProvider}`);
+  }
+  if (!setupChecklist.includes("--temporal-provider native")) {
+    errors.push(`${setupChecklistPath}: native Temporal setup must select the native scaffold`);
+  }
+  if (!typescriptPeer || !setupChecklist.includes(`"typescript@${typescriptPeer}"`)) {
+    errors.push(`${setupChecklistPath}: TypeScript install must match the package peer range`);
+  }
+}
+
 if (errors.length > 0) {
   process.stderr.write(`${errors.join("\n")}\n`);
   process.exitCode = 1;

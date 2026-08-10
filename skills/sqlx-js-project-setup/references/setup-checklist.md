@@ -4,19 +4,30 @@
 
 - PostgreSQL 16 or newer.
 - Node.js 24+, Bun 1.3+, or Deno 2.9+.
-- TypeScript 5.4 through 6.x for scanning commands.
+- TypeScript 6.x for scanning commands.
+- ES2025 or newer runtime semantics.
 - ESM project configuration.
 
 ## Install
 
 ```bash
-npm install @onreza/sqlx-js
-npm install --save-dev "typescript@>=5.4 <7"
+npm install @onreza/sqlx-js temporal-polyfill
+npm install --save-dev "typescript@>=6 <7"
+
+# or
+bun add @onreza/sqlx-js temporal-polyfill
+bun add --dev "typescript@>=6 <7"
 ```
 
-Use Bun equivalents where appropriate.
+The default `sqlx-js init` scaffold imports the adaptive fallback. Omit
+`temporal-polyfill` only when every target runtime exposes native Temporal, and
+select the matching scaffold explicitly:
 
-## Provider selection
+```bash
+sqlx-js init --temporal-provider native
+```
+
+## Schema provider selection
 
 - Existing ordered SQL migrations: select built-in migrations.
 - Existing declarative `schema.sql` owned through pgschema: select pgschema.
