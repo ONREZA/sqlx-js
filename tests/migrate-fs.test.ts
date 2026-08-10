@@ -371,7 +371,7 @@ describe("pg_dump baseline output", () => {
         "database=target_db\n" +
         "sslmode=require\n" +
         "service=\n" +
-        "passfile=/tmp/wrong-passfile\n" +
+        "passfile=\n" +
         "connect_timeout=15\n",
       );
     } finally {
@@ -380,6 +380,22 @@ describe("pg_dump baseline output", () => {
         else process.env[key] = value;
       }
     }
+  });
+
+  test("validates password-file permissions before pg_dump", () => {
+    const d = newDir();
+    const script = join(d, "permission-pg-dump");
+    const marker = join(d, "executed");
+    const passfile = join(d, "pgpass");
+    writeFileSync(passfile, "db.internal:5432:app:app:secret\n", { mode: 0o644 });
+    writeFileSync(script, `#!/usr/bin/env bash\nprintf executed > ${JSON.stringify(marker)}\n`);
+    chmodSync(script, 0o755);
+
+    expect(() => dumpSchema(
+      `postgresql://app@db.internal/app?passfile=${encodeURIComponent(passfile)}`,
+      script,
+    )).toThrow(`PostgreSQL password file ${passfile} must not grant group or world access`);
+    expect(existsSync(marker)).toBe(false);
   });
 
   test("reads large pg_dump output through a file instead of stdout buffering", () => {

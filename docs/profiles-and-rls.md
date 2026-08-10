@@ -58,6 +58,12 @@ export const findJob = defineQuery
 
 `prepare` opens a session for each configured profile, applies its role, and runs the normal `Parse`/`Describe`/generic-plan pipeline in that session. The cache key includes both the SQL fingerprint and profile, so the same SQL can resolve through different `search_path`, RLS, type, and privilege contexts. `SqlxJsGeneratedProfileRegistry<Name>` makes `createSqlClient(..., { profile })` bind only that profile's query set and require the exact configured role. The runtime sends the role as a startup parameter on every pool connection, including replacement generations. The login in `DATABASE_URL` must be allowed to `SET ROLE` to every configured role.
 
+Prepare and doctor may start under a distinct base role selected by the URL or
+resolved `PGOPTIONS`; that role is the delegation session and is not required
+to equal any configured profile role. Runtime profile pools are different:
+their startup role is the final execution role and must match the generated
+profile exactly.
+
 The live `prepare` connection must reach PostgreSQL directly or through a session-pooling proxy: role validation requires `SET ROLE`, `Describe`, and planning to stay on the same backend session. Transaction- or statement-pooling proxies cannot preserve that contract. A runtime proxy must likewise accept and preserve the configured startup role on each pooled connection.
 
 Profile names and role names are static generated-contract inputs. Keep them identical across prepare/CI and deployed runtime environments. Shadow-database workflows use cluster roles rather than database-local objects, so every configured role must already exist on the shadow cluster; keep table/schema grants in migrations.

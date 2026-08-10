@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -44,12 +45,50 @@ export type ConnectionEnvironment = Readonly<Record<string, string | undefined>>
 
 export type ResolveDatabaseUrlOptions = {
   env?: ConnectionEnvironment;
+  platform?: NodeJS.Platform;
 };
+
+function connectionParameters(search: string): Map<string, string> {
+  const parameters = new Map<string, string>();
+  for (const field of search.replace(/^\?/, "").split("&")) {
+    if (field === "") continue;
+    const equals = field.indexOf("=");
+    const rawName = equals === -1 ? field : field.slice(0, equals);
+    const name = decodeURIComponent(rawName);
+    if (parameters.has(name)) continue;
+    parameters.set(name, decodeURIComponent(equals === -1 ? "" : field.slice(equals + 1)));
+  }
+  return parameters;
+}
+
+function removeConnectionParameter(search: string, name: string): { search: string; removed: boolean } {
+  let removed = false;
+  const fields = search.replace(/^\?/, "").split("&").filter((field) => {
+    if (field === "") return false;
+    const equals = field.indexOf("=");
+    const rawName = equals === -1 ? field : field.slice(0, equals);
+    if (decodeURIComponent(rawName) !== name) return true;
+    removed = true;
+    return false;
+  });
+  return {
+    search: fields.length === 0 ? "" : `?${fields.join("&")}`,
+    removed,
+  };
+}
+
+export function removeDatabaseUrlParameter(url: string, name: string): string {
+  const parsed = new URL(url);
+  const result = removeConnectionParameter(parsed.search, name);
+  if (!result.removed) return url;
+  parsed.search = result.search;
+  return parsed.toString();
+}
 
 export function replaceDatabaseInUrl(url: string, database: string): string {
   const parsed = new URL(url);
   parsed.pathname = `/${database}`;
-  parsed.searchParams.delete("dbname");
+  parsed.search = removeConnectionParameter(parsed.search, "dbname").search;
   return parsed.toString();
 }
 
@@ -137,9 +176,9 @@ export function parseDatabaseUrl(
     }
   }
 
-  const params = parsedUrl.searchParams;
+  const params = connectionParameters(parsedUrl.search);
   const sslAlias = params.get("ssl");
-  if (sslAlias !== null && sslAlias !== "true") {
+  if (sslAlias !== undefined && sslAlias !== "true") {
     throw new Error(`sqlx-js: PostgreSQL connection parameter ssl only supports ssl=true, got ${sslAlias}`);
   }
   const explicitSslMode = value(params.get("sslmode"));
@@ -193,7 +232,11 @@ export function parseDatabaseUrl(
       throw new Error("sqlx-js: sslrootcert=system requires sslmode=verify-full");
     }
   }
-  const passfile = value(params.get("passfile")) ?? environmentValue(env, "PGPASSFILE");
+  const explicitPassfile = value(params.get("passfile")) ?? environmentValue(env, "PGPASSFILE");
+  const passfile = explicitPassfile
+    ?? (urlPassword === undefined && environmentPassword === undefined
+      ? defaultPassfile(env, options.platform ?? process.platform) ?? ""
+      : undefined);
 
   const cfg: ConnConfig = {
     host,
@@ -292,7 +335,9 @@ function passfilePath(
   env: ConnectionEnvironment,
   platform: NodeJS.Platform,
 ): string | undefined {
-  return config.passfile ?? defaultPassfile(env, platform);
+  return config.passfile === undefined
+    ? defaultPassfile(env, platform)
+    : value(config.passfile);
 }
 
 function assertPassfilePermissions(path: string, mode: number, platform: NodeJS.Platform): void {
@@ -508,4 +553,19 @@ export function postgresConnectionEnvironment(
     String(Math.ceil(effectiveConnectTimeoutMs(config) / 1000)),
   );
   return env;
+}
+
+export function postgresResolvedPasswordEnvironment(
+  config: ConnConfig,
+  base: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const password = resolveConnectionPassword(config);
+  return postgresConnectionEnvironment({
+    ...config,
+    password: password === ""
+      ? `sqlx-js-no-password-${randomBytes(16).toString("hex")}`
+      : password,
+    passwordSource: "option",
+    passfile: "",
+  }, base);
 }

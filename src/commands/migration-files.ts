@@ -10,7 +10,7 @@ import {
   type SquashMetadata,
   type SquashReplacement,
 } from "../migration-core";
-import { parseDatabaseUrl, postgresConnectionEnvironment } from "../pg/wire";
+import { parseDatabaseUrl, postgresResolvedPasswordEnvironment } from "../pg/wire";
 
 const FILE_RE = /^(\d+)_(.+)\.up\.sql$/;
 const DOWN_FILE_RE = /^(\d+)_(.+)\.down\.sql$/;
@@ -225,7 +225,7 @@ export function createSquashMigration(opts: {
 
 function pgDumpEnv(databaseUrl: string): NodeJS.ProcessEnv {
   const cfg = parseDatabaseUrl(databaseUrl);
-  return postgresConnectionEnvironment(cfg);
+  return postgresResolvedPasswordEnvironment(cfg);
 }
 
 export function dumpSchema(databaseUrl: string, pgDumpPath = "pg_dump"): string {

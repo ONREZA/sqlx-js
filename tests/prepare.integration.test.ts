@@ -80,11 +80,15 @@ if (!haveIntegrationDatabase) {
     return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   }
 
-  function prepareRoot(root: string, args: string[] = []): { code: number; stdout: string; stderr: string } {
+  function prepareRoot(
+    root: string,
+    args: string[] = [],
+    databaseUrl = dbUrl,
+  ): { code: number; stdout: string; stderr: string } {
     const r = spawnSync(
       "bun",
       [join(repoRoot, "bin/sqlx-js.ts"), "prepare", "--root", root, ...args],
-      { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
+      { env: { ...process.env, DATABASE_URL: databaseUrl }, encoding: "utf8" },
     );
     return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   }
@@ -1059,6 +1063,8 @@ ORDER BY input.ordinality
     try {
       const currentUserResult = await client.simpleQuery("SELECT current_user");
       const currentUser = new TextDecoder().decode(currentUserResult.rows[0]![0]!);
+      const baseRoleUrl = new URL(dbUrl);
+      baseRoleUrl.searchParams.set("role", currentUser);
       await client.simpleQuery(`
         CREATE ROLE ${quoteIdent(apiRole)};
         CREATE ROLE ${quoteIdent(workerRole)};
@@ -1090,11 +1096,11 @@ export default {
         "await worker.sql.one(\"SELECT value FROM profile_target WHERE $1::boolean\", true);\n",
       );
 
-      const prepared = prepareRoot(root);
+      const prepared = prepareRoot(root, [], baseRoleUrl.toString());
       expect(prepared.code, prepared.stderr).toBe(0);
-      expect(prepareRoot(root, ["--check"]).code).toBe(0);
-      expect(prepareRoot(root, ["--offline"]).code).toBe(0);
-      expect(prepareRoot(root, ["--verify"]).code).toBe(0);
+      expect(prepareRoot(root, ["--check"], baseRoleUrl.toString()).code).toBe(0);
+      expect(prepareRoot(root, ["--offline"], baseRoleUrl.toString()).code).toBe(0);
+      expect(prepareRoot(root, ["--verify"], baseRoleUrl.toString()).code).toBe(0);
       const entries = queryCacheFiles(root)
         .map((file) => JSON.parse(readFileSync(join(root, ".sqlx-js", file), "utf8")))
         .filter((entry) => entry.query === "SELECT value FROM profile_target WHERE $1::boolean");
@@ -1115,7 +1121,7 @@ export default {
       const doctorResult = spawnSync(
         "bun",
         [join(repoRoot, "bin/sqlx-js.ts"), "doctor", "--root", root, "--json"],
-        { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
+        { env: { ...process.env, DATABASE_URL: baseRoleUrl.toString() }, encoding: "utf8" },
       );
       const doctorReport = JSON.parse(doctorResult.stdout) as {
         checks: Array<{ name: string; status: string; details?: { roles?: Record<string, string> } }>;
@@ -2687,12 +2693,12 @@ export default {
   columnTypes: { "tmp_search_path.tmp_search_path_target.payload": "SearchPathPayload" },
 };
 `);
-      const url = new URL(dbUrl);
-      url.searchParams.set("options", "-c search_path=tmp_search_path,public");
+      const separator = dbUrl.includes("?") ? "&" : "?";
+      const url = `${dbUrl}${separator}options=${encodeURIComponent("-c search_path=tmp_search_path,public")}`;
       const result = spawnSync(
         "bun",
         [join(repoRoot, "bin/sqlx-js.ts"), "prepare", "--root", root],
-        { env: { ...process.env, DATABASE_URL: url.toString() }, encoding: "utf8" },
+        { env: { ...process.env, DATABASE_URL: url }, encoding: "utf8" },
       );
       expect(result.status).toBe(0);
       const dts = readFileSync(join(root, "sqlx-js-env.d.ts"), "utf8");

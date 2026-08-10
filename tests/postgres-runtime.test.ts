@@ -78,9 +78,14 @@ test("Prisma schema parameters remain compatible with the internal runtime", () 
   )).toBe(
     "postgres://app:secret@db.example.com/app?statement_timeout=5000",
   );
+  expect(normalizeRuntimeDatabaseUrl(
+    "postgres://app:secret@db.example.com/app?options=-c%20search_path%3Dapp%2Cpublic&schema=public&application_name=a+b",
+  )).toBe(
+    "postgres://app:secret@db.example.com/app?options=-c%20search_path%3Dapp%2Cpublic&application_name=a+b",
+  );
 });
 
-test("profile validation rejects a role injected through resolved PGOPTIONS", () => {
+test("profile validation keeps the runtime startup role exact", () => {
   const previous = process.env.PGOPTIONS;
   try {
     for (const options of [
@@ -99,6 +104,11 @@ test("profile validation rejects a role injected through resolved PGOPTIONS", ()
     if (previous === undefined) delete process.env.PGOPTIONS;
     else process.env.PGOPTIONS = previous;
   }
+
+  expect(() => profileClientOptions(
+    "postgresql://app@db.internal/app?role=base_role",
+    { execution: "adaptive", profile: { name: "api", role: "app_api" } },
+  )).toThrow("profile api requires role app_api, but DATABASE_URL uses role base_role");
 });
 
 test("resolved connection configs are snapshotted before pool generations use them", async () => {
