@@ -31,6 +31,13 @@ function result(entries = 1): PrepareResult {
 function session(name: string, closed: string[]): PrepareSession {
   return {
     client: { end: async () => { closed.push(name); } } as unknown as PrepareSession["client"],
+    connection: {
+      host: "watch",
+      port: 5432,
+      user: "watch",
+      password: "",
+      database: "watch",
+    },
     target,
     schema: {} as PrepareSession["schema"],
     userCfg: {},

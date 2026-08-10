@@ -25,7 +25,7 @@ import {
 } from "../src/index";
 import { _internal, normalizeRuntimeDatabaseUrl } from "../src/postgres-runtime";
 import { profileClientOptions } from "../src/postgres-client-options";
-import { EXECUTE_KNOWN_PARAMS } from "../src/pg/driver";
+import { createPostgresClient, EXECUTE_KNOWN_PARAMS } from "../src/pg/driver";
 import { defineQuery } from "../src/query";
 import {
   CACHE_FORMAT_VERSION,
@@ -99,6 +99,28 @@ test("profile validation rejects a role injected through resolved PGOPTIONS", ()
     if (previous === undefined) delete process.env.PGOPTIONS;
     else process.env.PGOPTIONS = previous;
   }
+});
+
+test("resolved connection configs are snapshotted before pool generations use them", async () => {
+  const connection = {
+    host: "initial.internal",
+    port: 5432,
+    user: "app",
+    password: "secret",
+    database: "app",
+    startupParameters: { role: "app_reader" },
+  };
+  const raw = createPostgresClient(connection);
+  connection.host = "changed.invalid";
+  connection.startupParameters.role = "changed_role";
+
+  expect((raw as unknown as {
+    config: { host: string; startupParameters?: Readonly<Record<string, string>> };
+  }).config).toMatchObject({
+    host: "initial.internal",
+    startupParameters: { role: "app_reader" },
+  });
+  await raw.end();
 });
 
 test("statementTimeoutMs configures only the PostgreSQL session parameter", async () => {

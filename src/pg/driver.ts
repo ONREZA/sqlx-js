@@ -175,8 +175,14 @@ function optionalMilliseconds(
   return value;
 }
 
-export function createPostgresClient(url: string, options: PostgresOptions = {}): PostgresClient {
-  return new PostgresPool(url, options);
+export function createPostgresClient(
+  connection: string | ConnConfig,
+  options: PostgresOptions = {},
+): PostgresClient {
+  return new PostgresPool(
+    typeof connection === "string" ? parseDatabaseUrl(connection) : connection,
+    options,
+  );
 }
 
 class PostgresPool implements PostgresClient {
@@ -190,7 +196,7 @@ class PostgresPool implements PostgresClient {
   private closing = false;
   private closePromise: Promise<void> | undefined;
 
-  constructor(url: string, options: PostgresOptions) {
+  constructor(resolvedConfig: ConnConfig, options: PostgresOptions) {
     const max = options.max ?? DEFAULT_MAX_CONNECTIONS;
     if (!Number.isSafeInteger(max) || max < 1) {
       throw new Error(`sqlx-js: max must be a positive integer, got ${String(max)}`);
@@ -200,7 +206,12 @@ class PostgresPool implements PostgresClient {
     const idleTimeoutMs = optionalMilliseconds(options.idleTimeoutMs, "idleTimeoutMs", true);
     const maxLifetimeMs = optionalMilliseconds(options.maxLifetimeMs, "maxLifetimeMs", true);
     const statementTimeoutMs = optionalMilliseconds(options.statementTimeoutMs, "statementTimeoutMs", true);
-    const config = parseDatabaseUrl(url);
+    const config: ConnConfig = {
+      ...resolvedConfig,
+      ...(resolvedConfig.startupParameters === undefined
+        ? {}
+        : { startupParameters: { ...resolvedConfig.startupParameters } }),
+    };
     if (typeof options.password === "string") {
       config.password = options.password;
       config.passwordSource = "option";

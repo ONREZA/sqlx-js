@@ -154,6 +154,10 @@ provider is called for each new connection. When no password is supplied, the
 resolver checks `PGPASSFILE`, URL `passfile`, or the platform default password
 file. `hostaddr` controls the TCP endpoint and cancellation socket while the
 URL host remains the `verify-full` certificate and password-file identity.
+The URL and supported environment fallbacks are resolved once when the managed
+client is created, so a replacement generation cannot silently move to a new
+target after later process-environment mutation. Only an explicit dynamic
+password provider is re-evaluated for each new connection.
 See [Unified connection resolution](./connection-resolution.md) for the exact
 precedence and supported `PG*` settings.
 Password-file and TLS credential reads are asynchronous and covered by the

@@ -73,6 +73,9 @@ are never included in target summaries or diagnostics.
   inside the end-to-end connection deadline.
 - [x] Dynamic runtime password providers still resolve once for every new
   connection and override URL, environment, and password-file sources.
+- [x] Prepare sessions and managed runtime clients resolve their target once;
+  validation workers and replacement pool generations cannot drift after a
+  later process-environment change.
 - [x] Single-host TCP is explicit; unsupported multi-host inputs fail during
   resolution instead of being partially interpreted.
 
@@ -84,20 +87,22 @@ are never included in target summaries or diagnostics.
 - [x] Automatic, admin, configured, and materializer shadow-database paths.
 - [x] Raw and managed runtime pools, replacement generations, and cancellation.
 - [x] `pg_dump` subprocesses receive the same `PGHOST`/`PGHOSTADDR`, identity,
-  TLS, timeout, and password-file settings without inheriting the raw
-  `DATABASE_URL`.
-- [x] `pgschema` receives the resolved endpoint and password. Its upstream
-  process cannot repeat password-file lookup after the shared resolver.
-  Its upstream
-  single-host DSN cannot express a separate TLS server name, so
+  TLS, timeout, password-file, statement-timeout, UTF-8, UTC, and ISO settings
+  without inheriting the raw `DATABASE_URL`.
+- [x] `pgschema` receives the resolved endpoint and password. Its process cannot
+  repeat password-file lookup after the shared resolver, and its upstream
+  single-host DSN cannot express a separate TLS server name. Therefore,
   a distinct `hostaddr` and `host` fails before the provider runs for every TLS
   mode, with guidance to use a hostname-preserving path or the built-in
   workflow. `sslmode=disable` remains available only for a trusted path.
-  Passthrough arguments cannot replace the resolved target, credentials,
-  schema file, or pgschema plan-database connection. Ambient
-  `PGSCHEMA_PLAN_*` connection overrides fail before the child starts.
-  Upstream pgschema owns its fixed 30-second connection timeout, so the adapter
-  does not claim to preserve sqlx-js's `connect_timeout` value.
+  Passthrough arguments cannot replace the resolved application target,
+  credentials, schema, or desired file. The separate disposable plan database
+  remains upstream pgschema-owned: `PGSCHEMA_PLAN_*` and `--plan-*` are passed
+  through and do not participate in sqlx-js target resolution.
+  Upstream pgschema owns its fixed `application_name=pgschema` and 30-second
+  connection timeout. Explicit target `application_name`, `options`, `role`,
+  and `statement_timeout` settings fail before execution because pgschema
+  cannot scope them independently from its second plan-database connection.
 
 ### Target diagnostics
 

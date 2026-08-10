@@ -272,8 +272,15 @@ them.
 configured; otherwise they prefer the managed binary under
 `node_modules/.cache/sqlx-js/pgschema/` and fall back to `pgschema` on `PATH`.
 Arguments after `--` are forwarded only by `plan` and `apply`.
-Connection, credential, target-schema, desired-file, and external plan-database
-flags remain owned by sqlx-js and are rejected in passthrough arguments.
+Connection, credential, target-schema, and desired-file flags remain owned by
+sqlx-js and are rejected in passthrough arguments. The external disposable plan
+database remains pgschema-owned, so `PGSCHEMA_PLAN_*` and `--plan-*` pass
+through without changing the sqlx-js target connection.
+pgschema fixes its own application name and connection timeout, and its target
+and plan connections share one process-level startup-options environment.
+Explicit target `application_name`, `options`, `role`, or `statement_timeout`
+therefore fail before the provider starts instead of leaking into the plan
+database or being silently ignored.
 `pgschema apply -- --plan plan.json` applies a reviewed plan without requiring
 the local `schema.sql`. The pinned pgschema 1.12.2 CLI accepts one `--schema`
 value, so multi-schema configurations fail explicitly. This version preserves
