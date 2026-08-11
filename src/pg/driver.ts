@@ -63,6 +63,11 @@ export type PostgresOptions = {
   types?: Readonly<Record<string, PostgresType>>;
 };
 
+export type PostgresSessionOptions = Omit<
+  PostgresOptions,
+  "idleTimeoutMs" | "max" | "maxLifetimeMs"
+>;
+
 type ParsedPostgresOptions = {
   max: number;
   connectTimeoutMs?: number;
@@ -109,6 +114,10 @@ export type PostgresQueryClient = {
 export type PostgresClient = PostgresQueryClient & {
   begin<T>(fn: (client: PostgresQueryClient) => T | Promise<T>): Promise<T>;
   begin<T>(options: string, fn: (client: PostgresQueryClient) => T | Promise<T>): Promise<T>;
+  end(): Promise<void>;
+};
+
+export type PostgresSession = PostgresQueryClient & {
   end(): Promise<void>;
 };
 
@@ -183,6 +192,17 @@ export function createPostgresClient(
     typeof connection === "string" ? parseDatabaseUrl(connection) : connection,
     options,
   );
+}
+
+export async function createPostgresSession(
+  connection: string | ConnConfig,
+  options: PostgresSessionOptions = {},
+): Promise<PostgresSession> {
+  const pool = new PostgresPool(
+    typeof connection === "string" ? parseDatabaseUrl(connection) : connection,
+    { ...options, max: 1 },
+  );
+  return await pool.reserveSession();
 }
 
 class PostgresPool implements PostgresClient {
@@ -304,8 +324,8 @@ class PostgresPool implements PostgresClient {
     const transactionOptions = typeof options === "string" ? options : "";
     if (!callback) throw new Error("sqlx-js: transaction callback is required");
     const lease = await this.acquire();
-    const setup = new ReservedClient(lease.slot, true);
-    const client = new ReservedClient(lease.slot, false);
+    const setup = new ReservedClient(lease.slot, "always", "transaction");
+    const client = new ReservedClient(lease.slot, "never", "transaction");
     try {
       await setup.unsafe(`BEGIN${transactionOptions ? ` ${transactionOptions}` : ""}`);
       try {
@@ -329,6 +349,11 @@ class PostgresPool implements PostgresClient {
       client.deactivate();
       lease.release();
     }
+  }
+
+  async reserveSession(): Promise<PostgresSession> {
+    const lease = await this.acquire();
+    return new DedicatedSessionClient(lease.slot, () => this.end());
   }
 
   end(): Promise<void> {
@@ -438,12 +463,15 @@ class PostgresPool implements PostgresClient {
   }
 }
 
+type ReconnectPolicy = "always" | "initial" | "never";
+
 class ReservedClient implements PostgresQueryClient {
   private active = true;
 
   constructor(
     private readonly slot: ConnectionSlot,
-    private readonly allowReconnect: boolean,
+    private reconnectPolicy: ReconnectPolicy,
+    private readonly scope: "session" | "transaction",
   ) {}
 
   unsafe<Row extends Record<string, unknown> = Record<string, unknown>>(
@@ -452,10 +480,16 @@ class ReservedClient implements PostgresQueryClient {
   ): PostgresPendingQuery<Row> {
     return new DriverQuery<Row>(
       (setCancel, isCancelled, timing) => {
-        if (!this.active) {
-          throw new Error("sqlx-js: transaction client cannot be used after the transaction ends");
-        }
-        return this.slot.query(query, params, setCancel, isCancelled, this.allowReconnect, undefined, timing);
+        this.assertActive();
+        return this.slot.query(
+          query,
+          params,
+          setCancel,
+          isCancelled,
+          this.allowReconnect(),
+          undefined,
+          timing,
+        );
       },
     );
   }
@@ -467,15 +501,13 @@ class ReservedClient implements PostgresQueryClient {
   ): PostgresPendingQuery<Row> {
     return new DriverQuery<Row>(
       (setCancel, isCancelled, timing) => {
-        if (!this.active) {
-          throw new Error("sqlx-js: transaction client cannot be used after the transaction ends");
-        }
+        this.assertActive();
         return this.slot.query(
           query,
           params,
           setCancel,
           isCancelled,
-          this.allowReconnect,
+          this.allowReconnect(),
           parameterOids,
           timing,
         );
@@ -497,6 +529,35 @@ class ReservedClient implements PostgresQueryClient {
 
   deactivate(): void {
     this.active = false;
+  }
+
+  private assertActive(): void {
+    if (this.active) return;
+    if (this.scope === "transaction") {
+      throw new Error("sqlx-js: transaction client cannot be used after the transaction ends");
+    }
+    throw new Error("sqlx-js: PostgreSQL session client cannot be used after the session ends");
+  }
+
+  private allowReconnect(): boolean {
+    if (this.reconnectPolicy === "always") return true;
+    if (this.reconnectPolicy === "never") return false;
+    this.reconnectPolicy = "never";
+    return true;
+  }
+}
+
+class DedicatedSessionClient extends ReservedClient implements PostgresSession {
+  private endPromise?: Promise<void>;
+
+  constructor(slot: ConnectionSlot, private readonly closePool: () => Promise<void>) {
+    super(slot, "initial", "session");
+  }
+
+  end(): Promise<void> {
+    if (this.endPromise) return this.endPromise;
+    this.deactivate();
+    return this.endPromise = this.closePool();
   }
 }
 

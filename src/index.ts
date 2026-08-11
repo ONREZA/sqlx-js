@@ -265,6 +265,15 @@ export type {
 export type { RuntimeQueryDescriptors } from "./runtime-descriptors";
 export { defineQuery } from "./query";
 export { queryId } from "./query-id";
+export {
+  PostgresAdvisoryLockLostError,
+  tryAcquirePostgresAdvisoryLock,
+} from "./postgres-advisory-lock";
+export type {
+  PostgresAdvisoryLockKey,
+  PostgresAdvisoryLockOptions,
+  PostgresAdvisoryLockSession,
+} from "./postgres-advisory-lock";
 
 export type Unsafe = (query: string, ...params: unknown[]) => Promise<Record<string, unknown>[]>;
 export function createClient<Registry extends QueryRegistry = QueryRegistry>(

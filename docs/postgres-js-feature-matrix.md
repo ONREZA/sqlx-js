@@ -78,7 +78,7 @@ Status values are intentionally explicit:
 | Bounded pool size and FIFO wait queue | Yes | Yes | One lease per operation; queued work continues after query errors. |
 | Idle connection eviction | Yes | Yes | Configured in milliseconds through `idleTimeoutMs`; `0` disables it. |
 | Maximum connection lifetime | Yes | Yes | Configured in milliseconds through `maxLifetimeMs`; active work finishes before retirement. |
-| Public connection reservation | Yes | No, permanent non-goal | Transactions reserve internally; exposing a retained raw lease would bypass managed generation ownership. |
+| Public connection reservation | Yes | No, permanent non-goal | Transactions and the advisory-lock capability reserve internally; the latter exposes only health and release because a retained raw lease would bypass managed generation ownership. |
 | Pool shutdown | Yes | Yes | Rejects admission and interrupts connections, including an in-progress startup. |
 | Idle connections allow natural process exit | No | Yes | Idle sockets and retirement timers are unreferenced; active work remains referenced. |
 | Managed bounded shutdown | No | Yes | `createSqlClient().close()` applies grace and force deadlines. |

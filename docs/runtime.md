@@ -133,6 +133,74 @@ type MigrateOptions = {
 
 When `lockTimeoutMs` is set, acquisition uses `pg_try_advisory_lock` in a polling loop and throws if not obtained within the timeout — useful for CI / multi-replica startup to avoid an indefinitely-blocked pod.
 
+## Pinned advisory-lock sessions
+
+`tryAcquirePostgresAdvisoryLock(...)` owns a dedicated one-connection client
+and returns `null` when another session already holds the two-part lock. The
+returned capability exposes only lock health and release; it does not expose a
+generic SQL escape hatch. Pool width, idle retirement, and maximum connection
+lifetime belong to the capability, and its control-query codecs are fixed;
+overrides for those settings are rejected at runtime.
+The application owns a stable, collision-free allocation of namespace and
+resource values within its database.
+The short-lived lock used by `migrate(...)` remains internal to the migration
+workflow; this capability is for application-owned coordination outside it.
+
+```ts
+import { tryAcquirePostgresAdvisoryLock } from "@onreza/sqlx-js";
+import { Temporal } from "temporal-polyfill";
+
+const lock = await tryAcquirePostgresAdvisoryLock(
+  process.env.DATABASE_URL,
+  { namespace: 1_728_194_883, resource: 3 },
+  {
+    temporalApi: Temporal,
+    applicationName: "worker-slot-3",
+    operationTimeoutMs: 5_000,
+  },
+);
+
+if (lock) {
+  try {
+    while (hasWork()) {
+      await lock.assertHeld();
+      await processOneBoundedIdempotentBatch();
+    }
+  } finally {
+    await lock.release();
+  }
+}
+```
+
+Both key parts are signed PostgreSQL `int4` values. After the acquisition query
+opens the reserved connection, the driver forbids reconnect for that
+capability. `assertHeld()` runs on the same backend and reports a closed
+connection or unexpected backend identity as `PostgresAdvisoryLockLostError`;
+it never moves the lock to a new connection. The check is point-in-time: the
+session can be lost immediately after it succeeds. Keep each unit of work
+bounded, check the lock between units,
+and make external side effects idempotent or protect them with a durable fencing
+token. An advisory lock alone is not an exactly-once boundary.
+It is a coordination primitive, not an authorization boundary.
+
+`operationTimeoutMs` optionally bounds acquisition, health checks, and release.
+Expiry destroys the reserved connection rather than replaying an operation with
+an unknown outcome. Acquisition rejects; an established capability reports
+`PostgresAdvisoryLockLostError`. Omitting the option preserves the raw driver's
+unbounded operation behavior.
+
+`release()` is idempotent and closes the owned client after unlocking. A later
+`assertHeld()` reports that the capability was explicitly released rather than
+misclassifying normal cleanup as lock loss. If the first release attempt cannot
+confirm the original backend and exact unlock, it still closes the connection
+but rejects with `PostgresAdvisoryLockLostError`; repeated calls share that same
+result. Applications remain responsible for heartbeat cadence, standby retry,
+and stop-work policy. Do not issue session-level `pg_advisory_lock` calls
+through a shared pooled query executor: the connection can return to the pool
+while the lock is still held. When the whole critical section fits in one
+database transaction, prefer `pg_advisory_xact_lock`, which PostgreSQL releases
+with the transaction.
+
 ## Managed and raw clients
 
 `createSqlClient(...)` owns generations of the integrated connection pool. It
