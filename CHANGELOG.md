@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.32.0](https://github.com/ONREZA/sqlx-js/compare/v0.31.0...v0.32.0) (2026-08-11)
+
+
+### Features
+
+* **runtime:** add pinned advisory locks ([a7b5201](https://github.com/ONREZA/sqlx-js/commit/a7b5201cd31502bf1aafedb703a88f445305e919))
+
 ## [0.31.0](https://github.com/ONREZA/sqlx-js/compare/v0.30.0...v0.31.0) (2026-08-10)
 
 
