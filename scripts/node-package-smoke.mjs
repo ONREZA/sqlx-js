@@ -38,9 +38,12 @@ try {
       defineQuery,
       createSqlClient,
       EXTENDED_JSON_PROTOCOL_VERSION,
+      tryAcquirePostgresAdvisoryLock,
       type JsonValue,
       type PgTimestamptz,
       type PgNotice,
+      type PostgresAdvisoryLockOptions,
+      type PostgresAdvisoryLockSession,
       type PostgresType,
       type QueryParams,
       type QueryRegistry,
@@ -98,12 +101,23 @@ try {
       temporalStatement,
       Temporal.Instant.from("2026-01-01T00:00:00Z"),
     );
+    const lockOptions: PostgresAdvisoryLockOptions = {
+      temporalApi: Temporal,
+      operationTimeoutMs: 5_000,
+    };
+    const lockResult: Promise<PostgresAdvisoryLockSession | null> =
+      tryAcquirePostgresAdvisoryLock(
+        undefined,
+        { namespace: 1_728_194_883, resource: 101 },
+        lockOptions,
+      );
     void codec;
     void notice;
     void wire;
     void boundedExecutor;
     void result;
     void nativeResult;
+    void lockResult;
   `);
   writeFileSync(join(temp, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
@@ -138,6 +152,7 @@ try {
       queryId,
       SqlxJson,
       TransactionTimeoutError,
+      tryAcquirePostgresAdvisoryLock,
     } from "@onreza/sqlx-js";
 
     let db;
@@ -242,6 +257,23 @@ try {
       assert.equal(answerQuery.queryId, queryId(answerQuery.query));
       assert.ok(events.some((event) => event.queryId === answerQuery.queryId && event.queryName === "smoke.answer"));
       assert.ok(events.some((event) => event.queryId === echoQuery.queryId && event.queryName === "smoke.echo"));
+      const lockKey = { namespace: 1_728_194_883, resource: 101 };
+      const lockOptions = {
+        temporalApi: Temporal,
+        applicationName: "sqlx-js-package-smoke-lock",
+        operationTimeoutMs: 5_000,
+      };
+      const lock = await tryAcquirePostgresAdvisoryLock(runtimeUrl.toString(), lockKey, lockOptions);
+      assert.ok(lock);
+      try {
+        await lock.assertHeld();
+        assert.equal(
+          await tryAcquirePostgresAdvisoryLock(runtimeUrl.toString(), lockKey, lockOptions),
+          null,
+        );
+      } finally {
+        await lock.release();
+      }
     } finally {
       await db?.close();
     }

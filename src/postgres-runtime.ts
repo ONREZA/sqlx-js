@@ -25,11 +25,14 @@ import {
 import {
   EXECUTE_KNOWN_PARAMS,
   createPostgresClient,
+  createPostgresSession as createDriverPostgresSession,
   queryDispatchedAt,
   type KnownParamsQueryClient,
   type PostgresClient as InternalPostgresClient,
   type PostgresOptions as InternalPostgresOptions,
   type PostgresQueryClient,
+  type PostgresSession as InternalPostgresSession,
+  type PostgresSessionOptions as InternalPostgresSessionOptions,
   type PostgresType,
 } from "./pg/driver";
 import { PostgresTypeRegistry, type RuntimeTypeCodecs } from "./postgres-codecs";
@@ -82,6 +85,8 @@ export type {
 
 export type PostgresClient = InternalPostgresClient;
 export type PostgresOptions = InternalPostgresOptions;
+export type PostgresSession = InternalPostgresSession;
+export type PostgresSessionOptions = InternalPostgresSessionOptions;
 export type { PostgresType, TemporalApi };
 type Deferred<T> = {
   promise: Promise<T>;
@@ -1300,6 +1305,14 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
 export function createClient(url = process.env.DATABASE_URL, options: CreateClientOptions = {}): PostgresClient {
   if (!url) throw new Error("sqlx-js: DATABASE_URL is not set");
   return createPostgresClient(normalizeRuntimeDatabaseUrl(url), options);
+}
+
+export async function createPostgresSession(
+  url = process.env.DATABASE_URL,
+  options: PostgresSessionOptions = {},
+): Promise<PostgresSession> {
+  if (!url) throw new Error("sqlx-js: DATABASE_URL is not set");
+  return await createDriverPostgresSession(normalizeRuntimeDatabaseUrl(url), options);
 }
 
 function createManagedClient(url: string | undefined, options: CreateSqlClientOptions): ManagedPostgresRuntime {
