@@ -30,6 +30,12 @@ files, and `defineQuery.run` / `runWith`. The same boundary is enforced at runti
 untyped JavaScript and deliberately rejects passing a wider DTO directly; map
 application input to the query's parameter shape before execution.
 
+TypeScript cannot always expose extra keys hidden behind an unresolved generic
+constraint. Those calls remain fail-closed at the runtime binding boundary:
+unknown named keys are rejected before client dispatch. Map a generic DTO to
+`QueryParams` inside the wrapper when that wrapper must prove the exact shape at
+compile time.
+
 ## `defineQuery`
 
 Define a query once without closing over a global client, then run the same generated contract through a root or transaction executor:
