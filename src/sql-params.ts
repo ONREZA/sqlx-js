@@ -15,6 +15,16 @@ export type RewrittenSql = {
   positionMap: number[];
 };
 
+export class ReservedNamedParameterError extends Error {
+  constructor(readonly parameterName: string) {
+    super(
+      `sqlx-js: named parameter "${parameterName}" is reserved because JavaScript object literals do not create it as an own property. `
+      + "Rename the parameter in the SQL and its parameter object.",
+    );
+    this.name = "ReservedNamedParameterError";
+  }
+}
+
 export function rewriteNamedParameters(query: string): RewrittenSql {
   let out = "";
   let i = 0;
@@ -76,9 +86,7 @@ export function rewriteNamedParameters(query: string): RewrittenSql {
       if (namedMatch) {
         const name = namedMatch[1]!;
         if (name === "__proto__") {
-          throw new Error(
-            "sqlx-js: named parameter \"__proto__\" is reserved because JavaScript object literals do not create it as an own property",
-          );
+          throw new ReservedNamedParameterError(name);
         }
         let index = indexes.get(name);
         if (index === undefined) {

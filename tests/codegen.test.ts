@@ -1346,6 +1346,17 @@ export function runRawPositionalRegistryGeneric<Registry extends CompatiblePosit
   return executor.one(${JSON.stringify(positionalQuery)}, ...params);
 }
 
+type GeneratedQueryArguments<Entry> = Entry extends { params: infer Params }
+  ? Params extends readonly [...infer _Values] ? Params : [Params]
+  : never;
+export function runGeneratedQuery<Query extends keyof SqlxJsGeneratedRegistry["queries"]>(
+  executor: SqlExecutor<SqlxJsGeneratedRegistry>,
+  query: Query,
+  ...params: GeneratedQueryArguments<SqlxJsGeneratedRegistry["queries"][Query]>
+) {
+  return executor(query, ...params);
+}
+
 export function runPositionalWithSignal(
   executor: SqlExecutor<SqlxJsGeneratedRegistry>,
   params: PositionalParams,
@@ -1534,6 +1545,7 @@ void invalidNestedNonNullArray;
     "runGenericTransaction",
     "runPositionalRegistryGeneric",
     "runRawPositionalRegistryGeneric",
+    "runGeneratedQuery",
   ]) {
     expect(emittedFunction(name)).toContain("Promise<");
     expect(emittedFunction(name)).not.toContain("unknown");

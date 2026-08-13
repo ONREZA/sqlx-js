@@ -1,4 +1,4 @@
-export const CACHE_FORMAT_VERSION = 12;
+export const CACHE_FORMAT_VERSION = 13;
 export const GENERATOR_REVISION = 30;
 export const RUNTIME_DESCRIPTOR_FORMAT_VERSION = 4;
 export const JSON_PROTOCOL_VERSION = 1;

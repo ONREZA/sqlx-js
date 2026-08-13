@@ -36,26 +36,41 @@ type QueryMethodResult<Entry, Mode extends "many" | "one" | "optional" | "execut
 type QueryParams<Queries, Query extends keyof Queries> =
   EntryParams<Queries[Query]>;
 
-// Excludes positional tuples, including the otherwise structurally empty `[]`.
-type NamedParamObject = {
-  readonly [Symbol.iterator]?: never;
-};
-type NamedParams<Expected, Actual extends Expected & NamedParamObject> =
-  ExactNamedParams<Expected, Actual>;
+type QueryArguments<Params> = Params extends readonly unknown[] ? Params : [Params];
 
-type TypedQueryMethod<Queries, Mode extends "many" | "one" | "optional" | "execute"> = {
-  <Query extends keyof Queries>(
-    query: Query,
-    ...params: QueryParams<Queries, NoInfer<Query>> & readonly unknown[]
-  ): QueryMethodResult<Queries[Query], Mode>;
-  <
-    Query extends keyof Queries,
-    const Actual extends QueryParams<Queries, NoInfer<Query>> & NamedParamObject,
-  >(
-    query: Query,
-    params: NamedParams<QueryParams<Queries, NoInfer<Query>>, Actual>,
-  ): QueryMethodResult<Queries[Query], Mode>;
-};
+// Keeps an equivalent unresolved forwarding tuple callable before exact-key analysis.
+type SameType<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends
+    (<Value>() => Value extends Right ? 1 : 2)
+    ? (<Value>() => Value extends Right ? 1 : 2) extends
+        (<Value>() => Value extends Left ? 1 : 2)
+      ? true
+      : false
+    : false;
+
+type ExactQueryArgumentShape<Actual, Expected> =
+  SameType<Actual, Readonly<QueryArguments<Expected>>> extends true
+    ? true
+    : [Actual] extends [Readonly<QueryArguments<Expected>>]
+      ? Expected extends readonly unknown[]
+        ? true
+        : Actual extends readonly [infer NamedActual]
+          ? [NamedActual] extends [Expected]
+            ? [ExtraNamedParamKeys<NamedActual, Expected>] extends [never] ? true : false
+            : false
+          : false
+      : false;
+
+type CompatibleQuery<Query, Actual, Expected> =
+  ExactQueryArgumentShape<Actual, Expected> extends false ? never : Query;
+
+type TypedQueryMethod<Queries, Mode extends "many" | "one" | "optional" | "execute"> = <
+  Query extends keyof Queries,
+  const Actual extends readonly unknown[],
+>(
+  query: CompatibleQuery<Query, Actual, QueryParams<Queries, NoInfer<Query>>>,
+  ...params: Actual
+) => QueryMethodResult<Queries[Query], Mode>;
 
 export type TypedFile<TFileQueries> = TypedQueryMethod<TFileQueries, "many"> & {
   one: TypedQueryMethod<TFileQueries, "one">;
