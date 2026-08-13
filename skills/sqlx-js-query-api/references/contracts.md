@@ -16,7 +16,11 @@
 ## Parameter rules
 
 - Positional form uses `$1`, `$2`, and separate arguments.
-- Named form uses `$name` and one exact object.
+- Named form uses `$name` and one exact object. Map a wider application DTO to
+  that object before execution; extra keys are rejected for variables as well
+  as inline literals.
+- `__proto__` is reserved as a named parameter because object literal syntax
+  cannot represent it reliably as an own data property.
 - Repeated named parameters reuse their first position.
 - A bare `null` is SQL `NULL`.
 - `sql.json(null)` is JSON `null`.

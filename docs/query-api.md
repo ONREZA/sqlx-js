@@ -23,6 +23,13 @@ const rows = await sql(`SELECT id FROM users WHERE name = $1`, "alice");
 
 Unknown queries, wrong parameter types, and dynamic strings are compile errors. For genuinely dynamic SQL, use `db.unsafe`.
 
+Named parameter objects must have exactly the generated keys, including when a
+variable's static type still exposes more keys than the generated contract.
+This applies to the root and transaction executors, cardinality helpers, SQL
+files, and `defineQuery.run` / `runWith`. The same boundary is enforced at runtime for
+untyped JavaScript and deliberately rejects passing a wider DTO directly; map
+application input to the query's parameter shape before execution.
+
 ## `defineQuery`
 
 Define a query once without closing over a global client, then run the same generated contract through a root or transaction executor:

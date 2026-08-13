@@ -32,10 +32,21 @@ test("named binding rejects missing and unknown keys", () => {
   const rewritten = rewriteNamedParameters("SELECT $id");
   expect(() => bindNamedParameters(rewritten, [{}])).toThrow(/missing named parameter.*id/);
   expect(() => bindNamedParameters(rewritten, [{ id: 1, extra: 2 }])).toThrow(/unknown named parameter.*extra/);
+  const metadata = Symbol("metadata");
+  expect(bindNamedParameters(rewritten, [{ id: 1, [metadata]: true }])).toEqual({
+    query: "SELECT $1",
+    params: [1],
+  });
 });
 
 test("named and positional parameters cannot be mixed", () => {
   expect(() => rewriteNamedParameters("SELECT $id, $1")).toThrow(/cannot be mixed/);
+});
+
+test("the JavaScript prototype setter cannot be a named parameter", () => {
+  expect(() => rewriteNamedParameters("SELECT $__proto__")).toThrow(
+    /named parameter "__proto__" is reserved.*own property/,
+  );
 });
 
 test("positional parameter count ignores quoted and commented placeholders", () => {

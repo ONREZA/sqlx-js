@@ -57,6 +57,11 @@ test("rejects named parameters without one object argument", () => {
   expect(() => scanProject(tmp)).toThrow(/exactly one parameter object/);
 });
 
+test("rejects the JavaScript prototype setter as a named parameter", () => {
+  setup({ "a.ts": `import { sql } from "@onreza/sqlx-js"; sql("SELECT $__proto__", { ["__proto__"]: 1 });` });
+  expect(() => scanProject(tmp)).toThrow(/a\.ts:1:\d+.*named parameter "__proto__" is reserved/);
+});
+
 test("respects alias import", () => {
   setup({
     "a.ts": `

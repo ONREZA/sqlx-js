@@ -75,6 +75,11 @@ export function rewriteNamedParameters(query: string): RewrittenSql {
       const namedMatch = /^\$([A-Za-z_][A-Za-z0-9_]*)/.exec(query.slice(i));
       if (namedMatch) {
         const name = namedMatch[1]!;
+        if (name === "__proto__") {
+          throw new Error(
+            "sqlx-js: named parameter \"__proto__\" is reserved because JavaScript object literals do not create it as an own property",
+          );
+        }
         let index = indexes.get(name);
         if (index === undefined) {
           names.push(name);

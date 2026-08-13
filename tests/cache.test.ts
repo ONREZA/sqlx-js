@@ -93,6 +93,17 @@ test("Cache rejects malformed named parameter metadata", () => {
       usesTimestampWithoutTimeZone: false,
     }));
     expect(() => new Cache(dir).read("bad")).toThrow(/malformed named parameter metadata/);
+    writeFileSync(join(dir, "bad.json"), JSON.stringify({
+      query: "SELECT $__proto__",
+      paramOids: [23],
+      paramTypeIdentities: [23],
+      paramTsTypes: ["number"],
+      paramNames: ["__proto__"],
+      columns: [],
+      hasResultSet: true,
+      usesTimestampWithoutTimeZone: false,
+    }));
+    expect(() => new Cache(dir).read("bad")).toThrow(/named parameter "__proto__" is reserved.*sqlx-js prepare/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -177,6 +177,8 @@ const rows = await db.sql(
 
 Named parameters use ASCII identifier names, are numbered by first appearance,
 and reuse repeated names. Named and positional parameters cannot be mixed.
+`__proto__` is reserved because JavaScript object literals do not create it as
+an own data property; choose a domain-specific parameter name instead.
 Quoted strings, comments, dollar-quoted bodies, and `$` inside PostgreSQL
 identifiers are left unchanged.
 
