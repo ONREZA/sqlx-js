@@ -8,7 +8,7 @@ import {
 } from "./artifact-versions";
 import { arrayElementOid, isBuiltinOid } from "./pg/oids";
 import { queryId } from "./query-id";
-import { rewriteNamedParameters } from "./sql-params";
+import { ReservedNamedParameterError, rewriteNamedParameters } from "./sql-params";
 
 export { CACHE_FORMAT_VERSION, GENERATOR_REVISION };
 export const CACHE_MANIFEST_FILE = "cache-manifest.json";
@@ -204,6 +204,12 @@ function assertEntryShape(fp: string, raw: unknown): CacheEntry {
     if (typeof entry.query !== "string") throw new Error("query must be a string");
     expectedNames = rewriteNamedParameters(entry.query).names;
   } catch (error) {
+    if (error instanceof ReservedNamedParameterError) {
+      throw new Error(
+        `sqlx-js: cache entry ${fp}.json uses reserved named parameter "${error.parameterName}". `
+        + "Rename the parameter in the source SQL and its parameter object, then run `sqlx-js prepare`.",
+      );
+    }
     const detail = error instanceof Error
       ? `: ${error.message.replace(/^sqlx-js: /, "")}`
       : "";

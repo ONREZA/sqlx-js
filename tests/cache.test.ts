@@ -103,7 +103,9 @@ test("Cache rejects malformed named parameter metadata", () => {
       hasResultSet: true,
       usesTimestampWithoutTimeZone: false,
     }));
-    expect(() => new Cache(dir).read("bad")).toThrow(/named parameter "__proto__" is reserved.*sqlx-js prepare/);
+    expect(() => new Cache(dir).read("bad")).toThrow(
+      /uses reserved named parameter "__proto__".*Rename.*sqlx-js prepare/,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -381,9 +383,15 @@ test("cache manifest binds generated artifacts to type-affecting config", () => 
   writeCacheManifest(dir, "config-a");
   expect(readCacheManifest(dir)?.configHash).toBe("config-a");
   const manifest = assertCacheManifest(dir, "config-a");
+  expect(manifest.cacheFormat).toBeGreaterThan(0);
   expect(manifest.generatorRevision).toBeGreaterThan(0);
   expect(manifest.jsonProtocol).toBeGreaterThan(0);
   expect(() => assertCacheManifest(dir, "config-b")).toThrow(/different type-affecting config/);
+  writeFileSync(join(dir, "cache-manifest.json"), JSON.stringify({
+    ...manifest,
+    cacheFormat: manifest.cacheFormat - 1,
+  }));
+  expect(() => readCacheManifest(dir)).toThrow(/cache manifest is stale.*Run `sqlx-js prepare`/);
   writeFileSync(join(dir, "cache-manifest.json"), JSON.stringify({
     ...manifest,
     generatorRevision: manifest.generatorRevision - 1,
