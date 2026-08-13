@@ -1,7 +1,11 @@
 import { queryId } from "./query-id";
 import { rewriteNamedParameters } from "./sql-params";
 import type { ExecuteResult, QueryExecutionOptions } from "./runtime";
-import type { TypedSqlForRegistry } from "./typed";
+import type {
+  ExactNamedParams,
+  ExtraNamedParamKeys,
+  TypedSqlForRegistry,
+} from "./typed";
 
 export type QueryExecutionMode = "many" | "one" | "optional" | "execute";
 export type QueryExecutionMetadata = { queryId: string; queryName?: string };
@@ -53,21 +57,30 @@ export type QueryDefinition<
   mapParams<Input, const WireParams extends QueryWireParams>(
     mapper: (input: Input, helpers: QueryParameterHelpers) => WireParams,
   ): MappedQueryDefinition<Query, Mode, Input, WireParams>;
-  run<Registry extends { queries: Record<Query, NamedQueryEntry>; fileQueries: object }>(
+  run<
+    Registry extends { queries: Record<Query, NamedQueryEntry>; fileQueries: object },
+    const Actual extends RegistryParams<Query, NoInfer<Registry>>,
+  >(
     executor: TypedSqlForRegistry<Registry>,
-    params: RegistryParams<Query, Registry>,
+    params: ExactNamedParams<RegistryParams<Query, NoInfer<Registry>>, Actual>,
     options?: QueryExecutionOptions,
   ): Promise<QueryResultFor<QueryDefinition<Query, Mode>, Registry>>;
   run<Registry extends { queries: Record<Query, PositionalQueryEntry>; fileQueries: object }>(
     executor: TypedSqlForRegistry<Registry>,
     ...params: RegistryParams<Query, Registry> & readonly unknown[]
   ): Promise<QueryResultFor<QueryDefinition<Query, Mode>, Registry>>;
-  runWith<Registry extends { queries: Record<Query, QueryEntry>; fileQueries: object }>(
+  runWith<
+    Registry extends { queries: Record<Query, NamedQueryEntry>; fileQueries: object },
+    const Actual extends RegistryParams<Query, NoInfer<Registry>>,
+  >(
     options: QueryExecutionOptions,
     executor: TypedSqlForRegistry<Registry>,
-    ...params: RegistryParams<Query, Registry> extends readonly unknown[]
-      ? RegistryParams<Query, Registry>
-      : [RegistryParams<Query, Registry>]
+    params: ExactNamedParams<RegistryParams<Query, NoInfer<Registry>>, Actual>,
+  ): Promise<QueryResultFor<QueryDefinition<Query, Mode>, Registry>>;
+  runWith<Registry extends { queries: Record<Query, PositionalQueryEntry>; fileQueries: object }>(
+    options: QueryExecutionOptions,
+    executor: TypedSqlForRegistry<Registry>,
+    ...params: RegistryParams<Query, Registry> & readonly unknown[]
   ): Promise<QueryResultFor<QueryDefinition<Query, Mode>, Registry>>;
 };
 
@@ -80,7 +93,7 @@ type ReadonlyWireParams<Params> = Readonly<Params>;
 
 type ExactWireShape<Actual extends QueryWireParams, Expected> =
   [Actual] extends [ReadonlyWireParams<Expected>]
-    ? [Exclude<keyof Actual, keyof Expected>] extends [never]
+    ? [ExtraNamedParamKeys<Actual, Expected>] extends [never]
       ? true
       : false
     : false;
@@ -113,9 +126,8 @@ export type MappedQueryDefinition<
 type DefinitionQuery<Definition> = Definition extends { readonly query: infer Query extends string } ? Query : never;
 type DefinitionMode<Definition> =
   Definition extends { readonly mode: infer Mode extends QueryExecutionMode } ? Mode : never;
-type RegistryQuery<Query extends string, Registry extends { queries: object }> = Registry extends {
-  queries: Record<Query, infer Entry>;
-} ? Entry : never;
+type RegistryQuery<Query extends string, Registry extends { queries: object }> =
+  Registry["queries"][Query & keyof Registry["queries"]];
 type RegistryParams<Query extends string, Registry extends { queries: object }> =
   RegistryQuery<Query, Registry>["params" & keyof RegistryQuery<Query, Registry>];
 type RegistryRow<Query extends string, Registry extends { queries: object }> =

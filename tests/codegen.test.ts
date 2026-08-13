@@ -355,6 +355,13 @@ const extraKey = defineQuery.for("api").one(${JSON.stringify(query)}).mapParams(
 );
 // @ts-expect-error mapped named parameters must have the registry's exact keys
 void extraKey.run(api.sql, { id: "user-1" });
+const unionExtraKey = defineQuery.for("api").one(${JSON.stringify(query)}).mapParams(
+  (input: { id: string; variant: "first" | "second" }) => input.variant === "first"
+    ? { id: input.id, first: true }
+    : { id: input.id, second: true },
+);
+// @ts-expect-error every mapped union branch must have the registry's exact keys
+void unionExtraKey.run(api.sql, { id: "user-1", variant: "first" });
 const shared = defineQuery.for("api", "worker").one(${JSON.stringify(query)}).mapParams(
   (input: { id: string }) => ({ id: input.id }),
 );
@@ -807,6 +814,15 @@ test("profile transaction settings are required and typed", () => {
       columns: [{ name: "api", typeOid: 23, tsType: "number", nullable: false }],
     },
     {
+      profile: "api",
+      query: "SELECT $tenant::text AS tenant",
+      paramOids: [25],
+      paramTsTypes: ["string"],
+      paramNames: ["tenant"],
+      hasResultSet: true,
+      columns: [{ name: "tenant", typeOid: 25, tsType: "string", nullable: false }],
+    },
+    {
       profile: "worker",
       query: "SELECT api",
       paramOids: [],
@@ -826,8 +842,12 @@ test("profile transaction settings are required and typed", () => {
     },
   });
   writeFileSync(join(root, "consumer.ts"), `
-import { createSqlClient, type SqlClient } from "@onreza/sqlx-js";
+import { createSqlClient, defineQuery, type SqlClient } from "@onreza/sqlx-js";
 import type { SqlxJsGeneratedProfileRegistry, SqlxJsGeneratedProfiles } from "./generated";
+
+const tenantQuery = defineQuery.one("SELECT $tenant::text AS tenant");
+const tenantParams = { tenant: "tenant-1" };
+const tenantParamsWithExtra = { ...tenantParams, extra: true };
 
 const api = createSqlClient<SqlxJsGeneratedProfileRegistry<"api">>(undefined, {
   execution: "adaptive",
@@ -845,9 +865,19 @@ void api.sql.transaction({
   },
 }, async (tx) => {
   await tx("SELECT api");
+  await tx.one("SELECT $tenant::text AS tenant", tenantParams);
+  await tenantQuery.run(tx, tenantParams);
   await tx.with({ timeoutMs: 1_000 })("SELECT api");
+  await tx.with({ timeoutMs: 1_000 }).one("SELECT $tenant::text AS tenant", tenantParams);
+  // @ts-expect-error contextual transaction params must have the registry's exact keys
+  await tx.one("SELECT $tenant::text AS tenant", tenantParamsWithExtra);
+  // @ts-expect-error contextual definitions must have the registry's exact keys
+  await tenantQuery.run(tx, tenantParamsWithExtra);
   await tx.savepoint(async (sp) => {
     await sp("SELECT api");
+    await sp.one("SELECT $tenant::text AS tenant", tenantParams);
+    // @ts-expect-error savepoint params must have the registry's exact keys
+    await sp.one("SELECT $tenant::text AS tenant", tenantParamsWithExtra);
   });
 });
 // @ts-expect-error contextual profiles execute SQL only through a transaction
@@ -1029,6 +1059,8 @@ test("query definitions, executor helpers, and structural JSON compile together"
       paramOids: [2950],
       paramTsTypes: ["string"],
       paramNames: ["id"],
+      filePaths: ["queries/user-by-id.sql"],
+      hasInline: true,
       hasResultSet: true,
       columns: [
         { name: "id", typeOid: 2950, tsType: "string", nullable: false },
@@ -1133,11 +1165,50 @@ void assertedItems;
 type Params = QueryParams<typeof findUser, SqlxJsGeneratedRegistry>;
 type Row = QueryRow<typeof findUser, SqlxJsGeneratedRegistry>;
 type Result = QueryResult<typeof findUser, SqlxJsGeneratedRegistry>;
+interface ParamsDto { id: string }
+interface ParamsDtoWithExtra extends ParamsDto { extra: boolean }
 const params: Params = { id: "00000000-0000-0000-0000-000000000000" };
+declare const paramsDto: ParamsDto;
+declare const paramsDtoWithExtra: ParamsDtoWithExtra;
+const paramsWithExtra = { ...params, extra: true };
+const paramsWithUnionExtra = Math.random() > 0.5
+  ? { ...params, first: true }
+  : { ...params, second: true };
+declare const paramsMetadata: unique symbol;
+const paramsWithMetadata = { ...params, [paramsMetadata]: true };
 const row: Row = { id: params.id, email: "user@example.com" };
 const result: Result = row;
 declare const executor: SqlExecutor<SqlxJsGeneratedRegistry>;
 void findUser.run(executor, params);
+void findUser.run(executor, params, { timeoutMs: 1_000 });
+void findUser.runWith({}, executor, params);
+void executor(${JSON.stringify(query)}, params);
+void executor.one(${JSON.stringify(query)}, params);
+void executor.one(${JSON.stringify(query)}, paramsDto);
+void executor.optional(${JSON.stringify(query)}, params);
+void executor.execute(${JSON.stringify(query)}, params);
+void executor.one(${JSON.stringify(query)}, paramsWithMetadata);
+void executor.with({ timeoutMs: 1_000 }).one(${JSON.stringify(query)}, params);
+void executor.file("queries/user-by-id.sql", params);
+void executor.file.one("queries/user-by-id.sql", params);
+void executor.file.optional("queries/user-by-id.sql", params);
+void executor.file.execute("queries/user-by-id.sql", params);
+// @ts-expect-error named definition parameters must have the registry's exact keys
+void findUser.run(executor, paramsWithExtra);
+// @ts-expect-error execution options do not weaken the exact named parameter contract
+void findUser.run(executor, paramsWithExtra, { timeoutMs: 1_000 });
+// @ts-expect-error named definition parameters must have the registry's exact keys
+void findUser.runWith({}, executor, paramsWithExtra);
+// @ts-expect-error named executor parameters must have the registry's exact keys
+void executor.one(${JSON.stringify(query)}, paramsWithExtra);
+// @ts-expect-error wider DTO interfaces must be mapped to the exact query shape
+void executor.one(${JSON.stringify(query)}, paramsDtoWithExtra);
+// @ts-expect-error every named parameter union branch must have the registry's exact keys
+void executor.one(${JSON.stringify(query)}, paramsWithUnionExtra);
+// @ts-expect-error named parameters through with() must have the registry's exact keys
+void executor.with({ timeoutMs: 1_000 }).one(${JSON.stringify(query)}, paramsWithExtra);
+// @ts-expect-error named SQL-file parameters must have the registry's exact keys
+void executor.file.one("queries/user-by-id.sql", paramsWithExtra);
 void result;
 
 export function runScoped(executor: SqlExecutor<SqlxJsGeneratedRegistry>, params: Params) {
@@ -1156,11 +1227,17 @@ export function runMany(executor: SqlExecutor<SqlxJsGeneratedRegistry>, params: 
 
 const positional = defineQuery.one("users.positional", ${JSON.stringify(positionalQuery)});
 type PositionalParams = QueryParams<typeof positional, SqlxJsGeneratedRegistry>;
+declare const positionalParams: PositionalParams;
+void executor.one(${JSON.stringify(positionalQuery)}, ...positionalParams);
+// @ts-expect-error positional parameters remain separate arguments
+void executor.one(${JSON.stringify(positionalQuery)}, positionalParams);
 export function runPositional(executor: SqlExecutor<SqlxJsGeneratedRegistry>, params: PositionalParams) {
   return positional.run(executor, ...params);
 }
 
 const countUsers = defineQuery.one("users.count", ${JSON.stringify(zeroParamsQuery)});
+// @ts-expect-error a zero-parameter query does not accept one empty tuple argument
+void executor.one(${JSON.stringify(zeroParamsQuery)}, [] as const);
 export function runZeroParams(executor: SqlExecutor<SqlxJsGeneratedRegistry>) {
   return countUsers.run(executor);
 }
@@ -1222,6 +1299,13 @@ export function runRegistryGeneric<Registry extends CompatibleRegistry>(
   return findUserOne.run(executor, params);
 }
 
+export function runRawRegistryGeneric<Registry extends CompatibleRegistry>(
+  executor: SqlExecutor<Registry>,
+  params: QueryParams<typeof findUserOne, Registry>,
+) {
+  return executor.one(${JSON.stringify(query)}, params);
+}
+
 export function runExtendedRegistry<Registry extends SqlxJsGeneratedRegistry>(
   executor: SqlExecutor<Registry>,
   params: QueryParams<typeof findUserOne, Registry>,
@@ -1253,6 +1337,13 @@ export function runPositionalRegistryGeneric<Registry extends CompatiblePosition
   params: QueryParams<typeof positional, Registry>,
 ) {
   return positional.run(executor, ...params);
+}
+
+export function runRawPositionalRegistryGeneric<Registry extends CompatiblePositionalRegistry>(
+  executor: SqlExecutor<Registry>,
+  params: QueryParams<typeof positional, Registry>,
+) {
+  return executor.one(${JSON.stringify(positionalQuery)}, ...params);
 }
 
 export function runPositionalWithSignal(
@@ -1379,6 +1470,7 @@ void invalidNestedNonNullArray;
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
       strict: true,
+      noUncheckedIndexedAccess: true,
       declaration: true,
       emitDeclarationOnly: true,
       outDir: join(root, "declarations"),
@@ -1436,10 +1528,12 @@ void invalidNestedNonNullArray;
   }
   for (const name of [
     "runRegistryGeneric",
+    "runRawRegistryGeneric",
     "runExtendedRegistry",
     "runGenericClient",
     "runGenericTransaction",
     "runPositionalRegistryGeneric",
+    "runRawPositionalRegistryGeneric",
   ]) {
     expect(emittedFunction(name)).toContain("Promise<");
     expect(emittedFunction(name)).not.toContain("unknown");

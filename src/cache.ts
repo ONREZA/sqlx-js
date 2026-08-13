@@ -203,8 +203,13 @@ function assertEntryShape(fp: string, raw: unknown): CacheEntry {
   try {
     if (typeof entry.query !== "string") throw new Error("query must be a string");
     expectedNames = rewriteNamedParameters(entry.query).names;
-  } catch {
-    throw new Error(`sqlx-js: cache entry ${fp}.json has malformed named parameter metadata. Run \`sqlx-js prepare\`.`);
+  } catch (error) {
+    const detail = error instanceof Error
+      ? `: ${error.message.replace(/^sqlx-js: /, "")}`
+      : "";
+    throw new Error(
+      `sqlx-js: cache entry ${fp}.json has malformed named parameter metadata${detail}. Run \`sqlx-js prepare\`.`,
+    );
   }
   if (entry.paramNames !== undefined || expectedNames.length > 0) {
     if (
