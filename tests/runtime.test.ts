@@ -188,6 +188,24 @@ test("runtime rewrites and binds named parameters", async () => {
   expect(received).toEqual({ query: "SELECT $1, $2, $1", params: ["a@b", 7] });
 });
 
+test("runtime rejects unknown named parameters before client dispatch", async () => {
+  let queries = 0;
+  const client: RuntimeClient = {
+    query: async () => {
+      queries++;
+      return [];
+    },
+    transaction: async (fn) => fn(client),
+    close: async () => {},
+  };
+  const runtime = createSqlRuntime(() => client);
+
+  await expect(runtime.sql("SELECT $id", { id: 7, extra: true })).rejects.toThrow(
+    "unknown named parameter(s): extra",
+  );
+  expect(queries).toBe(0);
+});
+
 test("runtime delegates parameter transformation once per query", async () => {
   let transformations = 0;
   let received: unknown[] | undefined;
