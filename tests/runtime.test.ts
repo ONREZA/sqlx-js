@@ -288,12 +288,14 @@ test("query definitions execute through root and transaction executors with stab
   const runtime = createSqlRuntime(() => client);
   const findUser = defineQuery.optional("users.findById", "SELECT id FROM users WHERE id = $id");
   expect(await findUser.run(runtime.sql as never, { id: 7 })).toEqual({ id: 7 });
+  expect(await findUser.bind(runtime.sql as never)({ id: 7 })).toEqual({ id: 7 });
   await runtime.sql.transaction(async (tx) => {
     expect(await findUser.run(tx as never, { id: 7 })).toEqual({ id: 7 });
   });
-  expect(events).toHaveLength(2);
+  expect(events).toHaveLength(3);
   expect(events[0]).toMatchObject({ queryId: findUser.queryId, queryName: "users.findById" });
   expect(events[1]).toMatchObject({ queryId: findUser.queryId, queryName: "users.findById" });
+  expect(events[2]).toMatchObject({ queryId: findUser.queryId, queryName: "users.findById" });
 });
 
 test("cardinality errors carry stable query metadata", async () => {
@@ -347,6 +349,7 @@ test("query definitions pass execution options outside SQL parameters", async ()
   const positional = defineQuery("users.byEmail", "SELECT id FROM users WHERE email = $1");
 
   await named.run(runtime.sql as never, { id: 7 }, { signal: controller.signal, timeoutMs: 100 });
+  await named.bind(runtime.sql as never)({ id: 7 }, { timeoutMs: 125 });
   await positional.runWith({ signal: controller.signal }, runtime.sql as never, "a@b");
 
   expect(requests[0]).toMatchObject({
@@ -354,6 +357,10 @@ test("query definitions pass execution options outside SQL parameters", async ()
     options: { signal: controller.signal, timeoutMs: 100 },
   });
   expect(requests[1]).toMatchObject({
+    params: [7],
+    options: { timeoutMs: 125 },
+  });
+  expect(requests[2]).toMatchObject({
     params: ["a@b"],
     options: { signal: controller.signal },
   });
@@ -417,6 +424,9 @@ test("query definitions fail closed when an executor cannot honor execution opti
   await expect(defineQuery("SELECT 1").runWith({}, executor as never)).rejects.toThrow(
     "execution options require a managed sqlx-js executor",
   );
+  await expect(defineQuery("SELECT $id").bind(executor as never)({ id: 7 }, {})).rejects.toThrow(
+    "execution options require a managed sqlx-js executor",
+  );
   expect(calls).toBe(0);
 });
 
@@ -458,14 +468,16 @@ test("mapped query definitions encode application input through root and transac
   }));
   const input = { events: [{ id: 7 }], ids: [3, 5] };
   await insertBatch.run(runtime.sql as never, input as never);
+  await insertBatch.bind(runtime.sql as never)(input as never);
   await runtime.sql.transaction(async (tx) => {
     await insertBatch.run(tx as never, input as never);
   });
   expect(received).toEqual([
     { query: "SELECT $1::jsonb, $2::int[]", params: ['[{"id":7}]', "{3,5}"] },
     { query: "SELECT $1::jsonb, $2::int[]", params: ['[{"id":7}]', "{3,5}"] },
+    { query: "SELECT $1::jsonb, $2::int[]", params: ['[{"id":7}]', "{3,5}"] },
   ]);
-  expect(events).toHaveLength(2);
+  expect(events).toHaveLength(3);
   expect(events[0]).toMatchObject({ queryId: insertBatch.queryId, queryName: "events.insertBatch" });
   expect(events[1]).toMatchObject({ queryId: insertBatch.queryId, queryName: "events.insertBatch" });
   expect(events[0]!.params).toEqual([{

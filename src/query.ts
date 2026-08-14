@@ -57,6 +57,12 @@ export type QueryDefinition<
   mapParams<Input, const WireParams extends QueryWireParams>(
     mapper: (input: Input, helpers: QueryParameterHelpers) => WireParams,
   ): MappedQueryDefinition<Query, Mode, Input, WireParams>;
+  bind<Registry extends { queries: Record<Query, NamedQueryEntry>; fileQueries: object }>(
+    executor: TypedSqlForRegistry<Registry>,
+  ): BoundNamedQueryRunner<Query, Mode, Registry>;
+  bind<Registry extends { queries: Record<Query, PositionalQueryEntry>; fileQueries: object }>(
+    executor: TypedSqlForRegistry<Registry>,
+  ): BoundPositionalQueryRunner<Query, Mode, Registry>;
   run<
     Registry extends { queries: Record<Query, NamedQueryEntry>; fileQueries: object },
     const Actual extends RegistryParams<Query, NoInfer<Registry>>,
@@ -111,6 +117,9 @@ export type MappedQueryDefinition<
   readonly profiles?: readonly string[];
   readonly [MAPPED_QUERY_INPUT]: Input;
   readonly [MAPPED_QUERY_WIRE_PARAMS]: WireParams;
+  bind<Registry extends { queries: Record<Query, QueryEntry>; fileQueries: object }>(
+    executor: MappedExecutor<Query, Registry, WireParams>,
+  ): BoundMappedQueryRunner<Query, Mode, Input, Registry>;
   run<Registry extends { queries: Record<Query, QueryEntry>; fileQueries: object }>(
     executor: MappedExecutor<Query, Registry, WireParams>,
     input: Input,
@@ -132,6 +141,30 @@ type RegistryParams<Query extends string, Registry extends { queries: object }> 
   RegistryQuery<Query, Registry>["params" & keyof RegistryQuery<Query, Registry>];
 type RegistryRow<Query extends string, Registry extends { queries: object }> =
   RegistryQuery<Query, Registry>["row" & keyof RegistryQuery<Query, Registry>];
+type BoundNamedQueryRunner<
+  Query extends string,
+  Mode extends QueryExecutionMode,
+  Registry extends { queries: Record<Query, NamedQueryEntry>; fileQueries: object },
+> = <const Actual extends RegistryParams<Query, NoInfer<Registry>>>(
+  params: ExactNamedParams<RegistryParams<Query, NoInfer<Registry>>, Actual>,
+  options?: QueryExecutionOptions,
+) => Promise<QueryResultFor<QueryDefinition<Query, Mode>, Registry>>;
+type BoundPositionalQueryRunner<
+  Query extends string,
+  Mode extends QueryExecutionMode,
+  Registry extends { queries: Record<Query, PositionalQueryEntry>; fileQueries: object },
+> = (
+  ...params: RegistryParams<Query, Registry> & readonly unknown[]
+) => Promise<QueryResultFor<QueryDefinition<Query, Mode>, Registry>>;
+type BoundMappedQueryRunner<
+  Query extends string,
+  Mode extends QueryExecutionMode,
+  Input,
+  Registry extends { queries: Record<Query, QueryEntry>; fileQueries: object },
+> = (
+  input: Input,
+  options?: QueryExecutionOptions,
+) => Promise<QueryResultFor<MappedQueryDefinition<Query, Mode, Input>, Registry>>;
 type MappedExecutor<
   Query extends string,
   Registry extends { queries: object; fileQueries: object },
@@ -322,6 +355,12 @@ function definitionMethod<Mode extends QueryExecutionMode, Profiles extends read
           queryId: metadata.queryId,
           ...(name ? { queryName: name } : {}),
           ...(declaredProfiles ? { profiles: declaredProfiles } : {}),
+          bind(executor: RuntimeExecutor) {
+            return async (input: Input, options?: QueryExecutionOptions) => {
+              const mapped = mapper(input, { json: executor.json, array: executor.array });
+              return await run(executor, Array.isArray(mapped) ? [...mapped] : [mapped], options);
+            };
+          },
           async run(executor: RuntimeExecutor, input: Input, options?: QueryExecutionOptions) {
             const mapped = mapper(input, { json: executor.json, array: executor.array });
             return await run(executor, Array.isArray(mapped) ? [...mapped] : [mapped], options);
@@ -331,6 +370,14 @@ function definitionMethod<Mode extends QueryExecutionMode, Profiles extends read
             return await run(executor, Array.isArray(mapped) ? [...mapped] : [mapped], options);
           },
         });
+      },
+      bind(executor: RuntimeExecutor) {
+        return async (...params: unknown[]) => {
+          const options = named && params.length > 1
+            ? params.pop() as QueryExecutionOptions
+            : undefined;
+          return await run(executor, params, options);
+        };
       },
       async run(executor: RuntimeExecutor, ...params: unknown[]) {
         const options = named && params.length > 1

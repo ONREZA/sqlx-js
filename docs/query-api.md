@@ -73,6 +73,26 @@ async function loadUser(
 
 The optional definition name is included in query observer and inventory metadata. The stable `queryId` is derived from the same lexical SQL fingerprint used by prepare/cache. `defineQuery.one`, `.optional`, and `.execute` mirror the cardinality contracts of the corresponding `sql` helpers.
 
+For a pass-through query adapter, bind the executor without redeclaring a
+structurally typed wrapper:
+
+```ts
+export function createUserQueries(executor: SqlExecutor<SqlxJsRegistry>) {
+  return {
+    find: findUser.bind(executor),
+  };
+}
+
+export type UserQueries = ReturnType<typeof createUserQueries>;
+```
+
+The bound runner retains the generated named-parameter exactness through
+`ReturnType`, `Pick`, and dependency injection, so a wider service DTO cannot be
+passed to `find` accidentally. Named and mapped runners accept execution options
+as their final argument; positional runners keep their generated positional
+arguments. Use an explicit object projection or `mapParams` when the application
+input intentionally differs from the PostgreSQL wire contract.
+
 The final options object records source-owned facts that PostgreSQL does not
 expose through `Describe`:
 

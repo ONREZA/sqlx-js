@@ -867,12 +867,16 @@ void api.sql.transaction({
   await tx("SELECT api");
   await tx.one("SELECT $tenant::text AS tenant", tenantParams);
   await tenantQuery.run(tx, tenantParams);
+  const boundTenantQuery = tenantQuery.bind(tx);
+  await boundTenantQuery(tenantParams);
   await tx.with({ timeoutMs: 1_000 })("SELECT api");
   await tx.with({ timeoutMs: 1_000 }).one("SELECT $tenant::text AS tenant", tenantParams);
   // @ts-expect-error contextual transaction params must have the registry's exact keys
   await tx.one("SELECT $tenant::text AS tenant", tenantParamsWithExtra);
   // @ts-expect-error contextual definitions must have the registry's exact keys
   await tenantQuery.run(tx, tenantParamsWithExtra);
+  // @ts-expect-error bound contextual definitions must preserve the exact keys
+  await boundTenantQuery(tenantParamsWithExtra);
   await tx.savepoint(async (sp) => {
     await sp("SELECT api");
     await sp.one("SELECT $tenant::text AS tenant", tenantParams);
@@ -880,6 +884,8 @@ void api.sql.transaction({
     await sp.one("SELECT $tenant::text AS tenant", tenantParamsWithExtra);
   });
 });
+// @ts-expect-error contextual profile definitions bind only inside a transaction
+void tenantQuery.bind(api.sql);
 // @ts-expect-error contextual profiles execute SQL only through a transaction
 void api.sql("SELECT api");
 // @ts-expect-error profile transaction settings are required
@@ -1167,6 +1173,7 @@ type Row = QueryRow<typeof findUser, SqlxJsGeneratedRegistry>;
 type Result = QueryResult<typeof findUser, SqlxJsGeneratedRegistry>;
 interface ParamsDto { id: string }
 interface ParamsDtoWithExtra extends ParamsDto { extra: boolean }
+interface UserServiceParams extends ParamsDto { visibleProjectIds?: readonly string[] }
 const params: Params = { id: "00000000-0000-0000-0000-000000000000" };
 declare const paramsDto: ParamsDto;
 declare const paramsDtoWithExtra: ParamsDtoWithExtra;
@@ -1179,6 +1186,9 @@ const paramsWithMetadata = { ...params, [paramsMetadata]: true };
 const row: Row = { id: params.id, email: "user@example.com" };
 const result: Result = row;
 declare const executor: SqlExecutor<SqlxJsGeneratedRegistry>;
+const boundFindUser = findUser.bind(executor);
+void boundFindUser(params);
+void boundFindUser(params, { timeoutMs: 1_000 });
 void findUser.run(executor, params);
 void findUser.run(executor, params, { timeoutMs: 1_000 });
 void findUser.runWith({}, executor, params);
@@ -1209,7 +1219,22 @@ void executor.one(${JSON.stringify(query)}, paramsWithUnionExtra);
 void executor.with({ timeoutMs: 1_000 }).one(${JSON.stringify(query)}, paramsWithExtra);
 // @ts-expect-error named SQL-file parameters must have the registry's exact keys
 void executor.file.one("queries/user-by-id.sql", paramsWithExtra);
+// @ts-expect-error bound named definitions preserve the exact parameter keys
+void boundFindUser(paramsWithExtra);
 void result;
+
+export function createUserQueries(boundExecutor: SqlExecutor<SqlxJsGeneratedRegistry>) {
+  return { find: findUser.bind(boundExecutor) };
+}
+type UserQueries = ReturnType<typeof createUserQueries>;
+type UserServiceDeps = { databaseQueries: Pick<UserQueries, "find"> };
+declare const userServiceDeps: UserServiceDeps;
+void userServiceDeps.databaseQueries.find(params);
+function loadUserThroughDi(input: UserServiceParams) {
+  // @ts-expect-error ReturnType, Pick, and DI must not erase bound exactness
+  return userServiceDeps.databaseQueries.find(input);
+}
+void loadUserThroughDi;
 
 export function runScoped(executor: SqlExecutor<SqlxJsGeneratedRegistry>, params: Params) {
   return findUser.run(executor, params);
@@ -1228,16 +1253,24 @@ export function runMany(executor: SqlExecutor<SqlxJsGeneratedRegistry>, params: 
 const positional = defineQuery.one("users.positional", ${JSON.stringify(positionalQuery)});
 type PositionalParams = QueryParams<typeof positional, SqlxJsGeneratedRegistry>;
 declare const positionalParams: PositionalParams;
+const boundPositional = positional.bind(executor);
+void boundPositional(...positionalParams);
 void executor.one(${JSON.stringify(positionalQuery)}, ...positionalParams);
 // @ts-expect-error positional parameters remain separate arguments
 void executor.one(${JSON.stringify(positionalQuery)}, positionalParams);
+// @ts-expect-error bound positional parameters remain separate arguments
+void boundPositional(positionalParams);
 export function runPositional(executor: SqlExecutor<SqlxJsGeneratedRegistry>, params: PositionalParams) {
   return positional.run(executor, ...params);
 }
 
 const countUsers = defineQuery.one("users.count", ${JSON.stringify(zeroParamsQuery)});
+const boundCountUsers = countUsers.bind(executor);
+void boundCountUsers();
 // @ts-expect-error a zero-parameter query does not accept one empty tuple argument
 void executor.one(${JSON.stringify(zeroParamsQuery)}, [] as const);
+// @ts-expect-error a bound zero-parameter query does not accept one empty tuple argument
+void boundCountUsers([] as const);
 export function runZeroParams(executor: SqlExecutor<SqlxJsGeneratedRegistry>) {
   return countUsers.run(executor);
 }
@@ -1389,6 +1422,9 @@ type MappedPayloadParams = QueryParams<typeof mappedPayloadQuery, SqlxJsGenerate
 type MappedPayloadWireParams = QueryWireParams<typeof mappedPayloadQuery, SqlxJsGeneratedRegistry>;
 const mappedPayload: MappedPayloadParams = payload;
 const mappedPayloadWire: MappedPayloadWireParams = { payload: encoded };
+const boundMappedPayload = mappedPayloadQuery.bind(executor);
+void boundMappedPayload(mappedPayload);
+void boundMappedPayload(mappedPayload, { timeoutMs: 1_000 });
 export function runMappedPayload(
   executor: SqlExecutor<SqlxJsGeneratedRegistry>,
   input: MappedPayloadParams,
@@ -1516,6 +1552,8 @@ void invalidNestedNonNullArray;
     expect(emittedFunction(name)).toContain("email: string;");
     expect(emittedFunction(name)).toContain("} | null>;");
   }
+  expect(emittedFunction("createUserQueries")).toContain("id: string;");
+  expect(emittedFunction("createUserQueries")).not.toContain("unknown");
   for (const name of ["runOneScoped"]) {
     expect(emittedFunction(name)).toContain("email: string;");
     expect(emittedFunction(name)).toContain("}>;");
@@ -1554,4 +1592,39 @@ void invalidNestedNonNullArray;
   for (const name of ["runExecute"]) {
     expect(emittedFunction(name)).toContain("ExecuteResult");
   }
+
+  writeFileSync(
+    join(root, "declarations/tests/.tmp-codegen/query-definitions/generated.d.ts"),
+    readFileSync(join(root, "generated.d.ts")),
+  );
+  writeFileSync(join(root, "downstream.ts"), `
+import { createUserQueries } from "./declarations/tests/.tmp-codegen/query-definitions/consumer";
+
+type UserQueries = ReturnType<typeof createUserQueries>;
+type UserServiceDeps = { databaseQueries: Pick<UserQueries, "find"> };
+declare const deps: UserServiceDeps;
+declare const params: { id: string };
+declare const widerParams: { id: string; visibleProjectIds?: readonly string[] };
+void deps.databaseQueries.find(params);
+// @ts-expect-error emitted bound runners must retain exact named keys for downstream packages
+void deps.databaseQueries.find(widerParams);
+`);
+  writeFileSync(join(root, "tsconfig.downstream.json"), JSON.stringify({
+    compilerOptions: {
+      strict: true,
+      noEmit: true,
+      module: "Preserve",
+      moduleResolution: "Bundler",
+      target: "ESNext",
+      lib: ["ES2024"],
+      types: ["bun-types"],
+      paths: { "@onreza/sqlx-js": [resolve(import.meta.dir, "../src/index.ts")] },
+    },
+    files: ["downstream.ts"],
+  }));
+  const downstream = spawnSync("bunx", ["tsc", "-p", join(root, "tsconfig.downstream.json")], {
+    cwd: resolve(import.meta.dir, ".."),
+    encoding: "utf8",
+  });
+  expect(downstream.status, downstream.stdout + downstream.stderr).toBe(0);
 });

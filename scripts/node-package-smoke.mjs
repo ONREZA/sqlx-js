@@ -53,6 +53,7 @@ try {
     } from "@onreza/sqlx-js";
 
     const statement = "SELECT $payload::jsonb AS payload";
+    const namedStatement = "SELECT $id::text AS id";
     interface Payload { id: string; nested: { count: number } }
     const query = defineQuery.one("smoke.typedEcho", statement).mapParams(
       (payload: Payload, { json }) => ({ payload: json(payload) }),
@@ -62,7 +63,10 @@ try {
       row: { payload: SqlxJson<JsonValue> };
     };
     type Registry = QueryRegistry & {
-      queries: Record<typeof statement, Entry>;
+      queries: Record<typeof statement, Entry> & Record<typeof namedStatement, {
+        params: { id: string };
+        row: { id: string };
+      }>;
       fileQueries: {};
       jsonProtocol: typeof EXTENDED_JSON_PROTOCOL_VERSION;
     };
@@ -72,6 +76,12 @@ try {
     declare const input: Input;
     declare const wire: Wire;
     const result: Promise<{ payload: SqlxJson<JsonValue> }> = query.run(executor, input);
+    const boundNamedQuery = defineQuery.one("smoke.bound", namedStatement).bind(executor);
+    const boundResult: Promise<{ id: string }> = boundNamedQuery({ id: "user-1" });
+    interface WiderNamedParams { id: string; visibleProjectIds?: readonly string[] }
+    declare const widerNamedParams: WiderNamedParams;
+    // @ts-expect-error bound packed declarations must preserve exact named keys
+    void boundNamedQuery(widerNamedParams);
     const boundedExecutor: SqlExecutor<Registry> = executor
       .with({ signal: new AbortController().signal })
       .with({ timeoutMs: 1_000 });
@@ -116,6 +126,7 @@ try {
     void wire;
     void boundedExecutor;
     void result;
+    void boundResult;
     void nativeResult;
     void lockResult;
   `);
@@ -249,10 +260,12 @@ try {
 
       const answerQuery = defineQuery.one("smoke.answer", "SELECT 43::int4 AS value");
       assert.deepEqual(await answerQuery.run(sql), { value: 43 });
+      assert.deepEqual(await answerQuery.bind(sql)(), { value: 43 });
       const echoQuery = defineQuery.one("smoke.echo", "SELECT $payload::jsonb AS payload").mapParams(
         (payload, { json }) => ({ payload: json(payload) }),
       );
       assert.deepEqual((await echoQuery.run(sql, { ok: true })).payload.value, { ok: true });
+      assert.deepEqual((await echoQuery.bind(sql)({ ok: true })).payload.value, { ok: true });
       assert.deepEqual(await sql.file.one("queries/embedded.sql"), { value: 9 });
       assert.equal(answerQuery.queryId, queryId(answerQuery.query));
       assert.ok(events.some((event) => event.queryId === answerQuery.queryId && event.queryName === "smoke.answer"));
