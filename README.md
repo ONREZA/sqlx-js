@@ -50,7 +50,7 @@ runtime, generate an ORM layer, or support MySQL and SQLite.
 
 | Area | What is included | Details |
 | --- | --- | --- |
-| Typed queries | Positional and named parameters, request-scoped query options, reusable `defineQuery`, external SQL files, one/optional/execute cardinality helpers | [Query API](./docs/query-api.md) |
+| Typed queries | Positional and named parameters, request-scoped query options, reusable and bound `defineQuery`, external SQL files, one/optional/execute cardinality helpers | [Query API](./docs/query-api.md) |
 | Inference | PostgreSQL metadata, joins, CTEs, set operations, DML targets, expression nullability, WHERE narrowing, enums, arrays, JSON | [Type and nullability inference](./docs/type-inference.md) |
 | Runtime | Descriptor-backed managed clients, transactions and savepoints, deadlines, TCP keepalive, lifecycle recovery, pinned advisory-lock sessions, observers, migrations, custom codecs | [Runtime and clients](./docs/runtime.md) |
 | Roles and RLS | Profile-scoped query registries, planning under the effective role, required transaction-local settings, RLS diagnostics | [Connection profiles and RLS](./docs/profiles-and-rls.md) |

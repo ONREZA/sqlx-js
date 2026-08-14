@@ -8,6 +8,7 @@
 | Command metadata / affected rows | `sql.execute(...)` |
 | Root-relative SQL asset | `sql.file(...)` and its cardinality helpers |
 | Reusable query | `defineQuery`, `.one`, `.optional`, or `.execute` |
+| Pass-through query adapter | `definition.bind(executor)` |
 | Dynamic application input | `defineQuery(...).mapParams(...)` |
 | Transaction | `sql.transaction(...)` or a scoped client transaction |
 | Dynamic allowlisted identifier | `sql.id(...)` |

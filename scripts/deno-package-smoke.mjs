@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { Temporal } from "npm:temporal-polyfill@1.0.3";
 import {
   createSqlClient,
+  defineQuery,
   JsonNumber,
   queryId,
   QueryAbortedError,
@@ -35,6 +36,8 @@ const db = createSqlClient(databaseUrl, {
 try {
   await db.ready({ timeoutMs: 5_000 });
   assert.deepEqual(await db.sql.one(descriptorQuery, 42), { descriptor_value: 42 });
+  const boundAnswer = defineQuery.one("smoke.denoBound", "SELECT 43::int4 AS value").bind(db.sql);
+  assert.deepEqual(await boundAnswer(), { value: 43 });
   const bytes = new Uint8Array([0x00, 0x5c, 0x7f, 0xff]);
   const row = await db.sql.one(
     `SELECT

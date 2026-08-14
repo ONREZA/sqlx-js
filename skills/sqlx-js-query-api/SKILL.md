@@ -28,6 +28,8 @@ API surface.
 - Keep the exact SQL literal stable; generated registries are keyed by source
   text, not the normalized fingerprint.
 - Prefer `defineQuery` for reuse across root and transaction executors.
+- Use `definition.bind(executor)` for pass-through adapters that must preserve
+  exact named parameters through dependency injection.
 - Use `mapParams` to map an application input into the generated wire contract,
   not to widen PostgreSQL parameters.
 - Use `unsafe` only when dynamic SQL cannot be represented by literal queries
