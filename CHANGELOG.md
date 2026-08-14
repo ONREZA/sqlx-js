@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.33.0](https://github.com/ONREZA/sqlx-js/compare/v0.32.0...v0.33.0) (2026-08-14)
+
+
+### Features
+
+* **types:** reject extra named params ([57138d1](https://github.com/ONREZA/sqlx-js/commit/57138d1368dd4c41b8bebc2cb9acfc86478f4993))
+
+
+### Bug Fixes
+
+* **artifacts:** refresh example cache fence ([dfb1e30](https://github.com/ONREZA/sqlx-js/commit/dfb1e30b37981966626590d45ccf4a0f89721dee))
+* **types:** preserve generic query forwarding ([641c48a](https://github.com/ONREZA/sqlx-js/commit/641c48a67bd757aff3b80544a19da56e7ec034fe))
+
+
+### Documentation
+
+* **query:** define generic key boundary ([c6cf803](https://github.com/ONREZA/sqlx-js/commit/c6cf803ee417bd5e5a0fc6b9bbd083f80dd2c18b))
+
 ## [0.32.0](https://github.com/ONREZA/sqlx-js/compare/v0.31.0...v0.32.0) (2026-08-11)
 
 
