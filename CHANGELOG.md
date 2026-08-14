@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.0](https://github.com/ONREZA/sqlx-js/compare/v0.33.0...v0.34.0) (2026-08-14)
+
+
+### Features
+
+* **query:** add bound query runners ([d54a3a0](https://github.com/ONREZA/sqlx-js/commit/d54a3a0c4b0a48d8fed3aa4c1d1a656fa3c31683))
+
 ## [0.33.0](https://github.com/ONREZA/sqlx-js/compare/v0.32.0...v0.33.0) (2026-08-14)
 
 
