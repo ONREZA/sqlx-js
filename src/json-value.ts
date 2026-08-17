@@ -44,16 +44,17 @@ export type JsonInputArray = readonly JsonInputValue[];
 type NonJsonValue = symbol | Date | Uint8Array | ((...args: never[]) => unknown);
 
 export type JsonCompatible<T> =
-  T extends JsonPrimitive | bigint | JsonNumber | TemporalRuntimeValue ? T
-    : T extends NonJsonValue ? never
-      : T extends readonly unknown[] ? T extends JsonInputArray
-        ? T
-        : { readonly [K in keyof T]: JsonCompatible<T[K]> }
-        : T extends object ? Extract<keyof T, symbol> extends never
-          ? T extends JsonInputObject
-            ? T
-            : { readonly [K in keyof T]: JsonCompatible<T[K]> }
-          : never
+  T extends SqlxJson<unknown> ? never
+    : T extends JsonPrimitive | bigint | JsonNumber | TemporalRuntimeValue ? T
+      : T extends NonJsonValue ? never
+        : T extends readonly unknown[] ? T extends JsonInputArray
+          ? T
+          : { readonly [K in keyof T]: JsonCompatible<T[K]> }
+          : T extends object ? Extract<keyof T, symbol> extends never
+            ? T extends JsonInputObject
+              ? T
+              : { readonly [K in keyof T]: JsonCompatible<T[K]> }
+            : never
           : never;
 
 export type ImmutableJson<T> =
@@ -234,6 +235,12 @@ function snapshotValue(value: unknown, state: SnapshotState, depth: number): Jso
   }
   if (typeof value !== "object") {
     throw new Error(`sqlx-js: unsupported Extended JSON value ${Object.prototype.toString.call(value)}`);
+  }
+  if (isSqlxJson(value)) {
+    throw new Error(
+      "sqlx-js: SqlxJson documents cannot be nested or passed to sql.json(...) again; "
+      + "pass the document directly as a PostgreSQL JSON parameter or use document.value at the application boundary",
+    );
   }
   if (state.seen.has(value)) throw new Error("sqlx-js: Extended JSON document contains a circular reference");
   if (hasCustomToJson(value)) {
