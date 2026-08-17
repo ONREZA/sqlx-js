@@ -360,6 +360,12 @@ const row = await sql.one("SELECT payload FROM events WHERE id = $1", id);
 const event = row.payload.value;
 ```
 
+An existing `SqlxJson` document is already a valid PostgreSQL JSON parameter;
+pass it to another query directly. Do not call `sql.json(document)` or nest the
+document inside another `sql.json(...)` value: both forms are TypeScript errors
+and fail closed at runtime when types are bypassed. Use `document.value` only
+when crossing into an application DTO or another ordinary-value boundary.
+
 Class instances, binary views, custom `toJSON`, accessors, symbol/named array
 properties, array holes, explicit `undefined`, functions, non-finite numbers,
 unsafe JavaScript integer `number` values, and JavaScript `Date` fail closed.

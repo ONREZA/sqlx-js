@@ -97,6 +97,11 @@ describe("encodeParam", () => {
       .toThrow("Extended JSON numbers must be finite");
     expect(() => _internal.encodeParam(json([undefined] as never)))
       .toThrow("Extended JSON arrays cannot contain holes, accessors, or undefined elements");
+    const document = json({ safe: true });
+    expect(() => json(document as never))
+      .toThrow("pass the document directly as a PostgreSQL JSON parameter");
+    expect(() => json({ nested: document } as never))
+      .toThrow("use document.value at the application boundary");
     expect(_internal.encodeParam(json({ at: Temporal.Instant.from("2026-01-01T00:00:00Z") })))
       .toContain('"type":"temporal.Instant"');
     expect(_internal.encodeParam(json({ ttl: Temporal.Duration.from("PT1H") })))

@@ -1412,6 +1412,10 @@ const legacyEncoded: JsonParameter<Payload> = encoded;
 const currentEncoded: SqlxJson<Payload> = legacyEncoded;
 const preserved: Payload = encoded.value;
 void executor(${JSON.stringify(jsonQuery)}, { payload: encoded });
+// @ts-expect-error SqlxJson documents are already encoded
+json(encoded);
+// @ts-expect-error SqlxJson documents cannot be nested in another document
+json({ payload: encoded });
 void currentEncoded;
 void preserved;
 
