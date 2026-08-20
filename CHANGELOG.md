@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.35.0](https://github.com/ONREZA/sqlx-js/compare/v0.34.0...v0.35.0) (2026-08-20)
+
+
+### Features
+
+* **pgschema:** support project-locked tools ([304b6f6](https://github.com/ONREZA/sqlx-js/commit/304b6f6f93a30f8145161f5cf2a92372144cca3d))
+
+
+### Bug Fixes
+
+* **json:** reject document rewrapping ([daeddd7](https://github.com/ONREZA/sqlx-js/commit/daeddd718aaf09721bae63ecbe86e089cc03da20))
+
 ## [0.34.0](https://github.com/ONREZA/sqlx-js/compare/v0.33.0...v0.34.0) (2026-08-14)
 
 
