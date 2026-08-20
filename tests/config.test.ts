@@ -433,6 +433,20 @@ test("loadConfig validates schema materializer commands", async () => {
   await expect(loadConfig(wrongProvider)).rejects.toThrow(/schema\.materializer requires schema\.provider = "pgschema"/);
 });
 
+test("loadConfig rejects empty pgschema file and command paths", async () => {
+  const emptyCommand = root();
+  writeFileSync(join(emptyCommand, "sqlx-js.config.mjs"), `export default {
+    schema: { provider: "pgschema", command: " " },
+  };\n`);
+  await expect(loadConfig(emptyCommand)).rejects.toThrow(/schema\.command must be a non-empty string/);
+
+  const emptyFile = root();
+  writeFileSync(join(emptyFile, "sqlx-js.config.mjs"), `export default {
+    schema: { provider: "pgschema", file: "" },
+  };\n`);
+  await expect(loadConfig(emptyFile)).rejects.toThrow(/schema\.file must be a non-empty string/);
+});
+
 test("current development runtime satisfies the supported baseline", () => {
   expect(() => assertSupportedRuntime()).not.toThrow();
 });

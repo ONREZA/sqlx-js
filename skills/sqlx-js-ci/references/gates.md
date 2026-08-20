@@ -31,6 +31,7 @@ sqlx-js migrate run --dry-run --json
 pgschema:
 
 ```bash
+sqlx-js pgschema install --frozen
 sqlx-js pgschema plan -- --output-json plan.json
 ```
 

@@ -14,7 +14,7 @@ records its ownership boundary.
 | `queries` | Read-only query inventory and audits | No | No |
 | `snapshot` | Schema snapshot and manifest dump/check | `dump` | Reads only |
 | `migrate` | Built-in migration source and target history | Subcommand-dependent | Subcommand-dependent |
-| `pgschema` | Managed pgschema install, plan, and apply | Install cache only | `apply` |
+| `pgschema` | Locked install/update, direct exec, plan, and apply | Install cache and lock updates | `apply` |
 
 ## Prepare modes
 

@@ -11,7 +11,7 @@ The command hierarchy follows ownership rather than implementation details:
 | `ci` | Run the provider-aware `verify --strict-inference` gate | No | No |
 | `prepare` | Generate, watch, restore, or check query artifacts | Depends on mode | Only reads |
 | `migrate` | Built-in migration files and target history | `add/squash/archive` | `run/revert` |
-| `pgschema` | Managed pgschema tool and target plan/apply | Install cache only | `apply` |
+| `pgschema` | Locked tool, direct exec, and target plan/apply | Install cache and lock updates | `apply` |
 | `snapshot` | Runtime identifier snapshot and LLM manifest | `dump` | No |
 | `queries` | Database-free read-only query inventory, inference explanation, and reuse/similarity audits | No | No |
 | `json audit` | Extended JSON collision, duplicate-key, schema-dependency, and source-usage inventory | No | No |
@@ -25,7 +25,7 @@ sqlx-js verify [--strict-inference] [--shadow-url <url>]
 sqlx-js ci [--json]
 sqlx-js prepare [--watch | --check | --offline | --verify] [--warnings | --verbose]
 sqlx-js migrate add|run|info|check|revert|squash|archive
-sqlx-js pgschema install|plan|apply
+sqlx-js pgschema install|update|exec|plan|apply
 sqlx-js snapshot dump|check
 sqlx-js doctor [--fix]
 sqlx-js queries [--json]
@@ -242,6 +242,7 @@ For complex PostgreSQL schemas with functions, triggers, RLS, grants, partitions
 ```bash
 sqlx-js init --schema-provider pgschema
 sqlx-js pgschema install
+# commit the generated pgschema.lock.json
 # edit schema.sql
 sqlx-js dev --strict-inference
 sqlx-js verify --strict-inference
@@ -278,11 +279,33 @@ shadow database does not remove cluster-scoped roles or extensions: use
 pre-existing objects or an ephemeral PostgreSQL cluster when validation creates
 them.
 
-`pgschema install` installs the pinned version used by this sqlx-js release.
+`pgschema install` installs the exact version and platform checksum recorded in
+the project-owned `pgschema.lock.json`. When the lock is absent, the command
+resolves the latest stable version in the supported `>=1.12 <1.13` range,
+installs it, and writes a lock containing all supported Linux and macOS asset
+digests. Commit that file. Use `pgschema install --frozen` in CI to reject a
+missing lock, and use `pgschema update --patch` to explicitly refresh it without
+upgrading sqlx-js. The update downloads and verifies the current-platform binary
+before atomically replacing the lock.
+
 `dev`, `verify`, `pgschema plan`, and `pgschema apply` use `schema.command` when
-configured; otherwise they prefer the managed binary under
-`node_modules/.cache/sqlx-js/pgschema/` and fall back to `pgschema` on `PATH`.
-Arguments after `--` are forwarded only by `plan` and `apply`.
+configured; otherwise they require the checksum-verified managed binary under
+`node_modules/.cache/sqlx-js/pgschema/`. They never resolve releases or update
+the lock. An external executable is therefore an explicit `schema.command`
+choice rather than an implicit `PATH` fallback. Provider commands run from the
+project root, so a relative `schema.command` is project-root-relative.
+
+`pgschema exec -- <args>` runs that same effective executable directly from the
+project root. It forwards every argument and the current process environment
+without adding connection flags, credentials, schema names, or desired files.
+This intentionally permits options that managed `plan/apply` reject, so it is a
+diagnostic and upstream-CLI escape hatch rather than a deployment workflow:
+
+```bash
+sqlx-js pgschema exec -- --help
+```
+
+Arguments after `--` are accepted only by `exec`, `plan`, and `apply`.
 Connection, credential, target-schema, and desired-file flags remain owned by
 sqlx-js and are rejected in passthrough arguments. The external disposable plan
 database remains pgschema-owned, so `PGSCHEMA_PLAN_*` and `--plan-*` pass
@@ -293,10 +316,10 @@ Explicit target `application_name`, `options`, `role`, or `statement_timeout`
 therefore fail before the provider starts instead of leaking into the plan
 database or being silently ignored.
 `pgschema apply -- --plan plan.json` applies a reviewed plan without requiring
-the local `schema.sql`. The pinned pgschema 1.12.2 CLI accepts one `--schema`
-value, so multi-schema configurations fail explicitly. This version preserves
-the complete function-local `SET` contract; the fixed upstream defect is
-tracked in [pgplex/pgschema#526](https://github.com/pgplex/pgschema/issues/526).
+the local `schema.sql`. The supported pgschema `>=1.12 <1.13` range accepts one
+`--schema` value, so multi-schema configurations fail explicitly. This range
+preserves the complete function-local `SET` contract; the fixed upstream defect
+is tracked in [pgplex/pgschema#526](https://github.com/pgplex/pgschema/issues/526).
 
 Use provider-aware `dev` while developing built-in migrations and SQL:
 

@@ -23,7 +23,7 @@ test("CLI help prints package metadata version", () => {
   expect(r.stdout).toContain("\ncommon workflows:\n  sqlx-js init");
   expect(r.stdout).toContain("sqlx-js dev");
   expect(r.stdout).toContain("sqlx-js verify");
-  expect(r.stdout).toContain("sqlx-js pgschema install|plan|apply");
+  expect(r.stdout).toContain("sqlx-js pgschema install|update|exec|plan|apply");
   expect(r.stdout).toContain("sqlx-js snapshot dump|check");
   expect(r.stdout).toContain("sqlx-js doctor");
   expect(r.stdout).toContain("--schema-provider");
@@ -146,6 +146,8 @@ test("CLI command help is successful and command-specific", () => {
     },
     { args: ["json", "audit"], expected: ["usage: sqlx-js json audit", "read-only transaction"] },
     { args: ["pgschema", "install"], expected: ["usage: sqlx-js pgschema install", "checksum"] },
+    { args: ["pgschema", "update"], expected: ["usage: sqlx-js pgschema update --patch", "atomically"] },
+    { args: ["pgschema", "exec"], expected: ["usage: sqlx-js pgschema exec", "escape hatch"] },
     { args: ["pgschema", "plan"], expected: ["usage: sqlx-js pgschema plan", "without applying"] },
     { args: ["pgschema", "apply"], expected: ["usage: sqlx-js pgschema apply", "reviewed --plan"] },
     { args: ["migrate", "add"], expected: ["usage: sqlx-js migrate add", ".up.sql and .down.sql"] },
@@ -642,22 +644,83 @@ test("CLI init scaffolds pgschema workflow", () => {
   }
 });
 
+test("CLI pgschema update requires an explicit patch update", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-update-cli-"));
+  try {
+    const result = spawnSync("bun", [binPath, "pgschema", "update", "--root", root], { encoding: "utf8" });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("pgschema update requires --patch");
+    expect(existsSync(root)).toBe(true);
+    expect(existsSync(join(root, "pgschema.lock.json"))).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI pgschema exec forwards exact arguments from the project root and preserves exit status", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-exec-cli-"));
+  const command = join(root, "pgschema.sh");
+  const capture = join(root, "capture.txt");
+  try {
+    const missingArgs = spawnSync("bun", [binPath, "pgschema", "exec", "--root", root], { encoding: "utf8" });
+    expect(missingArgs.status).toBe(2);
+    expect(missingArgs.stderr).toContain("pgschema exec requires arguments after --");
+
+    writeFileSync(join(root, "sqlx-js.config.ts"), `export default {
+  schema: { provider: "pgschema", command: ${JSON.stringify(command)} },
+};
+`);
+    writeFileSync(join(root, ".env"), "DATABASE_URL=postgres://must-not-be-loaded/example\n");
+    writeFileSync(command, `#!/bin/sh
+: > "$CAPTURE"
+printf 'cwd=%s\n' "$PWD" >> "$CAPTURE"
+printf 'database=%s\n' "$DATABASE_URL" >> "$CAPTURE"
+for arg in "$@"; do
+  printf 'arg=%s\n' "$arg" >> "$CAPTURE"
+done
+if [ "$1" = "fail" ]; then exit 7; fi
+`);
+    chmodSync(command, 0o755);
+
+    const env = { ...process.env, CAPTURE: capture, DATABASE_URL: "" };
+    const success = spawnSync(
+      "bun",
+      [binPath, "pgschema", "exec", "--root", root, "--", "--help", "--host", "custom"],
+      { encoding: "utf8", env },
+    );
+    expect(success.status).toBe(0);
+    expect(readFileSync(capture, "utf8")).toBe(
+      `cwd=${root}\ndatabase=\narg=--help\narg=--host\narg=custom\n`,
+    );
+
+    const failure = spawnSync("bun", [binPath, "pgschema", "exec", "--root", root, "--", "fail"], {
+      encoding: "utf8",
+      env,
+    });
+    expect(failure.status).toBe(7);
+    expect(failure.stderr).toContain("exited with 7");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("CLI pgschema plan delegates to configured pgschema", () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-"));
   const binDir = join(root, "bin");
   const capture = join(root, "capture.txt");
+  const fake = join(binDir, "pgschema");
   try {
     mkdirSync(binDir);
     writeFileSync(join(root, "sqlx-js.config.ts"), `export default {
   schema: {
     provider: "pgschema",
+    command: ${JSON.stringify(fake)},
     file: "schema.sql",
     schemas: ["private"],
   },
 };
 `);
     writeFileSync(join(root, "schema.sql"), "CREATE TABLE users (id bigint primary key);\n");
-    const fake = join(binDir, "pgschema");
     writeFileSync(fake, `#!/bin/sh
 : > "$CAPTURE"
 for arg in "$@"; do
@@ -715,17 +778,18 @@ test("CLI pgschema apply accepts a reviewed plan without schema file", () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-apply-plan-"));
   const binDir = join(root, "bin");
   const capture = join(root, "capture.txt");
+  const fake = join(binDir, "pgschema");
   try {
     mkdirSync(binDir);
     writeFileSync(join(root, "sqlx-js.config.ts"), `export default {
   schema: {
     provider: "pgschema",
+    command: ${JSON.stringify(fake)},
     file: "schema.sql",
     schemas: ["private"],
   },
 };
 `);
-    const fake = join(binDir, "pgschema");
     writeFileSync(fake, `#!/bin/sh
 : > "$CAPTURE"
 for arg in "$@"; do
@@ -770,18 +834,19 @@ test("CLI pgschema plan rejects multi-schema config", () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-multi-"));
   const binDir = join(root, "bin");
   const capture = join(root, "capture.txt");
+  const fake = join(binDir, "pgschema");
   try {
     mkdirSync(binDir);
     writeFileSync(join(root, "sqlx-js.config.ts"), `export default {
   schema: {
     provider: "pgschema",
+    command: ${JSON.stringify(fake)},
     file: "schema.sql",
     schemas: ["public", "private"],
   },
 };
 `);
     writeFileSync(join(root, "schema.sql"), "CREATE TABLE users (id bigint primary key);\n");
-    const fake = join(binDir, "pgschema");
     writeFileSync(fake, `#!/bin/sh
 printf 'called\\n' > "$CAPTURE"
 exit 0

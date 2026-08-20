@@ -131,6 +131,7 @@ provider-aware top level.
 
 ```bash
 sqlx-js pgschema install
+# commit pgschema.lock.json
 # edit schema.sql
 sqlx-js dev --strict-inference
 sqlx-js verify --strict-inference
@@ -145,6 +146,11 @@ sqlx-js pgschema apply -- --plan plan.json --auto-approve
 
 The managed pgschema workflow supports Linux and macOS. On Windows, run
 sqlx-js under WSL/Linux/macOS or use built-in migrations.
+
+`pgschema install` creates a missing project lock from the latest stable
+`>=1.12 <1.13` release. Commit `pgschema.lock.json`, use `install --frozen` in
+CI, and refresh only that lock with `pgschema update --patch` when a new patch
+is available. Schema execution never updates the tool implicitly.
 
 `doctor` is a full-project diagnostic rather than an install-only probe. It
 checks generated artifacts and the target database as well as the configured

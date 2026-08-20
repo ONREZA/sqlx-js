@@ -43,7 +43,7 @@ In CI:
 
 ```yaml
 - run: bun install
-- run: sqlx-js pgschema install # only when schema.provider is "pgschema"
+- run: sqlx-js pgschema install --frozen # pgschema provider without schema.command
 - run: sqlx-js ci
 - run: sqlx-js doctor --json
 - run: tsc --noEmit
@@ -68,7 +68,13 @@ the exact target schema or an authoritative production-shaped copy after the
 intended DDL is present; descriptors optimize dispatch and do not replace this
 schema-parity gate.
 
-The managed pgschema binary is installed under `node_modules/.cache/sqlx-js/pgschema/`, not `.sqlx-js/`, so it is not part of the committed offline cache.
+Commit the root `pgschema.lock.json` for managed pgschema projects. It records one exact
+compatible version and every supported platform digest; `--frozen` prevents CI
+from resolving or creating it. Refresh it explicitly with
+`sqlx-js pgschema update --patch` and review the resulting CI plan/apply tests.
+The managed binary itself is installed under
+`node_modules/.cache/sqlx-js/pgschema/`, not `.sqlx-js/`, so it is not part of
+the committed offline cache.
 
 Generated declarations, enum modules, embedded-SQL modules, and cache files should be excluded from formatters and linters. The runtime descriptor is JSON and is imported explicitly by applications that enable its fast path. TypeScript artifacts remain included in `tsconfig.json` for type checking, but rules such as Biome's empty-interface or confusing-void checks are not meaningful for generated contracts.
 

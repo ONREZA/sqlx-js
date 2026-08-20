@@ -42,7 +42,11 @@ export function optionsFor(command: string, subcommand?: string): ParseArgsOptio
     "shadow-admin-url": { type: "string" },
   };
   if (command === "json") return { ...ROOT_OPTIONS, json: { type: "boolean" } };
-  if (command === "pgschema") return ROOT_OPTIONS;
+  if (command === "pgschema") {
+    if (subcommand === "update") return { ...ROOT_OPTIONS, patch: { type: "boolean" } };
+    if (subcommand === "install") return { ...ROOT_OPTIONS, frozen: { type: "boolean" } };
+    return ROOT_OPTIONS;
+  }
   if (command === "prepare") {
     return {
       ...ROOT_OPTIONS,

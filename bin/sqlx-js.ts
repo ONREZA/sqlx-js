@@ -153,10 +153,16 @@ function validateInvocation(): void {
   if (cmd === "pgschema") {
     requirePositionals(1, 1, "pgschema");
     const sub = positionals[0];
-    if (sub !== "install" && sub !== "plan" && sub !== "apply") {
+    if (sub !== "install" && sub !== "update" && sub !== "exec" && sub !== "plan" && sub !== "apply") {
       usageError(`unknown pgschema command ${JSON.stringify(sub)}`, "pgschema", commandArgv);
     }
-    if (passthroughArgs.length > 0 && sub !== "plan" && sub !== "apply") {
+    if (sub === "update" && !flag("--patch")) {
+      usageError("pgschema update requires --patch", "pgschema", commandArgv);
+    }
+    if (sub === "exec" && passthroughArgs.length === 0) {
+      usageError("pgschema exec requires arguments after --", "pgschema", commandArgv);
+    }
+    if (passthroughArgs.length > 0 && sub !== "exec" && sub !== "plan" && sub !== "apply") {
       usageError(`pgschema ${sub} does not accept arguments after --`, "pgschema", commandArgv);
     }
     return;
@@ -544,7 +550,9 @@ if (cmd === "init") {
   const {
     PgschemaCommandError,
     runPgschemaCommand,
+    runPgschemaExec,
     runPgschemaInstall,
+    runPgschemaUpdate,
   } = await import("../src/commands/pgschema");
   const sub = positionals[0];
   const failPgschema = (error: unknown): never => {
@@ -552,7 +560,19 @@ if (cmd === "init") {
   };
   if (sub === "install") {
     try {
-      await runPgschemaInstall({ root });
+      await runPgschemaInstall({ root, frozen: flag("--frozen") });
+    } catch (e) {
+      failPgschema(e);
+    }
+  } else if (sub === "update") {
+    try {
+      await runPgschemaUpdate({ root });
+    } catch (e) {
+      failPgschema(e);
+    }
+  } else if (sub === "exec") {
+    try {
+      runPgschemaExec({ root, config: await loadConfig(root), args: passthroughArgs });
     } catch (e) {
       failPgschema(e);
     }

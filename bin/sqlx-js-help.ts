@@ -28,7 +28,7 @@ export function helpText(version: string, scope: HelpScope, args: string[] = [])
 
   schema ownership:
     sqlx-js migrate add|run|info|check|revert|squash|archive
-    sqlx-js pgschema install|plan|apply
+    sqlx-js pgschema install|update|exec|plan|apply
 
   inspection and generated artifacts:
     sqlx-js doctor [--root <dir>] [--dts <path>] [--json] [--fix]
@@ -94,9 +94,9 @@ export function helpText(version: string, scope: HelpScope, args: string[] = [])
 
   Writes worktree: no
   Changes target database: no`,
-    pgschema: `usage: sqlx-js pgschema install | plan | apply
+    pgschema: `usage: sqlx-js pgschema install | update --patch | exec -- <args> | plan | apply
 
-  Manage the pinned pgschema tool and target-database deployment plans.
+  Manage the project-locked pgschema tool and target-database deployment plans.
   Use provider-aware \`sqlx-js dev\` and \`sqlx-js verify\` for shadow validation.`,
     prepare: `usage: sqlx-js prepare [--check | --offline | --verify | --watch] [--include <glob>] [--query <name-or-id>] [--warnings | --verbose | --json | --jsonl] [--strict-inference] [--root <dir>] [--dts <path>] [--no-prune]
 
@@ -152,10 +152,20 @@ export function helpText(version: string, scope: HelpScope, args: string[] = [])
 
   Audit stored json/jsonb documents and extension-sensitive schema/source usage
   before Extended JSON writers are enabled. Runs in a read-only transaction.`,
-    "pgschema:install": `usage: sqlx-js pgschema install [--root <dir>]
+    "pgschema:install": `usage: sqlx-js pgschema install [--frozen] [--root <dir>]
 
-  Download and checksum the pinned pgschema binary. \`sqlx-js doctor\` reports
-  its availability as part of full-project diagnostics.`,
+  Install and checksum the pgschema binary locked by pgschema.lock.json. When
+  the lock is missing, resolve the latest compatible >=1.12 <1.13 release,
+  install it, and create the lock. --frozen requires an existing lock.`,
+    "pgschema:update": `usage: sqlx-js pgschema update --patch [--root <dir>]
+
+  Resolve the latest stable >=1.12 <1.13 release, install its binary, and
+  atomically update pgschema.lock.json with every supported platform digest.`,
+    "pgschema:exec": `usage: sqlx-js pgschema exec [--root <dir>] -- <pgschema args>
+
+  Run the checksum-verified managed binary, or schema.command, directly from the
+  project root. Arguments and process environment pass through unchanged. This
+  explicit escape hatch bypasses sqlx-js connection and schema safeguards.`,
     "pgschema:plan": `usage: sqlx-js pgschema plan [--root <dir>] [-- <pgschema args>]
 
   Plan target-database changes from schema.sql without applying them.`,

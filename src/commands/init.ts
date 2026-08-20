@@ -269,7 +269,7 @@ export function runInit(opts: InitOptions): void {
   log("Next steps:");
   log("  1. Set DATABASE_URL (see .env.example).");
   if (schemaProvider === "pgschema") {
-    log("  2. Install managed pgschema:  sqlx-js pgschema install");
+    log("  2. Install and commit pgschema lock:  sqlx-js pgschema install");
     log("  3. Edit schema.sql, then develop:  sqlx-js dev --strict-inference");
     log("  4. Verify desired schema and SQL:  sqlx-js verify --strict-inference");
     log("  5. Review target changes:  sqlx-js pgschema plan");

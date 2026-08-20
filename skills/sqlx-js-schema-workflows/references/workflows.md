@@ -19,12 +19,16 @@ own only recognized migration history.
 
 ```bash
 sqlx-js pgschema install
+# commit pgschema.lock.json
 sqlx-js dev --strict-inference
 sqlx-js verify --strict-inference
 sqlx-js pgschema plan -- --output-json plan.json
 sqlx-js pgschema apply -- --plan plan.json --auto-approve
 ```
 
+Use `pgschema install --frozen` in CI and refresh the compatible patch only with
+`pgschema update --patch`. `pgschema exec -- <args>` is a direct diagnostic
+escape hatch and does not own deployment connection or schema safeguards.
 Review the saved plan as the deployment artifact. Do not use `dev` or `verify`
 as a substitute for `plan` and `apply`.
 

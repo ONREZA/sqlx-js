@@ -13,7 +13,8 @@ them with target deployment.
 1. Inspect the configured schema provider and committed generated outputs.
 2. Provision PostgreSQL and shadow creation credentials or an explicit
    disposable shadow.
-3. Install pgschema only when configured.
+3. Install the committed pgschema lock with `pgschema install --frozen` when
+   the pgschema provider has no explicit `schema.command`.
 4. Run provider-aware `sqlx-js ci`.
 5. Run `doctor --json`, TypeScript, tests, example, and build as appropriate.
 6. Keep target-specific migration or pgschema plans in explicit deployment
@@ -29,6 +30,8 @@ Read [the CI gate map](references/gates.md) before changing a pipeline.
 - `prepare --verify` compares against a specifically supplied live database and
   does not write the worktree.
 - Commit generated declarations, cache, and configured enum output.
+- Commit `pgschema.lock.json` for managed pgschema projects and update it explicitly;
+  never resolve a new tool version during CI.
 - Keep `doctor --json` read-only in CI; apply `doctor --fix` locally and commit
   the resulting `.gitattributes` change.
 - Exclude generated artifacts from formatters while keeping TypeScript outputs

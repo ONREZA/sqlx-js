@@ -123,11 +123,12 @@ jobs:
           await sql.unsafe("CREATE DATABASE sqlx_js_pgschema_plan");
           await sql.end();'
 
-      - name: Install and verify pinned pgschema
+      - name: Install, execute, and verify locked pgschema
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_pgschema
         run: |
-          bun bin/sqlx-js.ts pgschema install --root tests/fixtures/pgschema
+          bun bin/sqlx-js.ts pgschema install --frozen --root tests/fixtures/pgschema
+          bun bin/sqlx-js.ts pgschema exec --root tests/fixtures/pgschema -- --help
           bun bin/sqlx-js.ts doctor --root tests/fixtures/pgschema
 
       - name: Plan and apply schema with the real pgschema binary
@@ -137,6 +138,7 @@ jobs:
         run: |
           bun bin/sqlx-js.ts pgschema plan --root tests/fixtures/pgschema -- --output-json "$PLAN_PATH" --no-color
           bun bin/sqlx-js.ts pgschema apply --root tests/fixtures/pgschema -- --plan "$PLAN_PATH" --auto-approve
+          # shellcheck disable=SC2016
           bun -e 'import { Temporal } from "temporal-polyfill"; import { createClient } from "@onreza/sqlx-js"; const sql = createClient(process.env.DATABASE_URL, { temporalApi: Temporal }); const rows = await sql.unsafe("SELECT name FROM pgschema_probe"); if (rows.length !== 0) throw new Error("expected empty probe table"); const settings = await sql.unsafe("SELECT cardinality(proconfig) = 2 AND proconfig @> ARRAY[$1, $2]::text[] AS matches FROM pg_proc WHERE oid = $3::regprocedure", ["search_path=public, pg_catalog, pg_temp", "TimeZone=UTC", "public.pgschema_normalize_name(text)"]); if (settings[0]?.matches !== true) throw new Error("pgschema did not preserve complete function SET clauses"); await sql.end();'
 
       - name: Verify pgschema plan is idempotent

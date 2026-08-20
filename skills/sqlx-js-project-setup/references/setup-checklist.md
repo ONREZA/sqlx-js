@@ -34,6 +34,9 @@ sqlx-js init --temporal-provider native
 - Existing external schema system: use the query-only prepare loop rather than
   creating a competing DDL owner.
 
+For pgschema, run `sqlx-js pgschema install`, commit the generated
+`pgschema.lock.json`, and use `pgschema install --frozen` in CI.
+
 ## First contract
 
 1. Configure `DATABASE_URL`.

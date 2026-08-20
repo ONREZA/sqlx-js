@@ -522,6 +522,9 @@ function validateConfig(value: unknown, path: string): SqlxJsConfig {
       if (schema[key] !== undefined && typeof schema[key] !== "string") {
         throw new Error(`sqlx-js: ${path} schema.${key} must be a string`);
       }
+      if (typeof schema[key] === "string" && schema[key].trim() === "") {
+        throw new Error(`sqlx-js: ${path} schema.${key} must be a non-empty string`);
+      }
     }
     if (schema.schemas !== undefined) validateStringArray(schema.schemas, "schema.schemas", path);
     if (schema.materializer !== undefined) {
