@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.36.0](https://github.com/ONREZA/sqlx-js/compare/v0.35.0...v0.36.0) (2026-08-23)
+
+
+### Features
+
+* improve query reuse and prepare DX ([05732b3](https://github.com/ONREZA/sqlx-js/commit/05732b3d4f0f135271c21872cebbffae45baa436))
+* **prepare:** generate database errors ([6eb847c](https://github.com/ONREZA/sqlx-js/commit/6eb847c0afe0068b5ab895d7480a590c3aec58d8))
+
 ## [0.35.0](https://github.com/ONREZA/sqlx-js/compare/v0.34.0...v0.35.0) (2026-08-20)
 
 
