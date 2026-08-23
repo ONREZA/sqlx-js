@@ -5,6 +5,7 @@ import { compareArtifacts } from "../artifacts";
 import { embeddedSqlOutputPath } from "../embedded-sql";
 import { enumCatalogOutputPath } from "../enum-catalog";
 import { errorCatalogOutputPath } from "../error-catalog";
+import { functionCatalogOutputPath } from "../function-catalog";
 import { prepareGeneratedOutputPaths } from "../prepare-artifacts";
 import { formatDatabaseTarget } from "../pg/target-summary";
 import { fatal } from "./prepare-diagnostics";
@@ -73,6 +74,13 @@ export async function verifyPrepareArtifacts(
   try {
     session = await openSession(opts);
     log(formatDatabaseTarget(session.target));
+    const expectedFunctionOutput = functionCatalogOutputPath(
+      opts.root,
+      session.userCfg,
+      opts.functionOutputPath,
+    );
+    const generatedFunctionOutput = expectedFunctionOutput ? join(tmp, "sqlx-js-functions.ts") : undefined;
+    verifyOpts.functionOutputPath = generatedFunctionOutput;
     const expectedEnumOutput = enumCatalogOutputPath(opts.root, session.userCfg, opts.enumOutputPath);
     const generatedEnumOutput = expectedEnumOutput ? join(tmp, "sqlx-js-enums.ts") : undefined;
     verifyOpts.enumOutputPath = generatedEnumOutput;
@@ -99,6 +107,10 @@ export async function verifyPrepareArtifacts(
         {
           cacheDir: opts.cacheDir,
           dtsPath: opts.dtsPath,
+          functionOutputPath: expectedFunctionOutput,
+          functionArtifactName: expectedFunctionOutput
+            ? relative(opts.root, expectedFunctionOutput).replace(/\\/g, "/")
+            : undefined,
           enumOutputPath: expectedEnumOutput,
           enumArtifactName: expectedEnumOutput
             ? relative(opts.root, expectedEnumOutput).replace(/\\/g, "/")
@@ -115,6 +127,10 @@ export async function verifyPrepareArtifacts(
         {
           cacheDir,
           dtsPath,
+          functionOutputPath: generatedFunctionOutput,
+          functionArtifactName: expectedFunctionOutput
+            ? relative(opts.root, expectedFunctionOutput).replace(/\\/g, "/")
+            : undefined,
           enumOutputPath: generatedEnumOutput,
           enumArtifactName: expectedEnumOutput
             ? relative(opts.root, expectedEnumOutput).replace(/\\/g, "/")

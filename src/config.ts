@@ -29,6 +29,11 @@ export type ErrorCatalogConfig = {
   schemas: string[];
 };
 
+export type FunctionCatalogConfig = {
+  includeExtensionOwned?: boolean;
+  output?: string;
+};
+
 export type ExactDuplicateIgnore = {
   queryId: string;
   occurrences: number;
@@ -64,9 +69,7 @@ export type SqlxJsConfig = {
   columnTypes?: Record<string, string>;
   arrayElementNullability?: Record<string, "non-null">;
   customTypes?: Record<string, string>;
-  functionCatalog?: false | {
-    includeExtensionOwned?: boolean;
-  };
+  functionCatalog?: false | FunctionCatalogConfig;
   enumCatalog?: EnumCatalogConfig;
   errorCatalog?: ErrorCatalogConfig;
   sqlFiles?: SqlFilesConfig;
@@ -515,8 +518,14 @@ function validateConfig(value: unknown, path: string): SqlxJsConfig {
       throw new Error(`sqlx-js: ${path} functionCatalog must be false or an object`);
     }
     const functionCatalog = config.functionCatalog as Record<string, unknown>;
+    if (Object.keys(functionCatalog).some((key) => key !== "includeExtensionOwned" && key !== "output")) {
+      throw new Error(`sqlx-js: ${path} functionCatalog only supports includeExtensionOwned and output`);
+    }
     if (functionCatalog.includeExtensionOwned !== undefined && typeof functionCatalog.includeExtensionOwned !== "boolean") {
       throw new Error(`sqlx-js: ${path} functionCatalog.includeExtensionOwned must be a boolean`);
+    }
+    if (functionCatalog.output !== undefined) {
+      validateGeneratedModuleOutput(functionCatalog.output, path, "functionCatalog.output");
     }
   }
   if (config.enumCatalog !== undefined) validateEnumCatalog(config.enumCatalog, path);

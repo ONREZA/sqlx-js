@@ -33,6 +33,10 @@ import {
   writeErrorCatalogModule,
   type ErrorCatalog,
 } from "./error-catalog";
+import {
+  functionCatalogOutputPath,
+  writeFunctionCatalogModule,
+} from "./function-catalog";
 import { writeFunctionCache, type FunctionEntry } from "./function-cache";
 import { writeRuntimeDescriptors } from "./runtime-descriptor-artifact";
 import type { TemporalPolicyOptions } from "./temporal";
@@ -41,6 +45,7 @@ type GeneratedOutputPublication = {
   dtsPath: string;
   entries: CacheEntry[];
   functions: FunctionEntry[];
+  functionModule?: { path: string; content: string };
   enumModule?: { path: string; content: string };
   errorModule?: { path: string; content: string };
   embeddedSqlModule?: { path: string; content: string };
@@ -101,12 +106,14 @@ export function prepareGeneratedOutputPaths(input: {
   root: string;
   config: SqlxJsConfig;
   dtsPath: string;
+  functionOutputPath?: string;
   enumOutputPath?: string;
   errorOutputPath?: string;
   sqlFilesOutputPath?: string;
 }): string[] {
   return [
     input.dtsPath,
+    functionCatalogOutputPath(input.root, input.config, input.functionOutputPath),
     enumCatalogOutputPath(input.root, input.config, input.enumOutputPath),
     errorCatalogOutputPath(input.root, input.config, input.errorOutputPath),
     embeddedSqlOutputPath(input.root, input.config, input.sqlFilesOutputPath),
@@ -117,6 +124,7 @@ export function assertDistinctPrepareGeneratedOutputs(input: {
   root: string;
   config: SqlxJsConfig;
   dtsPath: string;
+  functionOutputPath?: string;
   enumOutputPath?: string;
   errorOutputPath?: string;
   sqlFilesOutputPath?: string;
@@ -126,7 +134,7 @@ export function assertDistinctPrepareGeneratedOutputs(input: {
     for (let other = index + 1; other < outputs.length; other++) {
       if (samePath(outputs[index]!, outputs[other]!)) {
         throw new Error(
-          "sqlx-js: generated declaration, enum catalog, error catalog, and embedded SQL outputs must be distinct",
+          "sqlx-js: generated declaration, function catalog, enum catalog, error catalog, and embedded SQL outputs must be distinct",
         );
       }
     }
@@ -217,6 +225,9 @@ function stageGeneratedOutputs(
   externalTargets: StagedTarget[],
 ): void {
   const dtsPath = resolvePublicationPath(input.dtsPath);
+  const functionModule = input.functionModule
+    ? { ...input.functionModule, path: resolvePublicationPath(input.functionModule.path) }
+    : undefined;
   const enumModule = input.enumModule
     ? { ...input.enumModule, path: resolvePublicationPath(input.enumModule.path) }
     : undefined;
@@ -226,7 +237,10 @@ function stageGeneratedOutputs(
   const embeddedSqlModule = input.embeddedSqlModule
     ? { ...input.embeddedSqlModule, path: resolvePublicationPath(input.embeddedSqlModule.path) }
     : undefined;
-  assertGeneratedOutputPaths([dtsPath, enumModule?.path, errorModule?.path, embeddedSqlModule?.path], cache);
+  assertGeneratedOutputPaths(
+    [dtsPath, functionModule?.path, enumModule?.path, errorModule?.path, embeddedSqlModule?.path],
+    cache,
+  );
   stageOutput(dtsPath, cache, externalTargets, (path) => {
     emitDts(
       path,
@@ -237,6 +251,14 @@ function stageGeneratedOutputs(
       input.temporal,
     );
   });
+  if (functionModule) {
+    stageOutput(
+      functionModule.path,
+      cache,
+      externalTargets,
+      (path) => writeFunctionCatalogModule(path, functionModule.content),
+    );
+  }
   if (enumModule) {
     stageOutput(
       enumModule.path,

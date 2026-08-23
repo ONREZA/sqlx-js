@@ -2373,15 +2373,20 @@ export default {
       version: number;
       functions: Array<{
         signature: string;
+        identity: string;
         strict: boolean;
         settings: string[];
         returns: string;
         params: { name?: string }[];
       }>;
     };
-    expect(functionCache.version).toBe(3);
+    expect(functionCache.version).toBe(4);
     expect(functionCache.functions.find((fn) => fn.signature === "public.tmp_catalog_slug(value text)"))
-      .toMatchObject({ strict: true, settings: ["TimeZone=UTC"] });
+      .toMatchObject({
+        identity: "public.tmp_catalog_slug(pg_catalog.text)",
+        strict: true,
+        settings: ["TimeZone=UTC"],
+      });
     const pair = functionCache.functions.find((fn) => fn.signature === "public.tmp_catalog_pair(value text)");
     expect(pair?.returns).toBe("{ score: number | null; slug: string | null }");
     expect(pair?.params.map((param) => param.name)).toEqual(["value", "slug", "score"]);
@@ -2397,6 +2402,58 @@ export default {
     expect(r.code).toBe(0);
     dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain('"public.tmp_catalog_slug(value text)":');
+
+    const identityCatalogRoot = isolatedRoot("function-catalog-identities");
+    writeRootFile(identityCatalogRoot, "sqlx-js.config.ts", `export default {
+      functionCatalog: { output: "src/db-functions.ts" },
+    };\n`);
+    writeRootFile(identityCatalogRoot, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT tmp_catalog_slug($1) AS slug\", \"Hello\");\n",
+    );
+    r = prepareRoot(identityCatalogRoot);
+    expect(r.code, r.stderr).toBe(0);
+    const functionOutput = join(identityCatalogRoot, "src/db-functions.ts");
+    const generatedFunctions = await import(pathToFileURL(functionOutput).href) as {
+      DbFunctions: Record<string, string>;
+    };
+    expect(generatedFunctions.DbFunctions).toMatchObject({
+      "public.tmp_catalog_slug(pg_catalog.text)": "public.tmp_catalog_slug(pg_catalog.text)",
+      "public.tmp_catalog_json_array(pg_catalog.jsonb[])":
+        "public.tmp_catalog_json_array(pg_catalog.jsonb[])",
+    });
+    const identityClient = new PgClient(parseDatabaseUrl(dbUrl));
+    await identityClient.connect();
+    try {
+      for (const identity of Object.values(generatedFunctions.DbFunctions)) {
+        const quoted = identity.replace(/'/g, "''");
+        const resolved = await identityClient.simpleQueryAll(
+          `SELECT pg_catalog.to_regprocedure('${quoted}') IS NOT NULL`,
+        );
+        expect(decodeText(resolved.rows[0]?.[0] ?? null), identity).toBe("t");
+      }
+    } finally {
+      await identityClient.end();
+    }
+    expect(prepareRoot(identityCatalogRoot, ["--check"]).code).toBe(0);
+    writeRootFile(identityCatalogRoot, "src/db-functions.ts", "export {};\n");
+    const staleFunctions = prepareRoot(identityCatalogRoot, ["--check", "--json"]);
+    expect(staleFunctions.code).toBe(1);
+    expect(JSON.parse(staleFunctions.stdout).diagnostics).toContainEqual(expect.objectContaining({
+      message: "generated function catalog is stale or missing",
+      file: "src/db-functions.ts",
+    }));
+    expect(prepareRoot(identityCatalogRoot, ["--offline"]).code).toBe(0);
+    expect(readFileSync(functionOutput, "utf8")).toContain("public.tmp_catalog_slug(pg_catalog.text)");
+    expect(prepareRoot(identityCatalogRoot, ["--verify"]).code).toBe(0);
+    const functionDoctor = spawnSync(
+      "bun",
+      [join(repoRoot, "bin/sqlx-js.ts"), "doctor", "--root", identityCatalogRoot, "--json"],
+      { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
+    );
+    expect(JSON.parse(functionDoctor.stdout).checks.find((check: { name: string }) =>
+      check.name === "functionCatalog"
+    )).toMatchObject({ status: "ok" });
 
     const fullCatalogRoot = isolatedRoot("function-catalog-extensions");
     writeRootFile(fullCatalogRoot, "sqlx-js.config.ts", `export default {

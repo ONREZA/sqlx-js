@@ -43,6 +43,7 @@ export type {
   DatabaseProfiles,
   EnumCatalogConfig,
   ErrorCatalogConfig,
+  FunctionCatalogConfig,
   ExactDuplicateIgnore,
   QueryAuditConfig,
   ScanConfig,

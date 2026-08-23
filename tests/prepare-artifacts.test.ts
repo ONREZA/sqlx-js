@@ -45,6 +45,7 @@ test("prepare artifact publication replaces a legacy cache as one snapshot", () 
   try {
     const cacheDir = join(root, ".sqlx-js");
     const dtsPath = join(root, "sqlx-js-env.d.ts");
+    const functionPath = join(root, "db-functions.ts");
     const enumPath = join(root, "db-enums.ts");
     const errorPath = join(root, "db-errors.ts");
     const cache = new Cache(cacheDir);
@@ -57,6 +58,7 @@ test("prepare artifact publication replaces a legacy cache as one snapshot", () 
     writeFileSync(join(cacheDir, "provider-state.bin"), "preserved");
     chmodSync(cacheDir, 0o750);
     writeFileSync(dtsPath, "old declarations\n");
+    writeFileSync(functionPath, "old functions\n");
     writeFileSync(enumPath, "old enums\n");
     writeFileSync(errorPath, "old errors\n");
 
@@ -68,6 +70,7 @@ test("prepare artifact publication replaces a legacy cache as one snapshot", () 
       generated: [{ fp: fingerprint(query), entry }],
       entries: [entry],
       functions: [],
+      functionModule: { path: functionPath, content: "export const DbFunctions = {} as const;\n" },
       enums: [{ schema: "public", name: "role", values: ["admin"] }],
       enumCatalogEnabled: true,
       enumModule: { path: enumPath, content: "export const Role = { Admin: \"admin\" } as const;\n" },
@@ -94,6 +97,7 @@ test("prepare artifact publication replaces a legacy cache as one snapshot", () 
     expect(statSync(cacheDir).mode & 0o777).toBe(0o750);
     expect(readCacheManifest(cacheDir)?.configHash).toBe("current-config");
     expect(readFileSync(dtsPath, "utf8")).toContain(JSON.stringify(query));
+    expect(readFileSync(functionPath, "utf8")).toContain("export const DbFunctions");
     expect(readFileSync(enumPath, "utf8")).toContain("export const Role");
     expect(readFileSync(errorPath, "utf8")).toContain("PAYMENT_INVALID");
     expect(readFileSync(join(cacheDir, "errors/errors.json"), "utf8")).toContain("PAYMENT_INVALID");

@@ -39,6 +39,10 @@ import {
 } from "../function-cache";
 import { introspectFunctions } from "../pg/functions";
 import {
+  functionCatalogOutputPath,
+  renderFunctionCatalog,
+} from "../function-catalog";
+import {
   buildParamMap,
   effectiveParamTargets,
   type ParamMapResult,
@@ -121,6 +125,7 @@ export type PrepareOptions = {
   cacheDir: string;
   dtsPath: string;
   enumOutputPath?: string;
+  functionOutputPath?: string;
   errorOutputPath?: string;
   sqlFilesOutputPath?: string;
   check: boolean;
@@ -862,6 +867,15 @@ export async function prepareOnce(
     }
   }
   addFunctionContractDiagnostics(functions, diagnostics, err);
+  let functionModule: { path: string; content: string } | undefined;
+  const functionOutput = functionCatalogOutputPath(opts.root, userCfg, opts.functionOutputPath);
+  if (functionOutput) {
+    try {
+      functionModule = { path: functionOutput, content: renderFunctionCatalog(functions) };
+    } catch (error) {
+      throw fatal(input.reuseFunctionCatalog ? "cache" : "introspect", error, session.target);
+    }
+  }
   let enums: EnumCatalogEntry[] = [];
   let enumCount = 0;
   let enumModule: { path: string; content: string } | undefined;
@@ -958,6 +972,7 @@ export async function prepareOnce(
       generated,
       entries,
       functions,
+      functionModule,
       enums,
       enumCatalogEnabled: userCfg.enumCatalog !== undefined,
       enumModule,

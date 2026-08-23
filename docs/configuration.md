@@ -53,6 +53,8 @@ export default defineConfig({
   functionCatalog: {
     // Extension-owned functions and their contract warnings are excluded by default.
     includeExtensionOwned: false,
+    // Optional runtime constants for overload-safe regprocedure identities.
+    output: "src/database/db-functions.ts",
   },
   queryAudit: {
     exactDuplicates: {
@@ -381,7 +383,20 @@ Arrays of that domain are inferred as `string[]` without config. Ordinary `text[
 
 Application-owned functions and procedures from non-system schemas are generated into `SqlxJsGeneratedFunctions`. Each signature records approximate parameter/return types together with `language`, `volatility`, `strict`, `securityDefiner`, `leakproof`, `parallelSafety`, `owner`, `ownerSuperuser`, `publicExecute`, the complete function-local `settings`, derived `searchPath`, and `extensionOwned`. Every input type includes SQL `null`: PostgreSQL accepts null for function arguments even when `strict` is true; strictness means the server returns null without invoking the function body. A `null` `searchPath` means the function has no function-local `SET search_path` clause and inherits the session setting. `publicExecute` reflects the effective PostgreSQL function ACL, including the default `EXECUTE TO PUBLIC` grant when `proacl` is null.
 
-The same metadata is committed in `.sqlx-js/functions/functions.json`, so `prepare --check` and `prepare --offline` reproduce the live diagnostics from cache, while `prepare --verify` detects database drift without modifying the worktree. Catalog and generator revisions fail closed with regeneration guidance after an incompatible upgrade; run one live `prepare`. Schema snapshots carry the same metadata and likewise require `snapshot dump` when their format changes.
+Set `functionCatalog.output` to generate ordinary runtime constants for canonical, overload-safe routine identities:
+
+```ts
+export const DbFunctions = {
+  "public.claim_delivery(pg_catalog.uuid,pg_catalog.text)":
+    "public.claim_delivery(pg_catalog.uuid,pg_catalog.text)",
+} as const;
+
+export type DbFunctionIdentity = keyof typeof DbFunctions;
+```
+
+The function name and every input argument type are schema-qualified; argument names, defaults, and OUT-only parameters are omitted because they do not participate in `regprocedure` identity. Array arguments use their SQL `[]` form. These strings can be passed to PostgreSQL APIs that resolve a routine identity, such as `to_regprocedure(...)` and `has_function_privilege(...)`, without losing overload information. This artifact intentionally contains identities only: executable callers still come from literal prepared queries, where PostgreSQL `Describe` supplies the real parameter and result contract.
+
+The same metadata and canonical identity are committed in `.sqlx-js/functions/functions.json`, so `prepare --check` and `prepare --offline` reproduce the live diagnostics and optional module from cache, while `prepare --verify` detects database drift without modifying the worktree. `doctor` checks that a configured output exists. Catalog and generator revisions fail closed with regeneration guidance after an incompatible upgrade; run one live `prepare`. Schema snapshots carry the same metadata and likewise require `snapshot dump` when their format changes.
 
 Owner attributes and effective ACLs are intentionally environment-sensitive contract data. A shadow or verification database must create routines under the intended owner and apply the same grants, or the committed artifacts will drift. Prefer explicit `ALTER FUNCTION ... OWNER TO ...` / `ALTER PROCEDURE ... OWNER TO ...`, `REVOKE`, and `GRANT` statements when those boundaries must be identical across environments.
 

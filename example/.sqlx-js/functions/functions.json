@@ -1,10 +1,11 @@
 {
-  "version": 3,
+  "version": 4,
   "functions": [
     {
       "schema": "public",
       "name": "list_users",
       "signature": "public.list_users(filter_role user_role, search_text text, after_id bigint, result_limit integer)",
+      "identity": "public.list_users(public.user_role,pg_catalog.text,pg_catalog.int8,pg_catalog.int4)",
       "kind": "function",
       "language": "sql",
       "params": [

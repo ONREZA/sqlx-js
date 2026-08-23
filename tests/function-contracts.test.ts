@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,6 +16,7 @@ function functionEntry(overrides: Partial<FunctionEntry> = {}): FunctionEntry {
     schema: "public",
     name: "example",
     signature: "public.example()",
+    identity: "public.example()",
     kind: "function",
     language: "sql",
     params: [],
@@ -57,6 +58,32 @@ test("function cache refuses non-canonical settings before writing", () => {
       settings: ["TimeZone=UTC", "search_path=app, pg_temp"],
       searchPath: "app, pg_temp",
     })])).toThrow(/refusing to write malformed function catalog cache/);
+  } finally {
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("function cache rejects duplicate canonical identities", () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "sqlx-js-function-cache-duplicate-"));
+  try {
+    expect(() => writeFunctionCache(cacheDir, [
+      functionEntry({ signature: "public.example(value text)" }),
+      functionEntry({ signature: "public.example(input text)" }),
+    ])).toThrow(/duplicate identity/);
+  } finally {
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("function cache rejects pre-identity snapshots with regeneration guidance", () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "sqlx-js-function-cache-stale-"));
+  try {
+    mkdirSync(join(cacheDir, "functions"));
+    writeFileSync(join(cacheDir, "functions/functions.json"), JSON.stringify({
+      version: 3,
+      functions: [],
+    }));
+    expect(() => readFunctionCache(cacheDir)).toThrow(/stale.*Run `sqlx-js prepare`/);
   } finally {
     rmSync(cacheDir, { recursive: true, force: true });
   }

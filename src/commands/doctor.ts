@@ -18,6 +18,7 @@ import { scanProject, type QueryCallSite } from "../scan/scanner";
 import { embeddedSqlOutputPath } from "../embedded-sql";
 import { enumCatalogOutputPath } from "../enum-catalog";
 import { errorCatalogOutputPath } from "../error-catalog";
+import { functionCatalogOutputPath } from "../function-catalog";
 import { assertDistinctPrepareGeneratedOutputs } from "../prepare-artifacts";
 import { queryId } from "../query-id";
 import type { PackageIdentityCheck } from "../package-identity";
@@ -54,6 +55,7 @@ function configuredGeneratedPaths(
   config: Awaited<ReturnType<typeof loadConfigInfo>>["config"],
 ): string[] {
   return [
+    functionCatalogOutputPath(root, config),
     enumCatalogOutputPath(root, config),
     errorCatalogOutputPath(root, config),
     embeddedSqlOutputPath(root, config),
@@ -580,6 +582,15 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
       "enumCatalog",
       "enum catalog",
       enumCatalogOutputPath(opts.root, config)!,
+    ));
+  }
+
+  const functionOutput = configLoaded ? functionCatalogOutputPath(opts.root, config) : undefined;
+  if (functionOutput) {
+    checks.push(generatedOutputCheck(
+      "functionCatalog",
+      "function catalog",
+      functionOutput,
     ));
   }
 

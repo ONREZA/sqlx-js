@@ -16,6 +16,7 @@ export type PgFunctionCatalogRow = {
   name: string;
   kind: string;
   identityArguments: string;
+  identity: string;
   arguments: string;
   returnType: string;
   inputArgOids: number[];
@@ -147,7 +148,32 @@ export async function loadFunctionCatalogRows(
       ),
       to_json(COALESCE(p.proconfig, ARRAY[]::text[]))::text,
       extension_dependency.objid IS NOT NULL,
-      l.lanname
+      l.lanname,
+      pg_catalog.format(
+        '%I.%I(%s)',
+        n.nspname,
+        p.proname,
+        COALESCE((
+          SELECT pg_catalog.string_agg(
+            CASE
+              WHEN argument_type.typcategory = 'A' AND argument_type.typelem <> 0
+                THEN pg_catalog.format('%I.%I[]', element_namespace.nspname, element_type.typname)
+              ELSE pg_catalog.format('%I.%I', argument_namespace.nspname, argument_type.typname)
+            END,
+            ',' ORDER BY argument.ordinality
+          )
+          FROM pg_catalog.unnest(
+            CASE
+              WHEN p.proargtypes::text = '' THEN ARRAY[]::pg_catalog.oid[]
+              ELSE pg_catalog.string_to_array(p.proargtypes::text, ' ')::pg_catalog.oid[]
+            END
+          ) WITH ORDINALITY AS argument(type_oid, ordinality)
+          JOIN pg_catalog.pg_type argument_type ON argument_type.oid = argument.type_oid
+          JOIN pg_catalog.pg_namespace argument_namespace ON argument_namespace.oid = argument_type.typnamespace
+          LEFT JOIN pg_catalog.pg_type element_type ON element_type.oid = argument_type.typelem
+          LEFT JOIN pg_catalog.pg_namespace element_namespace ON element_namespace.oid = element_type.typnamespace
+        ), '')
+      )
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
     JOIN pg_language l ON l.oid = p.prolang
@@ -185,6 +211,7 @@ export async function loadFunctionCatalogRows(
     settings: parseNullableStringArray(decodeText(row[20] ?? null)) ?? [],
     extensionOwned: decodeText(row[21]!) === "t",
     language: decodeText(row[22]!)!,
+    identity: decodeText(row[23]!)!,
   }));
 }
 

@@ -17,6 +17,7 @@ type FunctionRow = {
   name: string;
   kind: FunctionKind;
   identityArguments: string;
+  identity: string;
   language: string;
   inputArgOids: number[];
   allArgOids: number[] | null;
@@ -87,6 +88,7 @@ function toEntry(row: FunctionRow, schema: SchemaCache): FunctionEntry {
     schema: row.schema,
     name: row.name,
     signature: `${row.schema}.${row.name}(${row.identityArguments})`,
+    identity: row.identity,
     kind: row.kind,
     language: row.language,
     params: params.map(persistedParam),

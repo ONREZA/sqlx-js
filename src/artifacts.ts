@@ -6,6 +6,8 @@ import { CACHE_MANIFEST_FILE, isQueryCacheFileName } from "./cache";
 export type ArtifactSet = {
   cacheDir: string;
   dtsPath: string;
+  functionOutputPath?: string;
+  functionArtifactName?: string;
   enumOutputPath?: string;
   enumArtifactName?: string;
   errorOutputPath?: string;
@@ -36,6 +38,12 @@ function readGeneratedFiles(set: ArtifactSet): Map<string, string> {
     }
   }
   if (existsSync(set.dtsPath)) files.set("sqlx-js-env.d.ts", readFileSync(set.dtsPath, "utf8"));
+  if (set.functionOutputPath && existsSync(set.functionOutputPath)) {
+    files.set(
+      set.functionArtifactName ?? "sqlx-js-functions.ts",
+      readFileSync(set.functionOutputPath, "utf8"),
+    );
+  }
   if (set.enumOutputPath && existsSync(set.enumOutputPath)) {
     files.set(set.enumArtifactName ?? "sqlx-js-enums.ts", readFileSync(set.enumOutputPath, "utf8"));
   }

@@ -16,12 +16,14 @@ and never writes generated artifacts or changes the target database. `--json`
 returns a versioned per-step report.
 
 Commit the generated `sqlx-js-env.d.ts`, `.sqlx-js/` cache directory including
-`runtime-descriptors.json`, and configured enum, database-error, or embedded-SQL outputs
+`runtime-descriptors.json`, and configured function, enum, database-error, or embedded-SQL outputs
 to your repo.
 
 ```gitattributes
 .sqlx-js/** linguist-generated
 /sqlx-js-env.d.ts linguist-generated
+# Add the configured functionCatalog.output when enabled.
+src/database/db-functions.ts linguist-generated
 # Add the configured enumCatalog.output when enabled.
 src/database/db-enums.ts linguist-generated
 # Add the configured errorCatalog.output when enabled.
@@ -37,7 +39,7 @@ same basename recursively in nested directories.
 For an existing project, `doctor` reports missing rules as fixable and
 `doctor --fix` appends them to the nearest project or repository
 `.gitattributes` without replacing existing attributes. Doctor includes the
-configured enum, database-error, and embedded-SQL outputs and honors canonical rules in
+configured function, enum, database-error, and embedded-SQL outputs and honors canonical rules in
 a containing monorepo. The files remain visible to local Git and can still be
 expanded during review.
 

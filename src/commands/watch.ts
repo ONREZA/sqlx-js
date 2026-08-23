@@ -14,6 +14,7 @@ import { profileFingerprint } from "../cache";
 import { embeddedSqlOutputPath } from "../embedded-sql";
 import { enumCatalogOutputPath } from "../enum-catalog";
 import { errorCatalogOutputPath } from "../error-catalog";
+import { functionCatalogOutputPath } from "../function-catalog";
 import {
   formatDatabaseTarget,
   type DatabaseTargetSummary,
@@ -359,6 +360,9 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
     const enumOutput = state.session
       ? enumCatalogOutputPath(opts.root, state.session.userCfg)
       : undefined;
+    const functionOutput = state.session
+      ? functionCatalogOutputPath(opts.root, state.session.userCfg)
+      : undefined;
     const embeddedSqlOutput = state.session
       ? embeddedSqlOutputPath(opts.root, state.session.userCfg)
       : undefined;
@@ -366,6 +370,7 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
       ? errorCatalogOutputPath(opts.root, state.session.userCfg)
       : undefined;
     const ignored = [relative(opts.root, resolve(opts.root, opts.dtsPath))];
+    if (functionOutput) ignored.push(relative(opts.root, functionOutput));
     if (enumOutput) ignored.push(relative(opts.root, enumOutput));
     if (errorOutput) ignored.push(relative(opts.root, errorOutput));
     if (embeddedSqlOutput) ignored.push(relative(opts.root, embeddedSqlOutput));

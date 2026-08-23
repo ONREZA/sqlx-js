@@ -55,7 +55,7 @@ runtime, generate an ORM layer, or support MySQL and SQLite.
 | Runtime | Descriptor-backed managed clients, transactions and savepoints, deadlines, TCP keepalive, lifecycle recovery, pinned advisory-lock sessions, observers, migrations, custom codecs | [Runtime and clients](./docs/runtime.md) |
 | Roles and RLS | Profile-scoped query registries, planning under the effective role, required transaction-local settings, RLS diagnostics | [Connection profiles and RLS](./docs/profiles-and-rls.md) |
 | Schema workflows | Built-in linear migrations or declarative pgschema, disposable shadow databases, snapshots, squash baselines | [CLI and workflows](./docs/cli.md) |
-| Reproducible artifacts | Versioned offline cache, `prepare --check`, live `prepare --verify`, generated declarations, enum, function, and PL/pgSQL error catalogs | [CI and deployment checks](./docs/ci.md) |
+| Reproducible artifacts | Versioned offline cache, `prepare --check`, live `prepare --verify`, generated declarations, enum values, function identities, and PL/pgSQL error catalogs | [CI and deployment checks](./docs/ci.md) |
 | PostgreSQL types | Built-ins, arrays, ranges, domains, composites, pgvector, hstore, citext, ltree, application codecs | [Configuration and custom types](./docs/configuration.md) |
 | Extended JSON | Branded immutable documents, exact native numbers, bigint/Temporal round-trips, reader-first collision audit | [Extended JSON protocol](./docs/extended-json-protocol.md) |
 | Tooling | Incremental watch mode, project doctor, JSON diagnostics, query inventory, advisory reuse/similarity audits, Extended JSON audit, embedded SQL generation | [Query reuse and similarity audits](./docs/query-audits.md) |
