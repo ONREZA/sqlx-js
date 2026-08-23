@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.36.1](https://github.com/ONREZA/sqlx-js/compare/v0.36.0...v0.36.1) (2026-08-23)
+
+
+### Bug Fixes
+
+* **ci:** support npm 12 package smoke ([5d43b43](https://github.com/ONREZA/sqlx-js/commit/5d43b432bf0a19a8997313af8507815ebf621034))
+
+
+### Documentation
+
+* refresh roadmap and current contracts ([5a2c85f](https://github.com/ONREZA/sqlx-js/commit/5a2c85f67d5dd6f58792e41564ef50a21ef79233))
+
 ## [0.36.0](https://github.com/ONREZA/sqlx-js/compare/v0.35.0...v0.36.0) (2026-08-23)
 
 
