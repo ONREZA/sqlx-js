@@ -33,15 +33,15 @@ until an alternating A/B benchmark passes the acceptance gate.
 
 | Work | Complexity | Expected ROI | Decision |
 | --- | ---: | ---: | --- |
-| Capture CPU and allocation profiles for one benchmark path | 2 | 9 | Do first |
+| Capture CPU and allocation profiles for one benchmark path | 2 | 9 | Shipped in the benchmark profiler; repeat before new optimization work |
 | Benchmark `TextEncoder.encodeInto()` for Bind frames | 2-3 | 4 | Rejected by A/B |
 | Share generation interruption state for operations without timeout or signal | 4 | 7 | Rejected by A/B |
-| Emit a prepared runtime manifest and execute known queries in one wire round trip | 7-8 | 10 | Main architectural target |
-| Merge managed operation state with driver dispatch state | 8 | 6-8 | Reconsider only after the earlier work |
+| Emit a prepared runtime manifest and execute known queries in one wire round trip | 7-8 | 10 | Shipped as explicit runtime descriptors |
+| Merge managed operation state with driver dispatch state | 8 | 6-8 | Reconsider only after a current profile proves a material remaining gap |
 | Precompile result row materializers | 5-6 | 3 | Defer while row-heavy paths are already competitive |
 | Further optimize query IDs or named-parameter rewriting | 3 | 1 | Do not prioritize |
 
-## Work sequence
+## Decision details
 
 ### 1. Measure without production instrumentation
 
@@ -53,32 +53,22 @@ Profile a single driver and scenario after warm-up. Keep raw profile artifacts
 so dispatch, parameter encoding, Bind-frame construction, row decoding, and
 managed lifecycle functions can be compared between commits.
 
-### 2. Test direct UTF-8 encoding
+### 2. Direct UTF-8 encoding remains rejected
 
-The Bind frame currently avoids fragmented frame concatenation but still
-creates one encoded byte array per non-null text parameter. A bounded
-experiment may use `TextEncoder.encodeInto()` to write into one over-allocated
-frame and return its populated view.
+The bounded `TextEncoder.encodeInto()` experiment reduced intermediate
+allocations but did not reach the end-to-end acceptance threshold. Do not
+reintroduce it without a changed runtime or workload profile and a new
+alternating A/B result.
 
-Retain it only when reduced allocations translate into stable end-to-end
-throughput or latency improvements. A smaller microbenchmark allocation count
-alone is not sufficient.
+### 3. Re-evaluate managed dispatch ownership only from new evidence
 
-### 3. Shorten the managed hot path
+Sharing generation interruption state without changing dispatch ownership
+regressed throughput and was removed. Further managed hot-path work must begin
+with a current profile and remove a measured state transition or ownership
+boundary, while retaining generation replacement, unknown-outcome reporting,
+per-operation cancellation, and bounded shutdown.
 
-The managed runtime should select the shortest internal path that preserves
-the configured contract:
-
-- share generation interruption state when an operation has no individual
-  timeout or `AbortSignal`;
-- avoid lifecycle event construction when the corresponding hook is absent;
-- keep only the active state required by generation poisoning and close drain;
-- create individual timer and abort state only when configured.
-
-This is not a user-facing unsafe mode. The managed client must retain generation
-replacement, unknown-outcome reporting, and bounded shutdown.
-
-### 4. Compile prepare output for runtime execution
+### 4. Prepared runtime descriptors
 
 The prepared path emits a portable runtime descriptor for every parameterized
 known query:
@@ -94,7 +84,7 @@ that contract and send `Parse`, `Bind`, `Describe Portal`, `Execute`, and
 `Sync` in one write without waiting for a separate
 `ParameterDescription`.
 
-The first implementation should retain the server's actual
+The implementation retains the server's actual
 `RowDescription`. Omitting it saves little after the synchronization point is
 removed and would detach result decoding from the server's current contract.
 
@@ -104,13 +94,13 @@ Queries absent from the selected descriptor map, including genuinely dynamic
 #### Descriptor delivery decision
 
 The runtime cannot recover application-specific prepare artifacts from
-TypeScript declarations after type erasure. The descriptor therefore needs an
+TypeScript declarations after type erasure. The descriptor therefore uses an
 explicit delivery contract:
 
-1. Generate `.sqlx-js/runtime-descriptors.json` from the canonical per-query
-   cache and pass its imported value once to `createSqlClient(...)`. This is the
-   selected direction because Node, Bun, Deno, bundlers, serverless packaging,
-   and monorepos can carry it without runtime filesystem discovery. JSON also
+1. `.sqlx-js/runtime-descriptors.json` is generated from the canonical per-query
+   cache and its imported value is passed once to `createSqlClient(...)`. Node,
+   Bun, Deno, bundlers, serverless packages, and monorepos can carry it without
+   runtime filesystem discovery. JSON also
    stays outside TypeScript lint and source transforms.
 2. Load `.sqlx-js/` implicitly from the current working directory. This keeps
    the call site shorter but makes packaged applications, multiple registries,
@@ -155,9 +145,9 @@ For a managed lifecycle change, require at least a 5% managed improvement in
 the target concurrent scenario or a reduction of at least one quarter of the
 measured managed-to-raw gap.
 
-For a prepared runtime descriptor, require protocol evidence that the separate
-statement-describe synchronization point is gone. Throughput alone is not
-enough to justify a new generated artifact and cache revision.
+Future prepared-descriptor changes require protocol evidence that they preserve
+the one-write path and current schema-drift behavior. Throughput alone is not
+enough to justify another generated-artifact or cache revision.
 
 ## Directions to avoid
 

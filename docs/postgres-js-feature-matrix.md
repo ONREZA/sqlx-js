@@ -65,7 +65,7 @@ Status values are intentionally explicit:
 | Command and affected-row metadata | Yes | Yes | `command` and `count` are preserved as non-enumerable result metadata. |
 | Column, statement, and connection-state result metadata | Yes | No | Not part of the typed application query contract. |
 | SQL files | Yes | Yes | Root-relative, compile-time checked, and optionally embedded for bundled deployments. |
-| Multiple statements in one call | Yes | No | Requires a sound statement splitter or simple-query surface; tracked on the roadmap. |
+| Multiple statements in one call | Yes | No | Requires a sound statement splitter or simple-query surface; no demonstrated consumer case currently justifies that separate execution contract. |
 | Cursor and chunked result iteration | Yes | No | Planned only with typed backpressure and connection-lifecycle semantics. |
 | Row-by-row `forEach` iteration | Yes | No | Belongs to the same future cursor surface. |
 | `COPY FROM/TO` streams | Yes | No | Unsupported COPY protocol responses fail fast and discard the connection; a future streaming API requires explicit ownership and runtime-specific adapters. |
@@ -114,10 +114,10 @@ Status values are intentionally explicit:
 | PostgreSQL large objects | Yes | No | Large-object descriptors and streams are outside the typed query contract; object storage or ordinary `bytea` values are preferable without a concrete consumer. |
 | CJS/Deno source duplication | Partial | No, permanent non-goal | sqlx-js ships one ESM source and relies on supported runtime compatibility. |
 
-## Replacement gate
+## Maintained replacement gate
 
-Removing Postgres.js from the dependency graph is not by itself the completion
-criterion. The integrated driver is ready to replace it only when:
+Postgres.js remains only as a development benchmark reference. The integrated
+driver remains the supported runtime only while:
 
 1. Node, Bun, and Deno built-package database smokes pass;
 2. cancellation, connection loss, reconnect, pool queueing, transaction

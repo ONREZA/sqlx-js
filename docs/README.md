@@ -32,14 +32,14 @@ guides contain the complete contracts, operational details, and edge cases.
   and known unsupported cases.
 - [Upgrade guides](./upgrades/README.md) contain version-specific regeneration,
   API migration, rollout, and rollback instructions.
-- [Roadmap](../ROADMAP.md) lists planned work and explicitly rejected or
-  deferred directions.
+- [Roadmap](../ROADMAP.md) lists only unfinished work, ordered by demonstrated
+  consumer ROI.
 
 ## Architecture and compatibility
 
-- [Unified connection resolution](./connection-resolution.md) defines the P0
-  target, credential precedence, security invariants, consumer matrix, and
-  completion tracker.
+- [Unified connection resolution](./connection-resolution.md) defines
+  credential precedence, security invariants, supported consumers, and
+  verification coverage.
 - [sqlx-js Extended JSON protocol](./extended-json-protocol.md) defines the
   branded, immutable, versioned `json`/`jsonb` value and transport contract.
 - [Postgres.js compatibility matrix](./postgres-js-feature-matrix.md) defines

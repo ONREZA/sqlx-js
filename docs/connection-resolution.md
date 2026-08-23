@@ -1,9 +1,8 @@
 # Unified connection resolution
 
-This document is the implementation and release tracker for the P0 connection
-resolver. Completion means that every sqlx-js-owned database consumer resolves
-the same target and credential contract. A working `prepare` command alone is
-not completion.
+Every sqlx-js-owned database consumer resolves the same target and credential
+contract. This document defines that shared contract, its supported consumers,
+and the maintained verification coverage.
 
 ## Resolution contract
 
@@ -47,7 +46,7 @@ verification, matching PostgreSQL's compatibility behavior.
 `hostaddr` is the numeric IPv4 or IPv6 TCP endpoint. `host` remains the logical
 identity used by TLS verification and password-file matching. When only
 `hostaddr` is supplied, its IP is used for all three identities. Multiple hosts
-and Unix-domain sockets are outside this P0 contract.
+and Unix-domain sockets are outside the supported contract.
 
 Password files use the PostgreSQL five-field
 `host:port:database:user:password` format. Matching is first-entry-wins,
@@ -59,44 +58,42 @@ default path is resolved with the rest of the connection, so later `HOME` or
 `APPDATA` mutation cannot redirect a pool generation. Passwords are never
 included in target summaries or diagnostics.
 
-## P0 implementation tracker
+## Resolver and security invariants
 
-### Resolver and security invariants
-
-- [x] One resolver owns URL parsing, supported environment fallbacks, defaults,
+- One resolver owns URL parsing, supported environment fallbacks, defaults,
   subprocess environment rendering, and password-file lookup.
-- [x] URL and typed values take precedence without allowing ambient environment
+- URL and typed values take precedence without allowing ambient environment
   settings to replace an explicit target or password.
-- [x] TCP routing, TLS identity, and password-file identity are represented
+- TCP routing, TLS identity, and password-file identity are represented
   separately and covered by regression tests.
-- [x] `verify-full` uses the logical host while TCP and cancellation use
+- `verify-full` uses the logical host while TCP and cancellation use
   `hostaddr`.
-- [x] Password-file first-match, wildcard, escaping, default-path, and Unix
+- Password-file first-match, wildcard, escaping, default-path, and Unix
   permission behavior are implemented without logging secrets.
-- [x] Internal wire password and TLS file reads are asynchronous and remain
+- Internal wire password and TLS file reads are asynchronous and remain
   inside the end-to-end connection deadline. Raw socket error handling remains
   active until the TLS socket takes ownership.
-- [x] Dynamic runtime password providers still resolve once for every new
+- Dynamic runtime password providers resolve once for every new
   connection and override URL, environment, and password-file sources.
-- [x] Prepare sessions and managed runtime clients resolve their target once;
+- Prepare sessions and managed runtime clients resolve their target once;
   validation workers and replacement pool generations cannot drift after a
   later process-environment change.
-- [x] Single-host TCP is explicit; unsupported multi-host inputs fail during
+- Single-host TCP is explicit; unsupported multi-host inputs fail during
   resolution instead of being partially interpreted.
 
-### Consumer coverage
+## Consumer coverage
 
-- [x] Prepare, prepare verify, prepare watch, and connection-profile workers.
-- [x] Doctor, schema snapshot, and JSON audit.
-- [x] Built-in migrate run/revert/repair paths and runtime startup migrations.
-- [x] Automatic, admin, configured, and materializer shadow-database paths.
-- [x] Raw and managed runtime pools, replacement generations, and cancellation.
-- [x] `pg_dump` subprocesses receive the same `PGHOST`/`PGHOSTADDR`, identity,
+- Prepare, prepare verify, prepare watch, and connection-profile workers.
+- Doctor, schema snapshot, and JSON audit.
+- Built-in migrate run/revert paths and runtime startup migrations.
+- Automatic, admin, configured, and materializer shadow-database paths.
+- Raw and managed runtime pools, replacement generations, and cancellation.
+- `pg_dump` subprocesses receive the same `PGHOST`/`PGHOSTADDR`, identity,
   TLS, timeout, statement-timeout, UTF-8, UTC, and ISO settings without
   inheriting the raw `DATABASE_URL`. The shared resolver validates the
   password file and passes only the resolved credential, preventing a second
   libpq lookup with different permissions or ambient environment.
-- [x] `pgschema` receives the resolved endpoint and password. Its process cannot
+- `pgschema` receives the resolved endpoint and password. Its process cannot
   repeat password-file lookup after the shared resolver, and its upstream
   single-host DSN cannot express a separate TLS server name. Therefore,
   a distinct `hostaddr` and `host` fails before the provider runs for every TLS
@@ -111,24 +108,24 @@ included in target summaries or diagnostics.
   and `statement_timeout` settings fail before execution because pgschema
   cannot scope them independently from its second plan-database connection.
 
-### Target diagnostics
+## Target diagnostics
 
-- [x] Live prepare and verify inspect `current_database`, `current_user`, server
+- Live prepare and verify inspect `current_database`, `current_user`, server
   version, `search_path`, current schema, and non-system function/enum counts.
-- [x] Human summary output includes the sanitized target on success, query
+- Human summary output includes the sanitized target on success, query
   failure, and fatal validation errors raised after target inspection.
-- [x] Prepare JSON and watch JSONL expose the target as structured fields.
-- [x] Target output contains neither the network host nor credentials.
+- Prepare JSON and watch JSONL expose the target as structured fields.
+- Target output contains neither the network host nor credentials.
 
-### Verification gates
+## Verification coverage
 
-- [x] Resolver, password-file, TCP endpoint, TLS fail-closed, connection-loss,
+- Resolver, password-file, TCP endpoint, TLS fail-closed, connection-loss,
   cross-runtime auth/TLS, and watch tests.
-- [x] Full Bun unit and PostgreSQL integration suite.
-- [x] Example TypeScript check and runtime-boundary test.
-- [x] Packed Node/Bun and Deno database smoke tests.
+- Full Bun unit and PostgreSQL integration suite.
+- Example TypeScript check and runtime-boundary test.
+- Packed Node/Bun and Deno database smoke tests.
 
-## Explicitly outside P0
+## Unsupported libpq surfaces
 
 The resolver is not a promise to clone all of libpq. Multi-host failover,
 `target_session_attrs`, service files, Unix-domain sockets, GSSAPI, channel
@@ -138,7 +135,7 @@ acceptance tests.
 
 Native `hostaddr` plus a distinct TLS identity and SNI name in the pgschema
 provider requires an upstream pgschema connection API that represents both
-values. sqlx-js's P0 contract is to preserve security by refusing that
+values. sqlx-js preserves security by refusing that
 combination for TLS modes, not to downgrade verification or patch DNS globally.
 
 [Documentation index](./README.md) · [Roadmap](../ROADMAP.md)

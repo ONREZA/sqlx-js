@@ -13,7 +13,7 @@ The library is **PostgreSQL-only** and keeps SQL/result validation at prepare ti
 ```
 .
 ├── bin/
-│   ├── sqlx-js.ts           CLI entry point (init, prepare, migrate, schema, watch)
+│   ├── sqlx-js.ts           CLI entry point for all commands and subcommands
 │   └── sqlx-js-diagnostics.ts JSON diagnostic adapter for GitHub and editors
 ├── src/
 │   ├── index.ts              Public package entry (sql, migrate, types)
