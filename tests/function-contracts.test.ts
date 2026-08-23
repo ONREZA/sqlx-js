@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -44,6 +44,7 @@ test("function cache preserves deterministic language, strictness, and all local
     const entry = functionEntry({ language: "plpgsql", strict: true, settings, searchPath: "app, pg_temp" });
     writeFunctionCache(cacheDir, [entry]);
     expect(readFunctionCache(cacheDir)).toEqual([entry]);
+    expect(readFileSync(join(cacheDir, "functions/functions.json"), "utf8").endsWith("\n")).toBe(true);
     expect(settings).toEqual(["search_path=app, pg_temp", "TimeZone=UTC"]);
     expect(functionSettingValue(settings, "timezone")).toBe("UTC");
   } finally {

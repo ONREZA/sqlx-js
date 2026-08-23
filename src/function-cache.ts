@@ -97,7 +97,7 @@ export function writeFunctionCache(cacheDir: string, functions: FunctionEntry[])
   mkdirSync(dirname(path), { recursive: true });
   const payload: FunctionCacheFile = { version: 4, functions };
   const tmp = `${path}.tmp-${randomBytes(4).toString("hex")}`;
-  writeFileSync(tmp, JSON.stringify(payload, null, 2));
+  writeFileSync(tmp, JSON.stringify(payload, null, 2) + "\n");
   try {
     renameSync(tmp, path);
   } catch (err) {
