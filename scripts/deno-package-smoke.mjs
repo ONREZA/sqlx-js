@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { Temporal } from "npm:temporal-polyfill@1.0.3";
 import {
   createSqlClient,
   defineQuery,
@@ -10,6 +9,10 @@ import {
   tryAcquirePostgresAdvisoryLock,
 } from "@onreza/sqlx-js";
 import descriptorVersions from "../example/.sqlx-js/runtime-descriptors.json" with { type: "json" };
+
+if (typeof Temporal === "undefined") {
+  throw new Error("deno package smoke requires native Temporal");
+}
 
 const databaseUrl = Deno.env.get("DATABASE_URL");
 if (!databaseUrl) throw new Error("deno package smoke requires DATABASE_URL");

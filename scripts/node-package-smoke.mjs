@@ -145,9 +145,33 @@ try {
     files: ["types.ts"],
   }));
   run(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "-p", join(temp, "tsconfig.json")], temp);
+  if (existsSync(join(temp, "node_modules/temporal-polyfill"))) {
+    throw new Error("packed runtime unexpectedly installed the optional Temporal peer");
+  }
+  writeFileSync(join(temp, "native-temporal.mjs"), `
+    import assert from "node:assert/strict";
+    import { createClient } from "@onreza/sqlx-js";
+
+    assert.equal(typeof Temporal, "object");
+    const client = createClient(process.env.DATABASE_URL, { max: 1, temporalApi: Temporal });
+    try {
+      const rows = await client.unsafe("SELECT '2026-08-23T12:34:56.123456Z'::timestamptz AS value");
+      assert.ok(rows[0]?.value instanceof Temporal.Instant);
+    } finally {
+      await client.end();
+    }
+    console.log("native Temporal packed runtime ok");
+  `);
+  process.stdout.write(`bun ${run("bun", ["native-temporal.mjs"], temp)}`);
+  const nodeTemporal = run("node", ["-p", "typeof Temporal"], temp).trim();
+  if (nodeTemporal === "object") {
+    process.stdout.write(`node ${run("node", ["native-temporal.mjs"], temp)}`);
+  } else if (process.env.SQLX_JS_REQUIRE_NATIVE_TEMPORAL === "1") {
+    throw new Error("current Node runtime does not expose native Temporal");
+  }
   run("npm", [
     "install",
-    "temporal-polyfill@1.0.3",
+    "temporal-polyfill@1.0.4",
     "--ignore-scripts",
     "--no-package-lock",
     "--no-audit",
@@ -155,7 +179,7 @@ try {
   ], temp);
   writeFileSync(join(temp, "app.mjs"), `
     import assert from "node:assert/strict";
-    import { Temporal } from "temporal-polyfill";
+    import { Temporal as PolyfillTemporal } from "temporal-polyfill";
     import {
       createSqlClient,
       defineQuery,
@@ -166,6 +190,7 @@ try {
       tryAcquirePostgresAdvisoryLock,
     } from "@onreza/sqlx-js";
 
+    const Temporal = globalThis.Temporal ?? PolyfillTemporal;
     let db;
     try {
       const events = [];
@@ -295,9 +320,10 @@ try {
   process.stdout.write(`node ${run("node", ["app.mjs"], temp)}`);
   process.stdout.write(`bun ${run("bun", ["app.mjs"], temp)}`);
   writeFileSync(join(temp, "idle-exit.mjs"), `
-    import { Temporal } from "temporal-polyfill";
+    import { Temporal as PolyfillTemporal } from "temporal-polyfill";
     import { createClient } from "@onreza/sqlx-js";
 
+    const Temporal = globalThis.Temporal ?? PolyfillTemporal;
     const client = createClient(process.env.DATABASE_URL, { max: 1, temporalApi: Temporal });
     await client.unsafe("SELECT 1");
     console.log("idle pool exit ok");

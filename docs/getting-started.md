@@ -13,15 +13,17 @@ bun add --dev "typescript@>=6 <7"
 ```
 
 The adaptive fallback is optional when every target runtime exposes native
-Temporal. The `temporal-polyfill` root import uses native Temporal when present
-and otherwise supplies the polyfill without mutating `globalThis`. Fallback
-projects should use an explicit base such as `lib: ["ES2025"]`. Native
-TypeScript projects can add `ESNext.Temporal` to that list. The default
-`sqlx-js init` scaffold uses the polyfill fallback. Pass
+Temporal. Bun 1.4+, official Deno 2.9 builds, and Node.js 26+ provide it by
+default; Node.js 24 LTS still requires the fallback. The `temporal-polyfill`
+root import uses native Temporal when present and otherwise supplies the
+polyfill without mutating `globalThis`. Fallback projects should use an
+explicit base such as `lib: ["ES2025"]`. Native TypeScript projects can add
+`ESNext.Temporal` to that list. The default `sqlx-js init` scaffold uses the
+polyfill fallback. Pass
 `--temporal-provider native` to generate a native-only `db.ts` with a targeted
 Temporal lib reference that preserves the project's implicit libraries.
 
-Node.js 24, Bun 1.3, or Deno 2.9 and PostgreSQL 16 or newer are required. The
+Node.js 24, Bun 1.4, or Deno 2.9 and PostgreSQL 16 or newer are required. The
 package ships ESM only, targets ES2025, and does not support CommonJS consumers.
 TypeScript 6.x is an optional peer so production-only installs do not pull the
 compiler into the application image; source scanning commands (`prepare`,

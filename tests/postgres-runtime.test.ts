@@ -334,6 +334,7 @@ test("raw client shutdown interrupts an in-flight startup", async () => {
     confirmClosed = resolve;
   });
   const server = createServer((socket) => {
+    socket.resume();
     socket.once("close", confirmClosed);
     accept();
   });

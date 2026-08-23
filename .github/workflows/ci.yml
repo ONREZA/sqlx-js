@@ -39,7 +39,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: "1.3.14"
+          bun-version: "1.4.0"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -47,7 +47,7 @@ jobs:
 
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
-          deno-version: "2.9.4"
+          deno-version: "2.9.5"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -114,8 +114,7 @@ jobs:
         env:
           ADMIN_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
         run: >-
-          bun -e 'import { Temporal } from "temporal-polyfill";
-          import { createClient } from "@onreza/sqlx-js";
+          bun -e 'import { createClient } from "@onreza/sqlx-js";
           const sql = createClient(process.env.ADMIN_DATABASE_URL, { max: 1, temporalApi: Temporal });
           await sql.unsafe("DROP DATABASE IF EXISTS sqlx_js_pgschema");
           await sql.unsafe("DROP DATABASE IF EXISTS sqlx_js_pgschema_plan");
@@ -139,7 +138,7 @@ jobs:
           bun bin/sqlx-js.ts pgschema plan --root tests/fixtures/pgschema -- --output-json "$PLAN_PATH" --no-color
           bun bin/sqlx-js.ts pgschema apply --root tests/fixtures/pgschema -- --plan "$PLAN_PATH" --auto-approve
           # shellcheck disable=SC2016
-          bun -e 'import { Temporal } from "temporal-polyfill"; import { createClient } from "@onreza/sqlx-js"; const sql = createClient(process.env.DATABASE_URL, { temporalApi: Temporal }); const rows = await sql.unsafe("SELECT name FROM pgschema_probe"); if (rows.length !== 0) throw new Error("expected empty probe table"); const settings = await sql.unsafe("SELECT cardinality(proconfig) = 2 AND proconfig @> ARRAY[$1, $2]::text[] AS matches FROM pg_proc WHERE oid = $3::regprocedure", ["search_path=public, pg_catalog, pg_temp", "TimeZone=UTC", "public.pgschema_normalize_name(text)"]); if (settings[0]?.matches !== true) throw new Error("pgschema did not preserve complete function SET clauses"); await sql.end();'
+          bun -e 'import { createClient } from "@onreza/sqlx-js"; const sql = createClient(process.env.DATABASE_URL, { temporalApi: Temporal }); const rows = await sql.unsafe("SELECT name FROM pgschema_probe"); if (rows.length !== 0) throw new Error("expected empty probe table"); const settings = await sql.unsafe("SELECT cardinality(proconfig) = 2 AND proconfig @> ARRAY[$1, $2]::text[] AS matches FROM pg_proc WHERE oid = $3::regprocedure", ["search_path=public, pg_catalog, pg_temp", "TimeZone=UTC", "public.pgschema_normalize_name(text)"]); if (settings[0]?.matches !== true) throw new Error("pgschema did not preserve complete function SET clauses"); await sql.end();'
 
       - name: Verify pgschema plan is idempotent
         env:
@@ -153,13 +152,52 @@ jobs:
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_pgschema
         run: |
-          bun -e 'import { Temporal } from "temporal-polyfill"; import { createClient } from "@onreza/sqlx-js"; const sql = createClient(process.env.DATABASE_URL, { temporalApi: Temporal }); await sql.unsafe("DROP TABLE pgschema_probe"); await sql.unsafe("CREATE TABLE pgschema_target_guard (id bigint PRIMARY KEY)"); await sql.end();'
+          bun -e 'import { createClient } from "@onreza/sqlx-js"; const sql = createClient(process.env.DATABASE_URL, { temporalApi: Temporal }); await sql.unsafe("DROP TABLE pgschema_probe"); await sql.unsafe("CREATE TABLE pgschema_target_guard (id bigint PRIMARY KEY)"); await sql.end();'
           bun bin/sqlx-js.ts verify --root tests/fixtures/pgschema --strict-inference
           bun bin/sqlx-js.ts dev --root tests/fixtures/pgschema --strict-inference
           bunx tsc -p tests/fixtures/pgschema
           git diff --exit-code -- tests/fixtures/pgschema
           # shellcheck disable=SC2016
-          bun -e 'import { Temporal } from "temporal-polyfill"; import { createClient } from "@onreza/sqlx-js"; const sql = createClient(process.env.DATABASE_URL, { temporalApi: Temporal }); const rows = await sql.unsafe("SELECT to_regclass($1)::text AS desired, to_regclass($2)::text AS guard", ["public.pgschema_probe", "public.pgschema_target_guard"]); if (rows[0]?.desired !== null || rows[0]?.guard !== "pgschema_target_guard") throw new Error("dev/verify changed the target database"); await sql.end();'
+          bun -e 'import { createClient } from "@onreza/sqlx-js"; const sql = createClient(process.env.DATABASE_URL, { temporalApi: Temporal }); const rows = await sql.unsafe("SELECT to_regclass($1)::text AS desired, to_regclass($2)::text AS guard", ["public.pgschema_probe", "public.pgschema_target_guard"]); if (rows[0]?.desired !== null || rows[0]?.guard !== "pgschema_target_guard") throw new Error("dev/verify changed the target database"); await sql.end();'
+
+  node-26-temporal:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: sqlx_js_node_current
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/sqlx_js_node_current
+      SQLX_JS_REQUIRE_NATIVE_TEMPORAL: "1"
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.0"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Verify native Temporal under Node 26
+        run: node scripts/node-package-smoke.mjs
 
   postgres-tls:
     runs-on: ubuntu-latest
@@ -174,7 +212,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: "1.3.14"
+          bun-version: "1.4.0"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -182,7 +220,7 @@ jobs:
 
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
-          deno-version: "2.9.4"
+          deno-version: "2.9.5"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -201,7 +239,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: "1.3.14"
+          bun-version: "1.4.0"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -245,7 +283,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: "1.3.14"
+          bun-version: "1.4.0"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -269,7 +307,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: "1.3.14"
+          bun-version: "1.4.0"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:

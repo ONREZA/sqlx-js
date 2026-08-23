@@ -22,7 +22,7 @@ reproduce it. Remove credentials and private data.
 Requirements:
 
 - Node.js 24 or newer
-- Bun 1.3 or newer
+- Bun 1.4 or newer
 - Deno 2.9 or newer for Deno package smoke tests
 - Docker for the PostgreSQL integration suite
 - PostgreSQL 16 or newer when using an external database

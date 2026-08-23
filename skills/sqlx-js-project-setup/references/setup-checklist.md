@@ -3,7 +3,7 @@
 ## Requirements
 
 - PostgreSQL 16 or newer.
-- Node.js 24+, Bun 1.3+, or Deno 2.9+.
+- Node.js 24+, Bun 1.4+, or Deno 2.9+.
 - TypeScript 6.x for scanning commands.
 - ES2025 or newer runtime semantics.
 - ESM project configuration.
