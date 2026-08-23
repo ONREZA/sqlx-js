@@ -55,11 +55,12 @@ inspection tooling:
   round-trip `bigint` and all reconstructable Temporal values; `JsonNumber`
   preserves exact native numerics; exact parsing, resource limits, artifact
   version binding, and the read-only reader-first audit fail closed.
-- Advisory query reuse analysis: exact fingerprints surface possible duplicates,
+- Query reuse analysis: exact fingerprints surface possible duplicates,
   contract divergence, query-name collisions, reviewed occurrence-fenced
-  ignores, and stale acknowledgements. Experimental AST similarity ranks shared
-  fragments across application queries and SQL-language functions without
-  rewriting SQL or becoming a prepare gate.
+  ignores, and stale acknowledgements. Reports remain advisory by default;
+  `queries audit --check` opts into a review-required CI gate. Experimental AST
+  similarity ranks shared fragments across application queries and SQL-language
+  functions without rewriting SQL or becoming a prepare gate.
 
 These items remain recorded here until the release containing the new cache,
 generator, and runtime descriptor revisions is published.

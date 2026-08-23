@@ -138,6 +138,9 @@ function validateInvocation(): void {
           commandArgv,
         );
       }
+      if (queryCommand !== "audit" && flag("--check")) {
+        usageError("--check is only supported by queries audit", "queries", commandArgv);
+      }
       return;
     }
     requirePositionals(0, 0, cmd);
@@ -716,7 +719,7 @@ if (cmd === "init") {
   try {
     if (queryCommand === "audit") {
       const { runExactQueryAudit } = await import("../src/commands/query-audit");
-      await runExactQueryAudit({ root, json: flag("--json") });
+      await runExactQueryAudit({ root, json: flag("--json"), check: flag("--check") });
     } else if (queryCommand === "similarities") {
       const { runQuerySimilarities } = await import("../src/commands/query-audit");
       await runQuerySimilarities({

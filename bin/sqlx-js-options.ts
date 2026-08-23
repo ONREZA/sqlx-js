@@ -69,6 +69,7 @@ export function optionsFor(command: string, subcommand?: string): ParseArgsOptio
     return {
       ...ROOT_OPTIONS,
       json: { type: "boolean" },
+      check: { type: "boolean" },
       functions: { type: "string" },
       "min-nodes": { type: "string" },
       limit: { type: "string" },

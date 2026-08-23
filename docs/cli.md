@@ -29,7 +29,7 @@ sqlx-js pgschema install|update|exec|plan|apply
 sqlx-js snapshot dump|check
 sqlx-js doctor [--fix]
 sqlx-js queries [--json]
-sqlx-js queries audit [--json]
+sqlx-js queries audit [--check] [--json]
 sqlx-js queries similarities [--json] [--functions <path>] [--min-nodes <n>] [--limit <n>]
 sqlx-js queries explain <query-id> [--json]
 sqlx-js json audit [--json]
@@ -138,8 +138,10 @@ duplicates can be ignored by query ID, exact occurrence count, and a required
 reason under `queryAudit.exactDuplicates.ignore`. Ignored candidates remain in
 JSON; changed, removed, and no-longer-duplicate entries are reported as stale.
 The ignore acknowledges source duplication but does not suppress a divergent
-source contract's `reviewRequired` signal. Findings are advisory and do not
-change ordinary prepare or CI exit behavior.
+source contract's `reviewRequired` signal. Findings are advisory by default and
+do not change ordinary prepare behavior. `queries audit --check` is an explicit
+CI gate: it exits 1 for active duplicates, contract divergences, query-name
+collisions, or stale ignores.
 
 `queries similarities` is an experimental advisory report over normalized
 PostgreSQL AST fragments. It ignores literal values and alpha-renames parameter

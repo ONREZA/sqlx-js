@@ -1,7 +1,12 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { SqlxJsConfig } from "../config";
-import { buildExactQueryAudit, type ExactQueryAuditReport, type ExactQueryAuditSite } from "../query-audit";
+import {
+  buildExactQueryAudit,
+  exactQueryAuditCheck,
+  type ExactQueryAuditReport,
+  type ExactQueryAuditSite,
+} from "../query-audit";
 import { queryId } from "../query-id";
 import { buildQuerySourceCatalog, querySourceLocation } from "../query-source-catalog";
 import {
@@ -279,10 +284,38 @@ function printQuerySimilarity(report: QuerySimilarityReport): void {
   }
 }
 
-export async function runExactQueryAudit(options: { root: string; json?: boolean }): Promise<void> {
+export async function runExactQueryAudit(options: { root: string; json?: boolean; check?: boolean }): Promise<void> {
   const report = await buildExactQueryAuditReport(options.root);
-  if (options.json) console.log(JSON.stringify(report, null, 2));
-  else printExactQueryAudit(report);
+  if (!options.check) {
+    if (options.json) console.log(JSON.stringify(report, null, 2));
+    else printExactQueryAudit(report);
+    return;
+  }
+  const check = exactQueryAuditCheck(report);
+  if (options.json) {
+    console.log(JSON.stringify({
+      ...report,
+      ok: check.passed,
+      advisory: false,
+      check,
+    }, null, 2));
+  } else {
+    printExactQueryAudit(report);
+    const labels: Record<keyof typeof check.failures, string> = {
+      activePossibleDuplicates: "active duplicates",
+      contractDivergences: "contract divergences",
+      queryNameCollisions: "query name collisions",
+      staleIgnores: "stale ignores",
+    };
+    const failures = (Object.entries(check.failures) as Array<[keyof typeof check.failures, number]>)
+      .filter(([, count]) => count > 0)
+      .map(([name, count]) => `${labels[name]}=${count}`)
+      .join(", ");
+    (check.passed ? console.log : console.error)(
+      check.passed ? "query audit check passed" : `query audit check failed: ${failures}`,
+    );
+  }
+  if (!check.passed) process.exitCode = 1;
 }
 
 export async function runQuerySimilarities(options: {

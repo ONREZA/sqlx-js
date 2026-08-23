@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { expect, test } from "bun:test";
 import { buildExactQueryAuditReport } from "../src/commands/query-audit";
 import { loadConfig } from "../src/config";
-import { buildExactQueryAudit } from "../src/query-audit";
+import { buildExactQueryAudit, exactQueryAuditCheck } from "../src/query-audit";
 import { queryId } from "../src/query-id";
 import type { QueryCallSite } from "../src/scan/scanner";
 
@@ -97,6 +97,17 @@ test("exact query audit keeps reviewed duplicates visible and reports contract d
     queryName: "users.byId",
     queryIds: expect.arrayContaining([id, queryId("SELECT email FROM users WHERE id = $1")]),
   });
+  expect(exactQueryAuditCheck(report)).toEqual({
+    enabled: true,
+    passed: false,
+    failureCount: 2,
+    failures: {
+      activePossibleDuplicates: 0,
+      contractDivergences: 1,
+      queryNameCollisions: 1,
+      staleIgnores: 0,
+    },
+  });
 });
 
 test("exact query audit resurfaces changed duplicates and classifies stale ignores", () => {
@@ -143,6 +154,11 @@ test("exact query audit resurfaces changed duplicates and classifies stale ignor
       staleReason: "occurrence-count-changed",
     },
   ].sort((left, right) => left.queryId.localeCompare(right.queryId)));
+  expect(exactQueryAuditCheck(report)).toMatchObject({
+    passed: false,
+    failureCount: 4,
+    failures: { activePossibleDuplicates: 1, staleIgnores: 3 },
+  });
 });
 
 test("an exact duplicate ignore does not acknowledge divergent source contracts", () => {
@@ -217,6 +233,75 @@ test("queries audit loads config ignores and emits advisory JSON", async () => {
       advisory: true,
       summary: { ignoredPossibleDuplicates: 1, reviewRequired: false },
     });
+
+    const checked = spawnSync("bun", [binPath, "queries", "audit", "--check", "--json", "--root", root], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: "" },
+    });
+    expect(checked.status).toBe(0);
+    expect(checked.stderr).toBe("");
+    expect(JSON.parse(checked.stdout)).toMatchObject({
+      ok: true,
+      advisory: false,
+      check: {
+        enabled: true,
+        passed: true,
+        failureCount: 0,
+      },
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("queries audit --check gates review-required findings without changing the default", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-query-audit-check-"));
+  try {
+    mkdirSync(join(root, "src"));
+    const query = "SELECT id FROM users WHERE id = $1";
+    writeFileSync(join(root, "src/a.ts"), `
+      import { defineQuery } from "@onreza/sqlx-js";
+      export const first = defineQuery.one("users.first", ${JSON.stringify(query)});
+      export const second = defineQuery.one("users.second", ${JSON.stringify(query)});
+    `);
+    writeFileSync(join(root, "sqlx-js.config.ts"), `
+      export default { scan: { include: ["src/**/*.ts"] } };
+    `);
+
+    const advisory = spawnSync("bun", [binPath, "queries", "audit", "--json", "--root", root], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: "" },
+    });
+    expect(advisory.status).toBe(0);
+    expect(JSON.parse(advisory.stdout)).toMatchObject({
+      ok: true,
+      advisory: true,
+      summary: { activePossibleDuplicates: 1, reviewRequired: true },
+    });
+
+    const checked = spawnSync("bun", [binPath, "queries", "audit", "--check", "--json", "--root", root], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: "" },
+    });
+    expect(checked.status).toBe(1);
+    expect(checked.stderr).toBe("");
+    expect(JSON.parse(checked.stdout)).toMatchObject({
+      ok: false,
+      advisory: false,
+      check: {
+        enabled: true,
+        passed: false,
+        failureCount: 1,
+        failures: { activePossibleDuplicates: 1 },
+      },
+    });
+
+    const unsupported = spawnSync("bun", [binPath, "queries", "similarities", "--check", "--root", root], {
+      encoding: "utf8",
+      env: { ...process.env, DATABASE_URL: "" },
+    });
+    expect(unsupported.status).toBe(2);
+    expect(unsupported.stderr).toContain("--check is only supported by queries audit");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
