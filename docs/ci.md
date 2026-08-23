@@ -15,6 +15,10 @@ present. It validates the proposed schema source, not target deployment drift,
 and never writes generated artifacts or changes the target database. `--json`
 returns a versioned per-step report.
 
+Query-reuse policy remains a separate opt-in source gate. Projects that review
+exact duplicates can add `sqlx-js queries audit --check`; `sqlx-js ci` does not
+enable that policy implicitly.
+
 Commit the generated `sqlx-js-env.d.ts`, `.sqlx-js/` cache directory including
 `runtime-descriptors.json`, and configured function, enum, database-error, or embedded-SQL outputs
 to your repo.
