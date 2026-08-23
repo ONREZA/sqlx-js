@@ -1140,6 +1140,7 @@ test("query definitions, executor helpers, and structural JSON compile together"
   writeFileSync(join(root, "consumer.ts"), `
 import {
   array,
+  bindQueries,
   defineQuery,
   json,
   type ExecuteResult,
@@ -1437,6 +1438,27 @@ export function runMappedPayload(
 }
 void mappedPayload;
 void mappedPayloadWire;
+
+const boundQueries = bindQueries(executor, {
+  find: findUser,
+  positional,
+  count: countUsers,
+  payload: mappedPayloadQuery,
+});
+void boundQueries.find(params, { timeoutMs: 1_000 });
+void boundQueries.positional(...positionalParams);
+void boundQueries.count();
+void boundQueries.payload(payload, { timeoutMs: 1_000 });
+// @ts-expect-error grouped named runners preserve exact parameter keys
+void boundQueries.find(paramsWithExtra);
+// @ts-expect-error grouped positional runners preserve separate arguments
+void boundQueries.positional(positionalParams);
+// @ts-expect-error grouped zero-parameter runners accept no arguments
+void boundQueries.count([] as const);
+// @ts-expect-error grouped mapped runners preserve their application input
+void boundQueries.payload({ id: "missing-nested" });
+// @ts-expect-error every grouped definition must exist in the executor registry
+bindQueries(executor, { missing: defineQuery("SELECT missing_registry_query") });
 
 const mappedJsonArrayQuery = defineQuery.one(
   "payload.selectArray",

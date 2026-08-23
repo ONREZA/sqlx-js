@@ -86,6 +86,29 @@ export function createUserQueries(executor: SqlExecutor<SqlxJsRegistry>) {
 export type UserQueries = ReturnType<typeof createUserQueries>;
 ```
 
+For a module with several pass-through definitions, bind the complete group
+without repeating `.bind(executor)` for every property:
+
+```ts
+import { bindQueries, type SqlExecutor } from "@onreza/sqlx-js";
+
+export function createUserQueries(executor: SqlExecutor<SqlxJsRegistry>) {
+  return bindQueries(executor, {
+    find: findUser,
+    list: listUsers,
+    create: createUser,
+  });
+}
+```
+
+`bindQueries` accepts ordinary named, positional, zero-parameter, and mapped
+definitions. Every property retains the same exact parameters, result
+cardinality, and execution-options contract as an individual `.bind(...)` call.
+The complete group must be compatible with the executor registry, so a missing
+query or an incompatible mapped wire shape fails at compile time. The helper
+only binds the supplied executor; transaction ownership stays explicit by
+calling it with the transaction executor inside the transaction callback.
+
 The bound runner retains the generated named-parameter exactness through
 `ReturnType`, `Pick`, and dependency injection, so a wider service DTO cannot be
 passed to `find` accidentally. Named and mapped runners accept execution options

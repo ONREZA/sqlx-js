@@ -173,6 +173,60 @@ type MappedExecutor<
   ? never
   : TypedSqlForRegistry<Registry>;
 
+type QueryDefinitionShape = {
+  readonly query: string;
+  readonly mode: QueryExecutionMode;
+  readonly bind: unknown;
+};
+
+type CompatibleQueryDefinition<
+  Definition,
+  Registry extends { queries: object; fileQueries: object },
+> = Definition extends {
+  readonly query: infer Query extends keyof Registry["queries"] & string;
+  readonly mode: QueryExecutionMode;
+}
+  ? Definition extends {
+    readonly [MAPPED_QUERY_WIRE_PARAMS]: infer WireParams extends QueryWireParams;
+  }
+    ? ExactWireShape<WireParams, RegistryParams<Query, Registry>> extends true ? Definition : never
+    : RegistryParams<Query, Registry> extends QueryWireParams ? Definition : never
+  : never;
+
+type CompatibleQueryDefinitions<
+  Definitions,
+  Registry extends { queries: object; fileQueries: object },
+> = {
+  [Key in keyof Definitions]: CompatibleQueryDefinition<Definitions[Key], Registry>;
+};
+
+type BoundQueryRunner<
+  Definition,
+  Registry extends { queries: object; fileQueries: object },
+  Query extends keyof Registry["queries"] & string = DefinitionQuery<Definition> & keyof Registry["queries"],
+> = Definition extends { readonly [MAPPED_QUERY_INPUT]: infer Input }
+  ? (
+    input: Input,
+    options?: QueryExecutionOptions,
+  ) => Promise<QueryResultFor<Definition, Registry>>
+  : RegistryParams<Query, Registry> extends readonly unknown[]
+    ? (
+      ...params: RegistryParams<Query, Registry> & readonly unknown[]
+    ) => Promise<QueryResultFor<Definition, Registry>>
+    : RegistryParams<Query, Registry> extends Record<string, unknown>
+      ? <const Actual extends RegistryParams<Query, NoInfer<Registry>>>(
+        params: ExactNamedParams<RegistryParams<Query, NoInfer<Registry>>, Actual>,
+        options?: QueryExecutionOptions,
+      ) => Promise<QueryResultFor<Definition, Registry>>
+      : never;
+
+export type BoundQueries<
+  Definitions,
+  Registry extends { queries: object; fileQueries: object },
+> = {
+  readonly [Key in keyof Definitions]: BoundQueryRunner<Definitions[Key], Registry>;
+};
+
 export type QueryWireParamsFor<Definition, Registry extends { queries: object }> =
   RegistryParams<DefinitionQuery<Definition>, Registry>;
 export type QueryParamsFor<Definition, Registry extends { queries: object }> = Definition extends {
@@ -416,3 +470,20 @@ export const defineQuery = Object.assign(definitionMethod("many"), {
     });
   },
 });
+
+export function bindQueries<
+  Registry extends { queries: object; fileQueries: object },
+  const Definitions extends Readonly<Record<string, QueryDefinitionShape>>,
+>(
+  executor: TypedSqlForRegistry<Registry>,
+  definitions: Definitions & CompatibleQueryDefinitions<Definitions, NoInfer<Registry>>,
+): BoundQueries<Definitions, Registry> {
+  const entries = Object.entries(definitions).map(([name, definition]) => {
+    const bind = definition.bind;
+    if (typeof bind !== "function") {
+      throw new Error(`sqlx-js.bindQueries: ${JSON.stringify(name)} is not a query definition`);
+    }
+    return [name, bind.call(definition, executor)] as const;
+  });
+  return Object.freeze(Object.fromEntries(entries)) as BoundQueries<Definitions, Registry>;
+}
