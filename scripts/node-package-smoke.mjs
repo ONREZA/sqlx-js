@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { npmPackFilename } from "./npm-pack-output.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const envFile = join(root, ".env");
@@ -26,8 +27,7 @@ function run(command, args, cwd = root) {
 
 try {
   const pack = JSON.parse(run("npm", ["pack", root, "--json", "--pack-destination", temp]));
-  const filename = pack[0]?.filename;
-  if (typeof filename !== "string") throw new Error("npm pack did not return a package filename");
+  const filename = npmPackFilename(pack);
   writeFileSync(join(temp, "package.json"), JSON.stringify({ type: "module", private: true }));
   run("npm", ["install", join(temp, filename), "--ignore-scripts", "--no-package-lock", "--no-audit", "--no-fund"], temp);
   if (existsSync(join(temp, "node_modules/typescript"))) {

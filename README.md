@@ -3,7 +3,7 @@
 Compile-time-checked raw SQL for TypeScript and PostgreSQL, inspired by
 Rust's [sqlx](https://github.com/launchbadge/sqlx).
 
-[![CI](https://github.com/ONREZA/sqlx-js/actions/workflows/ci.yml/badge.svg)](https://github.com/ONREZA/sqlx-js/actions/workflows/ci.yml)
+[![CI and Release](https://github.com/ONREZA/sqlx-js/actions/workflows/release.yml/badge.svg)](https://github.com/ONREZA/sqlx-js/actions/workflows/release.yml)
 [![npm](https://img.shields.io/npm/v/@onreza/sqlx-js.svg)](https://www.npmjs.com/package/@onreza/sqlx-js)
 [![license](https://img.shields.io/npm/l/@onreza/sqlx-js.svg)](./LICENSE)
 
