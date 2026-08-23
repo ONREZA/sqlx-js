@@ -15,9 +15,7 @@ import {
 import { embeddedSqlOutputPath, renderEmbeddedSqlModuleFromSites } from "../embedded-sql";
 import {
   errorCatalogCacheExists,
-  errorCatalogCoverageMessage,
   errorCatalogOutputPath,
-  errorCatalogSkipMessage,
   readErrorCatalogCache,
   renderErrorCatalog,
   type ErrorCatalog,
@@ -42,6 +40,7 @@ import { renderRuntimeDescriptors, runtimeDescriptorPath } from "../runtime-desc
 import { scanProject, type QueryCallSite } from "../scan/scanner";
 import {
   addFunctionContractDiagnostics,
+  errorCatalogDiagnostics,
   executionIntentDiagnostics,
   fatal,
   formatPrepareDiagnostic,
@@ -304,22 +303,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         if (errorCatalogCacheExists(opts.cacheDir)) {
           errorCatalog = readErrorCatalogCache(opts.cacheDir);
           databaseErrorCount = errorCatalog.errors.length;
-          const coverageMessage = errorCatalogCoverageMessage(errorCatalog);
-          if (coverageMessage) {
-            diagnostics.push({
-              severity: "warning",
-              phase: "cache",
-              code: "error-catalog-partial",
-              message: coverageMessage,
-            });
-            for (const skip of errorCatalog.skips) diagnostics.push({
-              severity: "warning",
-              phase: "cache",
-              code: `error-catalog-${skip.reason}`,
-              functionSignature: skip.routine,
-              message: errorCatalogSkipMessage(skip),
-            });
-          }
+          diagnostics.push(...errorCatalogDiagnostics(errorCatalog, "cache"));
         } else {
           diagnostics.push({
             severity: "error",

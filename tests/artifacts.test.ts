@@ -55,7 +55,7 @@ function writeSetWithErrors(root: string) {
   const errorOutputPath = join(root, "src/db-errors.ts");
   mkdirSync(join(set.cacheDir, "errors"), { recursive: true });
   mkdirSync(join(root, "src"), { recursive: true });
-  writeFileSync(join(set.cacheDir, "errors/errors.json"), '{"version":1,"errors":[],"coverage":{}}\n');
+  writeFileSync(join(set.cacheDir, "errors/errors.json"), '{"version":2,"errors":[],"coverage":{"routinesWithRaises":0,"raiseExceptions":0,"extractedOccurrences":0,"skipped":0},"skips":[]}\n');
   writeFileSync(errorOutputPath, "export const DbErrors = {} as const;\n");
   return { ...set, errorOutputPath, errorArtifactName: "src/db-errors.ts" };
 }
@@ -126,7 +126,7 @@ test("compareArtifacts includes error cache and configured output", () => {
     expect(compareArtifacts(left, right)).toEqual({ ok: false, changed: ["src/db-errors.ts"] });
 
     writeFileSync(right.errorOutputPath, "export const DbErrors = {} as const;\n");
-    writeFileSync(join(right.cacheDir, "errors/errors.json"), '{"version":1,"errors":[{}]}\n');
+    writeFileSync(join(right.cacheDir, "errors/errors.json"), '{"version":2,"errors":[{"code":"22023","message":"PAYMENT_INVALID","routines":["public.charge()"]}],"coverage":{"routinesWithRaises":1,"raiseExceptions":1,"extractedOccurrences":1,"skipped":0},"skips":[]}\n');
     expect(compareArtifacts(left, right)).toEqual({ ok: false, changed: ["cache/errors/errors.json"] });
   } finally {
     rmSync(leftRoot, { recursive: true, force: true });

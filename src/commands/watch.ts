@@ -63,16 +63,16 @@ export function formatWatchEvent(
   return JSON.stringify({ formatVersion: 1, event: name, timestamp, ...data });
 }
 
-export function watchErrorData(
+export function watchErrorEvents(
   error: unknown,
   target?: DatabaseTargetSummary,
-): Record<string, unknown> {
+): Record<string, unknown>[] {
   const message = error instanceof Error ? error.message : String(error);
   const resolvedTarget = error instanceof PrepareFatalError ? error.target ?? target : target;
   if (!(error instanceof PrepareFatalError)) {
-    return { ...(resolvedTarget === undefined ? {} : { target: resolvedTarget }), message };
+    return [{ ...(resolvedTarget === undefined ? {} : { target: resolvedTarget }), message }];
   }
-  const diagnostics = error.diagnostics ?? [{
+  const diagnostics = error.diagnostics?.length ? error.diagnostics : [{
     severity: "error" as const,
     phase: error.phase,
     message,
@@ -80,11 +80,10 @@ export function watchErrorData(
     ...(error.line === undefined ? {} : { line: error.line }),
     ...(error.column === undefined ? {} : { column: error.column }),
   }];
-  return {
+  return diagnostics.map((diagnostic) => ({
     ...(resolvedTarget === undefined ? {} : { target: resolvedTarget }),
-    diagnostic: diagnostics[0],
-    ...(diagnostics.length > 1 ? { diagnostics } : {}),
-  };
+    diagnostic,
+  }));
 }
 
 type WatchDeps = {
@@ -305,7 +304,9 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
     if (opts.jsonl) report(r);
     else log(`watch: ready — ${r.entries} queries, ${r.failures} failures`);
   } catch (e) {
-    if (opts.jsonl) event("error", watchErrorData(e, state.session?.target));
+    if (opts.jsonl) {
+      for (const data of watchErrorEvents(e, state.session?.target)) event("error", data);
+    }
     else {
       if (e instanceof PrepareFatalError && e.target !== undefined && state.session === null) {
         log(formatDatabaseTarget(e.target));
@@ -339,7 +340,9 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
           if (opts.jsonl) report(r, durationMs);
           else log(`watch: re-prepared in ${durationMs}ms (${r.entries} queries, ${r.failures} failures)`);
         } catch (e) {
-          if (opts.jsonl) event("error", watchErrorData(e, state.session?.target));
+          if (opts.jsonl) {
+            for (const data of watchErrorEvents(e, state.session?.target)) event("error", data);
+          }
           else {
             if (e instanceof PrepareFatalError && e.target !== undefined && state.session === null) {
               log(formatDatabaseTarget(e.target));

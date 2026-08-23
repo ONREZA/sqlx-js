@@ -1,6 +1,11 @@
 import { containsUnknownType } from "../type-inspection";
 import { fingerprint, type CacheEntry } from "../cache";
 import {
+  errorCatalogCoverageMessage,
+  errorCatalogSkipMessage,
+  type ErrorCatalog,
+} from "../error-catalog";
+import {
   functionContractDiagnostics,
   type FunctionEntry,
 } from "../function-cache";
@@ -95,6 +100,29 @@ export function addFunctionContractDiagnostics(
     diagnostics.push(diagnostic);
     report(formatPrepareDiagnostic(diagnostic));
   }
+}
+
+export function errorCatalogDiagnostics(
+  catalog: ErrorCatalog,
+  phase: "cache" | "introspect",
+): PrepareDiagnostic[] {
+  const coverageMessage = errorCatalogCoverageMessage(catalog);
+  if (!coverageMessage) return [];
+  return [
+    {
+      severity: "warning",
+      phase,
+      code: "error-catalog-partial",
+      message: coverageMessage,
+    },
+    ...catalog.skips.map((skip): PrepareDiagnostic => ({
+      severity: "warning",
+      phase,
+      code: `error-catalog-${skip.reason}`,
+      functionSignature: skip.routine,
+      message: errorCatalogSkipMessage(skip),
+    })),
+  ];
 }
 
 export function formatPrepareDiagnostic(diagnostic: PrepareDiagnostic): string {

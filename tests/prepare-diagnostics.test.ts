@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   executionIntentDiagnostics,
+  errorCatalogDiagnostics,
   formatPrepareDiagnostic,
   formatPrepareDiagnosticCounts,
   planningDiagnostics,
@@ -140,6 +141,48 @@ test("summary diagnostics expose query drill-down and aggregate phases", () => {
   expect(formatPrepareDiagnosticCounts(diagnostics)).toBe(
     "2 warnings (inference: 1, intent: 1), 1 error (cache: 1)",
   );
+});
+
+test("error catalog diagnostics keep summary and routine details aligned", () => {
+  expect(errorCatalogDiagnostics({
+    errors: [],
+    coverage: {
+      routinesWithRaises: 1,
+      raiseExceptions: 2,
+      extractedOccurrences: 0,
+      skipped: 2,
+    },
+    skips: [
+      { routine: "billing.charge(pg_catalog.uuid)", statement: 1, reason: "dynamic-sqlstate" },
+      { routine: "billing.charge(pg_catalog.uuid)", statement: 2, reason: "dynamic-message" },
+    ],
+  }, "cache")).toEqual([
+    {
+      severity: "warning",
+      phase: "cache",
+      code: "error-catalog-partial",
+      message: "errorCatalog skipped 2 of 2 exception-level RAISE statement(s) because their SQLSTATE or symbolic MESSAGE is dynamic or unsupported",
+    },
+    {
+      severity: "warning",
+      phase: "cache",
+      code: "error-catalog-dynamic-sqlstate",
+      functionSignature: "billing.charge(pg_catalog.uuid)",
+      message: "RAISE #1 skipped: SQLSTATE is dynamic or not a plain literal",
+    },
+    {
+      severity: "warning",
+      phase: "cache",
+      code: "error-catalog-dynamic-message",
+      functionSignature: "billing.charge(pg_catalog.uuid)",
+      message: "RAISE #2 skipped: MESSAGE is dynamic or formatted",
+    },
+  ]);
+  expect(errorCatalogDiagnostics({
+    errors: [],
+    coverage: { routinesWithRaises: 0, raiseExceptions: 0, extractedOccurrences: 0, skipped: 0 },
+    skips: [],
+  }, "introspect")).toEqual([]);
 });
 
 test("expected parse-only validation remains visible without a warning", () => {

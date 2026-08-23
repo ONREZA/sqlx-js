@@ -42,6 +42,34 @@ export function userSchemaFilter(alias = "n"): string {
   return `${alias}.nspname <> 'information_schema' AND ${alias}.nspname NOT LIKE 'pg\\_%' ESCAPE '\\'`;
 }
 
+function canonicalRoutineIdentitySql(procedureAlias: string, namespaceAlias: string): string {
+  return `pg_catalog.format(
+    '%I.%I(%s)',
+    ${namespaceAlias}.nspname,
+    ${procedureAlias}.proname,
+    COALESCE((
+      SELECT pg_catalog.string_agg(
+        CASE
+          WHEN argument_type.typcategory = 'A' AND argument_type.typelem <> 0
+            THEN pg_catalog.format('%I.%I[]', element_namespace.nspname, element_type.typname)
+          ELSE pg_catalog.format('%I.%I', argument_namespace.nspname, argument_type.typname)
+        END,
+        ',' ORDER BY argument.ordinality
+      )
+      FROM pg_catalog.unnest(${routineInputOidsSql(procedureAlias)})
+        WITH ORDINALITY AS argument(type_oid, ordinality)
+      JOIN pg_catalog.pg_type argument_type ON argument_type.oid = argument.type_oid
+      JOIN pg_catalog.pg_namespace argument_namespace ON argument_namespace.oid = argument_type.typnamespace
+      LEFT JOIN pg_catalog.pg_type element_type ON element_type.oid = argument_type.typelem
+      LEFT JOIN pg_catalog.pg_namespace element_namespace ON element_namespace.oid = element_type.typnamespace
+    ), '')
+  )`;
+}
+
+function routineInputOidsSql(procedureAlias: string): string {
+  return `${procedureAlias}.proargtypes::pg_catalog.oid[]`;
+}
+
 export async function loadEnumCatalogRows(
   client: PgClient,
   schemas?: readonly string[],
@@ -71,25 +99,7 @@ export async function loadRoutineErrorSources(
 ): Promise<PgRoutineErrorSourceRow[]> {
   const result = await client.simpleQueryAll(`
     SELECT
-      pg_catalog.format(
-        '%I.%I(%s)',
-        n.nspname,
-        p.proname,
-        COALESCE((
-          SELECT pg_catalog.string_agg(
-            pg_catalog.format('%I.%I', type_namespace.nspname, argument_type.typname),
-            ', ' ORDER BY argument.ordinality
-          )
-          FROM pg_catalog.unnest(
-            CASE
-              WHEN p.proargtypes::text = '' THEN ARRAY[]::pg_catalog.oid[]
-              ELSE pg_catalog.string_to_array(p.proargtypes::text, ' ')::pg_catalog.oid[]
-            END
-          ) WITH ORDINALITY AS argument(type_oid, ordinality)
-          JOIN pg_catalog.pg_type argument_type ON argument_type.oid = argument.type_oid
-          JOIN pg_catalog.pg_namespace type_namespace ON type_namespace.oid = argument_type.typnamespace
-        ), '')
-      ) AS signature,
+      ${canonicalRoutineIdentitySql("p", "n")} AS signature,
       p.prosrc
     FROM pg_catalog.pg_proc p
     JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
@@ -122,12 +132,7 @@ export async function loadFunctionCatalogRows(
       pg_get_function_identity_arguments(p.oid),
       pg_get_function_arguments(p.oid),
       pg_get_function_result(p.oid),
-      to_json(
-        CASE
-          WHEN p.proargtypes::text = '' THEN ARRAY[]::oid[]
-          ELSE string_to_array(p.proargtypes::text, ' ')::oid[]
-        END
-      )::text,
+      pg_catalog.to_json(${routineInputOidsSql("p")})::pg_catalog.text,
       to_json(p.proallargtypes)::text,
       to_json(p.proargmodes)::text,
       to_json(p.proargnames)::text,
@@ -149,31 +154,7 @@ export async function loadFunctionCatalogRows(
       to_json(COALESCE(p.proconfig, ARRAY[]::text[]))::text,
       extension_dependency.objid IS NOT NULL,
       l.lanname,
-      pg_catalog.format(
-        '%I.%I(%s)',
-        n.nspname,
-        p.proname,
-        COALESCE((
-          SELECT pg_catalog.string_agg(
-            CASE
-              WHEN argument_type.typcategory = 'A' AND argument_type.typelem <> 0
-                THEN pg_catalog.format('%I.%I[]', element_namespace.nspname, element_type.typname)
-              ELSE pg_catalog.format('%I.%I', argument_namespace.nspname, argument_type.typname)
-            END,
-            ',' ORDER BY argument.ordinality
-          )
-          FROM pg_catalog.unnest(
-            CASE
-              WHEN p.proargtypes::text = '' THEN ARRAY[]::pg_catalog.oid[]
-              ELSE pg_catalog.string_to_array(p.proargtypes::text, ' ')::pg_catalog.oid[]
-            END
-          ) WITH ORDINALITY AS argument(type_oid, ordinality)
-          JOIN pg_catalog.pg_type argument_type ON argument_type.oid = argument.type_oid
-          JOIN pg_catalog.pg_namespace argument_namespace ON argument_namespace.oid = argument_type.typnamespace
-          LEFT JOIN pg_catalog.pg_type element_type ON element_type.oid = argument_type.typelem
-          LEFT JOIN pg_catalog.pg_namespace element_namespace ON element_namespace.oid = element_type.typnamespace
-        ), '')
-      )
+      ${canonicalRoutineIdentitySql("p", "n")}
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
     JOIN pg_language l ON l.oid = p.prolang

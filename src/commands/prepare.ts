@@ -72,9 +72,7 @@ import { embeddedSqlOutputPath, renderEmbeddedSqlModuleFromSites } from "../embe
 import {
   ErrorCatalogConflictError,
   errorCatalogCacheExists,
-  errorCatalogCoverageMessage,
   errorCatalogOutputPath,
-  errorCatalogSkipMessage,
   introspectErrorCatalog,
   readErrorCatalogCache,
   renderErrorCatalog,
@@ -94,6 +92,7 @@ import {
 } from "./prepare-inference";
 import {
   addFunctionContractDiagnostics,
+  errorCatalogDiagnostics,
   executionIntentDiagnostics,
   fatal,
   formatPrepareDiagnostic,
@@ -940,27 +939,9 @@ export async function prepareOnce(
     } catch (error) {
       throw fatal(reused ? "cache" : "introspect", error, session.target);
     }
-    const coverageMessage = errorCatalogCoverageMessage(errorCatalog);
-    if (coverageMessage) {
-      const diagnostic: PrepareDiagnostic = {
-        severity: "warning",
-        phase: reused ? "cache" : "introspect",
-        code: "error-catalog-partial",
-        message: coverageMessage,
-      };
+    for (const diagnostic of errorCatalogDiagnostics(errorCatalog, reused ? "cache" : "introspect")) {
       diagnostics.push(diagnostic);
       err(formatPrepareDiagnostic(diagnostic));
-      for (const skip of errorCatalog.skips) {
-        const skipDiagnostic: PrepareDiagnostic = {
-          severity: "warning",
-          phase: reused ? "cache" : "introspect",
-          code: `error-catalog-${skip.reason}`,
-          functionSignature: skip.routine,
-          message: errorCatalogSkipMessage(skip),
-        };
-        diagnostics.push(skipDiagnostic);
-        err(formatPrepareDiagnostic(skipDiagnostic));
-      }
     }
   }
   let pruned: number;

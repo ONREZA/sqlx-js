@@ -222,7 +222,9 @@ function printPrepareFailure(
   targetText?: string,
   diagnostics?: PrepareDiagnostic[],
 ): void {
-  const failures = diagnostics ?? [{ severity: "error" as const, phase, message, ...location }];
+  const failures = diagnostics?.length
+    ? diagnostics
+    : [{ severity: "error" as const, phase, message, ...location }];
   if (flag("--jsonl")) {
     for (const diagnostic of failures) console.log(JSON.stringify({
         formatVersion: 1,
