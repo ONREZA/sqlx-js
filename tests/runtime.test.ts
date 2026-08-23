@@ -397,7 +397,6 @@ test("bindQueries binds named, positional, zero-parameter, and mapped definition
   await queries.zero();
   await queries.mapped({ value: 9 }, { timeoutMs: 200 });
 
-  expect(Object.isFrozen(queries)).toBe(true);
   expect(requests.map((request) => ({
     query: request.query,
     params: request.params,

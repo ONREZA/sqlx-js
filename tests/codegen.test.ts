@@ -1461,6 +1461,14 @@ void boundQueries.count([] as const);
 void boundQueries.payload({ id: "missing-nested" });
 // @ts-expect-error every grouped definition must exist in the executor registry
 bindQueries(executor, { missing: defineQuery("SELECT missing_registry_query") });
+bindQueries(executor, {
+  // @ts-expect-error arbitrary bind-shaped objects are not query definitions
+  fake: {
+    query: ${JSON.stringify(query)},
+    mode: "optional" as const,
+    bind: () => async () => ({ id: "not-a-generated-row" }),
+  },
+});
 
 const mappedJsonArrayQuery = defineQuery.one(
   "payload.selectArray",

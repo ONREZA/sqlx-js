@@ -37,6 +37,7 @@ type NamedQueryEntry = { params: Record<string, unknown>; row: unknown };
 type PositionalQueryEntry = { params: readonly unknown[]; row: unknown };
 type QueryEntry = NamedQueryEntry | PositionalQueryEntry;
 type QueryWireParams = Record<string, unknown> | readonly unknown[];
+declare const QUERY_DEFINITION: unique symbol;
 declare const MAPPED_QUERY_INPUT: unique symbol;
 declare const MAPPED_QUERY_WIRE_PARAMS: unique symbol;
 type QueryModeResult<Mode extends QueryExecutionMode, Row> =
@@ -49,6 +50,7 @@ export type QueryDefinition<
   Query extends string = string,
   Mode extends QueryExecutionMode = QueryExecutionMode,
 > = {
+  readonly [QUERY_DEFINITION]: { readonly query: Query; readonly mode: Mode };
   readonly query: Query;
   readonly mode: Mode;
   readonly queryId: string;
@@ -110,6 +112,7 @@ export type MappedQueryDefinition<
   Input = unknown,
   WireParams extends QueryWireParams = QueryWireParams,
 > = {
+  readonly [QUERY_DEFINITION]: { readonly query: Query; readonly mode: Mode };
   readonly query: Query;
   readonly mode: Mode;
   readonly queryId: string;
@@ -174,6 +177,7 @@ type MappedExecutor<
   : TypedSqlForRegistry<Registry>;
 
 type QueryDefinitionShape = {
+  readonly [QUERY_DEFINITION]: unknown;
   readonly query: string;
   readonly mode: QueryExecutionMode;
   readonly bind: unknown;
@@ -221,7 +225,7 @@ type BoundQueryRunner<
       : never;
 
 export type BoundQueries<
-  Definitions,
+  Definitions extends Readonly<Record<string, QueryDefinitionShape>>,
   Registry extends { queries: object; fileQueries: object },
 > = {
   readonly [Key in keyof Definitions]: BoundQueryRunner<Definitions[Key], Registry>;
@@ -485,5 +489,5 @@ export function bindQueries<
     }
     return [name, bind.call(definition, executor)] as const;
   });
-  return Object.freeze(Object.fromEntries(entries)) as BoundQueries<Definitions, Registry>;
+  return Object.fromEntries(entries) as BoundQueries<Definitions, Registry>;
 }
