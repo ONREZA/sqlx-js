@@ -1675,11 +1675,11 @@ export default {
             MESSAGE = 'PAYMENT_INVALID';
         END
         $$;
-        CREATE FUNCTION tmp_error_catalog.raise_dynamic(value text) RETURNS void
+        CREATE FUNCTION tmp_error_catalog.raise_dynamic(value text[], suffix text) RETURNS void
         LANGUAGE plpgsql AS $$
         BEGIN
           RAISE WARNING USING MESSAGE = 'WARNING_ONLY';
-          RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = value;
+          RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = array_to_string(value, ',') || suffix;
         END
         $$
       `);
@@ -1712,8 +1712,9 @@ export default {
         raised = error;
       }
       expect(isPgError(raised, generated.DbErrors.PAYMENT_INVALID)).toBe(true);
-      expect(JSON.parse(readFileSync(cachePath, "utf8"))).toEqual({
-        version: 1,
+      const errorCatalog = JSON.parse(readFileSync(cachePath, "utf8"));
+      expect(errorCatalog).toEqual({
+        version: 2,
         errors: [{
           code: "22023",
           message: "PAYMENT_INVALID",
@@ -1725,7 +1726,17 @@ export default {
           extractedOccurrences: 1,
           skipped: 1,
         },
+        skips: [{
+          routine: "tmp_error_catalog.raise_dynamic(pg_catalog.text[],pg_catalog.text)",
+          statement: 1,
+          reason: "dynamic-message",
+        }],
       });
+      const skippedIdentity = errorCatalog.skips[0].routine.replaceAll("'", "''");
+      const resolvedIdentity = await client.simpleQueryAll(
+        `SELECT pg_catalog.to_regprocedure('${skippedIdentity}') IS NOT NULL`,
+      );
+      expect(decodeText(resolvedIdentity.rows[0]?.[0] ?? null)).toBe("t");
 
       const checked = prepareRoot(root, ["--check", "--json"]);
       expect(checked.code).toBe(0);
@@ -1735,6 +1746,13 @@ export default {
         severity: "warning",
         phase: "cache",
         code: "error-catalog-partial",
+      }));
+      expect(checkedPayload.diagnostics).toContainEqual(expect.objectContaining({
+        severity: "warning",
+        phase: "cache",
+        code: "error-catalog-dynamic-message",
+        functionSignature: "tmp_error_catalog.raise_dynamic(pg_catalog.text[],pg_catalog.text)",
+        message: expect.stringContaining("RAISE #1 skipped"),
       }));
       writeRootFile(root, "src/db-errors.ts", "export {};\n");
       const stale = prepareRoot(root, ["--check", "--json"]);
@@ -1788,16 +1806,48 @@ export default {
         BEGIN
           RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'PAYMENT_REJECTED';
         END
+        $$;
+        CREATE FUNCTION tmp_error_catalog.raise_busy() RETURNS void
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE EXCEPTION USING ERRCODE = '40001', MESSAGE = 'PAYMENT_BUSY';
+        END
+        $$;
+        CREATE FUNCTION tmp_error_catalog.raise_busy_conflict() RETURNS void
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE EXCEPTION USING ERRCODE = '55P03', MESSAGE = 'PAYMENT_BUSY';
+        END
         $$
       `);
       const conflict = prepareRoot(root, ["--json"]);
       expect(conflict.code).toBe(1);
-      expect(JSON.parse(conflict.stdout).diagnostics).toContainEqual(expect.objectContaining({
+      const conflictDiagnostics = JSON.parse(conflict.stdout).diagnostics.filter(
+        (diagnostic: { code?: string }) => diagnostic.code === "error-catalog-conflict",
+      );
+      expect(conflictDiagnostics).toHaveLength(2);
+      expect(conflictDiagnostics).toContainEqual(expect.objectContaining({
         phase: "introspect",
+        code: "error-catalog-conflict",
         message: expect.stringContaining("PAYMENT_REJECTED"),
       }));
+      expect(conflictDiagnostics).toContainEqual(expect.objectContaining({
+        phase: "introspect",
+        code: "error-catalog-conflict",
+        message: expect.stringContaining("PAYMENT_BUSY"),
+      }));
+      expect(conflictDiagnostics.find((diagnostic: { message: string }) =>
+        diagnostic.message.includes("PAYMENT_REJECTED")
+      )?.message).toContain("tmp_error_catalog.raise_conflict()");
+      expect(conflictDiagnostics.find((diagnostic: { message: string }) =>
+        diagnostic.message.includes("PAYMENT_REJECTED")
+      )?.message).toContain("tmp_error_catalog.raise_stable()");
       expect(readFileSync(outputPath, "utf8")).toBe(initial);
-      await client.simpleQuery("DROP FUNCTION tmp_error_catalog.raise_conflict()");
+      await client.simpleQuery(`
+        DROP FUNCTION tmp_error_catalog.raise_conflict();
+        DROP FUNCTION tmp_error_catalog.raise_busy();
+        DROP FUNCTION tmp_error_catalog.raise_busy_conflict()
+      `);
 
       await client.simpleQuery(`
         CREATE TYPE tmp_error_catalog.error_argument AS ENUM ('payment');
@@ -1853,7 +1903,7 @@ export default {
       expect(JSON.parse(result.stdout).diagnostics).toEqual([
         expect.objectContaining({
           phase: "config",
-          message: expect.stringContaining("generated declaration, enum catalog, error catalog, and embedded SQL outputs must be distinct"),
+          message: expect.stringContaining("generated declaration, function catalog, enum catalog, error catalog, and embedded SQL outputs must be distinct"),
         }),
       ]);
       expect(readFileSync(output, "utf8")).toBe("export const sentinel = true;\n");
@@ -2358,15 +2408,20 @@ export default {
       version: number;
       functions: Array<{
         signature: string;
+        identity: string;
         strict: boolean;
         settings: string[];
         returns: string;
         params: { name?: string }[];
       }>;
     };
-    expect(functionCache.version).toBe(3);
+    expect(functionCache.version).toBe(4);
     expect(functionCache.functions.find((fn) => fn.signature === "public.tmp_catalog_slug(value text)"))
-      .toMatchObject({ strict: true, settings: ["TimeZone=UTC"] });
+      .toMatchObject({
+        identity: "public.tmp_catalog_slug(pg_catalog.text)",
+        strict: true,
+        settings: ["TimeZone=UTC"],
+      });
     const pair = functionCache.functions.find((fn) => fn.signature === "public.tmp_catalog_pair(value text)");
     expect(pair?.returns).toBe("{ score: number | null; slug: string | null }");
     expect(pair?.params.map((param) => param.name)).toEqual(["value", "slug", "score"]);
@@ -2382,6 +2437,58 @@ export default {
     expect(r.code).toBe(0);
     dts = readFileSync(join(tmp, "sqlx-js-env.d.ts"), "utf8");
     expect(dts).toContain('"public.tmp_catalog_slug(value text)":');
+
+    const identityCatalogRoot = isolatedRoot("function-catalog-identities");
+    writeRootFile(identityCatalogRoot, "sqlx-js.config.ts", `export default {
+      functionCatalog: { output: "src/db-functions.ts" },
+    };\n`);
+    writeRootFile(identityCatalogRoot, "a.ts",
+      "import { sql } from \"@onreza/sqlx-js\";\n" +
+      "await sql(\"SELECT tmp_catalog_slug($1) AS slug\", \"Hello\");\n",
+    );
+    r = prepareRoot(identityCatalogRoot);
+    expect(r.code, r.stderr).toBe(0);
+    const functionOutput = join(identityCatalogRoot, "src/db-functions.ts");
+    const generatedFunctions = await import(pathToFileURL(functionOutput).href) as {
+      DbFunctions: Record<string, string>;
+    };
+    expect(generatedFunctions.DbFunctions).toMatchObject({
+      "public.tmp_catalog_slug(pg_catalog.text)": "public.tmp_catalog_slug(pg_catalog.text)",
+      "public.tmp_catalog_json_array(pg_catalog.jsonb[])":
+        "public.tmp_catalog_json_array(pg_catalog.jsonb[])",
+    });
+    const identityClient = new PgClient(parseDatabaseUrl(dbUrl));
+    await identityClient.connect();
+    try {
+      for (const identity of Object.values(generatedFunctions.DbFunctions)) {
+        const quoted = identity.replace(/'/g, "''");
+        const resolved = await identityClient.simpleQueryAll(
+          `SELECT pg_catalog.to_regprocedure('${quoted}') IS NOT NULL`,
+        );
+        expect(decodeText(resolved.rows[0]?.[0] ?? null), identity).toBe("t");
+      }
+    } finally {
+      await identityClient.end();
+    }
+    expect(prepareRoot(identityCatalogRoot, ["--check"]).code).toBe(0);
+    writeRootFile(identityCatalogRoot, "src/db-functions.ts", "export {};\n");
+    const staleFunctions = prepareRoot(identityCatalogRoot, ["--check", "--json"]);
+    expect(staleFunctions.code).toBe(1);
+    expect(JSON.parse(staleFunctions.stdout).diagnostics).toContainEqual(expect.objectContaining({
+      message: "generated function catalog is stale or missing",
+      file: "src/db-functions.ts",
+    }));
+    expect(prepareRoot(identityCatalogRoot, ["--offline"]).code).toBe(0);
+    expect(readFileSync(functionOutput, "utf8")).toContain("public.tmp_catalog_slug(pg_catalog.text)");
+    expect(prepareRoot(identityCatalogRoot, ["--verify"]).code).toBe(0);
+    const functionDoctor = spawnSync(
+      "bun",
+      [join(repoRoot, "bin/sqlx-js.ts"), "doctor", "--root", identityCatalogRoot, "--json"],
+      { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
+    );
+    expect(JSON.parse(functionDoctor.stdout).checks.find((check: { name: string }) =>
+      check.name === "functionCatalog"
+    )).toMatchObject({ status: "ok" });
 
     const fullCatalogRoot = isolatedRoot("function-catalog-extensions");
     writeRootFile(fullCatalogRoot, "sqlx-js.config.ts", `export default {

@@ -113,6 +113,13 @@ test("ignores comments, strings, non-exception levels, and dynamic or human mess
   ]);
 
   expect(catalog.errors).toEqual([]);
+  expect(catalog.skips).toEqual([
+    { routine: "billing.charge(payment_id uuid)", statement: 1, reason: "dynamic-sqlstate" },
+    { routine: "billing.charge(payment_id uuid)", statement: 2, reason: "dynamic-message" },
+    { routine: "billing.charge(payment_id uuid)", statement: 3, reason: "dynamic-message" },
+    { routine: "billing.charge(payment_id uuid)", statement: 4, reason: "dynamic-message" },
+    { routine: "billing.charge(payment_id uuid)", statement: 5, reason: "unsupported-form" },
+  ]);
   expect(catalog.coverage).toEqual({
     routinesWithRaises: 1,
     raiseExceptions: 5,
@@ -146,6 +153,13 @@ test("rejects escaped E literals and contradictory or duplicate RAISE options", 
     extractedOccurrences: 1,
     skipped: 5,
   });
+  expect(catalog.skips.map((skip) => skip.reason)).toEqual([
+    "dynamic-message",
+    "unsupported-form",
+    "unsupported-form",
+    "unsupported-form",
+    "unsupported-form",
+  ]);
 });
 
 test("quotes configured schema names without depending on standard_conforming_strings", async () => {
@@ -176,16 +190,19 @@ test("deduplicates identical errors and preserves routine provenance", () => {
   expect(catalog.coverage.extractedOccurrences).toBe(2);
 });
 
-test("rejects one symbolic message mapped to different SQLSTATE codes", () => {
+test("reports every conflicting symbolic message with SQLSTATE and routine provenance", () => {
   expect(() => extractErrorCatalog([
     routine("BEGIN RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'PAYMENT_INVALID'; END", "first"),
     routine("BEGIN RAISE EXCEPTION USING ERRCODE = '23514', MESSAGE = 'PAYMENT_INVALID'; END", "second"),
-  ])).toThrow(/PAYMENT_INVALID.*22023.*23514/);
+    routine("BEGIN RAISE EXCEPTION USING ERRCODE = '40001', MESSAGE = 'PAYMENT_BUSY'; END", "third"),
+    routine("BEGIN RAISE EXCEPTION USING ERRCODE = '55P03', MESSAGE = 'PAYMENT_BUSY'; END", "fourth"),
+  ])).toThrow(/PAYMENT_BUSY[\s\S]*40001[\s\S]*billing\.third[\s\S]*55P03[\s\S]*billing\.fourth[\s\S]*PAYMENT_INVALID[\s\S]*22023[\s\S]*billing\.first[\s\S]*23514[\s\S]*billing\.second/);
 });
 
 test("renders a stable runtime error catalog", () => {
   expect(renderErrorCatalog({
     coverage: { routinesWithRaises: 1, raiseExceptions: 1, extractedOccurrences: 1, skipped: 0 },
+    skips: [],
     errors: [{
       code: "22023",
       message: "PAYMENT_INVALID",
@@ -213,6 +230,7 @@ test("round-trips the versioned cache and generated module", () => {
   })!;
   const catalog = {
     coverage: { routinesWithRaises: 1, raiseExceptions: 1, extractedOccurrences: 1, skipped: 0 },
+    skips: [],
     errors: [{
       code: "22023",
       message: "PAYMENT_INVALID",
@@ -256,6 +274,7 @@ test("focused prepare requires the configured error catalog cache", () => {
   writeErrorCatalogCache(cacheDir, {
     errors: [],
     coverage: { routinesWithRaises: 0, raiseExceptions: 0, extractedOccurrences: 0, skipped: 0 },
+    skips: [],
   });
   expect(() => assertFocusedPrepareCatalogs(config, cacheDir)).not.toThrow();
 });
@@ -266,9 +285,10 @@ test("rejects a stale error catalog cache with regeneration guidance", () => {
   const cacheDir = join(root, ".sqlx-js");
   mkdirSync(join(cacheDir, "errors"), { recursive: true });
   writeFileSync(join(cacheDir, "errors/errors.json"), JSON.stringify({
-    version: 2,
+    version: 1,
     errors: [],
     coverage: { routinesWithRaises: 0, raiseExceptions: 0, extractedOccurrences: 0, skipped: 0 },
+    skips: [],
   }));
 
   expect(() => readErrorCatalogCache(cacheDir)).toThrow(/stale.*Run `sqlx-js prepare`/);
@@ -287,16 +307,18 @@ test("rejects duplicate identities and impossible cache coverage", () => {
   };
 
   writeFileSync(path, JSON.stringify({
-    version: 1,
+    version: 2,
     errors: [entry, entry],
     coverage: { routinesWithRaises: 1, raiseExceptions: 2, extractedOccurrences: 2, skipped: 0 },
+    skips: [],
   }));
   expect(() => readErrorCatalogCache(cacheDir)).toThrow(/duplicate message/);
 
   writeFileSync(path, JSON.stringify({
-    version: 1,
+    version: 2,
     errors: [entry],
     coverage: { routinesWithRaises: 1, raiseExceptions: 0, extractedOccurrences: 0, skipped: 0 },
+    skips: [],
   }));
   expect(() => readErrorCatalogCache(cacheDir)).toThrow(/malformed/);
 });
@@ -308,9 +330,10 @@ test("does not read an error catalog through a cache-file symlink", () => {
   const outside = join(root, "outside.json");
   mkdirSync(join(cacheDir, "errors"), { recursive: true });
   writeFileSync(outside, JSON.stringify({
-    version: 1,
+    version: 2,
     errors: [],
     coverage: { routinesWithRaises: 0, raiseExceptions: 0, extractedOccurrences: 0, skipped: 0 },
+    skips: [],
   }));
   symlinkSync(outside, join(cacheDir, "errors/errors.json"));
 
@@ -325,9 +348,10 @@ test("does not read an error catalog through a managed-directory symlink", () =>
   mkdirSync(cacheDir);
   mkdirSync(outside);
   writeFileSync(join(outside, "errors.json"), JSON.stringify({
-    version: 1,
+    version: 2,
     errors: [],
     coverage: { routinesWithRaises: 0, raiseExceptions: 0, extractedOccurrences: 0, skipped: 0 },
+    skips: [],
   }));
   symlinkSync(outside, join(cacheDir, "errors"), "dir");
 

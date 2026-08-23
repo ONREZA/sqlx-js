@@ -254,6 +254,7 @@ test("prepare config hash is independent of object key order", () => {
 test("prepare config hash includes column and function catalog contracts", () => {
   const base = prepareConfigHash({});
   expect(prepareConfigHash({ functionCatalog: { includeExtensionOwned: false } })).toBe(base);
+  expect(prepareConfigHash({ functionCatalog: { output: "src/db-functions.ts" } })).toBe(base);
   expect(prepareConfigHash({
     queryAudit: {
       exactDuplicates: {
@@ -448,6 +449,26 @@ test("loadConfig validates function catalog settings", async () => {
     functionCatalog: { includeExtensionOwned: "yes" },
   };\n`);
   await expect(loadConfig(dir)).rejects.toThrow(/includeExtensionOwned must be a boolean/);
+
+  const valid = root();
+  writeFileSync(join(valid, "sqlx-js.config.mjs"), `export default {
+    functionCatalog: { includeExtensionOwned: false, output: "src/db-functions.ts" },
+  };\n`);
+  expect(await loadConfig(valid)).toEqual({
+    functionCatalog: { includeExtensionOwned: false, output: "src/db-functions.ts" },
+  });
+
+  const outside = root();
+  writeFileSync(join(outside, "sqlx-js.config.mjs"), `export default {
+    functionCatalog: { output: "../db-functions.ts" },
+  };\n`);
+  await expect(loadConfig(outside)).rejects.toThrow(/functionCatalog\.output must be a root-relative/);
+
+  const unsupported = root();
+  writeFileSync(join(unsupported, "sqlx-js.config.mjs"), `export default {
+    functionCatalog: { include: ["public.example"] },
+  };\n`);
+  await expect(loadConfig(unsupported)).rejects.toThrow(/only supports includeExtensionOwned and output/);
 });
 
 test("loadConfig validates schema materializer commands", async () => {

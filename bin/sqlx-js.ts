@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { JsonAuditReport } from "../src/commands/json-audit";
 import type { PgschemaSubcommand } from "../src/commands/pgschema";
-import type { PrepareDiagnosticPhase } from "../src/commands/prepare";
+import type { PrepareDiagnostic, PrepareDiagnosticPhase } from "../src/commands/prepare";
 import type { DatabaseTargetSummary } from "../src/pg/target-summary";
 import { JSON_PROTOCOL_VERSION } from "../src/artifact-versions";
 import { assertSupportedRuntime, loadConfig, loadRootEnv } from "../src/config";
@@ -138,6 +138,9 @@ function validateInvocation(): void {
           commandArgv,
         );
       }
+      if (queryCommand !== "audit" && flag("--check")) {
+        usageError("--check is only supported by queries audit", "queries", commandArgv);
+      }
       return;
     }
     requirePositionals(0, 0, cmd);
@@ -217,15 +220,19 @@ function printPrepareFailure(
   location: { file?: string; line?: number; column?: number } = {},
   target?: DatabaseTargetSummary,
   targetText?: string,
+  diagnostics?: PrepareDiagnostic[],
 ): void {
+  const failures = diagnostics?.length
+    ? diagnostics
+    : [{ severity: "error" as const, phase, message, ...location }];
   if (flag("--jsonl")) {
-    console.log(JSON.stringify({
-      formatVersion: 1,
-      event: "error",
-      timestamp: new Date().toISOString(),
-      ...(target === undefined ? {} : { target }),
-      diagnostic: { severity: "error", phase, message, ...location },
-    }));
+    for (const diagnostic of failures) console.log(JSON.stringify({
+        formatVersion: 1,
+        event: "error",
+        timestamp: new Date().toISOString(),
+        ...(target === undefined ? {} : { target }),
+        diagnostic,
+      }));
   } else if (flag("--json")) {
     console.log(JSON.stringify({
       formatVersion: 1,
@@ -234,24 +241,32 @@ function printPrepareFailure(
       ...(target === undefined ? {} : { target }),
       sites: 0,
       entries: 0,
-      failures: 1,
+      failures: failures.length,
       pruned: 0,
       functions: 0,
       enums: 0,
       databaseErrors: 0,
-      diagnostics: [{ severity: "error", phase, message, ...location }],
+      diagnostics: failures,
     }, null, 2));
   } else if (!flag("--verbose")) {
     if (targetText !== undefined) console.log(targetText);
-    const locationText = location.file
-      ? `${location.file}${location.line ? `:${location.line}:${location.column ?? 1}` : ""}`
-      : "";
-    const embeddedLocation = locationText ? `sqlx-js: ${locationText} — ` : "";
-    const detail = embeddedLocation && message.startsWith(embeddedLocation)
-      ? message.slice(embeddedLocation.length)
-      : message;
-    console.error(`${phase} failed: ${locationText ? `${locationText} — ` : ""}${detail}`);
-    console.error(`summary: 0 warnings, 1 error (${phase}: 1)`);
+    for (const diagnostic of failures) {
+      const diagnosticLocation = diagnostic.file
+        ? `${diagnostic.file}${diagnostic.line ? `:${diagnostic.line}:${diagnostic.column ?? 1}` : ""}`
+        : diagnostic.functionSignature ?? "";
+      const embeddedLocation = diagnostic.file && diagnosticLocation
+        ? `sqlx-js: ${diagnosticLocation} — `
+        : "";
+      const detail = embeddedLocation && diagnostic.message.startsWith(embeddedLocation)
+        ? diagnostic.message.slice(embeddedLocation.length)
+        : diagnostic.message;
+      const metadata = diagnostic.code ? ` (code ${diagnostic.code})` : "";
+      console.error(
+        `${diagnostic.phase} failed: ${diagnosticLocation ? `${diagnosticLocation} — ` : ""}`
+        + `${detail}${metadata}`,
+      );
+    }
+    console.error(`summary: 0 warnings, ${failures.length} error${failures.length === 1 ? "" : "s"} (${phase}: ${failures.length})`);
   } else {
     if (targetText !== undefined) console.log(targetText);
     console.error(message);
@@ -611,8 +626,9 @@ if (cmd === "init") {
     location: { file?: string; line?: number; column?: number } = {},
     target?: DatabaseTargetSummary,
     targetText?: string,
+    diagnostics?: PrepareDiagnostic[],
   ): never => {
-    printPrepareFailure(message, phase, location, target, targetText);
+    printPrepareFailure(message, phase, location, target, targetText, diagnostics);
     process.exit(exitCode);
   };
   if ([prepareCheck, prepareOffline, prepareVerify, prepareWatch].filter(Boolean).length > 1) {
@@ -692,6 +708,7 @@ if (cmd === "init") {
           : {},
         target,
         targetText,
+        e instanceof PrepareFatalError ? e.diagnostics : undefined,
       );
     }
   }
@@ -710,7 +727,7 @@ if (cmd === "init") {
   try {
     if (queryCommand === "audit") {
       const { runExactQueryAudit } = await import("../src/commands/query-audit");
-      await runExactQueryAudit({ root, json: flag("--json") });
+      await runExactQueryAudit({ root, json: flag("--json"), check: flag("--check") });
     } else if (queryCommand === "similarities") {
       const { runQuerySimilarities } = await import("../src/commands/query-audit");
       await runQuerySimilarities({

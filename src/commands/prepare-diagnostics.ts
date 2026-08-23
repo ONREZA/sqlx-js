@@ -1,6 +1,11 @@
 import { containsUnknownType } from "../type-inspection";
 import { fingerprint, type CacheEntry } from "../cache";
 import {
+  errorCatalogCoverageMessage,
+  errorCatalogSkipMessage,
+  type ErrorCatalog,
+} from "../error-catalog";
+import {
   functionContractDiagnostics,
   type FunctionEntry,
 } from "../function-cache";
@@ -25,6 +30,23 @@ export type PrepareDiagnosticPhase =
   | "cache"
   | "verify";
 
+export type PrepareDiagnostic = {
+  severity: "error" | "warning";
+  phase: PrepareDiagnosticPhase;
+  message: string;
+  file?: string;
+  line?: number;
+  column?: number;
+  query?: string;
+  queryId?: string;
+  queryName?: string;
+  profile?: string;
+  code?: string;
+  position?: number;
+  hint?: string;
+  functionSignature?: string;
+};
+
 export class PrepareFatalError extends Error {
   public readonly file?: string;
   public readonly line?: number;
@@ -36,6 +58,7 @@ export class PrepareFatalError extends Error {
     location: { file?: string; line?: number; column?: number } = {},
     options?: ErrorOptions,
     public target?: DatabaseTargetSummary,
+    public readonly diagnostics?: PrepareDiagnostic[],
   ) {
     super(message, options);
     this.name = "PrepareFatalError";
@@ -61,23 +84,6 @@ export function fatal(
   return new PrepareFatalError(phase, message, location, { cause: error }, target);
 }
 
-export type PrepareDiagnostic = {
-  severity: "error" | "warning";
-  phase: PrepareDiagnosticPhase;
-  message: string;
-  file?: string;
-  line?: number;
-  column?: number;
-  query?: string;
-  queryId?: string;
-  queryName?: string;
-  profile?: string;
-  code?: string;
-  position?: number;
-  hint?: string;
-  functionSignature?: string;
-};
-
 export function addFunctionContractDiagnostics(
   functions: readonly FunctionEntry[],
   diagnostics: PrepareDiagnostic[],
@@ -94,6 +100,29 @@ export function addFunctionContractDiagnostics(
     diagnostics.push(diagnostic);
     report(formatPrepareDiagnostic(diagnostic));
   }
+}
+
+export function errorCatalogDiagnostics(
+  catalog: ErrorCatalog,
+  phase: "cache" | "introspect",
+): PrepareDiagnostic[] {
+  const coverageMessage = errorCatalogCoverageMessage(catalog);
+  if (!coverageMessage) return [];
+  return [
+    {
+      severity: "warning",
+      phase,
+      code: "error-catalog-partial",
+      message: coverageMessage,
+    },
+    ...catalog.skips.map((skip): PrepareDiagnostic => ({
+      severity: "warning",
+      phase,
+      code: `error-catalog-${skip.reason}`,
+      functionSignature: skip.routine,
+      message: errorCatalogSkipMessage(skip),
+    })),
+  ];
 }
 
 export function formatPrepareDiagnostic(diagnostic: PrepareDiagnostic): string {

@@ -15,13 +15,16 @@ import {
 import { embeddedSqlOutputPath, renderEmbeddedSqlModuleFromSites } from "../embedded-sql";
 import {
   errorCatalogCacheExists,
-  errorCatalogCoverageMessage,
   errorCatalogOutputPath,
   readErrorCatalogCache,
   renderErrorCatalog,
   type ErrorCatalog,
 } from "../error-catalog";
 import { functionCacheExists, readFunctionCache, type FunctionEntry } from "../function-cache";
+import {
+  functionCatalogOutputPath,
+  renderFunctionCatalog,
+} from "../function-catalog";
 import {
   assertDistinctPrepareGeneratedOutputs,
   prepareGeneratedOutputPaths,
@@ -37,6 +40,7 @@ import { renderRuntimeDescriptors, runtimeDescriptorPath } from "../runtime-desc
 import { scanProject, type QueryCallSite } from "../scan/scanner";
 import {
   addFunctionContractDiagnostics,
+  errorCatalogDiagnostics,
   executionIntentDiagnostics,
   fatal,
   formatPrepareDiagnostic,
@@ -194,6 +198,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
     let enumCount = 0;
     let errorCatalog: ErrorCatalog | undefined;
     let databaseErrorCount = 0;
+    const functionOutput = functionCatalogOutputPath(opts.root, userCfg, opts.functionOutputPath);
     const enumOutput = enumCatalogOutputPath(opts.root, userCfg, opts.enumOutputPath);
     const errorOutput = errorCatalogOutputPath(opts.root, userCfg, opts.errorOutputPath);
     const embeddedOutput = embeddedSqlOutputPath(opts.root, userCfg, opts.sqlFilesOutputPath);
@@ -298,13 +303,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         if (errorCatalogCacheExists(opts.cacheDir)) {
           errorCatalog = readErrorCatalogCache(opts.cacheDir);
           databaseErrorCount = errorCatalog.errors.length;
-          const coverageMessage = errorCatalogCoverageMessage(errorCatalog);
-          if (coverageMessage) diagnostics.push({
-            severity: "warning",
-            phase: "cache",
-            code: "error-catalog-partial",
-            message: coverageMessage,
-          });
+          diagnostics.push(...errorCatalogDiagnostics(errorCatalog, "cache"));
         } else {
           diagnostics.push({
             severity: "error",
@@ -357,6 +356,18 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
               file: relative(opts.root, descriptorPath).replace(/\\/g, "/"),
             });
             inferenceFailures++;
+          }
+          if (functionOutput) {
+            const generatedFunctions = renderFunctionCatalog(functions);
+            if (!existsSync(functionOutput) || readFileSync(functionOutput, "utf8") !== generatedFunctions) {
+              diagnostics.push({
+                severity: "error",
+                phase: "cache",
+                message: "generated function catalog is stale or missing",
+                file: relative(opts.root, functionOutput).replace(/\\/g, "/"),
+              });
+              inferenceFailures++;
+            }
           }
           if (enumOutput) {
             const generatedEnums = renderEnumCatalog(enums, userCfg.enumCatalog);
@@ -440,6 +451,9 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
           dtsPath: opts.dtsPath,
           entries,
           functions,
+          functionModule: functionOutput
+            ? { path: functionOutput, content: renderFunctionCatalog(functions) }
+            : undefined,
           enumModule: enumOutput
             ? { path: enumOutput, content: renderEnumCatalog(enums, userCfg.enumCatalog) }
             : undefined,

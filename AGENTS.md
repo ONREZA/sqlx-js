@@ -6,7 +6,7 @@ Operational handbook for any agent (human or AI) working on this repository. Rea
 
 `sqlx-js` is a TypeScript library published as `@onreza/sqlx-js` that ports the developer experience of Rust's `sqlx` to TypeScript + PostgreSQL: you write raw SQL, a `prepare` step validates it against a live database and emits typed declarations. The library has both a CLI (`bin/sqlx-js.ts`) and a runtime (`src/index.ts`).
 
-The library is **PostgreSQL-only** and keeps SQL/result validation at prepare time by design — no runtime SQL parsing, no runtime result-schema validation, no ORM layer. Prepare, migrations, and runtime queries share an integrated PostgreSQL wire implementation. The package is ESM-only; the supported baseline is Node ≥ 24, Bun ≥ 1.3, or Deno ≥ 2.9.
+The library is **PostgreSQL-only** and keeps SQL/result validation at prepare time by design — no runtime SQL parsing, no runtime result-schema validation, no ORM layer. Prepare, migrations, and runtime queries share an integrated PostgreSQL wire implementation. The package is ESM-only; the supported baseline is Node ≥ 24, Bun ≥ 1.4, or Deno ≥ 2.9.
 
 ## Repository layout
 
@@ -96,7 +96,7 @@ RLS policy DDL remains owned by migrations, `schema.sql`, or pgschema. `doctor` 
 
 ### Prerequisites
 
-- Node ≥ 24 for the published CLI and default runtime. Bun ≥ 1.3 is required
+- Node ≥ 24 for the published CLI and default runtime. Bun ≥ 1.4 is required
   for the test suite (`bun test --timeout 120000`) and can run the package through npm tooling.
   CI smoke-tests the integrated runtime through Node, Bun, and Deno.
 - A reachable PostgreSQL 16+

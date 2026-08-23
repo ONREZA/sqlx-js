@@ -95,6 +95,29 @@ export type ExactQueryAuditReport = {
   staleIgnores: StaleExactDuplicateIgnore[];
 };
 
+export type ExactQueryAuditCheck = {
+  enabled: true;
+  passed: boolean;
+  failureCount: number;
+  failures: {
+    activePossibleDuplicates: number;
+    contractDivergences: number;
+    queryNameCollisions: number;
+    staleIgnores: number;
+  };
+};
+
+export function exactQueryAuditCheck(report: ExactQueryAuditReport): ExactQueryAuditCheck {
+  const failures = {
+    activePossibleDuplicates: report.summary.activePossibleDuplicates,
+    contractDivergences: report.summary.contractDivergences,
+    queryNameCollisions: report.summary.queryNameCollisions,
+    staleIgnores: report.summary.staleIgnores,
+  };
+  const failureCount = Object.values(failures).reduce((total, count) => total + count, 0);
+  return { enabled: true, passed: failureCount === 0, failureCount, failures };
+}
+
 function normalizeAssertions(assertions: QueryResultAssertions | undefined): QueryResultAssertions {
   return Object.fromEntries(
     Object.entries(assertions ?? {}).sort(([left], [right]) => left.localeCompare(right)),

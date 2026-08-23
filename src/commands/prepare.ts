@@ -39,6 +39,10 @@ import {
 } from "../function-cache";
 import { introspectFunctions } from "../pg/functions";
 import {
+  functionCatalogOutputPath,
+  renderFunctionCatalog,
+} from "../function-catalog";
+import {
   buildParamMap,
   effectiveParamTargets,
   type ParamMapResult,
@@ -66,8 +70,8 @@ import {
 } from "../prepare-artifacts";
 import { embeddedSqlOutputPath, renderEmbeddedSqlModuleFromSites } from "../embedded-sql";
 import {
+  ErrorCatalogConflictError,
   errorCatalogCacheExists,
-  errorCatalogCoverageMessage,
   errorCatalogOutputPath,
   introspectErrorCatalog,
   readErrorCatalogCache,
@@ -88,6 +92,7 @@ import {
 } from "./prepare-inference";
 import {
   addFunctionContractDiagnostics,
+  errorCatalogDiagnostics,
   executionIntentDiagnostics,
   fatal,
   formatPrepareDiagnostic,
@@ -104,6 +109,7 @@ import {
   siteDiagnostic,
   temporalPolicyDiagnostics,
   withOutputHints,
+  PrepareFatalError,
   type PrepareDiagnostic,
 } from "./prepare-diagnostics";
 export {
@@ -118,6 +124,7 @@ export type PrepareOptions = {
   cacheDir: string;
   dtsPath: string;
   enumOutputPath?: string;
+  functionOutputPath?: string;
   errorOutputPath?: string;
   sqlFilesOutputPath?: string;
   check: boolean;
@@ -859,6 +866,15 @@ export async function prepareOnce(
     }
   }
   addFunctionContractDiagnostics(functions, diagnostics, err);
+  let functionModule: { path: string; content: string } | undefined;
+  const functionOutput = functionCatalogOutputPath(opts.root, userCfg, opts.functionOutputPath);
+  if (functionOutput) {
+    try {
+      functionModule = { path: functionOutput, content: renderFunctionCatalog(functions) };
+    } catch (error) {
+      throw fatal(input.reuseFunctionCatalog ? "cache" : "introspect", error, session.target);
+    }
+  }
   let enums: EnumCatalogEntry[] = [];
   let enumCount = 0;
   let enumModule: { path: string; content: string } | undefined;
@@ -895,6 +911,25 @@ export async function prepareOnce(
       try {
         errorCatalog = await introspectErrorCatalog(client, userCfg.errorCatalog.schemas);
       } catch (error) {
+        if (error instanceof ErrorCatalogConflictError) {
+          const conflictDiagnostics: PrepareDiagnostic[] = error.conflicts.map((conflict) => ({
+            severity: "error",
+            phase: "introspect",
+            code: "error-catalog-conflict",
+            message: `${JSON.stringify(conflict.message)} maps to multiple SQLSTATE codes: `
+              + conflict.variants.map((variant) =>
+                `${variant.code} in ${variant.routines.join(", ")}`
+              ).join("; "),
+          }));
+          throw new PrepareFatalError(
+            "introspect",
+            error.message,
+            {},
+            { cause: error },
+            session.target,
+            conflictDiagnostics,
+          );
+        }
         throw fatal("introspect", error, session.target);
       }
     }
@@ -904,14 +939,7 @@ export async function prepareOnce(
     } catch (error) {
       throw fatal(reused ? "cache" : "introspect", error, session.target);
     }
-    const coverageMessage = errorCatalogCoverageMessage(errorCatalog);
-    if (coverageMessage) {
-      const diagnostic: PrepareDiagnostic = {
-        severity: "warning",
-        phase: reused ? "cache" : "introspect",
-        code: "error-catalog-partial",
-        message: coverageMessage,
-      };
+    for (const diagnostic of errorCatalogDiagnostics(errorCatalog, reused ? "cache" : "introspect")) {
       diagnostics.push(diagnostic);
       err(formatPrepareDiagnostic(diagnostic));
     }
@@ -925,6 +953,7 @@ export async function prepareOnce(
       generated,
       entries,
       functions,
+      functionModule,
       enums,
       enumCatalogEnabled: userCfg.enumCatalog !== undefined,
       enumModule,

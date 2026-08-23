@@ -11,7 +11,7 @@ function writeSet(root: string, query = "SELECT 1") {
   writeFileSync(join(cacheDir, "cache-manifest.json"), '{"cacheFormat":2}\n');
   writeFileSync(join(cacheDir, "runtime-descriptors.json"), '{"formatVersion":1}\n');
   writeFileSync(join(cacheDir, "0123456789abcdef.json"), JSON.stringify({ query }));
-  writeFileSync(join(cacheDir, "functions/functions.json"), '{"version":2,"functions":[]}');
+  writeFileSync(join(cacheDir, "functions/functions.json"), '{"version":4,"functions":[]}');
   writeFileSync(dtsPath, `declare const query: ${JSON.stringify(query)};\n`);
   return { cacheDir, dtsPath };
 }
@@ -24,6 +24,18 @@ function writeSetWithEnums(root: string) {
   writeFileSync(join(set.cacheDir, "enums/enums.json"), '{"version":1,"enums":[]}\n');
   writeFileSync(enumOutputPath, "export const Role = { admin: 'admin' } as const;\n");
   return { ...set, enumOutputPath, enumArtifactName: "src/db-enums.ts" };
+}
+
+function writeSetWithFunctions(root: string) {
+  const set = writeSet(root);
+  const functionOutputPath = join(root, "src/db-functions.ts");
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(functionOutputPath, "export const DbFunctions = {} as const;\n");
+  return {
+    ...set,
+    functionOutputPath,
+    functionArtifactName: "src/db-functions.ts",
+  };
 }
 
 function writeSetWithEmbeddedSql(root: string) {
@@ -43,7 +55,7 @@ function writeSetWithErrors(root: string) {
   const errorOutputPath = join(root, "src/db-errors.ts");
   mkdirSync(join(set.cacheDir, "errors"), { recursive: true });
   mkdirSync(join(root, "src"), { recursive: true });
-  writeFileSync(join(set.cacheDir, "errors/errors.json"), '{"version":1,"errors":[],"coverage":{}}\n');
+  writeFileSync(join(set.cacheDir, "errors/errors.json"), '{"version":2,"errors":[],"coverage":{"routinesWithRaises":0,"raiseExceptions":0,"extractedOccurrences":0,"skipped":0},"skips":[]}\n');
   writeFileSync(errorOutputPath, "export const DbErrors = {} as const;\n");
   return { ...set, errorOutputPath, errorArtifactName: "src/db-errors.ts" };
 }
@@ -86,6 +98,22 @@ test("compareArtifacts includes enum cache and configured output", () => {
   }
 });
 
+test("compareArtifacts includes the configured function output", () => {
+  const leftRoot = mkdtempSync(join(tmpdir(), "sqlx-js-artifacts-function-left-"));
+  const rightRoot = mkdtempSync(join(tmpdir(), "sqlx-js-artifacts-function-right-"));
+  try {
+    const left = writeSetWithFunctions(leftRoot);
+    const right = writeSetWithFunctions(rightRoot);
+    expect(compareArtifacts(left, right)).toEqual({ ok: true, changed: [] });
+
+    writeFileSync(right.functionOutputPath, "export const DbFunctions = { changed: 'changed' } as const;\n");
+    expect(compareArtifacts(left, right)).toEqual({ ok: false, changed: ["src/db-functions.ts"] });
+  } finally {
+    rmSync(leftRoot, { recursive: true, force: true });
+    rmSync(rightRoot, { recursive: true, force: true });
+  }
+});
+
 test("compareArtifacts includes error cache and configured output", () => {
   const leftRoot = mkdtempSync(join(tmpdir(), "sqlx-js-artifacts-error-left-"));
   const rightRoot = mkdtempSync(join(tmpdir(), "sqlx-js-artifacts-error-right-"));
@@ -98,7 +126,7 @@ test("compareArtifacts includes error cache and configured output", () => {
     expect(compareArtifacts(left, right)).toEqual({ ok: false, changed: ["src/db-errors.ts"] });
 
     writeFileSync(right.errorOutputPath, "export const DbErrors = {} as const;\n");
-    writeFileSync(join(right.cacheDir, "errors/errors.json"), '{"version":1,"errors":[{}]}\n');
+    writeFileSync(join(right.cacheDir, "errors/errors.json"), '{"version":2,"errors":[{"code":"22023","message":"PAYMENT_INVALID","routines":["public.charge()"]}],"coverage":{"routinesWithRaises":1,"raiseExceptions":1,"extractedOccurrences":1,"skipped":0},"skips":[]}\n');
     expect(compareArtifacts(left, right)).toEqual({ ok: false, changed: ["cache/errors/errors.json"] });
   } finally {
     rmSync(leftRoot, { recursive: true, force: true });

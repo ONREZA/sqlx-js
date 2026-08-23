@@ -53,6 +53,8 @@ export default defineConfig({
   functionCatalog: {
     // Extension-owned functions and their contract warnings are excluded by default.
     includeExtensionOwned: false,
+    // Optional runtime constants for overload-safe regprocedure identities.
+    output: "src/database/db-functions.ts",
   },
   queryAudit: {
     exactDuplicates: {
@@ -320,7 +322,7 @@ export default defineConfig({
 });
 ```
 
-Live prepare reads installed, non-extension-owned PL/pgSQL routines from `pg_proc` in the explicitly listed schemas. It conservatively extracts only exceptions whose SQLSTATE and message can be determined statically. A generated message must match `[A-Z][A-Z0-9_]*`; dynamic expressions, formatted human messages, named conditions without a literal SQLSTATE, and unsupported forms are skipped and reported as partial coverage.
+Live prepare reads installed, non-extension-owned PL/pgSQL routines from `pg_proc` in the explicitly listed schemas. It conservatively extracts only exceptions whose SQLSTATE and message can be determined statically. A generated message must match `[A-Z][A-Z0-9_]*`; dynamic expressions, formatted human messages, named conditions without a literal SQLSTATE, and unsupported forms are skipped and reported as partial coverage. `--warnings` and `--verbose` identify each routine, its exception-level `RAISE` ordinal, and the skip reason. JSON diagnostics expose the same details with stable `error-catalog-dynamic-sqlstate`, `error-catalog-dynamic-message`, `error-catalog-non-symbolic-message`, or `error-catalog-unsupported-form` codes.
 
 ```sql
 RAISE EXCEPTION USING
@@ -358,11 +360,11 @@ try {
 }
 ```
 
-The same symbolic message must always map to one SQLSTATE; live prepare fails on a conflicting mapping and preserves the previous artifact snapshot. Repeated identical pairs are deduplicated while the cache retains their originating routine signatures.
+The same symbolic message must always map to one SQLSTATE; live prepare reports every conflicting message in one pass, including every SQLSTATE and originating routine signature, then preserves the previous artifact snapshot. JSON diagnostics use the stable `error-catalog-conflict` code. Repeated identical pairs are deduplicated while the cache retains their originating routine signatures.
 
 This is a catalog of directly declared, statically identifiable exceptions, not an exhaustive `throws` contract for a query or routine. Extraction does not prove branch reachability or that a lazily validated PL/pgSQL body will execute successfully. PostgreSQL can also raise errors from constraints, built-ins, triggers, nested calls, permissions, concurrency, transport, and dynamic PL/pgSQL paths. Application handling should therefore match known identities without assuming all other failures are impossible.
 
-The snapshot lives at `.sqlx-js/errors/errors.json`. `prepare --offline` regenerates the configured module, `prepare --check` verifies it, and `prepare --verify` compares it with the live database without changing the worktree. The error module must not collide with declarations, enum output, or embedded SQL output. Moving or disabling it leaves the previous TypeScript module for explicit application-owned cleanup; the next live prepare removes the disabled cache and prints a reminder.
+The snapshot lives at `.sqlx-js/errors/errors.json`. `prepare --offline` regenerates the configured module, `prepare --check` verifies it, and `prepare --verify` compares it with the live database without changing the worktree. The error module must not collide with declarations, function or enum catalogs, or embedded SQL output. Moving or disabling it leaves the previous TypeScript module for explicit application-owned cleanup; the next live prepare removes the disabled cache and prints a reminder.
 
 ## Array element nullability assertions
 
@@ -381,7 +383,20 @@ Arrays of that domain are inferred as `string[]` without config. Ordinary `text[
 
 Application-owned functions and procedures from non-system schemas are generated into `SqlxJsGeneratedFunctions`. Each signature records approximate parameter/return types together with `language`, `volatility`, `strict`, `securityDefiner`, `leakproof`, `parallelSafety`, `owner`, `ownerSuperuser`, `publicExecute`, the complete function-local `settings`, derived `searchPath`, and `extensionOwned`. Every input type includes SQL `null`: PostgreSQL accepts null for function arguments even when `strict` is true; strictness means the server returns null without invoking the function body. A `null` `searchPath` means the function has no function-local `SET search_path` clause and inherits the session setting. `publicExecute` reflects the effective PostgreSQL function ACL, including the default `EXECUTE TO PUBLIC` grant when `proacl` is null.
 
-The same metadata is committed in `.sqlx-js/functions/functions.json`, so `prepare --check` and `prepare --offline` reproduce the live diagnostics from cache, while `prepare --verify` detects database drift without modifying the worktree. Catalog and generator revisions fail closed with regeneration guidance after an incompatible upgrade; run one live `prepare`. Schema snapshots carry the same metadata and likewise require `snapshot dump` when their format changes.
+Set `functionCatalog.output` to generate ordinary runtime constants for canonical, overload-safe routine identities:
+
+```ts
+export const DbFunctions = {
+  "public.claim_delivery(pg_catalog.uuid,pg_catalog.text)":
+    "public.claim_delivery(pg_catalog.uuid,pg_catalog.text)",
+} as const;
+
+export type DbFunctionIdentity = keyof typeof DbFunctions;
+```
+
+The function name and every input argument type are schema-qualified; argument names, defaults, and OUT-only parameters are omitted because they do not participate in `regprocedure` identity. Array arguments use their SQL `[]` form. These strings can be passed to PostgreSQL APIs that resolve a routine identity, such as `to_regprocedure(...)` and `has_function_privilege(...)`, without losing overload information. This artifact intentionally contains identities only: executable callers still come from literal prepared queries, where PostgreSQL `Describe` supplies the real parameter and result contract.
+
+The same metadata and canonical identity are committed in `.sqlx-js/functions/functions.json`, so `prepare --check` and `prepare --offline` reproduce the live diagnostics and optional module from cache, while `prepare --verify` detects database drift without modifying the worktree. The generated function module must remain distinct from declarations, enum/error catalogs, and embedded SQL output. `doctor` checks that a configured output exists. Catalog and generator revisions fail closed with regeneration guidance after an incompatible upgrade; run one live `prepare`. The separately versioned schema snapshot carries the broader routine metadata used for schema drift and requires `snapshot dump` only when that format changes.
 
 Owner attributes and effective ACLs are intentionally environment-sensitive contract data. A shadow or verification database must create routines under the intended owner and apply the same grants, or the committed artifacts will drift. Prefer explicit `ALTER FUNCTION ... OWNER TO ...` / `ALTER PROCEDURE ... OWNER TO ...`, `REVOKE`, and `GRANT` statements when those boundaries must be identical across environments.
 

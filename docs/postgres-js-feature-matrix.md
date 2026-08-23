@@ -21,7 +21,7 @@ Status values are intentionally explicit:
 | ESM package | Yes | Yes | The only module format. |
 | CommonJS package | Yes | No, permanent non-goal | Consumers must support ESM. |
 | Node.js runtime | Yes | Yes | Node.js 24 or newer. |
-| Bun runtime | Yes | Yes | Bun 1.3 or newer. |
+| Bun runtime | Yes | Yes | Bun 1.4 or newer. |
 | Deno runtime | Yes | Yes | Deno 2.9 or newer; covered by a built-package database smoke test. |
 | Cloudflare Workers | Yes | No | Requires a separate socket/TLS adapter; the current driver uses Node-compatible sockets. |
 | PostgreSQL version floor | Partial | Yes | sqlx-js deliberately requires PostgreSQL 16 or newer. |

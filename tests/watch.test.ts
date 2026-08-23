@@ -6,7 +6,7 @@ import {
   formatWatchEvent,
   prepareWatchedOnce,
   shouldWatchFile,
-  watchErrorData,
+  watchErrorEvents,
   type WatchOptions,
   type WatchState,
 } from "../src/commands/watch";
@@ -470,11 +470,11 @@ test("watch JSONL events are one versioned document per line", () => {
   expect(formatWatchEvent("error", { message: "broken" })).not.toContain("\n");
   expect(formatDatabaseTarget({ ...target, database: "watch\nspoof", searchPath: "public\u001b[31m" }))
     .toBe("target: database watch\\nspoof as watch; PostgreSQL 18.0; schema public; search_path public\\u001b[31m; 0 function(s), 0 enum(s)");
-  expect(watchErrorData(new PrepareFatalError("scan", "broken", {
+  expect(watchErrorEvents(new PrepareFatalError("scan", "broken", {
     file: "src/a.ts",
     line: 4,
     column: 7,
-  }))).toEqual({
+  }))).toEqual([{
     diagnostic: {
       severity: "error",
       message: "broken",
@@ -483,12 +483,45 @@ test("watch JSONL events are one versioned document per line", () => {
       line: 4,
       column: 7,
     },
-  });
-  expect(watchErrorData(new PrepareFatalError(
+  }]);
+  expect(watchErrorEvents(new PrepareFatalError(
     "config",
     "wrong target",
     {},
     undefined,
     target,
-  ))).toMatchObject({ target });
+  ))).toEqual([expect.objectContaining({ target })]);
+  const diagnostics = [
+    { severity: "error" as const, phase: "cache" as const, code: "first", message: "first conflict" },
+    { severity: "error" as const, phase: "cache" as const, code: "second", message: "second conflict" },
+  ];
+  expect(watchErrorEvents(new PrepareFatalError(
+    "cache",
+    "conflicts",
+    {},
+    undefined,
+    undefined,
+    diagnostics,
+  ))).toEqual([
+    { diagnostic: diagnostics[0] },
+    { diagnostic: diagnostics[1] },
+  ]);
+  expect(watchErrorEvents(new Error("connection failed"), target)).toEqual([{
+    target,
+    message: "connection failed",
+  }]);
+  expect(watchErrorEvents(new PrepareFatalError(
+    "cache",
+    "empty aggregate",
+    {},
+    undefined,
+    undefined,
+    [],
+  ))).toEqual([{
+    diagnostic: {
+      severity: "error",
+      phase: "cache",
+      message: "empty aggregate",
+    },
+  }]);
 });

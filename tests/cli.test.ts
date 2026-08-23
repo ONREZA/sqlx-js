@@ -388,7 +388,7 @@ test("CLI init scaffolds project files and is idempotent without DATABASE_URL", 
     mkdirSync(temporalDir, { recursive: true });
     writeFileSync(join(temporalDir, "package.json"), JSON.stringify({
       name: "temporal-polyfill",
-      version: "1.0.3",
+      version: "1.0.4",
       type: "module",
       exports: { ".": { types: "./index.d.ts" } },
     }));

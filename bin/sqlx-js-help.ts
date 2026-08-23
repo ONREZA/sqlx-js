@@ -33,7 +33,7 @@ export function helpText(version: string, scope: HelpScope, args: string[] = [])
   inspection and generated artifacts:
     sqlx-js doctor [--root <dir>] [--dts <path>] [--json] [--fix]
     sqlx-js queries [--json] [--root <dir>]
-    sqlx-js queries audit [--json] [--root <dir>]
+    sqlx-js queries audit [--check] [--json] [--root <dir>]
     sqlx-js queries similarities [--json] [--functions <path>] [--root <dir>]
     sqlx-js queries explain <query-id> [--json] [--root <dir>]
     sqlx-js json audit [--json] [--root <dir>]
@@ -116,7 +116,7 @@ export function helpText(version: string, scope: HelpScope, args: string[] = [])
 
   For schema-source validation prefer \`sqlx-js dev\` or \`sqlx-js verify\`.`,
     queries: `usage: sqlx-js queries [--json] [--root <dir>]
-         sqlx-js queries audit [--json] [--root <dir>]
+         sqlx-js queries audit [--check] [--json] [--root <dir>]
          sqlx-js queries similarities [--json] [--functions <path>] [--min-nodes <n>] [--limit <n>] [--root <dir>]
          sqlx-js queries explain <query-id> [--json] [--root <dir>]
 
@@ -140,10 +140,11 @@ export function helpText(version: string, scope: HelpScope, args: string[] = [])
 
   Explain result provenance, parameter targets, nullability decisions, and
   actionable inference hints from committed prepare artifacts.`,
-    "queries:audit": `usage: sqlx-js queries audit [--json] [--root <dir>]
+    "queries:audit": `usage: sqlx-js queries audit [--check] [--json] [--root <dir>]
 
   Report possible exact query duplicates, source-contract divergence, query-name
-  collisions, reviewed ignores, and stale ignore entries. Findings are advisory.`,
+  collisions, reviewed ignores, and stale ignore entries. Findings are advisory
+  unless --check enables the explicit CI gate.`,
     "queries:similarities": `usage: sqlx-js queries similarities [--json] [--functions <path>] [--min-nodes <n>] [--limit <n>] [--root <dir>]
 
   Rank normalized PostgreSQL AST fragments across application queries and optional

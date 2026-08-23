@@ -1,9 +1,10 @@
 # Query reuse and similarity audits
 
 `sqlx-js queries audit` and `sqlx-js queries similarities` provide
-database-free evidence for reviewing repeated SQL. Both commands are read-only,
-advisory, and independent from `prepare`: findings never invalidate generated
-artifacts, fail an ordinary prepare, rewrite SQL, or apply a refactor.
+database-free evidence for reviewing repeated SQL. Both commands are read-only
+and independent from `prepare`: findings never invalidate generated artifacts,
+fail an ordinary prepare, rewrite SQL, or apply a refactor. Reports are advisory
+by default; exact-query audit can become an explicit CI gate with `--check`.
 
 ## Exact query reuse
 
@@ -12,6 +13,7 @@ Run the exact audit after source scanning:
 ```bash
 sqlx-js queries audit
 sqlx-js queries audit --json
+sqlx-js queries audit --check
 ```
 
 The audit treats two or more source sites with the same stable query fingerprint
@@ -29,8 +31,12 @@ It separately reports a named `defineQuery` identity attached to multiple query
 fingerprints. Such a name collision can merge unrelated operations in query
 observers even when neither SQL text is duplicated.
 
-Findings have a zero exit status. Configuration and source-scan failures retain
-the standard `queries` error behavior and exit with status 2.
+Without `--check`, findings have a zero exit status and JSON keeps `ok: true`
+and `advisory: true`. `--check` fails with status 1 when the report contains an
+active possible duplicate, contract divergence, query-name collision, or stale
+ignore. Its JSON sets `advisory: false`, reflects the result in `ok`, and includes
+per-category failure counts. Configuration and source-scan failures retain the
+standard `queries` error behavior and exit with status 2.
 
 ### Reviewed intentional duplication
 
@@ -64,7 +70,9 @@ review reason. It also emits every stale ignore. An acknowledged candidate is
 therefore distinguishable from a candidate that is absent from the project.
 The ignore acknowledges only the duplicate-source signal. A cardinality,
 profile, assertion, validation, or Temporal contract divergence still sets the
-candidate and report `reviewRequired` fields.
+candidate and report `reviewRequired` fields and fails `--check`. An ignored
+duplicate passes only while its exact occurrence count still matches and it has
+no other review-required finding.
 
 ## AST similarity
 

@@ -55,10 +55,10 @@ runtime, generate an ORM layer, or support MySQL and SQLite.
 | Runtime | Descriptor-backed managed clients, transactions and savepoints, deadlines, TCP keepalive, lifecycle recovery, pinned advisory-lock sessions, observers, migrations, custom codecs | [Runtime and clients](./docs/runtime.md) |
 | Roles and RLS | Profile-scoped query registries, planning under the effective role, required transaction-local settings, RLS diagnostics | [Connection profiles and RLS](./docs/profiles-and-rls.md) |
 | Schema workflows | Built-in linear migrations or declarative pgschema, disposable shadow databases, snapshots, squash baselines | [CLI and workflows](./docs/cli.md) |
-| Reproducible artifacts | Versioned offline cache, `prepare --check`, live `prepare --verify`, generated declarations, enum, function, and PL/pgSQL error catalogs | [CI and deployment checks](./docs/ci.md) |
+| Reproducible artifacts | Versioned offline cache, `prepare --check`, live `prepare --verify`, generated declarations, enum values, function identities, and PL/pgSQL error catalogs | [CI and deployment checks](./docs/ci.md) |
 | PostgreSQL types | Built-ins, arrays, ranges, domains, composites, pgvector, hstore, citext, ltree, application codecs | [Configuration and custom types](./docs/configuration.md) |
 | Extended JSON | Branded immutable documents, exact native numbers, bigint/Temporal round-trips, reader-first collision audit | [Extended JSON protocol](./docs/extended-json-protocol.md) |
-| Tooling | Incremental watch mode, project doctor, JSON diagnostics, query inventory, advisory reuse/similarity audits, Extended JSON audit, embedded SQL generation | [Query reuse and similarity audits](./docs/query-audits.md) |
+| Tooling | Incremental watch mode, project doctor, JSON diagnostics, query inventory, advisory reuse/similarity audits with an opt-in exact-audit gate, Extended JSON audit, embedded SQL generation | [Query reuse and similarity audits](./docs/query-audits.md) |
 | Agent workflows | Installable skills for CLI, schema, queries, inference, runtime, RLS, types, upgrades, and releases | [Agent skills](./docs/agent-skills.md) |
 
 See the [documentation index](./docs/README.md) for the complete guide set.
@@ -66,7 +66,7 @@ See the [documentation index](./docs/README.md) for the complete guide set.
 ## Requirements
 
 - PostgreSQL 16 or newer
-- Node.js 24 or newer, Bun 1.3 or newer, or Deno 2.9 or newer
+- Node.js 24 or newer, Bun 1.4 or newer, or Deno 2.9 or newer
 - TypeScript 6.x for source-scanning commands
 - ES2025 or newer runtime semantics
 - Optional `temporal-polyfill` 1.x adaptive fallback when native Temporal is unavailable
@@ -89,9 +89,11 @@ bun add @onreza/sqlx-js temporal-polyfill
 bun add --dev "typescript@>=6 <7"
 ```
 
-Omit `temporal-polyfill` when every target runtime exposes native Temporal. Its
-root import uses native Temporal when available and falls back without mutating
-`globalThis`. `sqlx-js init` scaffolds that adaptive fallback by default.
+Omit `temporal-polyfill` when every target runtime exposes native Temporal. Bun
+1.4+, official Deno 2.9 builds, and Node.js 26+ provide it by default; Node.js
+24 LTS still requires the fallback. The polyfill's root import uses native
+Temporal when available and falls back without mutating `globalThis`.
+`sqlx-js init` scaffolds that adaptive fallback by default.
 Native-only projects pass `--temporal-provider native`; the generated `db.ts`
 references `ESNext.Temporal` directly without narrowing the project's implicit
 TypeScript libraries.

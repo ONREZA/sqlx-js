@@ -55,11 +55,12 @@ inspection tooling:
   round-trip `bigint` and all reconstructable Temporal values; `JsonNumber`
   preserves exact native numerics; exact parsing, resource limits, artifact
   version binding, and the read-only reader-first audit fail closed.
-- Advisory query reuse analysis: exact fingerprints surface possible duplicates,
+- Query reuse analysis: exact fingerprints surface possible duplicates,
   contract divergence, query-name collisions, reviewed occurrence-fenced
-  ignores, and stale acknowledgements. Experimental AST similarity ranks shared
-  fragments across application queries and SQL-language functions without
-  rewriting SQL or becoming a prepare gate.
+  ignores, and stale acknowledgements. Reports remain advisory by default;
+  `queries audit --check` opts into a review-required CI gate. Experimental AST
+  similarity ranks shared fragments across application queries and SQL-language
+  functions without rewriting SQL or becoming a prepare gate.
 
 These items remain recorded here until the release containing the new cache,
 generator, and runtime descriptor revisions is published.
@@ -69,7 +70,7 @@ generator, and runtime descriptor revisions is published.
 | Prisma migration assistant | 7 | Import Prisma Migrate SQL history and Prisma TypedSQL/raw SQL into `sqlx-js`; classify Prisma Client CRUD/nested-write sites as assisted/manual instead of promising a fully automatic ORM rewrite. The shipped `queries --json` inventory covers sqlx-js definitions/call sites after conversion, not Prisma reference-graph discovery. |
 | Planning datasets and query-plan inventory | 6 | Let applications seed a disposable planning database before `ANALYZE`, then capture normalized generic `EXPLAIN` metadata in a separate environment-scoped snapshot. sqlx-js owns safe orchestration and fingerprints; the application owns representative data. Without a declared planning dataset or representative database, only structural plan changes are meaningful. |
 | pgschema snapshot and migration handoff | 6 | Provider-aware `dev` / `verify` validates application SQL against `schema.sql` in disposable shadow databases. Next, automate snapshot handoff for teams migrating from built-in migrations without creating two DDL authorities. |
-| Generated function call API | 5 | Consider a typed callable surface only after function identity, default arguments, named arguments, procedures, overload resolution, and security metadata are represented soundly. The existing generated function catalog remains the lower-risk foundation. |
+| Generated function call API | 5 | Canonical overload-safe identities and security metadata now ship in the generated function catalog. Consider a callable surface only after default arguments, named arguments, procedures, and overload resolution can also be represented soundly. |
 | Built-in migration lifecycle maintenance | 5 | Keep provider-aware `dev` / `verify` and `migrate run/revert/squash/archive` stable for simple projects and application startup, but avoid expanding the built-in provider into a full PostgreSQL schema-as-code system. |
 | Multidimensional array contracts | 4 | Preserve runtime dimensions in generated row and parameter types without treating declared `int[2][2]` bounds as enforced shape. The text codec already handles nested values and explicit lower bounds; the public typed wrapper remains one-dimensional until both input and output contracts can stay sound. |
 | Streaming / cursor / COPY typing | 4 | Extend the integrated wire runtime with proper row types, backpressure, and connection ownership once a concrete large-result or bulk-ingest consumer justifies expanding the public surface. |

@@ -17,6 +17,7 @@ export type FunctionEntry = {
   schema: string;
   name: string;
   signature: string;
+  identity: string;
   kind: FunctionKind;
   language: string;
   params: FunctionParamEntry[];
@@ -36,7 +37,7 @@ export type FunctionEntry = {
 };
 
 type FunctionCacheFile = {
-  version: 3;
+  version: 4;
   functions: FunctionEntry[];
 };
 
@@ -65,12 +66,13 @@ function parseFunctionCache(raw: unknown, path: string): FunctionEntry[] {
     throw new Error(`sqlx-js: function catalog cache is malformed: ${path}`);
   }
   const obj = raw as { version?: unknown; functions?: unknown };
-  if (obj.version !== 3) {
+  if (obj.version !== 4) {
     throw new Error(`sqlx-js: function catalog cache is stale: ${path}. Run \`sqlx-js prepare\`.`);
   }
   if (!Array.isArray(obj.functions) || !obj.functions.every(isFunctionEntry)) {
     throw new Error(`sqlx-js: function catalog cache is malformed: ${path}`);
   }
+  assertUniqueFunctionIdentities(obj.functions, `sqlx-js: function catalog cache is malformed: ${path}`);
   return obj.functions;
 }
 
@@ -91,10 +93,11 @@ export function writeFunctionCache(cacheDir: string, functions: FunctionEntry[])
   if (!functions.every(isFunctionEntry)) {
     throw new Error(`sqlx-js: refusing to write malformed function catalog cache: ${path}`);
   }
+  assertUniqueFunctionIdentities(functions, `sqlx-js: refusing to write malformed function catalog cache: ${path}`);
   mkdirSync(dirname(path), { recursive: true });
-  const payload: FunctionCacheFile = { version: 3, functions };
+  const payload: FunctionCacheFile = { version: 4, functions };
   const tmp = `${path}.tmp-${randomBytes(4).toString("hex")}`;
-  writeFileSync(tmp, JSON.stringify(payload, null, 2));
+  writeFileSync(tmp, JSON.stringify(payload, null, 2) + "\n");
   try {
     renameSync(tmp, path);
   } catch (err) {
@@ -182,6 +185,16 @@ function functionSettingName(setting: string): string {
   return separator < 0 ? setting : setting.slice(0, separator);
 }
 
+function assertUniqueFunctionIdentities(functions: readonly FunctionEntry[], prefix: string): void {
+  const identities = new Set<string>();
+  for (const fn of functions) {
+    if (identities.has(fn.identity)) {
+      throw new Error(`${prefix}: duplicate identity ${JSON.stringify(fn.identity)}`);
+    }
+    identities.add(fn.identity);
+  }
+}
+
 function isFunctionEntry(value: unknown): value is FunctionEntry {
   if (!value || typeof value !== "object") return false;
   const entry = value as Partial<FunctionEntry>;
@@ -190,6 +203,8 @@ function isFunctionEntry(value: unknown): value is FunctionEntry {
     && typeof entry.name === "string"
     && entry.name.length > 0
     && typeof entry.signature === "string"
+    && typeof entry.identity === "string"
+    && entry.identity.length > 0
     && isFunctionKind(entry.kind)
     && typeof entry.language === "string"
     && entry.language.length > 0

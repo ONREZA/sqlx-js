@@ -43,6 +43,7 @@ export type {
   DatabaseProfiles,
   EnumCatalogConfig,
   ErrorCatalogConfig,
+  FunctionCatalogConfig,
   ExactDuplicateIgnore,
   QueryAuditConfig,
   ScanConfig,
@@ -255,6 +256,7 @@ export type QueryRow<Definition, Registry extends QueryRegistry> =
 export type QueryResult<Definition, Registry extends QueryRegistry> =
   QueryResultFor<Definition, Registry>;
 export type {
+  BoundQueries,
   DefineQueryOptions,
   MappedQueryDefinition,
   QueryDefinition,
@@ -265,7 +267,7 @@ export type {
   QueryValidationExpectation,
 } from "./query";
 export type { RuntimeQueryDescriptors } from "./runtime-descriptors";
-export { defineQuery } from "./query";
+export { bindQueries, defineQuery } from "./query";
 export { queryId } from "./query-id";
 export {
   PostgresAdvisoryLockLostError,

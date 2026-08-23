@@ -19,7 +19,7 @@ import {
   TransactionTimeoutError,
 } from "../src/runtime";
 import { PgError } from "../src/pg/wire";
-import { defineQuery } from "../src/query";
+import { bindQueries, defineQuery } from "../src/query";
 import { Temporal } from "temporal-polyfill";
 import { SQLSTATE, isPgError } from "../src/runtime";
 
@@ -369,6 +369,45 @@ test("query definitions pass execution options outside SQL parameters", async ()
     params: ["a@b"],
     options: { signal: controller.signal },
   });
+});
+
+test("bindQueries binds named, positional, zero-parameter, and mapped definitions", async () => {
+  const requests: import("../src/runtime").RuntimeQueryRequest[] = [];
+  const client: RuntimeClient = {
+    query: async () => [],
+    execute: async (request) => {
+      requests.push(request);
+      return request.query.includes("one") ? [{ value: 1 }] : [];
+    },
+    transaction: async (fn) => fn(client),
+    close: async () => {},
+  };
+  const runtime = createSqlRuntime(() => client);
+  const queries = bindQueries(runtime.sql as never, {
+    named: defineQuery("group.named", "SELECT $id"),
+    positional: defineQuery.one("group.positional", "SELECT one, $1"),
+    zero: defineQuery("group.zero", "SELECT zero"),
+    mapped: defineQuery.execute("group.mapped", "SELECT $value").mapParams(
+      (input: { value: number }) => ({ value: input.value }),
+    ),
+  });
+
+  await queries.named({ id: 7 }, { timeoutMs: 100 });
+  await queries.positional("ready");
+  await queries.zero();
+  await queries.mapped({ value: 9 }, { timeoutMs: 200 });
+
+  expect(requests.map((request) => ({
+    query: request.query,
+    params: request.params,
+    options: request.options,
+    queryName: request.metadata.queryName,
+  }))).toEqual([
+    { query: "SELECT $1", params: [7], options: { timeoutMs: 100 }, queryName: "group.named" },
+    { query: "SELECT one, $1", params: ["ready"], options: undefined, queryName: "group.positional" },
+    { query: "SELECT zero", params: [], options: undefined, queryName: "group.zero" },
+    { query: "SELECT $1", params: [9], options: { timeoutMs: 200 }, queryName: "group.mapped" },
+  ]);
 });
 
 test("sql.with binds execution options across root and transaction queries", async () => {

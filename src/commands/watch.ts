@@ -14,6 +14,7 @@ import { profileFingerprint } from "../cache";
 import { embeddedSqlOutputPath } from "../embedded-sql";
 import { enumCatalogOutputPath } from "../enum-catalog";
 import { errorCatalogOutputPath } from "../error-catalog";
+import { functionCatalogOutputPath } from "../function-catalog";
 import {
   formatDatabaseTarget,
   type DatabaseTargetSummary,
@@ -62,26 +63,27 @@ export function formatWatchEvent(
   return JSON.stringify({ formatVersion: 1, event: name, timestamp, ...data });
 }
 
-export function watchErrorData(
+export function watchErrorEvents(
   error: unknown,
   target?: DatabaseTargetSummary,
-): Record<string, unknown> {
+): Record<string, unknown>[] {
   const message = error instanceof Error ? error.message : String(error);
   const resolvedTarget = error instanceof PrepareFatalError ? error.target ?? target : target;
   if (!(error instanceof PrepareFatalError)) {
-    return { ...(resolvedTarget === undefined ? {} : { target: resolvedTarget }), message };
+    return [{ ...(resolvedTarget === undefined ? {} : { target: resolvedTarget }), message }];
   }
-  return {
+  const diagnostics = error.diagnostics?.length ? error.diagnostics : [{
+    severity: "error" as const,
+    phase: error.phase,
+    message,
+    ...(error.file === undefined ? {} : { file: error.file }),
+    ...(error.line === undefined ? {} : { line: error.line }),
+    ...(error.column === undefined ? {} : { column: error.column }),
+  }];
+  return diagnostics.map((diagnostic) => ({
     ...(resolvedTarget === undefined ? {} : { target: resolvedTarget }),
-    diagnostic: {
-      severity: "error",
-      phase: error.phase,
-      message,
-      ...(error.file === undefined ? {} : { file: error.file }),
-      ...(error.line === undefined ? {} : { line: error.line }),
-      ...(error.column === undefined ? {} : { column: error.column }),
-    },
-  };
+    diagnostic,
+  }));
 }
 
 type WatchDeps = {
@@ -302,7 +304,9 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
     if (opts.jsonl) report(r);
     else log(`watch: ready — ${r.entries} queries, ${r.failures} failures`);
   } catch (e) {
-    if (opts.jsonl) event("error", watchErrorData(e, state.session?.target));
+    if (opts.jsonl) {
+      for (const data of watchErrorEvents(e, state.session?.target)) event("error", data);
+    }
     else {
       if (e instanceof PrepareFatalError && e.target !== undefined && state.session === null) {
         log(formatDatabaseTarget(e.target));
@@ -336,7 +340,9 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
           if (opts.jsonl) report(r, durationMs);
           else log(`watch: re-prepared in ${durationMs}ms (${r.entries} queries, ${r.failures} failures)`);
         } catch (e) {
-          if (opts.jsonl) event("error", watchErrorData(e, state.session?.target));
+          if (opts.jsonl) {
+            for (const data of watchErrorEvents(e, state.session?.target)) event("error", data);
+          }
           else {
             if (e instanceof PrepareFatalError && e.target !== undefined && state.session === null) {
               log(formatDatabaseTarget(e.target));
@@ -359,6 +365,9 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
     const enumOutput = state.session
       ? enumCatalogOutputPath(opts.root, state.session.userCfg)
       : undefined;
+    const functionOutput = state.session
+      ? functionCatalogOutputPath(opts.root, state.session.userCfg)
+      : undefined;
     const embeddedSqlOutput = state.session
       ? embeddedSqlOutputPath(opts.root, state.session.userCfg)
       : undefined;
@@ -366,6 +375,7 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
       ? errorCatalogOutputPath(opts.root, state.session.userCfg)
       : undefined;
     const ignored = [relative(opts.root, resolve(opts.root, opts.dtsPath))];
+    if (functionOutput) ignored.push(relative(opts.root, functionOutput));
     if (enumOutput) ignored.push(relative(opts.root, enumOutput));
     if (errorOutput) ignored.push(relative(opts.root, errorOutput));
     if (embeddedSqlOutput) ignored.push(relative(opts.root, embeddedSqlOutput));
