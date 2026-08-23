@@ -13,6 +13,14 @@ import {
   type EnumCatalogEntry,
 } from "../enum-catalog";
 import { embeddedSqlOutputPath, renderEmbeddedSqlModuleFromSites } from "../embedded-sql";
+import {
+  errorCatalogCacheExists,
+  errorCatalogCoverageMessage,
+  errorCatalogOutputPath,
+  readErrorCatalogCache,
+  renderErrorCatalog,
+  type ErrorCatalog,
+} from "../error-catalog";
 import { functionCacheExists, readFunctionCache, type FunctionEntry } from "../function-cache";
 import {
   assertDistinctPrepareGeneratedOutputs,
@@ -161,6 +169,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
           pruned: 0,
           functions: 0,
           enums: 0,
+          databaseErrors: 0,
           diagnostics,
         }, null, 2));
       } else if (!opts.verbose) {
@@ -183,7 +192,10 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
     let functions: FunctionEntry[];
     let enums: EnumCatalogEntry[] = [];
     let enumCount = 0;
+    let errorCatalog: ErrorCatalog | undefined;
+    let databaseErrorCount = 0;
     const enumOutput = enumCatalogOutputPath(opts.root, userCfg, opts.enumOutputPath);
+    const errorOutput = errorCatalogOutputPath(opts.root, userCfg, opts.errorOutputPath);
     const embeddedOutput = embeddedSqlOutputPath(opts.root, userCfg, opts.sqlFilesOutputPath);
     try {
       for (const u of unique.values()) {
@@ -282,6 +294,33 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         });
         inferenceFailures++;
       }
+      if (userCfg.errorCatalog) {
+        if (errorCatalogCacheExists(opts.cacheDir)) {
+          errorCatalog = readErrorCatalogCache(opts.cacheDir);
+          databaseErrorCount = errorCatalog.errors.length;
+          const coverageMessage = errorCatalogCoverageMessage(errorCatalog);
+          if (coverageMessage) diagnostics.push({
+            severity: "warning",
+            phase: "cache",
+            code: "error-catalog-partial",
+            message: coverageMessage,
+          });
+        } else {
+          diagnostics.push({
+            severity: "error",
+            phase: "cache",
+            message: "error catalog cache is missing",
+          });
+          inferenceFailures++;
+        }
+      } else if (errorCatalogCacheExists(opts.cacheDir)) {
+        diagnostics.push({
+          severity: "error",
+          phase: "cache",
+          message: "error catalog cache exists but errorCatalog is disabled; run live `sqlx-js prepare`",
+        });
+        inferenceFailures++;
+      }
       if (opts.check && inferenceFailures === 0) {
         const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-check-"));
         const generatedDts = join(tmp, "sqlx-js-env.d.ts");
@@ -331,6 +370,18 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
               inferenceFailures++;
             }
           }
+          if (errorOutput && errorCatalog) {
+            const generatedErrors = renderErrorCatalog(errorCatalog);
+            if (!existsSync(errorOutput) || readFileSync(errorOutput, "utf8") !== generatedErrors) {
+              diagnostics.push({
+                severity: "error",
+                phase: "cache",
+                message: "generated error catalog is stale or missing",
+                file: relative(opts.root, errorOutput).replace(/\\/g, "/"),
+              });
+              inferenceFailures++;
+            }
+          }
           if (embeddedOutput) {
             const generatedSqlFiles = renderEmbeddedSqlModuleFromSites(sites);
             if (!existsSync(embeddedOutput) || readFileSync(embeddedOutput, "utf8") !== generatedSqlFiles) {
@@ -359,6 +410,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
             pruned: 0,
             functions: functions.length,
             enums: enumCount,
+            databaseErrors: databaseErrorCount,
             diagnostics,
           }, null, 2));
         } else if (!opts.verbose) {
@@ -391,6 +443,9 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
           enumModule: enumOutput
             ? { path: enumOutput, content: renderEnumCatalog(enums, userCfg.enumCatalog) }
             : undefined,
+          errorModule: errorOutput && errorCatalog
+            ? { path: errorOutput, content: renderErrorCatalog(errorCatalog) }
+            : undefined,
           embeddedSqlModule: embeddedOutput
             ? { path: embeddedOutput, content: renderEmbeddedSqlModuleFromSites(sites) }
             : undefined,
@@ -414,6 +469,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         pruned: 0,
         functions: functions.length,
         enums: enumCount,
+        databaseErrors: databaseErrorCount,
         diagnostics,
       }, null, 2));
     } else if (!opts.verbose) {
@@ -425,6 +481,7 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
           entries: entries.length,
           functions: functions.length,
           enums: enumCount,
+          databaseErrors: databaseErrorCount,
         })}; `
         + withOutputHints(`${formatPrepareDiagnosticCounts(diagnostics)}; ${suffix}`, diagnostics, opts.warnings),
       );
@@ -433,7 +490,10 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         console.error(formatPrepareDiagnostic(diagnostic));
       }
       const suffix = opts.offline ? ", generated files regenerated" : ", generated artifacts are current";
-      console.log(`ok — ${entries.length} unique queries, ${functions.length} function(s), ${enumCount} enum(s)${suffix}`);
+      console.log(
+        `ok — ${entries.length} unique queries, ${functions.length} function(s), ${enumCount} enum(s), `
+        + `${databaseErrorCount} database error(s)${suffix}`,
+      );
     }
     return;
   }
@@ -536,7 +596,8 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
         ? `\nfocused prepare validated ${focused.selectedSites}/${focused.projectSites} source site(s); `
           + `${focused.omittedContracts} uncached unselected query/profile contract(s) omitted; `
           + `artifacts are incomplete → ${outputs}`
-        : `\nprepared ${r.entries} unique query/queries, ${r.functions} function(s), ${r.enums} enum(s) `
+        : `\nprepared ${r.entries} unique query/queries, ${r.functions} function(s), ${r.enums} enum(s), `
+          + `${r.databaseErrors} database error(s) `
           + `→ ${outputs}`);
     }
   } catch (error) {

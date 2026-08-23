@@ -25,6 +25,14 @@ import {
   type EnumCatalogEntry,
 } from "./enum-catalog";
 import { embeddedSqlOutputPath } from "./embedded-sql";
+import {
+  errorCatalogCacheExists,
+  errorCatalogOutputPath,
+  removeErrorCatalogCache,
+  writeErrorCatalogCache,
+  writeErrorCatalogModule,
+  type ErrorCatalog,
+} from "./error-catalog";
 import { writeFunctionCache, type FunctionEntry } from "./function-cache";
 import { writeRuntimeDescriptors } from "./runtime-descriptor-artifact";
 import type { TemporalPolicyOptions } from "./temporal";
@@ -34,6 +42,7 @@ type GeneratedOutputPublication = {
   entries: CacheEntry[];
   functions: FunctionEntry[];
   enumModule?: { path: string; content: string };
+  errorModule?: { path: string; content: string };
   embeddedSqlModule?: { path: string; content: string };
   customTypes?: Readonly<Record<string, string>>;
   profiles?: DatabaseProfiles;
@@ -45,6 +54,7 @@ export type PrepareArtifactPublication = GeneratedOutputPublication & {
   generated: readonly { fp: string; entry: CacheEntry }[];
   enums: EnumCatalogEntry[];
   enumCatalogEnabled: boolean;
+  errorCatalog?: ErrorCatalog;
   configHash: string;
   prune: boolean;
   artifactComplete?: boolean;
@@ -53,6 +63,7 @@ export type PrepareArtifactPublication = GeneratedOutputPublication & {
 export type PrepareArtifactPublicationResult = {
   pruned: number;
   enumCacheRemoved: boolean;
+  errorCacheRemoved: boolean;
 };
 
 export type OfflinePrepareArtifactPublication = GeneratedOutputPublication & {
@@ -91,11 +102,13 @@ export function prepareGeneratedOutputPaths(input: {
   config: SqlxJsConfig;
   dtsPath: string;
   enumOutputPath?: string;
+  errorOutputPath?: string;
   sqlFilesOutputPath?: string;
 }): string[] {
   return [
     input.dtsPath,
     enumCatalogOutputPath(input.root, input.config, input.enumOutputPath),
+    errorCatalogOutputPath(input.root, input.config, input.errorOutputPath),
     embeddedSqlOutputPath(input.root, input.config, input.sqlFilesOutputPath),
   ].filter((path): path is string => path !== undefined);
 }
@@ -105,6 +118,7 @@ export function assertDistinctPrepareGeneratedOutputs(input: {
   config: SqlxJsConfig;
   dtsPath: string;
   enumOutputPath?: string;
+  errorOutputPath?: string;
   sqlFilesOutputPath?: string;
 }): void {
   const outputs = prepareGeneratedOutputPaths(input).map(resolvePublicationPath);
@@ -112,7 +126,7 @@ export function assertDistinctPrepareGeneratedOutputs(input: {
     for (let other = index + 1; other < outputs.length; other++) {
       if (samePath(outputs[index]!, outputs[other]!)) {
         throw new Error(
-          "sqlx-js: generated declaration, enum catalog, and embedded SQL outputs must be distinct",
+          "sqlx-js: generated declaration, enum catalog, error catalog, and embedded SQL outputs must be distinct",
         );
       }
     }
@@ -133,6 +147,12 @@ export function publishPrepareArtifacts(
         && enumCatalogCacheExists(input.cacheDir);
       if (input.enumCatalogEnabled) writeEnumCatalogCache(cache.staged, input.enums);
       else removeEnumCatalogCache(cache.staged);
+      const errorCacheRemoved = input.errorCatalog === undefined && errorCatalogCacheExists(input.cacheDir);
+      if (input.errorCatalog) {
+        writeErrorCatalogCache(cache.staged, input.errorCatalog);
+      } else {
+        removeErrorCatalogCache(cache.staged);
+      }
       writeRuntimeDescriptors(
         cache.staged,
         input.entries,
@@ -146,7 +166,7 @@ export function publishPrepareArtifacts(
 
       // The manifest inside cacheDir is the commit marker, so external outputs publish first.
       publishTargets([...externalTargets, { target: cache.publication, staged: cache.staged }]);
-      return { pruned, enumCacheRemoved };
+      return { pruned, enumCacheRemoved, errorCacheRemoved };
     } finally {
       removePath(cache.staged);
       for (const target of externalTargets) removePath(target.staged);
@@ -200,10 +220,13 @@ function stageGeneratedOutputs(
   const enumModule = input.enumModule
     ? { ...input.enumModule, path: resolvePublicationPath(input.enumModule.path) }
     : undefined;
+  const errorModule = input.errorModule
+    ? { ...input.errorModule, path: resolvePublicationPath(input.errorModule.path) }
+    : undefined;
   const embeddedSqlModule = input.embeddedSqlModule
     ? { ...input.embeddedSqlModule, path: resolvePublicationPath(input.embeddedSqlModule.path) }
     : undefined;
-  assertGeneratedOutputPaths([dtsPath, enumModule?.path, embeddedSqlModule?.path], cache);
+  assertGeneratedOutputPaths([dtsPath, enumModule?.path, errorModule?.path, embeddedSqlModule?.path], cache);
   stageOutput(dtsPath, cache, externalTargets, (path) => {
     emitDts(
       path,
@@ -220,6 +243,14 @@ function stageGeneratedOutputs(
       cache,
       externalTargets,
       (path) => writeEnumCatalogModule(path, enumModule.content),
+    );
+  }
+  if (errorModule) {
+    stageOutput(
+      errorModule.path,
+      cache,
+      externalTargets,
+      (path) => writeErrorCatalogModule(path, errorModule.content),
     );
   }
   if (embeddedSqlModule) {
@@ -385,7 +416,7 @@ function publishTargets(targets: readonly StagedTarget[]): void {
 }
 
 function assertSafeManagedCachePaths(cacheDir: string): void {
-  for (const name of ["functions", "enums"]) {
+  for (const name of ["functions", "enums", "errors"]) {
     const path = join(cacheDir, name);
     if (pathExists(path) && lstatSync(path).isSymbolicLink()) {
       throw new Error(`sqlx-js: managed cache path must not be a symbolic link: ${path}`);

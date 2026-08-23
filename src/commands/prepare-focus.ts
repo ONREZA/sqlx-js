@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { Cache, profileFingerprint } from "../cache";
 import type { SqlxJsConfig } from "../config";
 import { enumCatalogCacheExists } from "../enum-catalog";
+import { errorCatalogCacheExists } from "../error-catalog";
 import { functionCacheExists } from "../function-cache";
 import { queryId } from "../query-id";
 import { scanProject, type QueryCallSite } from "../scan/scanner";
@@ -32,6 +33,11 @@ export function assertFocusedPrepareCatalogs(config: SqlxJsConfig, cacheDir: str
   if (config.enumCatalog && !enumCatalogCacheExists(cacheDir)) {
     throw new Error(
       "sqlx-js focused prepare: enum catalog cache is missing; run a full `sqlx-js prepare`",
+    );
+  }
+  if (config.errorCatalog && !errorCatalogCacheExists(cacheDir)) {
+    throw new Error(
+      "sqlx-js focused prepare: error catalog cache is missing; run a full `sqlx-js prepare`",
     );
   }
 }
@@ -98,6 +104,7 @@ export function selectFocusedPrepareInput(
       reuseCacheFps,
       reuseFunctionCatalog: true,
       reuseEnumCatalog: true,
+      reuseErrorCatalog: true,
       artifactComplete: false,
     },
     projectSites: projectSites.length,

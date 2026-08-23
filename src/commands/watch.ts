@@ -13,6 +13,7 @@ import { configHash, loadConfig } from "../config";
 import { profileFingerprint } from "../cache";
 import { embeddedSqlOutputPath } from "../embedded-sql";
 import { enumCatalogOutputPath } from "../enum-catalog";
+import { errorCatalogOutputPath } from "../error-catalog";
 import {
   formatDatabaseTarget,
   type DatabaseTargetSummary,
@@ -209,6 +210,7 @@ export async function prepareWatchedOnce(
       sites,
       reuseCacheFps,
       reuseEnumCatalog: !full,
+      reuseErrorCatalog: !full,
     });
   } catch (error) {
     state.dirtyFps = new Set([...dirtyFps, ...changedFps]);
@@ -288,6 +290,7 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
       pruned: result.pruned,
       functions: result.functions,
       enums: result.enums,
+      databaseErrors: result.databaseErrors,
       ...(durationMs === undefined ? {} : { durationMs }),
     });
   };
@@ -359,8 +362,12 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
     const embeddedSqlOutput = state.session
       ? embeddedSqlOutputPath(opts.root, state.session.userCfg)
       : undefined;
+    const errorOutput = state.session
+      ? errorCatalogOutputPath(opts.root, state.session.userCfg)
+      : undefined;
     const ignored = [relative(opts.root, resolve(opts.root, opts.dtsPath))];
     if (enumOutput) ignored.push(relative(opts.root, enumOutput));
+    if (errorOutput) ignored.push(relative(opts.root, errorOutput));
     if (embeddedSqlOutput) ignored.push(relative(opts.root, embeddedSqlOutput));
     if (!shouldWatchFile(filename.toString(), ignored)) return;
     changedFiles.add(normalizePath(filename.toString()));

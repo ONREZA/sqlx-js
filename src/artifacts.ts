@@ -8,6 +8,8 @@ export type ArtifactSet = {
   dtsPath: string;
   enumOutputPath?: string;
   enumArtifactName?: string;
+  errorOutputPath?: string;
+  errorArtifactName?: string;
   embeddedSqlOutputPath?: string;
   embeddedSqlArtifactName?: string;
 };
@@ -28,14 +30,17 @@ function readGeneratedFiles(set: ArtifactSet): Map<string, string> {
       ) continue;
       files.set(`cache/${name}`, readFileSync(join(set.cacheDir, name), "utf8"));
     }
-    const functions = join(set.cacheDir, "functions/functions.json");
-    if (existsSync(functions)) files.set("cache/functions/functions.json", readFileSync(functions, "utf8"));
-    const enums = join(set.cacheDir, "enums/enums.json");
-    if (existsSync(enums)) files.set("cache/enums/enums.json", readFileSync(enums, "utf8"));
+    for (const name of ["functions/functions.json", "enums/enums.json", "errors/errors.json"]) {
+      const path = join(set.cacheDir, name);
+      if (existsSync(path)) files.set(`cache/${name}`, readFileSync(path, "utf8"));
+    }
   }
   if (existsSync(set.dtsPath)) files.set("sqlx-js-env.d.ts", readFileSync(set.dtsPath, "utf8"));
   if (set.enumOutputPath && existsSync(set.enumOutputPath)) {
     files.set(set.enumArtifactName ?? "sqlx-js-enums.ts", readFileSync(set.enumOutputPath, "utf8"));
+  }
+  if (set.errorOutputPath && existsSync(set.errorOutputPath)) {
+    files.set(set.errorArtifactName ?? "sqlx-js-errors.ts", readFileSync(set.errorOutputPath, "utf8"));
   }
   if (set.embeddedSqlOutputPath && existsSync(set.embeddedSqlOutputPath)) {
     files.set(

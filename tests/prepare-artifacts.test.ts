@@ -46,6 +46,7 @@ test("prepare artifact publication replaces a legacy cache as one snapshot", () 
     const cacheDir = join(root, ".sqlx-js");
     const dtsPath = join(root, "sqlx-js-env.d.ts");
     const enumPath = join(root, "db-enums.ts");
+    const errorPath = join(root, "db-errors.ts");
     const cache = new Cache(cacheDir);
     const oldQuery = "SELECT old_value";
     cache.write(fingerprint(oldQuery), emptyEntry(oldQuery));
@@ -57,6 +58,7 @@ test("prepare artifact publication replaces a legacy cache as one snapshot", () 
     chmodSync(cacheDir, 0o750);
     writeFileSync(dtsPath, "old declarations\n");
     writeFileSync(enumPath, "old enums\n");
+    writeFileSync(errorPath, "old errors\n");
 
     const query = "SELECT current_value";
     const entry = emptyEntry(query);
@@ -69,13 +71,21 @@ test("prepare artifact publication replaces a legacy cache as one snapshot", () 
       enums: [{ schema: "public", name: "role", values: ["admin"] }],
       enumCatalogEnabled: true,
       enumModule: { path: enumPath, content: "export const Role = { Admin: \"admin\" } as const;\n" },
+      errorCatalog: {
+        errors: [{ code: "22023", message: "PAYMENT_INVALID", routines: ["public.charge()"] }],
+        coverage: { routinesWithRaises: 1, raiseExceptions: 1, extractedOccurrences: 1, skipped: 0 },
+      },
+      errorModule: {
+        path: errorPath,
+        content: "export const DbErrors = { PAYMENT_INVALID: { code: \"22023\", message: \"PAYMENT_INVALID\" } } as const;\n",
+      },
       configHash: "current-config",
       customTypes: {},
       profiles: {},
       prune: true,
     });
 
-    expect(result).toEqual({ pruned: 2, enumCacheRemoved: false });
+    expect(result).toEqual({ pruned: 2, enumCacheRemoved: false, errorCacheRemoved: false });
     expect(
       readdirSync(cacheDir).filter((name) => /^[0-9a-f]{16}\.json$/.test(name)),
     ).toEqual([`${fingerprint(query)}.json`]);
@@ -84,6 +94,8 @@ test("prepare artifact publication replaces a legacy cache as one snapshot", () 
     expect(readCacheManifest(cacheDir)?.configHash).toBe("current-config");
     expect(readFileSync(dtsPath, "utf8")).toContain(JSON.stringify(query));
     expect(readFileSync(enumPath, "utf8")).toContain("export const Role");
+    expect(readFileSync(errorPath, "utf8")).toContain("PAYMENT_INVALID");
+    expect(readFileSync(join(cacheDir, "errors/errors.json"), "utf8")).toContain("PAYMENT_INVALID");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

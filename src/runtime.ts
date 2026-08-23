@@ -57,6 +57,7 @@ export {
   toPgError,
   withResultDecodeQueryMetadata,
   type KnownSqlState,
+  type PgErrorIdentity,
   type QueryOutcome,
   type QueryTimeoutPhase,
   type ResultDecodeErrorDetails,

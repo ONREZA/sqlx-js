@@ -75,6 +75,10 @@ export default defineConfig({
     },
     registry: true,
   },
+  errorCatalog: {
+    output: "src/database/db-errors.ts",
+    schemas: ["public", "billing"],
+  },
   // Optional bundled map for every referenced sql.file(...) asset.
   sqlFiles: {
     output: "src/database/sql-files.generated.ts",
@@ -302,6 +306,63 @@ The catalog snapshot is committed at `.sqlx-js/enums/enums.json`. `prepare --off
 The enum module and declaration output must be different files. If `--dts` overrides the declaration destination, prepare and doctor reject a colliding `enumCatalog.output` before writing either artifact.
 
 Moving `output` or disabling the catalog does not delete the previous TypeScript module, because the new configuration no longer identifies that path safely. Update imports and remove the old generated file explicitly; the next live prepare removes a disabled catalog's cache and prints a reminder.
+
+## Generated database error catalog
+
+Enable `errorCatalog` when application code treats symbolic PL/pgSQL exception messages as stable domain error identities:
+
+```ts
+export default defineConfig({
+  errorCatalog: {
+    output: "src/database/db-errors.ts",
+    schemas: ["public", "billing"],
+  },
+});
+```
+
+Live prepare reads installed, non-extension-owned PL/pgSQL routines from `pg_proc` in the explicitly listed schemas. It conservatively extracts only exceptions whose SQLSTATE and message can be determined statically. A generated message must match `[A-Z][A-Z0-9_]*`; dynamic expressions, formatted human messages, named conditions without a literal SQLSTATE, and unsupported forms are skipped and reported as partial coverage.
+
+```sql
+RAISE EXCEPTION USING
+  ERRCODE = '22023',
+  MESSAGE = 'PAYMENT_ATTEMPT_CANCEL_RETRYABILITY_REQUIRED';
+```
+
+The generated module contains ordinary runtime values:
+
+```ts
+export const DbErrors = {
+  PAYMENT_ATTEMPT_CANCEL_RETRYABILITY_REQUIRED: {
+    code: "22023",
+    message: "PAYMENT_ATTEMPT_CANCEL_RETRYABILITY_REQUIRED",
+  },
+} as const;
+
+export type DbErrorName = keyof typeof DbErrors;
+export type DbError = (typeof DbErrors)[DbErrorName];
+```
+
+Pass an entry directly to the runtime type guard:
+
+```ts
+import { isPgError } from "@onreza/sqlx-js";
+import { DbErrors } from "./database/db-errors.js";
+
+try {
+  await chargePayment();
+} catch (error) {
+  if (isPgError(error, DbErrors.PAYMENT_ATTEMPT_CANCEL_RETRYABILITY_REQUIRED)) {
+    // error.code and error.message are narrowed to their exact literals.
+  }
+  throw error;
+}
+```
+
+The same symbolic message must always map to one SQLSTATE; live prepare fails on a conflicting mapping and preserves the previous artifact snapshot. Repeated identical pairs are deduplicated while the cache retains their originating routine signatures.
+
+This is a catalog of directly declared, statically identifiable exceptions, not an exhaustive `throws` contract for a query or routine. Extraction does not prove branch reachability or that a lazily validated PL/pgSQL body will execute successfully. PostgreSQL can also raise errors from constraints, built-ins, triggers, nested calls, permissions, concurrency, transport, and dynamic PL/pgSQL paths. Application handling should therefore match known identities without assuming all other failures are impossible.
+
+The snapshot lives at `.sqlx-js/errors/errors.json`. `prepare --offline` regenerates the configured module, `prepare --check` verifies it, and `prepare --verify` compares it with the live database without changing the worktree. The error module must not collide with declarations, enum output, or embedded SQL output. Moving or disabling it leaves the previous TypeScript module for explicit application-owned cleanup; the next live prepare removes the disabled cache and prints a reminder.
 
 ## Array element nullability assertions
 

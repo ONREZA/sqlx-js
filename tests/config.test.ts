@@ -266,6 +266,7 @@ test("prepare config hash includes column and function catalog contracts", () =>
   expect(prepareConfigHash({ functionCatalog: false })).not.toBe(base);
   expect(prepareConfigHash({ functionCatalog: { includeExtensionOwned: true } })).not.toBe(base);
   expect(prepareConfigHash({ enumCatalog: { output: "src/db-enums.ts", schemas: ["public"] } })).not.toBe(base);
+  expect(prepareConfigHash({ errorCatalog: { output: "src/db-errors.ts", schemas: ["public"] } })).not.toBe(base);
   expect(prepareConfigHash({
     profiles: { api: { name: "api", role: "app_api" } },
   })).not.toBe(base);
@@ -391,6 +392,36 @@ test("enum catalog cache hash follows schemas rather than output-only options", 
       aliases: { "public.status": "Status" },
       registry: false,
     },
+  }));
+});
+
+test("error catalog config requires a project output and explicit schemas", async () => {
+  const valid = root();
+  writeFileSync(join(valid, "sqlx-js.config.mjs"), `export default {
+    errorCatalog: { output: "src/db-errors.ts", schemas: ["public", "billing"] },
+  };\n`);
+  expect(await loadConfig(valid)).toEqual({
+    errorCatalog: { output: "src/db-errors.ts", schemas: ["public", "billing"] },
+  });
+
+  const noSchemas = root();
+  writeFileSync(join(noSchemas, "sqlx-js.config.mjs"), `export default {
+    errorCatalog: { output: "src/db-errors.ts", schemas: [] },
+  };\n`);
+  await expect(loadConfig(noSchemas)).rejects.toThrow(/errorCatalog\.schemas must contain/);
+
+  const unsupported = root();
+  writeFileSync(join(unsupported, "sqlx-js.config.mjs"), `export default {
+    errorCatalog: { output: "src/db-errors.ts", schemas: ["public"], include: ["PAYMENT_INVALID"] },
+  };\n`);
+  await expect(loadConfig(unsupported)).rejects.toThrow(/only supports output and schemas/);
+});
+
+test("error catalog cache hash follows schemas rather than its output", () => {
+  expect(prepareConfigHash({
+    errorCatalog: { output: "src/db-errors.ts", schemas: ["billing", "public"] },
+  })).toBe(prepareConfigHash({
+    errorCatalog: { output: "generated/errors.ts", schemas: ["public", "billing"] },
   }));
 });
 
@@ -777,6 +808,43 @@ test("doctor checks the configured enum catalog output", async () => {
     dtsPath: join(dir, "sqlx-js-env.d.ts"),
   });
   expect(checks.find((check) => check.name === "enumCatalog")).toMatchObject({ status: "ok" });
+});
+
+test("doctor checks and marks the configured error catalog output", async () => {
+  const dir = root();
+  writeFileSync(join(dir, "sqlx-js.config.mjs"), `export default {
+    errorCatalog: { output: "db-errors.ts", schemas: ["public"] },
+  };\n`);
+
+  let checks = await inspectDoctor({
+    root: dir,
+    databaseUrl: "",
+    cacheDir: join(dir, ".sqlx-js"),
+    dtsPath: join(dir, "sqlx-js-env.d.ts"),
+  });
+  expect(checks.find((check) => check.name === "errorCatalog")).toMatchObject({
+    status: "error",
+    message: expect.stringContaining("generated error catalog not found"),
+  });
+  expect(checks.find((check) => check.name === "gitAttributes")).toMatchObject({
+    status: "warning",
+    details: {
+      missing: [
+        ".sqlx-js/** linguist-generated",
+        "/sqlx-js-env.d.ts linguist-generated",
+        "/db-errors.ts linguist-generated",
+      ],
+    },
+  });
+
+  writeFileSync(join(dir, "db-errors.ts"), "export const DbErrors = {} as const;\n");
+  checks = await inspectDoctor({
+    root: dir,
+    databaseUrl: "",
+    cacheDir: join(dir, ".sqlx-js"),
+    dtsPath: join(dir, "sqlx-js-env.d.ts"),
+  });
+  expect(checks.find((check) => check.name === "errorCatalog")).toMatchObject({ status: "ok" });
 });
 
 test("doctor does not treat an unrelated .env file as DATABASE_URL configuration", async () => {

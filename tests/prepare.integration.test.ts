@@ -1,6 +1,7 @@
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -12,7 +13,7 @@ import { SchemaCache, compositeLiteral } from "../src/pg/schema";
 import { mergeExtensionTypes } from "../src/pg/extensions";
 import { fingerprint, readCacheManifest } from "../src/cache";
 import { createSqlClient as createRuntimeSqlClient, type PostgresClient } from "../src/postgres-runtime";
-import { array, json, QueryTimeoutError, ResultDecodeError, type OnQueryEvent } from "../src/runtime";
+import { array, isPgError, json, QueryTimeoutError, ResultDecodeError, type OnQueryEvent } from "../src/runtime";
 import { JsonNumber, SqlxJson } from "../src/json-value";
 import { queryId } from "../src/query-id";
 import type { RuntimeQueryDescriptors } from "../src/runtime-descriptors";
@@ -23,6 +24,7 @@ import {
   renderCanonicalJsonNumberAnalysis,
 } from "../src/commands/json-audit-number";
 import { canonicalJsonNumberBytes, JSON_NUMBER_LIMITS } from "../src/json-number";
+import { introspectErrorCatalog } from "../src/error-catalog";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const tmp = mkdtempSync(join(tmpdir(), "sqlx-js-integration-"));
@@ -1657,14 +1659,192 @@ export default {
     }
   });
 
+  test("error catalog generates stable pg_proc exception identities across prepare modes", async () => {
+    const root = isolatedRoot("error-catalog");
+    const client = new PgClient(parseDatabaseUrl(dbUrl));
+    await client.connect();
+    try {
+      await client.simpleQuery(`
+        DROP SCHEMA IF EXISTS tmp_error_catalog CASCADE;
+        CREATE SCHEMA tmp_error_catalog;
+        CREATE FUNCTION tmp_error_catalog.raise_stable() RETURNS void
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE EXCEPTION USING
+            ERRCODE = '22023',
+            MESSAGE = 'PAYMENT_INVALID';
+        END
+        $$;
+        CREATE FUNCTION tmp_error_catalog.raise_dynamic(value text) RETURNS void
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE WARNING USING MESSAGE = 'WARNING_ONLY';
+          RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = value;
+        END
+        $$
+      `);
+      writeRootFile(root, "a.ts", "export {};\n");
+      writeRootFile(root, "sqlx-js.config.ts", `export default {
+        functionCatalog: false,
+        errorCatalog: { output: "src/db-errors.ts", schemas: ["tmp_error_catalog"] },
+      };\n`);
+
+      const prepared = prepareRoot(root, ["--warnings"]);
+      expect(prepared.code, prepared.stderr).toBe(0);
+      expect(prepared.stderr).toContain("errorCatalog skipped 1 of 2 exception-level RAISE");
+      const verbose = prepareRoot(root, ["--verbose"]);
+      expect(verbose.code, verbose.stderr).toBe(0);
+      expect(verbose.stderr).toContain("introspect warning: errorCatalog skipped 1 of 2 exception-level RAISE");
+      const outputPath = join(root, "src/db-errors.ts");
+      const cachePath = join(root, ".sqlx-js/errors/errors.json");
+      const initial = readFileSync(outputPath, "utf8");
+      expect(initial).toContain('PAYMENT_INVALID: { code: "22023", message: "PAYMENT_INVALID" }');
+      expect(initial).not.toContain("WARNING_ONLY");
+      const generated = await import(pathToFileURL(outputPath).href) as {
+        DbErrors: {
+          PAYMENT_INVALID: { readonly code: "22023"; readonly message: "PAYMENT_INVALID" };
+        };
+      };
+      let raised: unknown;
+      try {
+        await client.simpleQuery("SELECT tmp_error_catalog.raise_stable()");
+      } catch (error) {
+        raised = error;
+      }
+      expect(isPgError(raised, generated.DbErrors.PAYMENT_INVALID)).toBe(true);
+      expect(JSON.parse(readFileSync(cachePath, "utf8"))).toEqual({
+        version: 1,
+        errors: [{
+          code: "22023",
+          message: "PAYMENT_INVALID",
+          routines: ["tmp_error_catalog.raise_stable()"],
+        }],
+        coverage: {
+          routinesWithRaises: 2,
+          raiseExceptions: 2,
+          extractedOccurrences: 1,
+          skipped: 1,
+        },
+      });
+
+      const checked = prepareRoot(root, ["--check", "--json"]);
+      expect(checked.code).toBe(0);
+      const checkedPayload = JSON.parse(checked.stdout);
+      expect(checkedPayload.databaseErrors).toBe(1);
+      expect(checkedPayload.diagnostics).toContainEqual(expect.objectContaining({
+        severity: "warning",
+        phase: "cache",
+        code: "error-catalog-partial",
+      }));
+      writeRootFile(root, "src/db-errors.ts", "export {};\n");
+      const stale = prepareRoot(root, ["--check", "--json"]);
+      expect(stale.code).toBe(1);
+      expect(JSON.parse(stale.stdout).diagnostics).toContainEqual(expect.objectContaining({
+        message: "generated error catalog is stale or missing",
+        file: "src/db-errors.ts",
+      }));
+      expect(prepareRoot(root, ["--offline"]).code).toBe(0);
+      expect(readFileSync(outputPath, "utf8")).toBe(initial);
+      rmSync(cachePath);
+      const missingCache = prepareRoot(root, ["--offline", "--json"]);
+      expect(missingCache.code).toBe(1);
+      expect(JSON.parse(missingCache.stdout).diagnostics).toContainEqual(expect.objectContaining({
+        severity: "error",
+        phase: "cache",
+        message: "error catalog cache is missing",
+      }));
+      expect(readFileSync(outputPath, "utf8")).toBe(initial);
+      expect(prepareRoot(root).code).toBe(0);
+
+      const diagnosis = spawnSync(
+        "bun",
+        [join(repoRoot, "bin/sqlx-js.ts"), "doctor", "--root", root, "--json"],
+        { env: { ...process.env, DATABASE_URL: dbUrl }, encoding: "utf8" },
+      );
+      const doctorPayload = JSON.parse(diagnosis.stdout) as {
+        checks: Array<{ name: string; status: string }>;
+      };
+      expect(doctorPayload.checks.find((check) => check.name === "errorCatalog")).toMatchObject({ status: "ok" });
+
+      await client.simpleQuery(`
+        CREATE OR REPLACE FUNCTION tmp_error_catalog.raise_stable() RETURNS void
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE EXCEPTION USING ERRCODE = '23514', MESSAGE = 'PAYMENT_REJECTED';
+        END
+        $$
+      `);
+      const verified = prepareRoot(root, ["--verify", "--json"]);
+      expect(verified.code).toBe(1);
+      expect(JSON.parse(verified.stdout).changed).toEqual([
+        "cache/errors/errors.json",
+        "src/db-errors.ts",
+      ]);
+      expect(readFileSync(outputPath, "utf8")).toBe(initial);
+
+      await client.simpleQuery(`
+        CREATE FUNCTION tmp_error_catalog.raise_conflict() RETURNS void
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'PAYMENT_REJECTED';
+        END
+        $$
+      `);
+      const conflict = prepareRoot(root, ["--json"]);
+      expect(conflict.code).toBe(1);
+      expect(JSON.parse(conflict.stdout).diagnostics).toContainEqual(expect.objectContaining({
+        phase: "introspect",
+        message: expect.stringContaining("PAYMENT_REJECTED"),
+      }));
+      expect(readFileSync(outputPath, "utf8")).toBe(initial);
+      await client.simpleQuery("DROP FUNCTION tmp_error_catalog.raise_conflict()");
+
+      await client.simpleQuery(`
+        CREATE TYPE tmp_error_catalog.error_argument AS ENUM ('payment');
+        CREATE FUNCTION tmp_error_catalog.raise_typed(value tmp_error_catalog.error_argument) RETURNS void
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'PAYMENT_TYPED';
+        END
+        $$
+      `);
+      await client.simpleQuery("SET search_path = tmp_error_catalog, public");
+      const visibleTypeCatalog = await introspectErrorCatalog(client, ["tmp_error_catalog"]);
+      await client.simpleQuery("SET search_path = public");
+      const qualifiedTypeCatalog = await introspectErrorCatalog(client, ["tmp_error_catalog"]);
+      expect(qualifiedTypeCatalog).toEqual(visibleTypeCatalog);
+      expect(qualifiedTypeCatalog.errors.find((error) => error.message === "PAYMENT_TYPED")?.routines).toEqual([
+        "tmp_error_catalog.raise_typed(tmp_error_catalog.error_argument)",
+      ]);
+      await client.simpleQuery(`
+        DROP FUNCTION tmp_error_catalog.raise_typed(tmp_error_catalog.error_argument);
+        DROP TYPE tmp_error_catalog.error_argument
+      `);
+
+      expect(prepareRoot(root).code).toBe(0);
+      const generatedBeforeDisable = readFileSync(outputPath, "utf8");
+      writeRootFile(root, "sqlx-js.config.ts", "export default { functionCatalog: false };\n");
+      const disabled = prepareRoot(root, ["--warnings"]);
+      expect(disabled.code, disabled.stderr).toBe(0);
+      expect(disabled.stderr).toContain("error catalog disabled: removed its cache");
+      expect(existsSync(cachePath)).toBe(false);
+      expect(readFileSync(outputPath, "utf8")).toBe(generatedBeforeDisable);
+      expect(prepareRoot(root, ["--check"]).code).toBe(0);
+    } finally {
+      await client.simpleQuery("DROP SCHEMA IF EXISTS tmp_error_catalog CASCADE").catch(() => {});
+      await client.end();
+    }
+  });
+
   test("generated outputs cannot overwrite each other in any prepare mode", () => {
-    const root = isolatedRoot("enum-output-collision");
+    const root = isolatedRoot("generated-output-collision");
     const output = join(root, "generated/types.ts");
     writeRootFile(root, "a.ts", "export {};\n");
     writeRootFile(root, "generated/types.ts", "export const sentinel = true;\n");
     writeRootFile(root, "sqlx-js.config.ts", `export default {
       functionCatalog: false,
       enumCatalog: { output: "generated/types.ts", schemas: ["public"] },
+      errorCatalog: { output: "generated/types.ts", schemas: ["public"] },
     };\n`);
 
     for (const args of [[], ["--check"], ["--offline"], ["--verify"]]) {
@@ -1673,7 +1853,7 @@ export default {
       expect(JSON.parse(result.stdout).diagnostics).toEqual([
         expect.objectContaining({
           phase: "config",
-          message: expect.stringContaining("generated declaration, enum catalog, and embedded SQL outputs must be distinct"),
+          message: expect.stringContaining("generated declaration, enum catalog, error catalog, and embedded SQL outputs must be distinct"),
         }),
       ]);
       expect(readFileSync(output, "utf8")).toBe("export const sentinel = true;\n");

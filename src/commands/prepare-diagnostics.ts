@@ -158,11 +158,12 @@ export function reportPrepareDiagnostics(
 }
 
 export function formatPrepareTotals(
-  result: { sites: number; entries: number; functions: number; enums: number },
+  result: { sites: number; entries: number; functions: number; enums: number; databaseErrors: number },
 ): string {
   return `${formatQueryTotals(result.sites, result.entries)}, `
     + `${result.functions} ${result.functions === 1 ? "function" : "functions"}, `
-    + `${result.enums} ${result.enums === 1 ? "enum" : "enums"}`;
+    + `${result.enums} ${result.enums === 1 ? "enum" : "enums"}, `
+    + `${result.databaseErrors} database ${result.databaseErrors === 1 ? "error" : "errors"}`;
 }
 
 export function formatQueryTotals(sites: number, entries: number): string {

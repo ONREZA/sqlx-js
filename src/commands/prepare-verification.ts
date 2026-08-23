@@ -4,6 +4,7 @@ import { join, relative } from "node:path";
 import { compareArtifacts } from "../artifacts";
 import { embeddedSqlOutputPath } from "../embedded-sql";
 import { enumCatalogOutputPath } from "../enum-catalog";
+import { errorCatalogOutputPath } from "../error-catalog";
 import { prepareGeneratedOutputPaths } from "../prepare-artifacts";
 import { formatDatabaseTarget } from "../pg/target-summary";
 import { fatal } from "./prepare-diagnostics";
@@ -31,7 +32,8 @@ export async function writePrepareArtifacts(
     }
     const outputs = prepareGeneratedOutputPaths({ ...opts, config: session.userCfg }).join(", ");
     log(
-      `\nprepared ${result.entries} unique query/queries, ${result.functions} function(s), ${result.enums} enum(s) `
+      `\nprepared ${result.entries} unique query/queries, ${result.functions} function(s), ${result.enums} enum(s), `
+      + `${result.databaseErrors} database error(s) `
       + `→ ${outputs}`,
     );
     return true;
@@ -74,6 +76,9 @@ export async function verifyPrepareArtifacts(
     const expectedEnumOutput = enumCatalogOutputPath(opts.root, session.userCfg, opts.enumOutputPath);
     const generatedEnumOutput = expectedEnumOutput ? join(tmp, "sqlx-js-enums.ts") : undefined;
     verifyOpts.enumOutputPath = generatedEnumOutput;
+    const expectedErrorOutput = errorCatalogOutputPath(opts.root, session.userCfg, opts.errorOutputPath);
+    const generatedErrorOutput = expectedErrorOutput ? join(tmp, "sqlx-js-errors.ts") : undefined;
+    verifyOpts.errorOutputPath = generatedErrorOutput;
     const expectedEmbeddedSqlOutput = embeddedSqlOutputPath(
       opts.root,
       session.userCfg,
@@ -98,6 +103,10 @@ export async function verifyPrepareArtifacts(
           enumArtifactName: expectedEnumOutput
             ? relative(opts.root, expectedEnumOutput).replace(/\\/g, "/")
             : undefined,
+          errorOutputPath: expectedErrorOutput,
+          errorArtifactName: expectedErrorOutput
+            ? relative(opts.root, expectedErrorOutput).replace(/\\/g, "/")
+            : undefined,
           embeddedSqlOutputPath: expectedEmbeddedSqlOutput,
           embeddedSqlArtifactName: expectedEmbeddedSqlOutput
             ? relative(opts.root, expectedEmbeddedSqlOutput).replace(/\\/g, "/")
@@ -109,6 +118,10 @@ export async function verifyPrepareArtifacts(
           enumOutputPath: generatedEnumOutput,
           enumArtifactName: expectedEnumOutput
             ? relative(opts.root, expectedEnumOutput).replace(/\\/g, "/")
+            : undefined,
+          errorOutputPath: generatedErrorOutput,
+          errorArtifactName: expectedErrorOutput
+            ? relative(opts.root, expectedErrorOutput).replace(/\\/g, "/")
             : undefined,
           embeddedSqlOutputPath: generatedEmbeddedSqlOutput,
           embeddedSqlArtifactName: expectedEmbeddedSqlOutput
@@ -126,7 +139,8 @@ export async function verifyPrepareArtifacts(
       return { ok: false, result, changed: comparison.changed };
     }
     log(
-      `verified ${result.entries} query/queries, ${result.functions} function(s), and ${result.enums} enum(s); `
+      `verified ${result.entries} query/queries, ${result.functions} function(s), ${result.enums} enum(s), and `
+      + `${result.databaseErrors} database error(s); `
       + "generated artifacts are current",
     );
     return { ok: true, result, changed: [] };

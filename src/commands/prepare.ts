@@ -66,6 +66,15 @@ import {
 } from "../prepare-artifacts";
 import { embeddedSqlOutputPath, renderEmbeddedSqlModuleFromSites } from "../embedded-sql";
 import {
+  errorCatalogCacheExists,
+  errorCatalogCoverageMessage,
+  errorCatalogOutputPath,
+  introspectErrorCatalog,
+  readErrorCatalogCache,
+  renderErrorCatalog,
+  type ErrorCatalog,
+} from "../error-catalog";
+import {
   columnInference,
   duplicateOutputColumns,
   isAliasOrExpression,
@@ -109,6 +118,7 @@ export type PrepareOptions = {
   cacheDir: string;
   dtsPath: string;
   enumOutputPath?: string;
+  errorOutputPath?: string;
   sqlFilesOutputPath?: string;
   check: boolean;
   offline?: boolean;
@@ -132,6 +142,7 @@ export type PrepareResult = {
   pruned: number;
   functions: number;
   enums: number;
+  databaseErrors: number;
   diagnostics: PrepareDiagnostic[];
 };
 
@@ -199,6 +210,7 @@ export type PrepareIncrementalInput = {
   reuseCacheFps?: ReadonlySet<string>;
   reuseFunctionCatalog?: boolean;
   reuseEnumCatalog?: boolean;
+  reuseErrorCatalog?: boolean;
   artifactComplete?: boolean;
 };
 
@@ -827,6 +839,7 @@ export async function prepareOnce(
       pruned: 0,
       functions: 0,
       enums: 0,
+      databaseErrors: 0,
       diagnostics,
     };
   }
@@ -867,6 +880,42 @@ export async function prepareOnce(
       throw fatal("introspect", error, session.target);
     }
   }
+  let errorCatalog: ErrorCatalog | undefined;
+  let errorModule: { path: string; content: string } | undefined;
+  if (userCfg.errorCatalog) {
+    let reused = false;
+    if (input.reuseErrorCatalog && errorCatalogCacheExists(opts.cacheDir)) {
+      try {
+        errorCatalog = readErrorCatalogCache(opts.cacheDir);
+        reused = true;
+      } catch (error) {
+        throw fatal("cache", error, session.target);
+      }
+    } else {
+      try {
+        errorCatalog = await introspectErrorCatalog(client, userCfg.errorCatalog.schemas);
+      } catch (error) {
+        throw fatal("introspect", error, session.target);
+      }
+    }
+    const path = errorCatalogOutputPath(opts.root, userCfg, opts.errorOutputPath)!;
+    try {
+      errorModule = { path, content: renderErrorCatalog(errorCatalog) };
+    } catch (error) {
+      throw fatal(reused ? "cache" : "introspect", error, session.target);
+    }
+    const coverageMessage = errorCatalogCoverageMessage(errorCatalog);
+    if (coverageMessage) {
+      const diagnostic: PrepareDiagnostic = {
+        severity: "warning",
+        phase: reused ? "cache" : "introspect",
+        code: "error-catalog-partial",
+        message: coverageMessage,
+      };
+      diagnostics.push(diagnostic);
+      err(formatPrepareDiagnostic(diagnostic));
+    }
+  }
   let pruned: number;
   try {
     const embeddedOutput = embeddedSqlOutputPath(opts.root, userCfg, opts.sqlFilesOutputPath);
@@ -879,6 +928,8 @@ export async function prepareOnce(
       enums,
       enumCatalogEnabled: userCfg.enumCatalog !== undefined,
       enumModule,
+      errorCatalog,
+      errorModule,
       embeddedSqlModule: embeddedOutput
         ? { path: embeddedOutput, content: renderEmbeddedSqlModuleFromSites(sites) }
         : undefined,
@@ -896,6 +947,11 @@ export async function prepareOnce(
       diagnostics.push({ severity: "warning", phase: "cache", message });
       log(message);
     }
+    if (publication.errorCacheRemoved) {
+      const message = "error catalog disabled: removed its cache; delete the previous generated error module if it is no longer used";
+      diagnostics.push({ severity: "warning", phase: "cache", message });
+      log(message);
+    }
   } catch (error) {
     throw fatal("cache", error, session.target);
   }
@@ -907,6 +963,7 @@ export async function prepareOnce(
     pruned,
     functions: functions.length,
     enums: enumCount,
+    databaseErrors: errorCatalog?.errors.length ?? 0,
     diagnostics,
   };
 }

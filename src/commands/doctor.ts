@@ -17,6 +17,7 @@ import { validateColumnAssertions } from "../config-column-assertions";
 import { scanProject, type QueryCallSite } from "../scan/scanner";
 import { embeddedSqlOutputPath } from "../embedded-sql";
 import { enumCatalogOutputPath } from "../enum-catalog";
+import { errorCatalogOutputPath } from "../error-catalog";
 import { assertDistinctPrepareGeneratedOutputs } from "../prepare-artifacts";
 import { queryId } from "../query-id";
 import type { PackageIdentityCheck } from "../package-identity";
@@ -54,8 +55,15 @@ function configuredGeneratedPaths(
 ): string[] {
   return [
     enumCatalogOutputPath(root, config),
+    errorCatalogOutputPath(root, config),
     embeddedSqlOutputPath(root, config),
   ].filter((path): path is string => path !== undefined);
+}
+
+function generatedOutputCheck(name: string, artifact: string, output: string): DoctorCheck {
+  return existsSync(output)
+    ? { name, status: "ok", message: `generated ${artifact} exists at ${output}` }
+    : { name, status: "error", message: `generated ${artifact} not found at ${output}; run sqlx-js prepare` };
 }
 
 function decodeBoolean(value: Uint8Array | null | undefined): boolean {
@@ -568,37 +576,27 @@ export async function inspectDoctor(opts: DoctorOptions): Promise<DoctorCheck[]>
   }
 
   if (configLoaded && config.enumCatalog) {
-    try {
-      const output = enumCatalogOutputPath(opts.root, config)!;
-      checks.push(existsSync(output)
-        ? {
-            name: "enumCatalog",
-            status: "ok",
-            message: `generated enum catalog exists at ${output}`,
-          }
-        : {
-            name: "enumCatalog",
-            status: "error",
-            message: `generated enum catalog not found at ${output}; run sqlx-js prepare`,
-          });
-    } catch (error) {
-      checks.push({ name: "enumCatalog", status: "error", message: (error as Error).message });
-    }
+    checks.push(generatedOutputCheck(
+      "enumCatalog",
+      "enum catalog",
+      enumCatalogOutputPath(opts.root, config)!,
+    ));
+  }
+
+  if (configLoaded && config.errorCatalog) {
+    checks.push(generatedOutputCheck(
+      "errorCatalog",
+      "error catalog",
+      errorCatalogOutputPath(opts.root, config)!,
+    ));
   }
 
   if (configLoaded && config.sqlFiles) {
-    const output = embeddedSqlOutputPath(opts.root, config)!;
-    checks.push(existsSync(output)
-      ? {
-          name: "embeddedSql",
-          status: "ok",
-          message: `generated embedded SQL module exists at ${output}`,
-        }
-      : {
-          name: "embeddedSql",
-          status: "error",
-          message: `generated embedded SQL module not found at ${output}; run sqlx-js prepare`,
-        });
+    checks.push(generatedOutputCheck(
+      "embeddedSql",
+      "embedded SQL module",
+      embeddedSqlOutputPath(opts.root, config)!,
+    ));
   }
 
   if (!opts.databaseUrl) {

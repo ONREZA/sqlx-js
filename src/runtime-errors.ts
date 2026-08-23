@@ -224,8 +224,25 @@ export const SQLSTATE = {
 
 export type KnownSqlState = (typeof SQLSTATE)[keyof typeof SQLSTATE];
 
+export type PgErrorIdentity<Code extends string = string, Message extends string = string> = {
+  readonly code: Code;
+  readonly message: Message;
+};
+
 export function isPgError(error: unknown): error is PgError;
 export function isPgError<const Code extends string>(error: unknown, code: Code): error is PgError & { readonly code: Code };
-export function isPgError(error: unknown, code?: string): error is PgError {
-  return error instanceof PgError && (code === undefined || error.code === code);
+export function isPgError<const Code extends string, const Message extends string>(
+  error: unknown,
+  identity: PgErrorIdentity<Code, Message>,
+): error is PgError & { readonly code: Code; readonly message: Message };
+export function isPgError(error: unknown, expected?: string | PgErrorIdentity): error is PgError {
+  if (!(error instanceof PgError)) return false;
+  if (expected === undefined) return true;
+  if (typeof expected === "string") return error.code === expected;
+  return expected !== null
+    && typeof expected === "object"
+    && typeof expected.code === "string"
+    && typeof expected.message === "string"
+    && error.code === expected.code
+    && error.message === expected.message;
 }

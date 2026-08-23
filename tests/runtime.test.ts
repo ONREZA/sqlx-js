@@ -703,6 +703,21 @@ describe("typed errors", () => {
     expect(isPgError(error, SQLSTATE.foreignKeyViolation)).toBe(false);
     expect(isPgError(new Error("duplicate"), SQLSTATE.uniqueViolation)).toBe(false);
   });
+
+  test("isPgError matches a generated database error identity", () => {
+    const identity = { code: "22023", message: "PAYMENT_INVALID" } as const;
+    const error: unknown = new PgError({ C: "22023", M: "PAYMENT_INVALID" });
+    expect(isPgError(error, identity)).toBe(true);
+    if (isPgError(error, identity)) {
+      const code: "22023" = error.code;
+      const message: "PAYMENT_INVALID" = error.message;
+      expect([code, message]).toEqual(["22023", "PAYMENT_INVALID"]);
+    }
+    expect(isPgError(new PgError({ C: "22023", M: "PAYMENT_MISSING" }), identity)).toBe(false);
+    expect(isPgError(new PgError({ C: "23514", M: "PAYMENT_INVALID" }), identity)).toBe(false);
+    expect(isPgError(error, null as never)).toBe(false);
+    expect(isPgError(error, {} as never)).toBe(false);
+  });
 });
 
 describe("toPgError", () => {

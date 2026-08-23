@@ -38,6 +38,16 @@ function writeSetWithEmbeddedSql(root: string) {
   };
 }
 
+function writeSetWithErrors(root: string) {
+  const set = writeSet(root);
+  const errorOutputPath = join(root, "src/db-errors.ts");
+  mkdirSync(join(set.cacheDir, "errors"), { recursive: true });
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(set.cacheDir, "errors/errors.json"), '{"version":1,"errors":[],"coverage":{}}\n');
+  writeFileSync(errorOutputPath, "export const DbErrors = {} as const;\n");
+  return { ...set, errorOutputPath, errorArtifactName: "src/db-errors.ts" };
+}
+
 test("compareArtifacts reports exact generated files that changed", () => {
   const leftRoot = mkdtempSync(join(tmpdir(), "sqlx-js-artifacts-left-"));
   const rightRoot = mkdtempSync(join(tmpdir(), "sqlx-js-artifacts-right-"));
@@ -70,6 +80,26 @@ test("compareArtifacts includes enum cache and configured output", () => {
     writeFileSync(right.enumOutputPath, "export const Role = { admin: 'admin' } as const;\n");
     writeFileSync(join(right.cacheDir, "enums/enums.json"), '{"version":1,"enums":[{"schema":"public"}]}\n');
     expect(compareArtifacts(left, right)).toEqual({ ok: false, changed: ["cache/enums/enums.json"] });
+  } finally {
+    rmSync(leftRoot, { recursive: true, force: true });
+    rmSync(rightRoot, { recursive: true, force: true });
+  }
+});
+
+test("compareArtifacts includes error cache and configured output", () => {
+  const leftRoot = mkdtempSync(join(tmpdir(), "sqlx-js-artifacts-error-left-"));
+  const rightRoot = mkdtempSync(join(tmpdir(), "sqlx-js-artifacts-error-right-"));
+  try {
+    const left = writeSetWithErrors(leftRoot);
+    const right = writeSetWithErrors(rightRoot);
+    expect(compareArtifacts(left, right)).toEqual({ ok: true, changed: [] });
+
+    writeFileSync(right.errorOutputPath, "export const DbErrors = { PAYMENT_INVALID: {} } as const;\n");
+    expect(compareArtifacts(left, right)).toEqual({ ok: false, changed: ["src/db-errors.ts"] });
+
+    writeFileSync(right.errorOutputPath, "export const DbErrors = {} as const;\n");
+    writeFileSync(join(right.cacheDir, "errors/errors.json"), '{"version":1,"errors":[{}]}\n');
+    expect(compareArtifacts(left, right)).toEqual({ ok: false, changed: ["cache/errors/errors.json"] });
   } finally {
     rmSync(leftRoot, { recursive: true, force: true });
     rmSync(rightRoot, { recursive: true, force: true });

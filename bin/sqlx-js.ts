@@ -238,6 +238,7 @@ function printPrepareFailure(
       pruned: 0,
       functions: 0,
       enums: 0,
+      databaseErrors: 0,
       diagnostics: [{ severity: "error", phase, message, ...location }],
     }, null, 2));
   } else if (!flag("--verbose")) {

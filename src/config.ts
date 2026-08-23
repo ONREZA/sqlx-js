@@ -24,6 +24,11 @@ export type EnumCatalogConfig = {
   registry?: boolean;
 };
 
+export type ErrorCatalogConfig = {
+  output: string;
+  schemas: string[];
+};
+
 export type ExactDuplicateIgnore = {
   queryId: string;
   occurrences: number;
@@ -63,6 +68,7 @@ export type SqlxJsConfig = {
     includeExtensionOwned?: boolean;
   };
   enumCatalog?: EnumCatalogConfig;
+  errorCatalog?: ErrorCatalogConfig;
   sqlFiles?: SqlFilesConfig;
   queryAudit?: QueryAuditConfig;
   profiles?: DatabaseProfiles;
@@ -386,6 +392,22 @@ function validateEnumCatalog(value: unknown, path: string): void {
   }
 }
 
+function validateErrorCatalog(value: unknown, path: string): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`sqlx-js: ${path} errorCatalog must be an object`);
+  }
+  const catalog = value as Record<string, unknown>;
+  if (Object.keys(catalog).some((key) => key !== "output" && key !== "schemas")) {
+    throw new Error(`sqlx-js: ${path} errorCatalog only supports output and schemas`);
+  }
+  validateGeneratedModuleOutput(catalog.output, path, "errorCatalog.output");
+  validateStringArray(catalog.schemas, "errorCatalog.schemas", path);
+  const schemas = catalog.schemas as string[];
+  if (schemas.length === 0 || schemas.some((schema) => schema.trim() === "")) {
+    throw new Error(`sqlx-js: ${path} errorCatalog.schemas must contain at least one non-empty schema name`);
+  }
+}
+
 function validateSqlFiles(value: unknown, path: string): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`sqlx-js: ${path} sqlFiles must be an object`);
@@ -464,6 +486,7 @@ const CONFIG_KEYS: ReadonlySet<string> = new Set([
   "customTypes",
   "functionCatalog",
   "enumCatalog",
+  "errorCatalog",
   "sqlFiles",
   "queryAudit",
   "profiles",
@@ -497,6 +520,7 @@ function validateConfig(value: unknown, path: string): SqlxJsConfig {
     }
   }
   if (config.enumCatalog !== undefined) validateEnumCatalog(config.enumCatalog, path);
+  if (config.errorCatalog !== undefined) validateErrorCatalog(config.errorCatalog, path);
   if (config.sqlFiles !== undefined) validateSqlFiles(config.sqlFiles, path);
   if (config.queryAudit !== undefined) validateQueryAudit(config.queryAudit, path);
   if (config.profiles !== undefined) validateProfiles(config.profiles, path);
@@ -557,6 +581,9 @@ export function prepareConfigHash(cfg: SqlxJsConfig): string {
     enumCatalog: cfg.enumCatalog
       ? { schemas: [...new Set(cfg.enumCatalog.schemas)].sort() }
       : false,
+    ...(cfg.errorCatalog
+      ? { errorCatalog: { schemas: [...new Set(cfg.errorCatalog.schemas)].sort() } }
+      : {}),
     profiles: cfg.profiles ?? false,
     temporal: resolveTemporalPolicy(cfg.temporal),
   });

@@ -6,6 +6,11 @@ export type PgEnumCatalogRow = {
   value: string | null;
 };
 
+export type PgRoutineErrorSourceRow = {
+  signature: string;
+  source: string;
+};
+
 export type PgFunctionCatalogRow = {
   schema: string;
   name: string;
@@ -56,6 +61,51 @@ export async function loadEnumCatalogRows(
     schema: decodeText(row[0]!)!,
     name: decodeText(row[1]!)!,
     value: decodeText(row[2] ?? null),
+  }));
+}
+
+export async function loadRoutineErrorSources(
+  client: PgClient,
+  schemas: readonly string[],
+): Promise<PgRoutineErrorSourceRow[]> {
+  const result = await client.simpleQueryAll(`
+    SELECT
+      pg_catalog.format(
+        '%I.%I(%s)',
+        n.nspname,
+        p.proname,
+        COALESCE((
+          SELECT pg_catalog.string_agg(
+            pg_catalog.format('%I.%I', type_namespace.nspname, argument_type.typname),
+            ', ' ORDER BY argument.ordinality
+          )
+          FROM pg_catalog.unnest(
+            CASE
+              WHEN p.proargtypes::text = '' THEN ARRAY[]::pg_catalog.oid[]
+              ELSE pg_catalog.string_to_array(p.proargtypes::text, ' ')::pg_catalog.oid[]
+            END
+          ) WITH ORDINALITY AS argument(type_oid, ordinality)
+          JOIN pg_catalog.pg_type argument_type ON argument_type.oid = argument.type_oid
+          JOIN pg_catalog.pg_namespace type_namespace ON type_namespace.oid = argument_type.typnamespace
+        ), '')
+      ) AS signature,
+      p.prosrc
+    FROM pg_catalog.pg_proc p
+    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+    JOIN pg_catalog.pg_language l ON l.oid = p.prolang
+    LEFT JOIN pg_catalog.pg_depend extension_dependency
+      ON extension_dependency.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass
+      AND extension_dependency.objid = p.oid
+      AND extension_dependency.refclassid = 'pg_catalog.pg_extension'::pg_catalog.regclass
+      AND extension_dependency.deptype = 'e'
+    WHERE l.lanname = 'plpgsql'
+      AND n.nspname IN (${schemas.map(quoteLiteral).join(", ")})
+      AND extension_dependency.objid IS NULL
+    ORDER BY signature
+  `);
+  return result.rows.map((row) => ({
+    signature: decodeText(row[0]!)!,
+    source: decodeText(row[1]!) ?? "",
   }));
 }
 
@@ -155,5 +205,5 @@ function parseNullableStringArray(raw: string | null): string[] | null {
 }
 
 function quoteLiteral(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
+  return `E'${value.replaceAll("\\", "\\\\").replaceAll("'", "''")}'`;
 }

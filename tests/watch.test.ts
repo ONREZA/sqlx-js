@@ -25,7 +25,17 @@ const target = {
 };
 
 function result(entries = 1): PrepareResult {
-  return { target, sites: entries, entries, failures: 0, pruned: 0, functions: 0, enums: 0, diagnostics: [] };
+  return {
+    target,
+    sites: entries,
+    entries,
+    failures: 0,
+    pruned: 0,
+    functions: 0,
+    enums: 0,
+    databaseErrors: 0,
+    diagnostics: [],
+  };
 }
 
 function session(name: string, closed: string[]): PrepareSession {
@@ -167,7 +177,9 @@ test("watch reuses unchanged fingerprints and scans only the changed source", as
       profileFingerprint("api", "SELECT 3"),
       profileFingerprint("worker", "SELECT 3"),
     ]));
+    expect(inputs[0]!.reuseErrorCatalog).toBe(false);
     expect(inputs[1]!.reuseEnumCatalog).toBe(true);
+    expect(inputs[1]!.reuseErrorCatalog).toBe(true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -443,6 +455,7 @@ test("watch reacts to source, SQL, config, and tsconfig graph changes", () => {
   expect(shouldWatchFile("sqlx-js-env.d.ts")).toBe(false);
   expect(shouldWatchFile("types/generated.d.ts", ["types/generated.d.ts"])).toBe(false);
   expect(shouldWatchFile("src/db-enums.ts", ["src/db-enums.ts"])).toBe(false);
+  expect(shouldWatchFile("src/db-errors.ts", ["src/db-errors.ts"])).toBe(false);
   expect(shouldWatchFile("src/sql-files.generated.ts", ["src/sql-files.generated.ts"])).toBe(false);
 });
 
