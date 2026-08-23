@@ -1726,7 +1726,7 @@ export default {
           skipped: 1,
         },
         skips: [{
-          routine: "tmp_error_catalog.raise_dynamic(text)",
+          routine: "tmp_error_catalog.raise_dynamic(pg_catalog.text)",
           statement: 1,
           reason: "dynamic-message",
         }],
@@ -1745,7 +1745,7 @@ export default {
         severity: "warning",
         phase: "cache",
         code: "error-catalog-dynamic-message",
-        functionSignature: "tmp_error_catalog.raise_dynamic(text)",
+        functionSignature: "tmp_error_catalog.raise_dynamic(pg_catalog.text)",
         message: expect.stringContaining("RAISE #1 skipped"),
       }));
       writeRootFile(root, "src/db-errors.ts", "export {};\n");
@@ -1868,7 +1868,7 @@ export default {
       expect(JSON.parse(result.stdout).diagnostics).toEqual([
         expect.objectContaining({
           phase: "config",
-          message: expect.stringContaining("generated declaration, enum catalog, error catalog, and embedded SQL outputs must be distinct"),
+          message: expect.stringContaining("generated declaration, function catalog, enum catalog, error catalog, and embedded SQL outputs must be distinct"),
         }),
       ]);
       expect(readFileSync(output, "utf8")).toBe("export const sentinel = true;\n");
