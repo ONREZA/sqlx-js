@@ -252,10 +252,16 @@ function printPrepareFailure(
       const diagnosticLocation = diagnostic.file
         ? `${diagnostic.file}${diagnostic.line ? `:${diagnostic.line}:${diagnostic.column ?? 1}` : ""}`
         : diagnostic.functionSignature ?? "";
+      const embeddedLocation = diagnostic.file && diagnosticLocation
+        ? `sqlx-js: ${diagnosticLocation} — `
+        : "";
+      const detail = embeddedLocation && diagnostic.message.startsWith(embeddedLocation)
+        ? diagnostic.message.slice(embeddedLocation.length)
+        : diagnostic.message;
       const metadata = diagnostic.code ? ` (code ${diagnostic.code})` : "";
       console.error(
         `${diagnostic.phase} failed: ${diagnosticLocation ? `${diagnosticLocation} — ` : ""}`
-        + `${diagnostic.message}${metadata}`,
+        + `${detail}${metadata}`,
       );
     }
     console.error(`summary: 0 warnings, ${failures.length} error${failures.length === 1 ? "" : "s"} (${phase}: ${failures.length})`);

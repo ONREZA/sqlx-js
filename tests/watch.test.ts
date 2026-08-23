@@ -491,4 +491,16 @@ test("watch JSONL events are one versioned document per line", () => {
     undefined,
     target,
   ))).toMatchObject({ target });
+  const diagnostics = [
+    { severity: "error" as const, phase: "cache" as const, code: "first", message: "first conflict" },
+    { severity: "error" as const, phase: "cache" as const, code: "second", message: "second conflict" },
+  ];
+  expect(watchErrorData(new PrepareFatalError(
+    "cache",
+    "conflicts",
+    {},
+    undefined,
+    undefined,
+    diagnostics,
+  ))).toEqual({ diagnostic: diagnostics[0], diagnostics });
 });

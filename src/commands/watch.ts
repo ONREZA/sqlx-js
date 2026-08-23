@@ -72,16 +72,18 @@ export function watchErrorData(
   if (!(error instanceof PrepareFatalError)) {
     return { ...(resolvedTarget === undefined ? {} : { target: resolvedTarget }), message };
   }
+  const diagnostics = error.diagnostics ?? [{
+    severity: "error" as const,
+    phase: error.phase,
+    message,
+    ...(error.file === undefined ? {} : { file: error.file }),
+    ...(error.line === undefined ? {} : { line: error.line }),
+    ...(error.column === undefined ? {} : { column: error.column }),
+  }];
   return {
     ...(resolvedTarget === undefined ? {} : { target: resolvedTarget }),
-    diagnostic: {
-      severity: "error",
-      phase: error.phase,
-      message,
-      ...(error.file === undefined ? {} : { file: error.file }),
-      ...(error.line === undefined ? {} : { line: error.line }),
-      ...(error.column === undefined ? {} : { column: error.column }),
-    },
+    diagnostic: diagnostics[0],
+    ...(diagnostics.length > 1 ? { diagnostics } : {}),
   };
 }
 
