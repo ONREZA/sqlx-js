@@ -66,9 +66,11 @@ import {
 } from "../prepare-artifacts";
 import { embeddedSqlOutputPath, renderEmbeddedSqlModuleFromSites } from "../embedded-sql";
 import {
+  ErrorCatalogConflictError,
   errorCatalogCacheExists,
   errorCatalogCoverageMessage,
   errorCatalogOutputPath,
+  errorCatalogSkipMessage,
   introspectErrorCatalog,
   readErrorCatalogCache,
   renderErrorCatalog,
@@ -104,6 +106,7 @@ import {
   siteDiagnostic,
   temporalPolicyDiagnostics,
   withOutputHints,
+  PrepareFatalError,
   type PrepareDiagnostic,
 } from "./prepare-diagnostics";
 export {
@@ -895,6 +898,25 @@ export async function prepareOnce(
       try {
         errorCatalog = await introspectErrorCatalog(client, userCfg.errorCatalog.schemas);
       } catch (error) {
+        if (error instanceof ErrorCatalogConflictError) {
+          const conflictDiagnostics: PrepareDiagnostic[] = error.conflicts.map((conflict) => ({
+            severity: "error",
+            phase: "introspect",
+            code: "error-catalog-conflict",
+            message: `${JSON.stringify(conflict.message)} maps to multiple SQLSTATE codes: `
+              + conflict.variants.map((variant) =>
+                `${variant.code} in ${variant.routines.join(", ")}`
+              ).join("; "),
+          }));
+          throw new PrepareFatalError(
+            "introspect",
+            error.message,
+            {},
+            { cause: error },
+            session.target,
+            conflictDiagnostics,
+          );
+        }
         throw fatal("introspect", error, session.target);
       }
     }
@@ -914,6 +936,17 @@ export async function prepareOnce(
       };
       diagnostics.push(diagnostic);
       err(formatPrepareDiagnostic(diagnostic));
+      for (const skip of errorCatalog.skips) {
+        const skipDiagnostic: PrepareDiagnostic = {
+          severity: "warning",
+          phase: reused ? "cache" : "introspect",
+          code: `error-catalog-${skip.reason}`,
+          functionSignature: skip.routine,
+          message: errorCatalogSkipMessage(skip),
+        };
+        diagnostics.push(skipDiagnostic);
+        err(formatPrepareDiagnostic(skipDiagnostic));
+      }
     }
   }
   let pruned: number;

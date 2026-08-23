@@ -1713,7 +1713,7 @@ export default {
       }
       expect(isPgError(raised, generated.DbErrors.PAYMENT_INVALID)).toBe(true);
       expect(JSON.parse(readFileSync(cachePath, "utf8"))).toEqual({
-        version: 1,
+        version: 2,
         errors: [{
           code: "22023",
           message: "PAYMENT_INVALID",
@@ -1725,6 +1725,11 @@ export default {
           extractedOccurrences: 1,
           skipped: 1,
         },
+        skips: [{
+          routine: "tmp_error_catalog.raise_dynamic(text)",
+          statement: 1,
+          reason: "dynamic-message",
+        }],
       });
 
       const checked = prepareRoot(root, ["--check", "--json"]);
@@ -1735,6 +1740,13 @@ export default {
         severity: "warning",
         phase: "cache",
         code: "error-catalog-partial",
+      }));
+      expect(checkedPayload.diagnostics).toContainEqual(expect.objectContaining({
+        severity: "warning",
+        phase: "cache",
+        code: "error-catalog-dynamic-message",
+        functionSignature: "tmp_error_catalog.raise_dynamic(text)",
+        message: expect.stringContaining("RAISE #1 skipped"),
       }));
       writeRootFile(root, "src/db-errors.ts", "export {};\n");
       const stale = prepareRoot(root, ["--check", "--json"]);
@@ -1794,8 +1806,11 @@ export default {
       expect(conflict.code).toBe(1);
       expect(JSON.parse(conflict.stdout).diagnostics).toContainEqual(expect.objectContaining({
         phase: "introspect",
+        code: "error-catalog-conflict",
         message: expect.stringContaining("PAYMENT_REJECTED"),
       }));
+      expect(JSON.parse(conflict.stdout).diagnostics[0].message).toContain("tmp_error_catalog.raise_conflict()");
+      expect(JSON.parse(conflict.stdout).diagnostics[0].message).toContain("tmp_error_catalog.raise_stable()");
       expect(readFileSync(outputPath, "utf8")).toBe(initial);
       await client.simpleQuery("DROP FUNCTION tmp_error_catalog.raise_conflict()");
 

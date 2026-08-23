@@ -320,7 +320,7 @@ export default defineConfig({
 });
 ```
 
-Live prepare reads installed, non-extension-owned PL/pgSQL routines from `pg_proc` in the explicitly listed schemas. It conservatively extracts only exceptions whose SQLSTATE and message can be determined statically. A generated message must match `[A-Z][A-Z0-9_]*`; dynamic expressions, formatted human messages, named conditions without a literal SQLSTATE, and unsupported forms are skipped and reported as partial coverage.
+Live prepare reads installed, non-extension-owned PL/pgSQL routines from `pg_proc` in the explicitly listed schemas. It conservatively extracts only exceptions whose SQLSTATE and message can be determined statically. A generated message must match `[A-Z][A-Z0-9_]*`; dynamic expressions, formatted human messages, named conditions without a literal SQLSTATE, and unsupported forms are skipped and reported as partial coverage. `--warnings` and `--verbose` identify each routine, its exception-level `RAISE` ordinal, and the skip reason. JSON diagnostics expose the same details with stable `error-catalog-dynamic-sqlstate`, `error-catalog-dynamic-message`, `error-catalog-non-symbolic-message`, or `error-catalog-unsupported-form` codes.
 
 ```sql
 RAISE EXCEPTION USING
@@ -358,7 +358,7 @@ try {
 }
 ```
 
-The same symbolic message must always map to one SQLSTATE; live prepare fails on a conflicting mapping and preserves the previous artifact snapshot. Repeated identical pairs are deduplicated while the cache retains their originating routine signatures.
+The same symbolic message must always map to one SQLSTATE; live prepare reports every conflicting message in one pass, including every SQLSTATE and originating routine signature, then preserves the previous artifact snapshot. JSON diagnostics use the stable `error-catalog-conflict` code. Repeated identical pairs are deduplicated while the cache retains their originating routine signatures.
 
 This is a catalog of directly declared, statically identifiable exceptions, not an exhaustive `throws` contract for a query or routine. Extraction does not prove branch reachability or that a lazily validated PL/pgSQL body will execute successfully. PostgreSQL can also raise errors from constraints, built-ins, triggers, nested calls, permissions, concurrency, transport, and dynamic PL/pgSQL paths. Application handling should therefore match known identities without assuming all other failures are impossible.
 

@@ -25,6 +25,23 @@ export type PrepareDiagnosticPhase =
   | "cache"
   | "verify";
 
+export type PrepareDiagnostic = {
+  severity: "error" | "warning";
+  phase: PrepareDiagnosticPhase;
+  message: string;
+  file?: string;
+  line?: number;
+  column?: number;
+  query?: string;
+  queryId?: string;
+  queryName?: string;
+  profile?: string;
+  code?: string;
+  position?: number;
+  hint?: string;
+  functionSignature?: string;
+};
+
 export class PrepareFatalError extends Error {
   public readonly file?: string;
   public readonly line?: number;
@@ -36,6 +53,7 @@ export class PrepareFatalError extends Error {
     location: { file?: string; line?: number; column?: number } = {},
     options?: ErrorOptions,
     public target?: DatabaseTargetSummary,
+    public readonly diagnostics?: PrepareDiagnostic[],
   ) {
     super(message, options);
     this.name = "PrepareFatalError";
@@ -60,23 +78,6 @@ export function fatal(
     : {};
   return new PrepareFatalError(phase, message, location, { cause: error }, target);
 }
-
-export type PrepareDiagnostic = {
-  severity: "error" | "warning";
-  phase: PrepareDiagnosticPhase;
-  message: string;
-  file?: string;
-  line?: number;
-  column?: number;
-  query?: string;
-  queryId?: string;
-  queryName?: string;
-  profile?: string;
-  code?: string;
-  position?: number;
-  hint?: string;
-  functionSignature?: string;
-};
 
 export function addFunctionContractDiagnostics(
   functions: readonly FunctionEntry[],

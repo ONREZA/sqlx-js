@@ -17,6 +17,7 @@ import {
   errorCatalogCacheExists,
   errorCatalogCoverageMessage,
   errorCatalogOutputPath,
+  errorCatalogSkipMessage,
   readErrorCatalogCache,
   renderErrorCatalog,
   type ErrorCatalog,
@@ -299,12 +300,21 @@ export async function runPrepare(opts: PrepareOptions): Promise<void> {
           errorCatalog = readErrorCatalogCache(opts.cacheDir);
           databaseErrorCount = errorCatalog.errors.length;
           const coverageMessage = errorCatalogCoverageMessage(errorCatalog);
-          if (coverageMessage) diagnostics.push({
-            severity: "warning",
-            phase: "cache",
-            code: "error-catalog-partial",
-            message: coverageMessage,
-          });
+          if (coverageMessage) {
+            diagnostics.push({
+              severity: "warning",
+              phase: "cache",
+              code: "error-catalog-partial",
+              message: coverageMessage,
+            });
+            for (const skip of errorCatalog.skips) diagnostics.push({
+              severity: "warning",
+              phase: "cache",
+              code: `error-catalog-${skip.reason}`,
+              functionSignature: skip.routine,
+              message: errorCatalogSkipMessage(skip),
+            });
+          }
         } else {
           diagnostics.push({
             severity: "error",

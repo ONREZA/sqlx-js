@@ -74,6 +74,7 @@ test("prepare artifact publication replaces a legacy cache as one snapshot", () 
       errorCatalog: {
         errors: [{ code: "22023", message: "PAYMENT_INVALID", routines: ["public.charge()"] }],
         coverage: { routinesWithRaises: 1, raiseExceptions: 1, extractedOccurrences: 1, skipped: 0 },
+        skips: [],
       },
       errorModule: {
         path: errorPath,

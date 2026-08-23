@@ -20,14 +20,48 @@ export type ErrorCatalogCoverage = {
   skipped: number;
 };
 
+export type ErrorCatalogSkipReason =
+  | "dynamic-sqlstate"
+  | "dynamic-message"
+  | "non-symbolic-message"
+  | "unsupported-form";
+
+export type ErrorCatalogSkip = {
+  routine: string;
+  statement: number;
+  reason: ErrorCatalogSkipReason;
+};
+
 export type ErrorCatalog = {
   errors: ErrorCatalogEntry[];
   coverage: ErrorCatalogCoverage;
+  skips: ErrorCatalogSkip[];
 };
 
 type ErrorCatalogCacheFile = ErrorCatalog & {
-  version: 1;
+  version: 2;
 };
+
+export type ErrorCatalogConflict = {
+  message: string;
+  variants: Array<{ code: string; routines: string[] }>;
+};
+
+export class ErrorCatalogConflictError extends Error {
+  constructor(public readonly conflicts: ErrorCatalogConflict[]) {
+    const count = conflicts.length;
+    super(
+      `sqlx-js: errorCatalog found ${count} symbolic message conflict${count === 1 ? "" : "s"}:\n`
+      + conflicts.map((conflict) => {
+        const variants = conflict.variants.map((variant) =>
+          `SQLSTATE ${variant.code} in ${variant.routines.join(", ")}`
+        ).join("; ");
+        return `  ${JSON.stringify(conflict.message)}: ${variants}`;
+      }).join("\n"),
+    );
+    this.name = "ErrorCatalogConflictError";
+  }
+}
 
 type Token =
   | { kind: "string"; text: string; value: string }
@@ -76,14 +110,14 @@ export function readErrorCatalogCache(cacheDir: string): ErrorCatalog {
     throw new Error(`sqlx-js: error catalog cache is malformed: ${path}`);
   }
   const file = raw as { version?: unknown; errors?: unknown; coverage?: unknown };
-  if (file.version !== 1) {
+  if (file.version !== 2) {
     throw new Error(`sqlx-js: error catalog cache is stale: ${path}. Run \`sqlx-js prepare\`.`);
   }
   if (!isErrorCatalog(file)) {
     throw new Error(`sqlx-js: error catalog cache is malformed: ${path}`);
   }
   assertCatalog(file, `sqlx-js: error catalog cache is malformed: ${path}`);
-  return { errors: file.errors, coverage: file.coverage };
+  return { errors: file.errors, coverage: file.coverage, skips: file.skips };
 }
 
 export function writeErrorCatalogCache(cacheDir: string, catalog: ErrorCatalog): void {
@@ -91,7 +125,7 @@ export function writeErrorCatalogCache(cacheDir: string, catalog: ErrorCatalog):
   const stable = stableCatalog(catalog);
   assertCatalog(stable, "sqlx-js: cannot write error catalog cache");
   mkdirSync(dirname(path), { recursive: true });
-  writeAtomic(path, JSON.stringify({ version: 1, ...stable } satisfies ErrorCatalogCacheFile, null, 2) + "\n");
+  writeAtomic(path, JSON.stringify({ version: 2, ...stable } satisfies ErrorCatalogCacheFile, null, 2) + "\n");
 }
 
 export function removeErrorCatalogCache(cacheDir: string): void {
@@ -107,7 +141,8 @@ export async function introspectErrorCatalog(
 }
 
 export function extractErrorCatalog(routines: readonly RoutineErrorSource[]): ErrorCatalog {
-  const byMessage = new Map<string, ErrorCatalogEntry>();
+  const byMessage = new Map<string, Map<string, Set<string>>>();
+  const skips: ErrorCatalogSkip[] = [];
   let routinesWithRaises = 0;
   let raiseExceptions = 0;
   let extractedOccurrences = 0;
@@ -116,32 +151,49 @@ export function extractErrorCatalog(routines: readonly RoutineErrorSource[]): Er
       statement.exception && !(statement.valid && statement.tokens.length === 1)
     );
     if (statements.length > 0) routinesWithRaises++;
-    for (const statement of statements) {
+    for (const [statementIndex, statement] of statements.entries()) {
       raiseExceptions++;
-      if (!statement.valid) continue;
-      const identity = extractIdentity(statement.tokens);
-      if (!identity) continue;
-      extractedOccurrences++;
-      const existing = byMessage.get(identity.message);
-      if (existing && existing.code !== identity.code) {
-        throw new Error(
-          `sqlx-js: errorCatalog message ${JSON.stringify(identity.message)} maps to both SQLSTATE `
-          + `${existing.code} and ${identity.code}`,
-        );
+      if (!statement.valid) {
+        skips.push({ routine: routine.signature, statement: statementIndex + 1, reason: "unsupported-form" });
+        continue;
       }
-      const entry = existing ?? { ...identity, routines: [] };
-      if (!entry.routines.includes(routine.signature)) entry.routines.push(routine.signature);
-      byMessage.set(identity.message, entry);
+      const extracted = extractIdentity(statement.tokens);
+      if (!("identity" in extracted)) {
+        skips.push({ routine: routine.signature, statement: statementIndex + 1, reason: extracted.reason });
+        continue;
+      }
+      const { identity } = extracted;
+      extractedOccurrences++;
+      const variants = byMessage.get(identity.message) ?? new Map<string, Set<string>>();
+      const origins = variants.get(identity.code) ?? new Set<string>();
+      origins.add(routine.signature);
+      variants.set(identity.code, origins);
+      byMessage.set(identity.message, variants);
     }
   }
+  const conflicts = [...byMessage.entries()]
+    .filter(([, variants]) => variants.size > 1)
+    .map(([message, variants]) => ({
+      message,
+      variants: [...variants.entries()]
+        .map(([code, origins]) => ({ code, routines: [...origins].sort(compareText) }))
+        .sort((a, b) => compareText(a.code, b.code)),
+    }))
+    .sort((a, b) => compareText(a.message, b.message));
+  if (conflicts.length > 0) throw new ErrorCatalogConflictError(conflicts);
+  const errors = [...byMessage.entries()].map(([message, variants]) => {
+    const [code, origins] = variants.entries().next().value!;
+    return { code, message, routines: [...origins] };
+  });
   return stableCatalog({
-    errors: [...byMessage.values()],
+    errors,
     coverage: {
       routinesWithRaises,
       raiseExceptions,
       extractedOccurrences,
       skipped: raiseExceptions - extractedOccurrences,
     },
+    skips,
   });
 }
 
@@ -173,18 +225,35 @@ export function errorCatalogCoverageMessage(catalog: ErrorCatalog): string | und
   return `errorCatalog skipped ${skipped} of ${raiseExceptions} exception-level RAISE statement(s) because their SQLSTATE or symbolic MESSAGE is dynamic or unsupported`;
 }
 
+export function errorCatalogSkipMessage(skip: ErrorCatalogSkip): string {
+  const reason = {
+    "dynamic-sqlstate": "SQLSTATE is dynamic or not a plain literal",
+    "dynamic-message": "MESSAGE is dynamic or formatted",
+    "non-symbolic-message": "MESSAGE is not a symbolic [A-Z][A-Z0-9_]* identity",
+    "unsupported-form": "RAISE form is ambiguous or unsupported",
+  }[skip.reason];
+  return `RAISE #${skip.statement} skipped: ${reason}`;
+}
+
 export function writeErrorCatalogModule(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
   writeAtomic(path, content);
 }
 
-function extractIdentity(tokens: readonly Token[]): { code: string; message: string } | null {
+function extractIdentity(tokens: readonly Token[]):
+  | { identity: { code: string; message: string } }
+  | { reason: ErrorCatalogSkipReason } {
   let cursor = 1;
   if (word(tokens[cursor], "EXCEPTION")) cursor++;
   const first = tokens[cursor];
-  if (!(first?.kind === "string" || word(first, "SQLSTATE") || word(first, "USING"))) return null;
+  if (!(first?.kind === "string" || word(first, "SQLSTATE") || word(first, "USING"))) {
+    return { reason: "unsupported-form" };
+  }
   const usingIndex = findTopLevelWord(tokens, "USING", cursor);
   const options = splitTopLevel(usingIndex === -1 ? [] : tokens.slice(usingIndex + 1), ",");
+  if (optionCount(options, "ERRCODE") > 1 || optionCount(options, "MESSAGE") > 1) {
+    return { reason: "unsupported-form" };
+  }
   const hasOptionCode = optionPresent(options, "ERRCODE");
   const hasOptionMessage = optionPresent(options, "MESSAGE");
   const optionCode = optionLiteral(options, "ERRCODE");
@@ -193,7 +262,7 @@ function extractIdentity(tokens: readonly Token[]): { code: string; message: str
   let message = optionMessage;
 
   if ((first?.kind === "string" && hasOptionMessage) || (word(first, "SQLSTATE") && hasOptionCode)) {
-    return null;
+    return { reason: "unsupported-form" };
   }
 
   if (word(first, "SQLSTATE")) {
@@ -214,8 +283,15 @@ function extractIdentity(tokens: readonly Token[]): { code: string; message: str
     && !hasOptionCode
     && (first?.kind === "string" || word(first, "USING"))
   ) code = "P0001";
-  if (!code || !message || !SQLSTATE.test(code) || code === "00000" || !ERROR_MESSAGE.test(message)) return null;
-  return { code, message };
+  if (!code) return { reason: hasOptionCode || word(first, "SQLSTATE") ? "dynamic-sqlstate" : "unsupported-form" };
+  if (!message) return { reason: hasOptionMessage || first?.kind === "string" ? "dynamic-message" : "unsupported-form" };
+  if (!SQLSTATE.test(code) || code === "00000") return { reason: "unsupported-form" };
+  if (!ERROR_MESSAGE.test(message)) return { reason: "non-symbolic-message" };
+  return { identity: { code, message } };
+}
+
+function optionCount(options: readonly Token[][], name: string): number {
+  return options.filter((segment) => word(segment[0], name)).length;
 }
 
 function optionLiteral(options: readonly Token[][], name: string): string | undefined {
@@ -429,6 +505,9 @@ function stableCatalog(catalog: ErrorCatalog): ErrorCatalog {
       .map((entry) => ({ ...entry, routines: [...new Set(entry.routines)].sort(compareText) }))
       .sort((a, b) => compareText(a.message, b.message)),
     coverage: { ...catalog.coverage },
+    skips: catalog.skips
+      .map((skip) => ({ ...skip }))
+      .sort((a, b) => compareText(a.routine, b.routine) || a.statement - b.statement || compareText(a.reason, b.reason)),
   };
 }
 
@@ -440,6 +519,7 @@ function assertCatalog(catalog: ErrorCatalog, prefix: string): void {
     || catalog.coverage.routinesWithRaises > catalog.coverage.raiseExceptions
     || catalog.errors.length > catalog.coverage.extractedOccurrences
     || (catalog.coverage.extractedOccurrences > 0 && catalog.errors.length === 0)
+    || catalog.skips.length !== catalog.coverage.skipped
   ) {
     throw new Error(prefix);
   }
@@ -467,12 +547,25 @@ function assertCatalog(catalog: ErrorCatalog, prefix: string): void {
 
 function isErrorCatalog(value: unknown): value is ErrorCatalog {
   if (!value || typeof value !== "object") return false;
-  const catalog = value as { errors?: unknown; coverage?: unknown };
+  const catalog = value as { errors?: unknown; coverage?: unknown; skips?: unknown };
   if (!Array.isArray(catalog.errors) || !catalog.errors.every(isErrorCatalogEntry)) return false;
+  if (!Array.isArray(catalog.skips) || !catalog.skips.every(isErrorCatalogSkip)) return false;
   if (!catalog.coverage || typeof catalog.coverage !== "object") return false;
   const coverage = catalog.coverage as Record<string, unknown>;
   return ["routinesWithRaises", "raiseExceptions", "extractedOccurrences", "skipped"]
     .every((key) => Number.isSafeInteger(coverage[key]) && (coverage[key] as number) >= 0);
+}
+
+function isErrorCatalogSkip(value: unknown): value is ErrorCatalogSkip {
+  if (!value || typeof value !== "object") return false;
+  const skip = value as Record<string, unknown>;
+  return typeof skip.routine === "string"
+    && skip.routine.length > 0
+    && Number.isSafeInteger(skip.statement)
+    && (skip.statement as number) >= 1
+    && ["dynamic-sqlstate", "dynamic-message", "non-symbolic-message", "unsupported-form"].includes(
+      skip.reason as string,
+    );
 }
 
 function isErrorCatalogEntry(value: unknown): value is ErrorCatalogEntry {
