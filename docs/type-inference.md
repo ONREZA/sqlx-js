@@ -23,6 +23,10 @@ Planning does not use `ANALYZE` and never executes the query. Statements outside
 the server-owned generic-plan surface are recorded as `parse-only`; Parse and
 Describe still validate their PostgreSQL contract.
 
+The analyzer uses the PostgreSQL 18 grammar. PostgreSQL 16 and 17 remain
+supported; the target server must accept a query before its AST is analyzed.
+Parser support does not make newer SQL syntax available on an older server.
+
 ## PostgreSQL type mapping
 
 The OID returned by PostgreSQL is the starting point. Built-in scalar, array,
@@ -60,7 +64,11 @@ regardless of the base table constraint. Inner join predicates can narrow
 columns because rows that do not satisfy the predicate are removed.
 
 Aliases, CTEs, derived tables, and supported lateral shapes retain source
-provenance. Ambiguous multi-relation stars and recursive self-references can
+provenance. Positional column aliases such as `AS p(before, after)` rename
+output slots without changing their physical source or nullability, including
+duplicate names from `OLD.*` and `NEW.*`. Schema-qualified relation identities
+keep equally named tables separate during joins and predicate narrowing.
+Ambiguous multi-relation stars and recursive self-references can
 lose enough provenance to require an explicit projection or assertion; see
 [Limitations and non-goals](./limitations.md).
 
@@ -107,6 +115,34 @@ Compatible configured application types are preserved across direct and
 CTE-backed branches; incompatible declarations fall back or fail according to
 the contract instead of being selected by traversal order.
 
+### DML RETURNING
+
+On PostgreSQL 18, `INSERT`, `UPDATE`, and `DELETE` can return both row versions,
+including aliases declared by `RETURNING WITH`:
+
+```sql
+INSERT INTO returning_probe (id, value) VALUES ($1, $2)
+ON CONFLICT (id) DO UPDATE SET value = EXCLUDED.value
+RETURNING WITH (OLD AS previous, NEW AS stored)
+  previous.id AS previous_id, stored.id AS stored_id;
+```
+
+For a primary-key `id`, `previous_id` is `number | null` and `stored_id` is
+`number`. The insert path has no old row; the conflict-update path can return
+one. `DELETE` similarly keeps `NEW` columns nullable, even when their source
+columns are `NOT NULL`. `UPDATE` retains schema nullability for both versions.
+Its pre-update predicates can narrow `OLD`, but cannot prove that updated
+`NEW` columns remain non-null.
+
+Default `old`/`new` names and explicit aliases retain column provenance for
+`columnTypes`, JSON, and array contracts, including through DML CTEs. Qualified
+stars expand each version separately; unqualified `RETURNING *` includes only
+the target table. Existing relation aliases can mask the default names.
+
+Upgrading from the PostgreSQL 17 parser requires a fresh live `prepare` and
+committing the regenerated artifacts. `prepare --check` rejects the previous
+generator revision with regeneration guidance.
+
 ### Explicit result assertions
 
 Use a column alias when the application owns a guarantee PostgreSQL metadata
@@ -145,6 +181,10 @@ type. sqlx-js then maps each `$N` to its direct SQL use:
 All compatible targets are aggregated. Conflicting application-owned
 declarations fail prepare with the affected columns instead of silently
 choosing one.
+
+CTE and derived-relation references do not inherit declarations from an
+equally named physical table. When parameter provenance cannot be traced to
+a physical column, its type falls back to PostgreSQL's parameter description.
 
 ### Parameter nullability
 

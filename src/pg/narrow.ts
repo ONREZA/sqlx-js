@@ -1,5 +1,13 @@
 export type NonNullSet = Set<string>;
 
+export function columnKey(alias: string | undefined, column: string): string {
+  return JSON.stringify([alias ?? "", column]);
+}
+
+export function columnReference(key: string): [alias: string, column: string] {
+  return JSON.parse(key) as [string, string];
+}
+
 const NULL_REJECTING_OPS = new Set(["=", "!=", "<>", "<", ">", "<=", ">="]);
 type EqualityEdge = readonly [string, string];
 type NarrowInfo = { forced: NonNullSet; equalities: EqualityEdge[] };
@@ -127,12 +135,13 @@ function keyOfColumnRef(node: any): string | null {
   if (fields.some((f: any) => f.A_Star !== undefined)) return null;
   if (fields.length === 1) {
     const col = fields[0]?.String?.sval;
-    return typeof col === "string" ? `|${col}` : null;
+    return typeof col === "string" ? columnKey(undefined, col) : null;
   }
   const alias = fields[fields.length - 2]?.String?.sval;
   const col = fields[fields.length - 1]?.String?.sval;
   if (typeof alias !== "string" || typeof col !== "string") return null;
-  return `${alias}|${col}`;
+  const schema = fields.length >= 3 ? fields[fields.length - 3]?.String?.sval : undefined;
+  return columnKey(schema === undefined ? alias : `${schema}\0${alias}`, col);
 }
 
 function isNullLiteral(node: any): boolean {
@@ -140,12 +149,5 @@ function isNullLiteral(node: any): boolean {
 }
 
 export function isNarrowed(set: NonNullSet, alias: string | undefined, col: string): boolean {
-  if (set.size === 0) return false;
-  if (alias && set.has(`${alias}|${col}`)) return true;
-  if (set.has(`|${col}`)) return true;
-  if (!alias) {
-    const suffix = `|${col}`;
-    for (const k of set) if (k.endsWith(suffix)) return true;
-  }
-  return false;
+  return set.has(columnKey(alias, col)) || set.has(columnKey(undefined, col));
 }

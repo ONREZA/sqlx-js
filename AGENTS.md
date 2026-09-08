@@ -60,6 +60,10 @@ The library is **PostgreSQL-only** and keeps SQL/result validation at prepare ti
 │       ├── schema.ts         query-time pg_class / pg_attribute / pg_type / pg_enum loaders
 │       ├── extensions.ts     Built-in extension type registry
 │       ├── analyze.ts        libpg-query-based nullability inference
+│       ├── analyze-types.ts  Shared analysis scope and column provenance contracts
+│       ├── analyze-columns.ts Shared column resolution, alias remapping, and star expansion
+│       ├── relation-alias.ts  PostgreSQL relation namespace and positional alias identities
+│       ├── returning.ts      PostgreSQL 18 DML row-version aliases and RETURNING scope
 │       ├── narrow.ts         WHERE-clause non-null narrowing
 │       └── param-map.ts      Maps $N → DML targets and predicate references
 ├── tests/                    Bun-test unit + integration tests
@@ -141,7 +145,7 @@ Edit `src/pg/oids.ts`. Add to `SCALAR` (single types) or `ARRAY` (where the valu
 
 ### Adding a new narrowing predicate
 
-`src/pg/narrow.ts` → the `walk` function. The walker returns a `Set<string>` of `alias|col` keys. Honor AND/OR semantics: union for AND, intersection for OR.
+`src/pg/narrow.ts` → the `walk` function. The walker returns a `Set<string>` of collision-free qualified column keys, encoded by `columnKey`. Preserve schema identity and quoted identifiers. Honor AND/OR semantics: union for AND, intersection for OR.
 
 ### Adding a new param-mapping case
 

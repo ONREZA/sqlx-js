@@ -89,7 +89,7 @@
     }
   },
   "dependencies": {
-    "libpg-query": "^17.7.4"
+    "libpg-query": "^18.1.4"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^12.1.0",
