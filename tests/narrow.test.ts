@@ -68,14 +68,22 @@ test("qualified WHERE matches qualified lookup", async () => {
   expect(isNarrowed(set, "u", "bio")).toBe(true);
 });
 
-test("schema-qualified WHERE narrows through the table name", async () => {
+test("schema-qualified WHERE preserves the namespace in its narrowing key", async () => {
   const set = narrowFromWhere(
     await whereOf("SELECT app.users.id FROM app.users WHERE app.users.bio IS NOT NULL"),
   );
-  expect(isNarrowed(set, "users", "bio")).toBe(true);
+  expect(isNarrowed(set, "app\0users", "bio")).toBe(true);
+  expect(isNarrowed(set, "other\0users", "bio")).toBe(false);
+  expect(isNarrowed(set, "users", "bio")).toBe(false);
 });
 
 test("unqualified WHERE matches qualified lookup", async () => {
   const set = narrowFromWhere(await whereOf("SELECT id FROM users WHERE bio IS NOT NULL"));
   expect(isNarrowed(set, "users", "bio")).toBe(true);
+});
+
+test("quoted identifiers cannot collide with narrowing key separators", async () => {
+  const set = narrowFromWhere(await whereOf('SELECT 1 FROM users AS "p|q" WHERE "p|q".bio IS NOT NULL'));
+  expect(isNarrowed(set, "p|q", "bio")).toBe(true);
+  expect(isNarrowed(set, "p", "q|bio")).toBe(false);
 });

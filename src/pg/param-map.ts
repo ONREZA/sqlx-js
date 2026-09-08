@@ -1,4 +1,5 @@
 import { parse } from "libpg-query";
+import { aliasColumnNames } from "./relation-alias";
 
 export type ParamTarget = { schema?: string; table: string; column?: string; columnIndex?: number };
 export type DmlParamTarget = { target: ParamTarget; nullSafe: boolean };
@@ -33,41 +34,49 @@ export function effectiveParamTargets(binding: ParamBinding | undefined): ParamT
     : binding.referenceTargets;
 }
 
-type Rel = { schema?: string; table: string };
+type Rel = { schema?: string; table: string; columnAliases?: string[] };
 
 type Scope = {
-  aliases: Map<string, Rel>;
+  aliases: Map<string, Rel | null>;
+  ctes: ReadonlySet<string>;
+  hasUnknownRelation: boolean;
   relations: Rel[];
   defaultRel: Rel | null;
 };
 
-function walkStatement(stmt: any, map: ParamMap): void {
-  if (stmt?.InsertStmt) walkInsert(stmt.InsertStmt, map);
-  else if (stmt?.UpdateStmt) walkUpdate(stmt.UpdateStmt, map);
-  else if (stmt?.SelectStmt) walkSelect(stmt.SelectStmt, map);
-  else if (stmt?.DeleteStmt) walkDelete(stmt.DeleteStmt, map);
+function walkStatement(stmt: any, map: ParamMap, ctes: ReadonlySet<string> = new Set()): void {
+  if (stmt?.InsertStmt) walkInsert(stmt.InsertStmt, map, ctes);
+  else if (stmt?.UpdateStmt) walkUpdate(stmt.UpdateStmt, map, ctes);
+  else if (stmt?.SelectStmt) walkSelect(stmt.SelectStmt, map, ctes);
+  else if (stmt?.DeleteStmt) walkDelete(stmt.DeleteStmt, map, ctes);
 }
 
-function walkWithClause(withClause: any, map: ParamMap): void {
-  for (const wrapper of withClause?.ctes ?? []) {
-    walkStatement(wrapper?.CommonTableExpr?.ctequery, map);
+function walkWithClause(withClause: any, map: ParamMap, inherited: ReadonlySet<string>): ReadonlySet<string> {
+  const ctes = new Set(inherited);
+  if (withClause?.recursive) {
+    for (const wrapper of withClause.ctes ?? []) ctes.add(wrapper.CommonTableExpr.ctename);
   }
+  for (const wrapper of withClause?.ctes ?? []) {
+    const cte = wrapper.CommonTableExpr;
+    walkStatement(cte.ctequery, map, ctes);
+    ctes.add(cte.ctename);
+  }
+  return ctes;
 }
 
-function walkInsert(ins: any, map: ParamMap): void {
-  walkWithClause(ins.withClause, map);
+function walkInsert(ins: any, map: ParamMap, inheritedCtes: ReadonlySet<string>): void {
+  const ctes = walkWithClause(ins.withClause, map, inheritedCtes);
   const rel = relOf(ins.relation);
   if (!rel) return;
-  const scope = scopeFromRelationNode(ins.relation, rel);
+  const scope = scopeFromRelationNode(ins.relation, rel, ctes);
   const cols: string[] = (ins.cols ?? [])
     .map((c: any) => c?.ResTarget?.name)
     .filter((n: any): n is string => typeof n === "string");
   const select = ins.selectStmt?.SelectStmt;
   if (select) {
     bindSelectValueParams(select, (index) => insertTarget(rel, cols, index), map);
-    walkSelect(select, map);
+    walkSelect(select, map, ctes);
   }
-  if (ins.returningList) walkExpr(ins.returningList, scope, map);
   walkOnConflict(ins.onConflictClause, rel, scope, map);
   walkExpr(ins.whereClause, scope, map);
 }
@@ -78,42 +87,42 @@ function walkOnConflict(conflict: any, rel: Rel, scope: Scope, map: ParamMap): v
   for (const rt of conflict.targetList ?? []) {
     const colName = rt?.ResTarget?.name;
     if (typeof colName !== "string") continue;
-    bindAssignmentValueParams(rt.ResTarget.val, { ...rel, column: colName }, map, guards);
+    bindAssignmentValueParams(rt.ResTarget.val, { ...rel, column: colName }, map, guards, scope.ctes);
     walkExpr(rt.ResTarget.val, scope, map);
   }
   walkExpr(conflict.whereClause, scope, map);
 }
 
-function walkUpdate(upd: any, map: ParamMap): void {
-  walkWithClause(upd.withClause, map);
+function walkUpdate(upd: any, map: ParamMap, inheritedCtes: ReadonlySet<string>): void {
+  const ctes = walkWithClause(upd.withClause, map, inheritedCtes);
   const rel = relOf(upd.relation);
   if (!rel) return;
-  const scope = scopeFromRelationNode(upd.relation, rel);
+  const scope = scopeFromRelationNode(upd.relation, rel, ctes);
   addRangeVars(upd.fromClause ?? [], scope);
   const guards = nonNullGuardParams(upd.whereClause);
   for (const rt of upd.targetList ?? []) {
     const colName = rt?.ResTarget?.name;
     if (typeof colName !== "string") continue;
-    bindAssignmentValueParams(rt.ResTarget.val, { ...rel, column: colName }, map, guards);
+    bindAssignmentValueParams(rt.ResTarget.val, { ...rel, column: colName }, map, guards, scope.ctes);
     walkExpr(rt.ResTarget.val, scope, map);
   }
   walkExpr(upd.whereClause, scope, map);
 }
 
-function walkDelete(del: any, map: ParamMap): void {
-  walkWithClause(del.withClause, map);
+function walkDelete(del: any, map: ParamMap, inheritedCtes: ReadonlySet<string>): void {
+  const ctes = walkWithClause(del.withClause, map, inheritedCtes);
   const rel = relOf(del.relation);
   if (!rel) return;
-  const scope = scopeFromRelationNode(del.relation, rel);
+  const scope = scopeFromRelationNode(del.relation, rel, ctes);
   addRangeVars(del.usingClause ?? [], scope);
   walkExpr(del.whereClause, scope, map);
 }
 
-function walkSelect(select: any, map: ParamMap): void {
-  walkWithClause(select?.withClause, map);
-  if (select?.larg) walkSelect(select.larg, map);
-  if (select?.rarg) walkSelect(select.rarg, map);
-  const scope = scopeFromSelect(select);
+function walkSelect(select: any, map: ParamMap, inheritedCtes: ReadonlySet<string>): void {
+  const ctes = walkWithClause(select?.withClause, map, inheritedCtes);
+  if (select?.larg) walkSelect(select.larg, map, ctes);
+  if (select?.rarg) walkSelect(select.rarg, map, ctes);
+  const scope = scopeFromSelect(select, ctes);
   walkJoinQuals(select.fromClause ?? [], scope, map);
   walkExpr(select.whereClause, scope, map);
 }
@@ -148,7 +157,8 @@ function bindAssignmentValueParams(
   node: any,
   target: ParamTarget,
   map: ParamMap,
-  guards: ReadonlySet<number> = new Set(),
+  guards: ReadonlySet<number>,
+  ctes: ReadonlySet<string>,
 ): void {
   const multi = node?.MultiAssignRef;
   if (!multi || typeof multi.colno !== "number") {
@@ -164,7 +174,7 @@ function bindAssignmentValueParams(
   const select = multi.source?.SubLink?.subselect?.SelectStmt;
   if (!select) return;
   bindSelectValueParams(select, (candidate) => candidate === index ? target : undefined, map, guards);
-  walkSelect(select, map);
+  walkSelect(select, map, ctes);
 }
 
 function walkExpr(node: any, scope: Scope, map: ParamMap): void {
@@ -212,7 +222,7 @@ function walkExpr(node: any, scope: Scope, map: ParamMap): void {
   }
   if (node.SubLink) {
     const sub = node.SubLink.subselect?.SelectStmt;
-    if (sub) walkSelect(sub, map);
+    if (sub) walkSelect(sub, map, scope.ctes);
     walkExpr(node.SubLink.testexpr, scope, map);
     return;
   }
@@ -377,16 +387,22 @@ function targetOfColumnRef(node: any, scope: Scope): ParamTarget | null {
   if (!fields) return null;
   const column = fields[fields.length - 1]!;
   if (fields.length === 1) {
-    return scope.defaultRel ? { ...scope.defaultRel, column } : null;
+    return scope.defaultRel ? referenceTarget(scope.defaultRel, column) : null;
   }
   if (fields.length === 2) {
     const qualifier = fields[0]!;
+    if (scope.aliases.get(qualifier) === null) return null;
     const rel = scope.aliases.get(qualifier) ?? scope.relations.find((r) => r.table === qualifier);
-    return rel ? { ...rel, column } : { table: qualifier, column };
+    return rel ? referenceTarget(rel, column) : { table: qualifier, column };
   }
   const table = fields[fields.length - 2]!;
   const schema = fields[fields.length - 3]!;
   return { schema, table, column };
+}
+
+function referenceTarget(rel: Rel, column: string): ParamTarget {
+  const index = rel.columnAliases?.indexOf(column) ?? -1;
+  return { schema: rel.schema, table: rel.table, ...(index >= 0 ? { columnIndex: index + 1 } : { column }) };
 }
 
 function paramNumber(node: any): number | null {
@@ -407,21 +423,21 @@ function insertTarget(rel: Rel, cols: string[], index: number): ParamTarget {
   return column ? { ...rel, column } : { ...rel, columnIndex: index + 1 };
 }
 
-function scopeFromSelect(select: any): Scope {
-  const scope = scopeFromRelations([], null);
+function scopeFromSelect(select: any, ctes: ReadonlySet<string>): Scope {
+  const scope = scopeFromRelations([], null, ctes);
   addRangeVars(select?.fromClause ?? [], scope);
-  if (scope.relations.length === 1) scope.defaultRel = scope.relations[0]!;
+  if (scope.relations.length === 1 && !scope.hasUnknownRelation) scope.defaultRel = scope.relations[0]!;
   return scope;
 }
 
-function scopeFromRelations(relations: Rel[], defaultRel: Rel | null): Scope {
-  const scope: Scope = { aliases: new Map(), relations: [], defaultRel };
+function scopeFromRelations(relations: Rel[], defaultRel: Rel | null, ctes: ReadonlySet<string>): Scope {
+  const scope: Scope = { aliases: new Map(), relations: [], defaultRel, ctes, hasUnknownRelation: false };
   for (const rel of relations) addRelation(scope, rel, rel.table);
   return scope;
 }
 
-function scopeFromRelationNode(relation: any, rel: Rel): Scope {
-  const scope = scopeFromRelations([rel], rel);
+function scopeFromRelationNode(relation: any, rel: Rel, ctes: ReadonlySet<string>): Scope {
+  const scope = scopeFromRelations([rel], rel, ctes);
   const alias = relation?.alias?.aliasname;
   if (typeof alias === "string") scope.aliases.set(alias, rel);
   return scope;
@@ -434,11 +450,23 @@ function addRelation(scope: Scope, rel: Rel, alias: string): void {
 
 function addRangeVars(nodes: any[], scope: Scope): void {
   for (const node of nodes) {
+    const derived = node?.RangeSubselect ?? node?.RangeFunction ?? node?.RangeTableFunc;
+    if (derived) {
+      const alias = derived.alias?.aliasname;
+      if (typeof alias === "string") scope.aliases.set(alias, null);
+      scope.hasUnknownRelation = true;
+      continue;
+    }
     if (node?.RangeVar) {
       const rel = relOf(node.RangeVar);
       if (!rel) continue;
       const alias = node.RangeVar.alias?.aliasname ?? rel.table;
-      addRelation(scope, rel, alias);
+      if (!node.RangeVar.schemaname && scope.ctes.has(rel.table)) {
+        scope.aliases.set(alias, null);
+        scope.hasUnknownRelation = true;
+        continue;
+      }
+      addRelation(scope, { ...rel, columnAliases: aliasColumnNames(node.RangeVar.alias) }, alias);
       continue;
     }
     if (node?.JoinExpr) {

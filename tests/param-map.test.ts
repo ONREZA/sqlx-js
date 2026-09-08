@@ -41,6 +41,31 @@ test("INSERT VALUES maps params to columns by position", async () => {
   expect(r.forceNullable.size).toBe(0);
 });
 
+test("CTE references cannot acquire provenance from an equally named physical table", async () => {
+  for (const qualifier of ["", "probe.", "p."]) {
+    const from = qualifier === "p." ? "probe AS p" : "probe";
+    const result = await buildParamMap(`WITH probe AS (SELECT chr(118) AS id) SELECT id FROM ${from} WHERE ${qualifier}id = $1`);
+    expect(result.bindings.has(1)).toBe(false);
+  }
+});
+
+test("physical DML targets and schema-qualified references remain visible beside CTEs", async () => {
+  const result = await buildParamMap("WITH probe AS (SELECT chr(118) AS id) UPDATE public.probe SET value = $1 FROM probe AS p WHERE public.probe.id = $2 AND p.id = $3");
+  expect(target(result, 1)).toEqual({ schema: "public", table: "probe", column: "value" });
+  expect(target(result, 2)).toEqual({ schema: "public", table: "probe", column: "id" });
+  expect(result.bindings.has(3)).toBe(false);
+});
+
+test("CTE visibility follows definition order, nested statements, and recursive forward references", async () => {
+  const nonrecursive = await buildParamMap("WITH probe AS (SELECT id FROM probe WHERE id = $1) SELECT id FROM probe WHERE id = $2");
+  expect(target(nonrecursive, 1)).toEqual({ schema: undefined, table: "probe", column: "id" });
+  expect(nonrecursive.bindings.has(2)).toBe(false);
+  const recursive = await buildParamMap("WITH RECURSIVE first AS (SELECT id FROM probe WHERE id = $1), probe AS (SELECT 1 AS id) SELECT * FROM first");
+  expect(recursive.bindings.has(1)).toBe(false);
+  const nested = await buildParamMap("WITH probe AS (SELECT 1 AS id) SELECT 1 WHERE EXISTS(SELECT 1 FROM probe WHERE id = $1)");
+  expect(nested.bindings.has(1)).toBe(false);
+});
+
 test("multi-row INSERT VALUES maps each row's params and marks them DML-bound", async () => {
   const r = await buildParamMap(
     "INSERT INTO users (name, settings) VALUES ($1, $2), ($3, $4)",
