@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.36.2](https://github.com/ONREZA/sqlx-js/compare/v0.36.1...v0.36.2) (2026-09-08)
+
+
+### Bug Fixes
+
+* **prepare:** support postgres 18 returning ([33b000e](https://github.com/ONREZA/sqlx-js/commit/33b000ef241355b553f9d666d113b8bcfa5e981d)), closes [#99](https://github.com/ONREZA/sqlx-js/issues/99)
+
 ## [0.36.1](https://github.com/ONREZA/sqlx-js/compare/v0.36.0...v0.36.1) (2026-08-23)
 
 
