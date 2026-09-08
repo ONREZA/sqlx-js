@@ -1,86 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { createServer, type Server } from "node:net";
 import { Temporal } from "temporal-polyfill";
 import {
   PostgresAdvisoryLockLostError,
   tryAcquirePostgresAdvisoryLock,
+  type PostgresAdvisoryLockKey,
 } from "../src/index";
 
-let server: Server | undefined;
+import { controlServer, within } from "./helpers/postgres-control-server";
 
+let server: Awaited<ReturnType<typeof controlServer>> | undefined;
 afterEach(async () => {
-  if (!server) return;
-  await new Promise<void>((resolve) => server!.close(() => resolve()));
+  await server?.close();
   server = undefined;
 });
-
-function protocolMessage(type: string, body: Buffer): Buffer {
-  const message = Buffer.alloc(5 + body.length);
-  message[0] = type.charCodeAt(0);
-  message.writeInt32BE(body.length + 4, 1);
-  body.copy(message, 5);
-  return message;
-}
-
-function int32(value: number): Buffer {
-  const result = Buffer.alloc(4);
-  result.writeInt32BE(value);
-  return result;
-}
-
-function parameterStatus(name: string, value: string): Buffer {
-  return protocolMessage("S", Buffer.from(`${name}\0${value}\0`));
-}
-
-async function stalledPostgresServer(): Promise<{
-  readonly closed: Promise<void>;
-  readonly port: number;
-  readonly querySeen: Promise<void>;
-}> {
-  let resolveClosed!: () => void;
-  let resolveQuerySeen!: () => void;
-  const closed = new Promise<void>((resolve) => {
-    resolveClosed = resolve;
-  });
-  const querySeen = new Promise<void>((resolve) => {
-    resolveQuerySeen = resolve;
-  });
-  server = createServer((socket) => {
-    let ready = false;
-    socket.once("close", resolveClosed);
-    socket.on("data", () => {
-      if (ready) {
-        resolveQuerySeen();
-        return;
-      }
-      ready = true;
-      socket.write(Buffer.concat([
-        protocolMessage("R", int32(0)),
-        parameterStatus("server_version", "17.0"),
-        parameterStatus("TimeZone", "UTC"),
-        parameterStatus("DateStyle", "ISO, MDY"),
-        protocolMessage("K", Buffer.concat([int32(123), int32(456)])),
-        protocolMessage("Z", Buffer.from("I")),
-      ]));
-    });
-  });
-  await new Promise<void>((resolve, reject) => {
-    server!.once("error", reject);
-    server!.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("expected TCP server address");
-  return { closed, port: address.port, querySeen };
-}
-
-async function within<T>(promise: Promise<T>, message: string): Promise<T> {
-  return await Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(message)), 2_000);
-    }),
-  ]);
-}
 
 describe("PostgreSQL advisory lock input", () => {
   const url = "postgresql://postgres:postgres@127.0.0.1:1/postgres";
@@ -94,6 +26,19 @@ describe("PostgreSQL advisory lock input", () => {
       namespace: 0,
       resource: 1.5,
     })).rejects.toThrow("resource must be a signed 32-bit integer");
+  });
+
+  test("rejects bigint keys outside signed int64 before connecting", async () => {
+    for (const key of [-9_223_372_036_854_775_809n, 9_223_372_036_854_775_808n]) {
+      await expect(tryAcquirePostgresAdvisoryLock(url, key))
+        .rejects.toThrow("bigint key must be a signed 64-bit integer");
+    }
+  });
+
+  test("rejects numeric and string substitutes for bigint before connecting", async () => {
+    for (const key of [300003, "300003", Object(300003n)]) {
+      await expect(tryAcquirePostgresAdvisoryLock(url, key as never)).rejects.toBeInstanceOf(TypeError);
+    }
   });
 
   test("rejects non-object keys before connecting", async () => {
@@ -143,17 +88,34 @@ describe("PostgreSQL advisory lock input", () => {
     expect(error.cause).toBe(cause);
   });
 
-  test("destroys a session when a control query exceeds its deadline", async () => {
-    const stalled = await stalledPostgresServer();
-    const acquisition = tryAcquirePostgresAdvisoryLock(
-      `postgresql://x:x@127.0.0.1:${stalled.port}/x?sslmode=disable`,
-      { namespace: 7, resource: 9 },
-      { temporalApi: Temporal, connectTimeoutMs: 1_000, operationTimeoutMs: 500 },
-    );
-    const rejected = expect(acquisition).rejects.toThrow("acquisition timed out after 500ms");
-
-    await within(stalled.querySeen, "advisory lock query was not dispatched");
-    await rejected;
-    await within(stalled.closed, "timed-out advisory lock socket remained open");
+  test("preserves a bigint key and its exact value in lock-loss errors", () => {
+    const key = -9_223_372_036_854_775_808n;
+    const cause = new Error("connection closed");
+    const error = new PostgresAdvisoryLockLostError(key, { cause });
+    expect(error.key).toBe(key);
+    expect(error.message).toContain("(bigint -9223372036854775808)");
+    expect(error.cause).toBe(cause);
   });
+
+  test.each<PostgresAdvisoryLockKey>([{ namespace: 7, resource: 9 }, 300003n])(
+    "destroys a session when acquisition exceeds its deadline for %p", async (key) => {
+      let querySeen!: () => void;
+      const dispatched = new Promise<void>((resolve) => { querySeen = resolve; });
+      server = await controlServer([{
+        flag: "acquired",
+        parameterOids: typeof key === "bigint" ? [20] : [23, 23],
+        rows: new Promise(() => {}),
+        onExecute: querySeen,
+      }]);
+      const acquisition = tryAcquirePostgresAdvisoryLock(
+        server.url,
+        key,
+        { temporalApi: Temporal, connectTimeoutMs: 1_000, operationTimeoutMs: 500 },
+      );
+      const outcome = acquisition.then(() => null, (error: unknown) => error);
+      await within(dispatched, "advisory lock query was not dispatched");
+      expect(await outcome).toMatchObject({ message: "sqlx-js: PostgreSQL advisory lock acquisition timed out after 500ms" });
+      await within(server.closed, "timed-out advisory lock socket remained open");
+    },
+  );
 });

@@ -4,29 +4,18 @@ import {
   type PostgresSession,
   type PostgresSessionOptions,
 } from "./postgres-runtime";
+import {
+  advisoryLockControl,
+  CHECK_ADVISORY_LOCK_SQL,
+  formatAdvisoryLockKey,
+  type PostgresAdvisoryLockControl,
+  type PostgresAdvisoryLockInt4Key,
+  type PostgresAdvisoryLockKey,
+} from "./postgres-advisory-lock-key";
 
-const MIN_INT32 = -2_147_483_648;
-const MAX_INT32 = 2_147_483_647;
+export type { PostgresAdvisoryLockInt4Key, PostgresAdvisoryLockKey } from "./postgres-advisory-lock-key";
+
 const MAX_TIMEOUT_MS = 2_147_483_647;
-
-const ACQUIRE_SQL = `SELECT
-  pg_catalog.pg_backend_pid() AS backend_pid,
-  pg_catalog.pg_try_advisory_lock(
-    $1::pg_catalog.int4,
-    $2::pg_catalog.int4
-  ) AS acquired`;
-const CHECK_SQL = "SELECT pg_catalog.pg_backend_pid() AS backend_pid";
-const RELEASE_SQL = `SELECT
-  pg_catalog.pg_backend_pid() AS backend_pid,
-  pg_catalog.pg_advisory_unlock(
-    $1::pg_catalog.int4,
-    $2::pg_catalog.int4
-  ) AS released`;
-
-export interface PostgresAdvisoryLockKey {
-  readonly namespace: number;
-  readonly resource: number;
-}
 
 export type PostgresAdvisoryLockOptions = Omit<PostgresSessionOptions, "types"> & {
   readonly operationTimeoutMs?: number;
@@ -37,7 +26,7 @@ export class PostgresAdvisoryLockLostError extends Error {
 
   constructor(key: PostgresAdvisoryLockKey, options?: ErrorOptions) {
     super(
-      `sqlx-js: PostgreSQL advisory lock (${key.namespace}, ${key.resource}) was lost`,
+      `sqlx-js: PostgreSQL advisory lock ${formatAdvisoryLockKey(key)} was lost`,
       options,
     );
     this.name = "PostgresAdvisoryLockLostError";
@@ -45,8 +34,10 @@ export class PostgresAdvisoryLockLostError extends Error {
   }
 }
 
-export interface PostgresAdvisoryLockSession extends AsyncDisposable {
-  readonly key: PostgresAdvisoryLockKey;
+export interface PostgresAdvisoryLockSession<
+  Key extends PostgresAdvisoryLockKey = PostgresAdvisoryLockKey,
+> extends AsyncDisposable {
+  readonly key: Key;
   assertHeld(): Promise<void>;
   release(): Promise<void>;
 }
@@ -58,6 +49,7 @@ type AcquireRow = {
 
 type CheckRow = {
   backend_pid: number;
+  held: boolean;
 };
 
 type ReleaseRow = {
@@ -70,26 +62,12 @@ type ValidatedLockOptions = {
   readonly sessionOptions: PostgresSessionOptions;
 };
 
-function validateLockKeyPart(value: number, name: string): void {
-  if (!Number.isInteger(value) || value < MIN_INT32 || value > MAX_INT32) {
-    throw new TypeError(`sqlx-js: advisory lock ${name} must be a signed 32-bit integer`);
-  }
-}
-
-function validateLockKey(key: PostgresAdvisoryLockKey): PostgresAdvisoryLockKey {
-  if (!key || typeof key !== "object" || Array.isArray(key)) {
-    throw new TypeError("sqlx-js: advisory lock key must be an object");
-  }
-  validateLockKeyPart(key.namespace, "namespace");
-  validateLockKeyPart(key.resource, "resource");
-  return Object.freeze({ namespace: key.namespace, resource: key.resource });
-}
-
 function validateLockOptions(options: PostgresAdvisoryLockOptions): ValidatedLockOptions {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("sqlx-js: advisory lock options must be an object");
   }
-  const poolOptions = options as PostgresOptions;
+  const snapshot = { ...options };
+  const poolOptions = snapshot as PostgresOptions;
   for (const name of ["max", "idleTimeoutMs", "maxLifetimeMs"] as const) {
     if (poolOptions[name] !== undefined) {
       throw new TypeError(`sqlx-js: advisory lock sessions own ${name}; do not configure it`);
@@ -98,7 +76,7 @@ function validateLockOptions(options: PostgresAdvisoryLockOptions): ValidatedLoc
   if (poolOptions.types !== undefined) {
     throw new TypeError("sqlx-js: advisory lock sessions use fixed control-query codecs");
   }
-  const { operationTimeoutMs, ...sessionOptions } = options;
+  const { operationTimeoutMs, ...sessionOptions } = snapshot;
   if (
     operationTimeoutMs !== undefined
     && (
@@ -143,8 +121,8 @@ async function runControlQuery<Row extends Record<string, unknown>>(
 }
 
 class HeldPostgresAdvisoryLock implements PostgresAdvisoryLockSession {
-  readonly key: PostgresAdvisoryLockKey;
   readonly #client: PostgresSession;
+  readonly #control: PostgresAdvisoryLockControl;
   readonly #backendPid: number;
   readonly #operationTimeoutMs: number | undefined;
   #state: "held" | "releasing" | "released" | "lost" = "held";
@@ -153,40 +131,48 @@ class HeldPostgresAdvisoryLock implements PostgresAdvisoryLockSession {
 
   constructor(
     client: PostgresSession,
-    key: PostgresAdvisoryLockKey,
+    control: PostgresAdvisoryLockControl,
     backendPid: number,
     operationTimeoutMs: number | undefined,
   ) {
     this.#client = client;
-    this.key = key;
+    this.#control = control;
     this.#backendPid = backendPid;
     this.#operationTimeoutMs = operationTimeoutMs;
   }
 
-  async assertHeld(): Promise<void> {
+  get key(): PostgresAdvisoryLockKey {
+    return this.#control.key;
+  }
+
+  #assertHeldState(): void {
     if (this.#state === "lost") throw new PostgresAdvisoryLockLostError(this.key);
     if (this.#state !== "held") {
       throw new Error(
-        `sqlx-js: PostgreSQL advisory lock (${this.key.namespace}, ${this.key.resource}) was released`,
+        `sqlx-js: PostgreSQL advisory lock ${formatAdvisoryLockKey(this.key)} was released`,
       );
     }
+  }
+
+  async assertHeld(): Promise<void> {
+    this.#assertHeldState();
     try {
       const [row] = await runControlQuery<CheckRow>(
         this.#client,
-        CHECK_SQL,
-        [],
+        CHECK_ADVISORY_LOCK_SQL,
+        this.#control.identity,
         "health check",
         this.#operationTimeoutMs,
       );
-      if (!row || row.backend_pid !== this.#backendPid) {
-        await this.#lose();
+      if (!row || row.backend_pid !== this.#backendPid || !row.held) {
         throw new PostgresAdvisoryLockLostError(this.key);
       }
     } catch (error) {
-      if (error instanceof PostgresAdvisoryLockLostError) throw error;
       await this.#lose();
+      if (error instanceof PostgresAdvisoryLockLostError) throw error;
       throw new PostgresAdvisoryLockLostError(this.key, { cause: error });
     }
+    this.#assertHeldState();
   }
 
   release(): Promise<void> {
@@ -206,14 +192,15 @@ class HeldPostgresAdvisoryLock implements PostgresAdvisoryLockSession {
     try {
       const [row] = await runControlQuery<ReleaseRow>(
         this.#client,
-        RELEASE_SQL,
-        [this.key.namespace, this.key.resource],
+        this.#control.releaseSql,
+        this.#control.params,
         "release",
         this.#operationTimeoutMs,
       );
       if (
         !row ||
         row.backend_pid !== this.#backendPid ||
+        this.#state === "lost" ||
         !row.released
       ) {
         throw new PostgresAdvisoryLockLostError(this.key);
@@ -240,19 +227,34 @@ class HeldPostgresAdvisoryLock implements PostgresAdvisoryLockSession {
   }
 }
 
+export function tryAcquirePostgresAdvisoryLock(
+  databaseUrl: string | undefined,
+  key: PostgresAdvisoryLockInt4Key,
+  options?: PostgresAdvisoryLockOptions,
+): Promise<PostgresAdvisoryLockSession<PostgresAdvisoryLockInt4Key> | null>;
+export function tryAcquirePostgresAdvisoryLock(
+  databaseUrl: string | undefined,
+  key: bigint,
+  options?: PostgresAdvisoryLockOptions,
+): Promise<PostgresAdvisoryLockSession<bigint> | null>;
+export function tryAcquirePostgresAdvisoryLock(
+  databaseUrl: string | undefined,
+  key: PostgresAdvisoryLockKey,
+  options?: PostgresAdvisoryLockOptions,
+): Promise<PostgresAdvisoryLockSession | null>;
 export async function tryAcquirePostgresAdvisoryLock(
   databaseUrl: string | undefined,
   keyInput: PostgresAdvisoryLockKey,
   options: PostgresAdvisoryLockOptions = {},
 ): Promise<PostgresAdvisoryLockSession | null> {
-  const key = validateLockKey(keyInput);
+  const control = advisoryLockControl(keyInput);
   const { operationTimeoutMs, sessionOptions } = validateLockOptions(options);
   const client = await createPostgresSession(databaseUrl, sessionOptions);
   try {
     const [row] = await runControlQuery<AcquireRow>(
       client,
-      ACQUIRE_SQL,
-      [key.namespace, key.resource],
+      control.acquireSql,
+      control.params,
       "acquisition",
       operationTimeoutMs,
     );
@@ -261,7 +263,7 @@ export async function tryAcquirePostgresAdvisoryLock(
       await client.end();
       return null;
     }
-    return new HeldPostgresAdvisoryLock(client, key, row.backend_pid, operationTimeoutMs);
+    return new HeldPostgresAdvisoryLock(client, control, row.backend_pid, operationTimeoutMs);
   } catch (error) {
     await client.end().catch(() => {});
     throw error;

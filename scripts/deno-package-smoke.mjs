@@ -101,19 +101,20 @@ try {
     (error) => error instanceof QueryAbortedError && error.reason === "deno smoke",
   );
   await db.ping({ timeoutMs: 5_000 });
-  const lockKey = { namespace: 1_728_194_883, resource: 102 };
   const lockOptions = {
     temporalApi: Temporal,
     applicationName: "sqlx-js-deno-smoke-lock",
     operationTimeoutMs: 5_000,
   };
-  const lock = await tryAcquirePostgresAdvisoryLock(databaseUrl, lockKey, lockOptions);
-  assert.ok(lock);
-  try {
-    await lock.assertHeld();
-    assert.equal(await tryAcquirePostgresAdvisoryLock(databaseUrl, lockKey, lockOptions), null);
-  } finally {
-    await lock.release();
+  for (const lockKey of [{ namespace: 1_728_194_883, resource: 102 }, 9223372036854775807n]) {
+    const lock = await tryAcquirePostgresAdvisoryLock(databaseUrl, lockKey, lockOptions);
+    assert.ok(lock);
+    try {
+      await lock.assertHeld();
+      assert.equal(await tryAcquirePostgresAdvisoryLock(databaseUrl, lockKey, lockOptions), null);
+    } finally {
+      await lock.release();
+    }
   }
 } finally {
   await db.close({ graceMs: 100, forceAfterMs: 1_000 });
