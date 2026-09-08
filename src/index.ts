@@ -274,6 +274,7 @@ export {
   tryAcquirePostgresAdvisoryLock,
 } from "./postgres-advisory-lock";
 export type {
+  PostgresAdvisoryLockInt4Key,
   PostgresAdvisoryLockKey,
   PostgresAdvisoryLockOptions,
   PostgresAdvisoryLockSession,

@@ -42,6 +42,8 @@ try {
       type JsonValue,
       type PgTimestamptz,
       type PgNotice,
+      type PostgresAdvisoryLockInt4Key,
+      type PostgresAdvisoryLockKey,
       type PostgresAdvisoryLockOptions,
       type PostgresAdvisoryLockSession,
       type PostgresType,
@@ -121,6 +123,40 @@ try {
         { namespace: 1_728_194_883, resource: 101 },
         lockOptions,
       );
+    const bigintLockResult: Promise<PostgresAdvisoryLockSession<bigint> | null> =
+      tryAcquirePostgresAdvisoryLock(undefined, -9223372036854775808n, lockOptions);
+    const pairLockResult: Promise<PostgresAdvisoryLockSession<PostgresAdvisoryLockInt4Key> | null> =
+      tryAcquirePostgresAdvisoryLock(undefined, { namespace: 1, resource: 2 }, lockOptions);
+    declare const eitherKey: PostgresAdvisoryLockKey;
+    const eitherLockResult: Promise<PostgresAdvisoryLockSession | null> =
+      tryAcquirePostgresAdvisoryLock(undefined, eitherKey, lockOptions);
+    async function inspectLockKeys() {
+      const bigintLock = await bigintLockResult;
+      const bigintKey: bigint | undefined = bigintLock?.key;
+      const pairLock = await pairLockResult;
+      const namespace: number | undefined = pairLock?.key.namespace;
+      const eitherLock = await eitherLockResult;
+      if (eitherLock) {
+        if (typeof eitherLock.key === "bigint") {
+          const key: bigint = eitherLock.key;
+          void key;
+        } else {
+          const key: PostgresAdvisoryLockInt4Key = eitherLock.key;
+          void key;
+        }
+      }
+      void bigintKey;
+      void namespace;
+    }
+    // @ts-expect-error number keys would silently lose bigint precision
+    tryAcquirePostgresAdvisoryLock(undefined, 300003, lockOptions);
+    // @ts-expect-error strings must be converted explicitly by the application
+    tryAcquirePostgresAdvisoryLock(undefined, "300003", lockOptions);
+    // @ts-expect-error both int4 key parts are required
+    tryAcquirePostgresAdvisoryLock(undefined, { namespace: 1 }, lockOptions);
+    // @ts-expect-error bigint halves do not select the int4-pair keyspace
+    tryAcquirePostgresAdvisoryLock(undefined, { namespace: 1n, resource: 2n }, lockOptions);
+    void inspectLockKeys;
     void codec;
     void notice;
     void wire;
@@ -295,22 +331,23 @@ try {
       assert.equal(answerQuery.queryId, queryId(answerQuery.query));
       assert.ok(events.some((event) => event.queryId === answerQuery.queryId && event.queryName === "smoke.answer"));
       assert.ok(events.some((event) => event.queryId === echoQuery.queryId && event.queryName === "smoke.echo"));
-      const lockKey = { namespace: 1_728_194_883, resource: 101 };
       const lockOptions = {
         temporalApi: Temporal,
         applicationName: "sqlx-js-package-smoke-lock",
         operationTimeoutMs: 5_000,
       };
-      const lock = await tryAcquirePostgresAdvisoryLock(runtimeUrl.toString(), lockKey, lockOptions);
-      assert.ok(lock);
-      try {
-        await lock.assertHeld();
-        assert.equal(
-          await tryAcquirePostgresAdvisoryLock(runtimeUrl.toString(), lockKey, lockOptions),
-          null,
-        );
-      } finally {
-        await lock.release();
+      for (const lockKey of [{ namespace: 1_728_194_883, resource: 101 }, -9223372036854775808n]) {
+        const lock = await tryAcquirePostgresAdvisoryLock(runtimeUrl.toString(), lockKey, lockOptions);
+        assert.ok(lock);
+        try {
+          await lock.assertHeld();
+          assert.equal(
+            await tryAcquirePostgresAdvisoryLock(runtimeUrl.toString(), lockKey, lockOptions),
+            null,
+          );
+        } finally {
+          await lock.release();
+        }
       }
     } finally {
       await db?.close();

@@ -136,13 +136,13 @@ When `lockTimeoutMs` is set, acquisition uses `pg_try_advisory_lock` in a pollin
 ## Pinned advisory-lock sessions
 
 `tryAcquirePostgresAdvisoryLock(...)` owns a dedicated one-connection client
-and returns `null` when another session already holds the two-part lock. The
+and returns `null` when another session already holds the requested lock. The
 returned capability exposes only lock health and release; it does not expose a
 generic SQL escape hatch. Pool width, idle retirement, and maximum connection
 lifetime belong to the capability, and its control-query codecs are fixed;
 overrides for those settings are rejected at runtime.
-The application owns a stable, collision-free allocation of namespace and
-resource values within its database.
+The application owns a stable, collision-free allocation of keys within its
+database and chosen PostgreSQL keyspace.
 The short-lived lock used by `migrate(...)` remains internal to the migration
 workflow; this capability is for application-owned coordination outside it.
 
@@ -172,10 +172,45 @@ if (lock) {
 }
 ```
 
-Both key parts are signed PostgreSQL `int4` values. After the acquisition query
-opens the reserved connection, the driver forbids reconnect for that
-capability. `assertHeld()` runs on the same backend and reports a closed
-connection or unexpected backend identity as `PostgresAdvisoryLockLostError`;
+Keys select one of PostgreSQL's two independent advisory-lock keyspaces:
+
+- `{ namespace, resource }`: two signed `int4` numbers, each from
+  `-2147483648` through `2147483647`.
+- A native JavaScript `bigint`: one signed `int8` value, from
+  `-9223372036854775808n` through `9223372036854775807n`. Numbers and strings
+  are not accepted as substitutes, and out-of-range values fail before connecting.
+
+```ts
+const legacyCompatibleLock = await tryAcquirePostgresAdvisoryLock(
+  process.env.DATABASE_URL,
+  300003n,
+  { temporalApi: Temporal, operationTimeoutMs: 5_000 },
+);
+try {
+  await legacyCompatibleLock?.assertHeld();
+} finally {
+  await legacyCompatibleLock?.release();
+}
+```
+
+The bigint overload conflicts with existing `pg_advisory_lock(bigint)` callers,
+including keys returned by PostgreSQL `hashtextextended(text, seed)`. Pass the
+original bigint directly; converting it through JavaScript `number` can lose
+precision. Preserve the original key and keyspace during a rolling deployment:
+`300003n` and `{ namespace: 0, resource: 300003 }` do **not** conflict, even though
+they encode the same 64 bits.
+
+`PostgresAdvisoryLockKey` is the union of `bigint` and
+`PostgresAdvisoryLockInt4Key`. Acquisition overloads preserve the specific key
+form on `PostgresAdvisoryLockSession<Key>.key`; code storing either form can use
+the default union and narrow with `typeof lock.key === "bigint"`. Pair keys are
+copied and frozen at acquisition.
+
+After the acquisition query opens the reserved connection, the driver forbids
+reconnect for that capability. `assertHeld()` checks the same backend and its
+exact granted exclusive lock in `pg_catalog.pg_locks`, including the database
+and keyspace. A closed connection, unexpected backend identity, or missing lock
+is reported as `PostgresAdvisoryLockLostError`;
 it never moves the lock to a new connection. The check is point-in-time: the
 session can be lost immediately after it succeeds. Keep each unit of work
 bounded, check the lock between units,
@@ -189,7 +224,8 @@ an unknown outcome. Acquisition rejects; an established capability reports
 `PostgresAdvisoryLockLostError`. Omitting the option preserves the raw driver's
 unbounded operation behavior.
 
-`release()` is idempotent and closes the owned client after unlocking. A later
+`release()` immediately invalidates the capability, including in-flight health
+checks, and closes the owned client after unlocking. It is idempotent. A later
 `assertHeld()` reports that the capability was explicitly released rather than
 misclassifying normal cleanup as lock loss. If the first release attempt cannot
 confirm the original backend and exact unlock, it still closes the connection

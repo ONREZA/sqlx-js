@@ -12,6 +12,7 @@ const allowedRuntimeFiles = new Set([
   "dist/src/json-number.js",
   "dist/src/json-value.js",
   "dist/src/postgres-advisory-lock.js",
+  "dist/src/postgres-advisory-lock-key.js",
   "dist/src/postgres-client-options.js",
   "dist/src/postgres-runtime.js",
   "dist/src/postgres-transaction-runtime.js",
