@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.37.0](https://github.com/ONREZA/sqlx-js/compare/v0.36.2...v0.37.0) (2026-09-08)
+
+
+### Features
+
+* **runtime:** support bigint advisory locks ([c5eea43](https://github.com/ONREZA/sqlx-js/commit/c5eea43ca0ef0950c9a02488b02af578c11fd628)), closes [#103](https://github.com/ONREZA/sqlx-js/issues/103)
+
 ## [0.36.2](https://github.com/ONREZA/sqlx-js/compare/v0.36.1...v0.36.2) (2026-09-08)
 
 
