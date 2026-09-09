@@ -1,7 +1,7 @@
 import type { AnalyzedColumn, ColumnSource, NamedColumn, Scope } from "./analyze-types";
 import type { FieldDescription } from "./wire";
 import type { SchemaCache } from "./schema";
-import { isNarrowed } from "./narrow";
+import { columnKey } from "./narrow";
 import { visibleAliasName } from "./relation-alias";
 
 export type { NamedColumn } from "./analyze-types";
@@ -19,7 +19,9 @@ export function aliasQualifiers(aliasKey: string, scope: Scope): string[] {
 }
 
 export function isAliasNarrowed(aliasKey: string, column: string, scope: Scope): boolean {
-  return aliasQualifiers(aliasKey, scope).some((key) => isNarrowed(scope.forcedNonNull, key, column));
+  if (aliasQualifiers(aliasKey, scope).some((key) => scope.forcedNonNull.has(columnKey(key, column)))) return true;
+  if (!scope.forcedNonNull.has(columnKey(undefined, column))) return false;
+  return unqualifiedColumn(column, scope)?.aliasName === aliasKey;
 }
 
 function baseColumns(aliasName: string, scope: Scope): NamedColumn[] | undefined {
@@ -59,27 +61,39 @@ function columnsForAlias(aliasName: string, scope: Scope): NamedColumn[] | undef
 }
 
 function columnForAlias(aliasName: string, name: string, scope: Scope): AnalyzedColumn | undefined {
+  const column = rawColumnForAlias(aliasName, name, scope);
+  return column ? scopedColumn(aliasName, name, column, scope) : undefined;
+}
+
+// Undefined means absent; null means the alias contains an ambiguous name.
+function rawColumnForAlias(aliasName: string, name: string, scope: Scope): AnalyzedColumn | null | undefined {
   const alias = scope.aliases.get(aliasName);
   if (!alias) return undefined;
+  if (alias.kind === "function") {
+    if ((alias.columnAliases?.filter((outputName) => outputName === name).length ?? 0) > 1) return null;
+    // Describe validates the reference; an unknown function shape must also compete
+    // with other relations when resolving an unqualified column.
+    return { nullable: true, sources: null, arrayElementNullability: "unknown" };
+  }
   if (alias.columnAliases?.length) {
-    const matches = columnsForAlias(aliasName, scope)?.filter(([outputName]) => outputName === name);
-    return matches?.length === 1 ? matches[0]![1] : undefined;
+    const matches = baseColumns(aliasName, scope)?.filter(([outputName], index) =>
+      (alias.columnAliases?.[index] ?? outputName) === name);
+    return matches && matches.length > 1 ? null : matches?.[0]?.[1];
   }
   if (alias.kind === "cte" || alias.kind === "subquery") {
     const matches = alias.columns.filter(([outputName]) => outputName === name);
-    const column = matches.length === 1 ? matches[0]![1] : undefined;
-    return column ? scopedColumn(aliasName, name, column, scope) : undefined;
+    return matches.length > 1 ? null : matches[0]?.[1];
   }
   if (alias.kind !== "table") return undefined;
   const oid = scope.aliasOidByName.get(aliasName);
   const table = oid === undefined ? undefined : scope.schema.tableNameByOid(oid);
   const column = oid === undefined ? undefined : scope.schema.columnsOf(oid)?.get(name);
   if (!table || !column) return undefined;
-  return scopedColumn(aliasName, name, {
+  return {
     nullable: !column.notNull,
     sources: [{ schema: table.schema, table: table.name, column: name }],
     arrayElementNullability: scope.schema.arrayElement?.(column.typeOid)?.nullability ?? "unknown",
-  }, scope);
+  };
 }
 
 export function columnRefAlias(fields: any[], scope: Scope): string | undefined {
@@ -104,13 +118,21 @@ export function resolveColumnRef(fields: any[], scope: Scope): AnalyzedColumn | 
     const alias = columnRefAlias(fields, scope);
     return alias ? columnForAlias(alias, name, scope) : undefined;
   }
-  const matches: AnalyzedColumn[] = [];
+  const match = unqualifiedColumn(name, scope);
+  return match ? scopedColumn(match.aliasName, name, match.column, scope) : undefined;
+}
+
+function unqualifiedColumn(name: string, scope: Scope): { aliasName: string; column: AnalyzedColumn } | undefined {
+  let match: { aliasName: string; column: AnalyzedColumn } | undefined;
   for (const [aliasName, alias] of scope.aliases) {
     if (alias.kind === "table" && alias.returning) continue;
-    const column = columnForAlias(aliasName, name, scope);
-    if (column) matches.push(column);
+    const column = rawColumnForAlias(aliasName, name, scope);
+    if (column === null) return undefined;
+    if (!column) continue;
+    if (match) return undefined;
+    match = { aliasName, column };
   }
-  return matches.length === 1 ? matches[0] : undefined;
+  return match;
 }
 
 export function expandStarColumns(val: any, scope: Scope): NamedColumn[] | undefined {

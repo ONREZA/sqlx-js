@@ -442,3 +442,32 @@ test("CTE UPDATE and DELETE statements retain assignment and predicate targets",
   expect(target(r, 3)).toEqual({ schema: undefined, table: "audit_log", column: "actor_id" });
   expect(dmlParams(r)).toEqual([1]);
 });
+
+test("correlated parameter references follow actual outer aliases", async () => {
+  for (const query of [
+    "SELECT * FROM users AS u WHERE EXISTS (SELECT 1 WHERE u.id = $1)",
+    "SELECT * FROM users AS u WHERE EXISTS (SELECT 1 FROM unnest(ARRAY[1]) AS input(value) WHERE u.id = $1)",
+    "SELECT * FROM users AS u WHERE EXISTS (SELECT 1 WHERE EXISTS (SELECT 1 WHERE u.id = $1))",
+    "SELECT * FROM users AS u WHERE EXISTS (SELECT 1 WHERE u.id = $1 UNION ALL SELECT 2 WHERE u.id = $1)",
+  ]) {
+    const result = await buildParamMap(query);
+    expect(target(result, 1)).toEqual({ schema: undefined, table: "users", column: "id" });
+  }
+});
+
+test("inner derived aliases shadow outer table parameter provenance", async () => {
+  for (const from of ["unnest(ARRAY[1]) AS u(id)", "(SELECT 1 AS id) AS u", "u"]) {
+    const result = await buildParamMap(`WITH u AS (SELECT 1 AS id) SELECT * FROM users AS u WHERE EXISTS (SELECT 1 FROM ${from} WHERE u.id = $1)`);
+    expect(result.bindings.size).toBe(0);
+  }
+});
+
+test("unknown qualifiers never become physical parameter targets", async () => {
+  const result = await buildParamMap("SELECT 1 WHERE missing.id = $1");
+  expect(result.bindings.size).toBe(0);
+});
+
+test("an unknown inner function alias cannot leak outer table provenance", async () => {
+  const result = await buildParamMap("SELECT * FROM users AS coalesce WHERE EXISTS (SELECT 1 FROM coalesce(NULL::int, 1) WHERE coalesce.coalesce = $1)");
+  expect(result.bindings.size).toBe(0);
+});

@@ -21,6 +21,8 @@ describe("plan validation classification", () => {
       "SET LOCAL session_replication_role = replica",
       "SET LOCAL ROLE application_user",
       "ANALYZE",
+      "EXPLAIN (FORMAT JSON) SELECT 1",
+      "EXPLAIN (ANALYZE, BUFFERS, WAL, FORMAT JSON) INSERT INTO items VALUES (1)",
       "CALL refresh_materialized_state()",
       "SELECT 1 INTO TEMPORARY TABLE prepared_output",
     ];

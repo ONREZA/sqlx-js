@@ -6,7 +6,8 @@ import { narrowFromWhere, type NonNullSet } from "./narrow";
 import type { AliasInfo, AnalyzedColumn, CteColumnInfo, Scope, AnalysisResult, ColumnSource } from "./analyze-types";
 import { dmlAsSelect, applyReturningScope, returningTargets, tablesFromRelation, type DmlKind } from "./returning";
 import { colNameOfColumnRef, containsStar, expandStarColumns, nullableFromField, resolveColumnRef, sourceFromField, type NamedColumn } from "./analyze-columns";
-import { aliasColumnNames, relationAliasKey } from "./relation-alias";
+import { analyzeExplain } from "./analyze-explain";
+import { aliasColumnNames, rangeFunctionAlias, relationAliasKey } from "./relation-alias";
 export type { AnalysisResult, ColumnSource } from "./analyze-types";
 
 export async function analyzeQuery(
@@ -29,6 +30,10 @@ export async function analyzeQuery(
   }
   if ("DeleteStmt" in stmt) {
     return await analyzeDml(stmt.DeleteStmt, rowDesc, schema, "delete");
+  }
+  if ("ExplainStmt" in stmt) {
+    return analyzeExplain(stmt.ExplainStmt, rowDesc)
+      ?? conservative(rowDesc, "unexpected EXPLAIN result contract");
   }
   const kind = Object.keys(stmt)[0] ?? "unknown";
   return conservative(rowDesc, `unsupported statement type: ${kind}`);
@@ -509,8 +514,11 @@ function walkFrom(node: any, joinNullable: boolean, scope: Scope, forceTable = f
     return;
   }
   if (node.RangeFunction) {
-    const alias = node.RangeFunction.alias?.aliasname;
-    if (alias) scope.aliases.set(alias, { kind: "function", joinNullable });
+    const range = node.RangeFunction;
+    const alias = rangeFunctionAlias(range);
+    if (alias) scope.aliases.set(alias, {
+      kind: "function", joinNullable, columnAliases: aliasColumnNames(range.alias),
+    });
     return;
   }
 }

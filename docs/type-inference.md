@@ -244,6 +244,22 @@ database, then persists the source contract in the cache. It cannot prove the
 semantic claim by inspecting function bodies, so the application must keep the
 assertion aligned with writes and returned data.
 
+A null-rejecting `WHERE` predicate also narrows named function outputs:
+
+```sql
+SELECT ARRAY(
+  SELECT u.value
+  FROM unnest(ARRAY[1, NULL]::int[]) AS u(value)
+  WHERE u.value IS NOT NULL
+) AS values;
+```
+
+This produces `number[]`; without the filter it produces `(number | null)[]`.
+Qualified and unqualified references work when the source is unambiguous.
+Unknown function output shapes remain conservative in multi-source scopes;
+qualify both the projection and predicate to identify the intended source.
+Function outputs do not inherit column assertions from equally named tables.
+
 Array value nullability and element nullability remain separate throughout
 CTEs, subqueries, aggregates, and set operations. Declared dimensions are not
 treated as fixed TypeScript tuple shapes because PostgreSQL does not enforce
@@ -271,6 +287,42 @@ When strict inference fails, prefer in this order:
 4. use an explicit `!` or `?` alias for result-value nullability, or an exact
    `resultAssertions` contract for array-element nullability, when the database
    cannot expose the guarantee.
+
+## PostgreSQL EXPLAIN results
+
+`EXPLAIN` has an explicit result contract: one non-null `QUERY PLAN` column,
+with `SqlxJson<JsonValue>` for `FORMAT JSON` under the default JSON mapping,
+or `string` for TEXT, XML, and YAML.
+Prepare checks the column name, type OID, and absence of table provenance against
+PostgreSQL's Describe response, following the server's
+[EXPLAIN result contract](https://github.com/postgres/postgres/blob/REL_18_STABLE/src/backend/commands/explain.c#L237-L269).
+It does not infer the schema of the plan document
+or the result columns of the explained statement. Input parameters retain the
+underlying statement's column mappings, configured types, and nullability rules,
+including named parameters and DML write constraints.
+
+```ts
+export const explain = defineQuery.one(
+  "qualification.explain",
+  `EXPLAIN (ANALYZE, BUFFERS, WAL, FORMAT JSON) SELECT 1`,
+  { expectedValidation: "parse-only" },
+);
+```
+
+The source acknowledgment remains required for strict inference because
+`EXPLAIN` is outside PostgreSQL's generic SQL `PREPARE` planning surface.
+Prepare only parses and describes this query; it never runs its `ANALYZE` or
+executes the underlying statement. Runtime execution of `EXPLAIN ANALYZE`
+executes the underlying statement, including any writes. JSON, XML, and YAML
+return one plan document; TEXT can return multiple rows, so use the many-row
+query surface for TEXT.
+
+After upgrading from a generator revision without these inference rules, run
+live `sqlx-js prepare --strict-inference` and commit the regenerated artifacts.
+Old cache manifests fail with regeneration guidance; `--offline` cannot repair
+stale inference. Fresh artifacts support `--check`, `--offline`, and `--verify`
+with `--strict-inference` without weakening inference for other utility or
+application queries.
 
 ## Explain and corpus policy
 

@@ -358,8 +358,8 @@ describe("analyze: CTE explicit column list and unnamed expressions", () => {
 describe("analyze: degraded reason", () => {
   test("unsupported statement type marks result as degraded", async () => {
     const schema = fakeSchema([]);
-    const sql = "EXPLAIN SELECT 1";
-    const rd = rowDesc([{ name: "QUERY PLAN", tableOid: 0, attno: 0 }]);
+    const sql = "SHOW work_mem";
+    const rd = rowDesc([{ name: "work_mem", typeOid: 25 }]);
     const result = await analyzeQuery(sql, rd, schema);
     expect(result.perColumnNullable).toEqual([true]);
     expect(result.degraded).toBeDefined();

@@ -71,6 +71,15 @@ for (const from of [
   });
 }
 
+test("unrecognized function expressions cannot acquire physical table parameter types", async () => {
+  const result = await buildParamMap("SELECT coalesce.coalesce FROM coalesce(NULL::int, 1) WHERE coalesce.coalesce = $1");
+  const schema = fakeSchema([{ name: "coalesce", oid: 100, columns: [{ name: "coalesce", attno: 1, notNull: true }] }]);
+  expect(result.bindings.size).toBe(0);
+  expect(resolveParamTs(1, "$1", 23, result.bindings, schema, {
+    columnTypes: { "public.coalesce.coalesce": "string" },
+  })).toBe("number");
+});
+
 test("DML CTE reference aliases preserve nullability, source columns, and array elements", async () => {
   const result = await analyzeQuery(
     "WITH changed AS (DELETE FROM probe RETURNING id, value, ARRAY[old.id] AS before_ids, ARRAY[new.id] AS after_ids) SELECT p.id, p.value, p.before, p.after FROM changed AS p(value, id, before, after)",
@@ -183,5 +192,20 @@ for (const qualifier of ["", "p."]) {
     const result = await buildParamMap(`SELECT * FROM probe AS p(value, id) WHERE ${qualifier}id = $1 AND ${qualifier}value = $2`);
     expect(effectiveParamTargets(result.bindings.get(1))).toEqual([{ schema: undefined, table: "probe", columnIndex: 2 }]);
     expect(effectiveParamTargets(result.bindings.get(2))).toEqual([{ schema: undefined, table: "probe", columnIndex: 1 }]);
+  });
+}
+
+for (const from of [
+  "unnest(ARRAY[1, NULL])",
+  "pg_catalog.unnest(ARRAY[1, NULL])",
+  "ROWS FROM (pg_catalog.unnest(ARRAY[1, NULL]), generate_series(1, 2))",
+]) {
+  test(`implicit function aliases cannot inherit table parameter declarations: ${from}`, async () => {
+    const result = await buildParamMap(`SELECT unnest.unnest FROM ${from} WHERE unnest.unnest = $1`);
+    const schema = fakeSchema([{ name: "unnest", oid: 100, columns: [{ name: "unnest", attno: 1, notNull: true }] }]);
+    expect(result.bindings.size).toBe(0);
+    expect(resolveParamTs(1, "$1", 23, result.bindings, schema, {
+      columnTypes: { "public.unnest.unnest": "string" },
+    })).toBe("number");
   });
 }

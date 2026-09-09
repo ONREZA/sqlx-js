@@ -1,5 +1,5 @@
 import { parse } from "libpg-query";
-import { aliasColumnNames } from "./relation-alias";
+import { aliasColumnNames, rangeFunctionAlias } from "./relation-alias";
 
 export type ParamTarget = { schema?: string; table: string; column?: string; columnIndex?: number };
 export type DmlParamTarget = { target: ParamTarget; nullSafe: boolean };
@@ -39,9 +39,10 @@ type Rel = { schema?: string; table: string; columnAliases?: string[] };
 type Scope = {
   aliases: Map<string, Rel | null>;
   ctes: ReadonlySet<string>;
-  hasUnknownRelation: boolean;
+  hasUnknownAlias: boolean;
   relations: Rel[];
   defaultRel: Rel | null;
+  parent?: Scope;
 };
 
 function walkStatement(stmt: any, map: ParamMap, ctes: ReadonlySet<string> = new Set()): void {
@@ -49,6 +50,7 @@ function walkStatement(stmt: any, map: ParamMap, ctes: ReadonlySet<string> = new
   else if (stmt?.UpdateStmt) walkUpdate(stmt.UpdateStmt, map, ctes);
   else if (stmt?.SelectStmt) walkSelect(stmt.SelectStmt, map, ctes);
   else if (stmt?.DeleteStmt) walkDelete(stmt.DeleteStmt, map, ctes);
+  else if (stmt?.ExplainStmt) walkStatement(stmt.ExplainStmt.query, map, ctes);
 }
 
 function walkWithClause(withClause: any, map: ParamMap, inherited: ReadonlySet<string>): ReadonlySet<string> {
@@ -118,11 +120,12 @@ function walkDelete(del: any, map: ParamMap, inheritedCtes: ReadonlySet<string>)
   walkExpr(del.whereClause, scope, map);
 }
 
-function walkSelect(select: any, map: ParamMap, inheritedCtes: ReadonlySet<string>): void {
+function walkSelect(select: any, map: ParamMap, inheritedCtes: ReadonlySet<string>, parent?: Scope): void {
   const ctes = walkWithClause(select?.withClause, map, inheritedCtes);
-  if (select?.larg) walkSelect(select.larg, map, ctes);
-  if (select?.rarg) walkSelect(select.rarg, map, ctes);
+  if (select?.larg) walkSelect(select.larg, map, ctes, parent);
+  if (select?.rarg) walkSelect(select.rarg, map, ctes, parent);
   const scope = scopeFromSelect(select, ctes);
+  scope.parent = parent;
   walkJoinQuals(select.fromClause ?? [], scope, map);
   walkExpr(select.whereClause, scope, map);
 }
@@ -222,7 +225,7 @@ function walkExpr(node: any, scope: Scope, map: ParamMap): void {
   }
   if (node.SubLink) {
     const sub = node.SubLink.subselect?.SelectStmt;
-    if (sub) walkSelect(sub, map, scope.ctes);
+    if (sub) walkSelect(sub, map, scope.ctes, scope);
     walkExpr(node.SubLink.testexpr, scope, map);
     return;
   }
@@ -391,9 +394,14 @@ function targetOfColumnRef(node: any, scope: Scope): ParamTarget | null {
   }
   if (fields.length === 2) {
     const qualifier = fields[0]!;
-    if (scope.aliases.get(qualifier) === null) return null;
-    const rel = scope.aliases.get(qualifier) ?? scope.relations.find((r) => r.table === qualifier);
-    return rel ? referenceTarget(rel, column) : { table: qualifier, column };
+    for (let current: Scope | undefined = scope; current; current = current.parent) {
+      if (current.aliases.has(qualifier)) {
+        const rel = current.aliases.get(qualifier);
+        return rel ? referenceTarget(rel, column) : null;
+      }
+      if (current.hasUnknownAlias) return null;
+    }
+    return null;
   }
   const table = fields[fields.length - 2]!;
   const schema = fields[fields.length - 3]!;
@@ -426,12 +434,14 @@ function insertTarget(rel: Rel, cols: string[], index: number): ParamTarget {
 function scopeFromSelect(select: any, ctes: ReadonlySet<string>): Scope {
   const scope = scopeFromRelations([], null, ctes);
   addRangeVars(select?.fromClause ?? [], scope);
-  if (scope.relations.length === 1 && !scope.hasUnknownRelation) scope.defaultRel = scope.relations[0]!;
+  if (scope.relations.length === 1 && !scope.hasUnknownAlias && ![...scope.aliases.values()].includes(null)) {
+    scope.defaultRel = scope.relations[0]!;
+  }
   return scope;
 }
 
 function scopeFromRelations(relations: Rel[], defaultRel: Rel | null, ctes: ReadonlySet<string>): Scope {
-  const scope: Scope = { aliases: new Map(), relations: [], defaultRel, ctes, hasUnknownRelation: false };
+  const scope: Scope = { aliases: new Map(), relations: [], defaultRel, ctes, hasUnknownAlias: false };
   for (const rel of relations) addRelation(scope, rel, rel.table);
   return scope;
 }
@@ -452,9 +462,9 @@ function addRangeVars(nodes: any[], scope: Scope): void {
   for (const node of nodes) {
     const derived = node?.RangeSubselect ?? node?.RangeFunction ?? node?.RangeTableFunc;
     if (derived) {
-      const alias = derived.alias?.aliasname;
+      const alias = node.RangeFunction ? rangeFunctionAlias(derived) : derived.alias?.aliasname;
       if (typeof alias === "string") scope.aliases.set(alias, null);
-      scope.hasUnknownRelation = true;
+      else scope.hasUnknownAlias = true;
       continue;
     }
     if (node?.RangeVar) {
@@ -463,7 +473,6 @@ function addRangeVars(nodes: any[], scope: Scope): void {
       const alias = node.RangeVar.alias?.aliasname ?? rel.table;
       if (!node.RangeVar.schemaname && scope.ctes.has(rel.table)) {
         scope.aliases.set(alias, null);
-        scope.hasUnknownRelation = true;
         continue;
       }
       addRelation(scope, { ...rel, columnAliases: aliasColumnNames(node.RangeVar.alias) }, alias);
