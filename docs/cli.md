@@ -283,12 +283,19 @@ them.
 
 `pgschema install` installs the exact version and platform checksum recorded in
 the project-owned `pgschema.lock.json`. When the lock is absent, the command
-resolves the latest stable version in the supported `>=1.12 <1.13` range,
+resolves the latest stable version in the supported `>=1.13 <1.14` range,
 installs it, and writes a lock containing all supported Linux and macOS asset
 digests. Commit that file. Use `pgschema install --frozen` in CI to reject a
 missing lock, and use `pgschema update --patch` to explicitly refresh it without
 upgrading sqlx-js. The update downloads and verifies the current-platform binary
 before atomically replacing the lock.
+
+The managed provider now targets pgschema 1.13. Existing 1.12 locks are outside
+this supported line; `update --patch` does not cross that minor boundary. To
+migrate, keep a backup of the old lock, remove it from the project root, run
+`pgschema install`, and review and commit the new lock. Validate the upgrade
+with a saved plan, a second empty plan after apply, and `verify` before using it
+on a production target.
 
 `dev`, `verify`, `pgschema plan`, and `pgschema apply` use `schema.command` when
 configured; otherwise they require the checksum-verified managed binary under
@@ -318,7 +325,7 @@ Explicit target `application_name`, `options`, `role`, or `statement_timeout`
 therefore fail before the provider starts instead of leaking into the plan
 database or being silently ignored.
 `pgschema apply -- --plan plan.json` applies a reviewed plan without requiring
-the local `schema.sql`. The supported pgschema `>=1.12 <1.13` range accepts one
+the local `schema.sql`. The supported pgschema `>=1.13 <1.14` range accepts one
 `--schema` value, so multi-schema configurations fail explicitly. This range
 preserves the complete function-local `SET` contract; the fixed upstream defect
 is tracked in [pgplex/pgschema#526](https://github.com/pgplex/pgschema/issues/526).

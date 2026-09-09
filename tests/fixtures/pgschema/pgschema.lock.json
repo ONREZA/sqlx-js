@@ -1,23 +1,23 @@
 {
   "lockfileVersion": 1,
   "source": "github:pgplex/pgschema",
-  "version": "1.12.4",
+  "version": "1.13.0",
   "assets": {
     "darwin-amd64": {
-      "name": "pgschema-1.12.4-darwin-amd64",
-      "sha256": "de488ba8980ee50a229e36679da0ac6ff8d4b2c94a24cc0a8e24e2b07caa5065"
+      "name": "pgschema-1.13.0-darwin-amd64",
+      "sha256": "c2c3f711475d5e36a2ecb4fdc1d251bab74b1de3209e5118d59314217e691ac3"
     },
     "darwin-arm64": {
-      "name": "pgschema-1.12.4-darwin-arm64",
-      "sha256": "644e7dfc1276c23070caa32a979567b06dbe3d2c437874948bdf5a201d8f67ca"
+      "name": "pgschema-1.13.0-darwin-arm64",
+      "sha256": "e4c57db61757de751db16541ec0aa7afcf24945d69950092193e0a92d96a7b51"
     },
     "linux-amd64": {
-      "name": "pgschema-1.12.4-linux-amd64",
-      "sha256": "693111ec8c9cf3203e958942336c3d9000628c99023914b5122657a7d51147d2"
+      "name": "pgschema-1.13.0-linux-amd64",
+      "sha256": "75785f3750bc441b1f27390c8432d495a555801d0a1d7e58b5de4160a099db5d"
     },
     "linux-arm64": {
-      "name": "pgschema-1.12.4-linux-arm64",
-      "sha256": "d06b0d246331122974b32c3338c86298e1575732fb82574239bd1a1d9fc336e9"
+      "name": "pgschema-1.13.0-linux-arm64",
+      "sha256": "eb5dc9484c628b21f729d7740a2648e489de4ae0934b38a400e93a5c93cf46b2"
     }
   }
 }

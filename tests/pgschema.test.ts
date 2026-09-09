@@ -64,21 +64,21 @@ function githubRelease(version: string, digest: string, extra: Record<string, un
 }
 
 test("resolvePgschemaAsset rejects Windows", () => {
-  expect(() => resolvePgschemaAsset(pgschemaLock("1.12.3", "0".repeat(64)), "win32", "x64")).toThrow("WSL");
+  expect(() => resolvePgschemaAsset(pgschemaLock("1.13.3", "0".repeat(64)), "win32", "x64")).toThrow("WSL");
 });
 
 test("resolveLatestPgschemaLock selects the newest stable compatible patch", async () => {
   const digest = "a".repeat(64);
   const lock = await resolveLatestPgschemaLock({
     fetchImpl: async () => new Response(JSON.stringify([
-      githubRelease("1.13.0", digest),
-      githubRelease("1.12.5", digest, { prerelease: true }),
-      githubRelease("1.12.2", digest),
-      githubRelease("1.12.3", digest),
+      githubRelease("1.14.0", digest),
+      githubRelease("1.13.5", digest, { prerelease: true }),
+      githubRelease("1.13.2", digest),
+      githubRelease("1.13.3", digest),
     ])),
   });
 
-  expect(lock.version).toBe("1.12.3");
+  expect(lock.version).toBe("1.13.3");
   expect(Object.keys(lock.assets)).toEqual([
     "darwin-amd64",
     "darwin-arm64",
@@ -88,7 +88,7 @@ test("resolveLatestPgschemaLock selects the newest stable compatible patch", asy
 });
 
 test("resolveLatestPgschemaLock requires every GitHub asset digest", async () => {
-  const release = githubRelease("1.12.3", "a".repeat(64));
+  const release = githubRelease("1.13.3", "a".repeat(64));
   (release.assets as Array<Record<string, unknown>>)[0]!.digest = null;
   await expect(resolveLatestPgschemaLock({
     fetchImpl: async () => new Response(JSON.stringify([release])),
@@ -127,13 +127,13 @@ test("probePgschema requires the locked managed binary unless command is explici
   const command = join(root, "pgschema");
   const previousPath = process.env.PATH;
   try {
-    writeFileSync(pgschemaLockPath(root), JSON.stringify(pgschemaLock("1.12.3", "e".repeat(64))));
+    writeFileSync(pgschemaLockPath(root), JSON.stringify(pgschemaLock("1.13.3", "e".repeat(64))));
     writeFileSync(command, "#!/bin/sh\nexit 0\n");
     chmodSync(command, 0o755);
     process.env.PATH = root;
     expect(probePgschema(root, { schema: { provider: "pgschema" } })).toMatchObject({
       ok: false,
-      message: expect.stringContaining("managed pgschema v1.12.3 is not installed"),
+      message: expect.stringContaining("managed pgschema v1.13.3 is not installed"),
     });
 
     expect(probePgschema(root, { schema: { provider: "pgschema", command: "./pgschema" } })).toMatchObject({
@@ -157,7 +157,7 @@ test("runPgschemaExec uses the checksum-verified managed binary", () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-managed-exec-"));
   const capture = join(root, "capture.txt");
   const body = Buffer.from("#!/bin/sh\nprintf '%s\\n' \"$PWD\" \"$@\" > \"$CAPTURE\"\n");
-  const lock = pgschemaLock("1.12.3", sha256(body));
+  const lock = pgschemaLock("1.13.3", sha256(body));
   const target = managedPgschemaPath(root, lock);
   const previousCapture = process.env.CAPTURE;
   try {
@@ -181,7 +181,7 @@ test("runPgschemaExec uses the checksum-verified managed binary", () => {
 test("managed probes stay read-only and install repairs executable mode", async () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-managed-mode-"));
   const body = Buffer.from("#!/bin/sh\nexit 0\n");
-  const lock = pgschemaLock("1.12.3", sha256(body));
+  const lock = pgschemaLock("1.13.3", sha256(body));
   const target = managedPgschemaPath(root, lock);
   try {
     writeFileSync(pgschemaLockPath(root), JSON.stringify(lock));
@@ -205,7 +205,7 @@ test("managed probes stay read-only and install repairs executable mode", async 
 test("runPgschemaInstall downloads and verifies the project-locked binary", async () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-install-"));
   const body = Buffer.from("#!/bin/sh\nprintf 'pgschema test\\n'\n");
-  const lock = pgschemaLock("1.12.3", sha256(body));
+  const lock = pgschemaLock("1.13.3", sha256(body));
   const asset: PgschemaAsset = resolvePgschemaAsset(lock);
   let hits = 0;
   const server = createServer((req, res) => {
@@ -262,8 +262,8 @@ test("runPgschemaInstall creates a missing lock unless frozen", async () => {
   const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
     fetches += 1;
     const url = String(input);
-    if (url === releaseUrl) return new Response(JSON.stringify([githubRelease("1.12.3", digest)]));
-    if (url.startsWith(`${downloadBaseUrl}/v1.12.3/`)) return new Response(body);
+    if (url === releaseUrl) return new Response(JSON.stringify([githubRelease("1.13.3", digest)]));
+    if (url.startsWith(`${downloadBaseUrl}/v1.13.3/`)) return new Response(body);
     return new Response(null, { status: 404 });
   };
 
@@ -272,7 +272,7 @@ test("runPgschemaInstall creates a missing lock unless frozen", async () => {
     expect(fetches).toBe(0);
 
     await runPgschemaInstall({ root, releasesUrl: releaseUrl, downloadBaseUrl, fetchImpl, log: () => {} });
-    expect(readPgschemaLock(root).version).toBe("1.12.3");
+    expect(readPgschemaLock(root).version).toBe("1.13.3");
     expect(fetches).toBe(2);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -299,7 +299,7 @@ test("pgschema install and update reject a missing project root before network a
 
 test("runPgschemaUpdate installs before atomically replacing the project lock", async () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-update-"));
-  const oldLock = pgschemaLock("1.12.2", "b".repeat(64));
+  const oldLock = pgschemaLock("1.13.2", "b".repeat(64));
   const body = Buffer.from("#!/bin/sh\nprintf 'pgschema updated\\n'\n");
   const nextDigest = sha256(body);
   const releaseUrl = "https://releases.test/pgschema";
@@ -307,8 +307,8 @@ test("runPgschemaUpdate installs before atomically replacing the project lock", 
   const logs: string[] = [];
   const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
     const url = String(input);
-    if (url === releaseUrl) return new Response(JSON.stringify([githubRelease("1.12.3", nextDigest)]));
-    if (url.startsWith(`${downloadBaseUrl}/v1.12.3/`)) return new Response(body);
+    if (url === releaseUrl) return new Response(JSON.stringify([githubRelease("1.13.3", nextDigest)]));
+    if (url.startsWith(`${downloadBaseUrl}/v1.13.3/`)) return new Response(body);
     return new Response(null, { status: 404 });
   };
 
@@ -317,9 +317,9 @@ test("runPgschemaUpdate installs before atomically replacing the project lock", 
     await runPgschemaUpdate({ root, releasesUrl: releaseUrl, downloadBaseUrl, fetchImpl, log: (msg) => logs.push(msg) });
 
     const lock = readPgschemaLock(root);
-    expect(lock.version).toBe("1.12.3");
+    expect(lock.version).toBe("1.13.3");
     expect(readFileSync(managedPgschemaPath(root, lock), "utf8")).toBe(body.toString());
-    expect(logs.join("\n")).toContain("from v1.12.2 to v1.12.3");
+    expect(logs.join("\n")).toContain("from v1.13.2 to v1.13.3");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -327,13 +327,13 @@ test("runPgschemaUpdate installs before atomically replacing the project lock", 
 
 test("runPgschemaUpdate preserves the previous lock when binary verification fails", async () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-failed-update-"));
-  const oldLock = pgschemaLock("1.12.2", "b".repeat(64));
+  const oldLock = pgschemaLock("1.13.2", "b".repeat(64));
   const releaseUrl = "https://releases.test/pgschema";
   const downloadBaseUrl = "https://downloads.test/pgschema";
   const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
     const url = String(input);
-    if (url === releaseUrl) return new Response(JSON.stringify([githubRelease("1.12.3", "c".repeat(64))]));
-    if (url.startsWith(`${downloadBaseUrl}/v1.12.3/`)) return new Response("wrong binary");
+    if (url === releaseUrl) return new Response(JSON.stringify([githubRelease("1.13.3", "c".repeat(64))]));
+    if (url.startsWith(`${downloadBaseUrl}/v1.13.3/`)) return new Response("wrong binary");
     return new Response(null, { status: 404 });
   };
 
@@ -342,7 +342,7 @@ test("runPgschemaUpdate preserves the previous lock when binary verification fai
     await expect(runPgschemaUpdate({ root, releasesUrl: releaseUrl, downloadBaseUrl, fetchImpl })).rejects.toThrow(
       "checksum mismatch",
     );
-    expect(readPgschemaLock(root).version).toBe("1.12.2");
+    expect(readPgschemaLock(root).version).toBe("1.13.2");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -351,7 +351,7 @@ test("runPgschemaUpdate preserves the previous lock when binary verification fai
 test("runPgschemaUpdate leaves an already-current lock byte-for-byte unchanged", async () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-current-update-"));
   const body = Buffer.from("#!/bin/sh\nprintf 'pgschema current\\n'\n");
-  const lock = pgschemaLock("1.12.3", sha256(body));
+  const lock = pgschemaLock("1.13.3", sha256(body));
   const original = JSON.stringify(lock);
   const releaseUrl = "https://releases.test/pgschema";
   const downloadBaseUrl = "https://downloads.test/pgschema";
@@ -375,8 +375,10 @@ test("runPgschemaUpdate leaves an already-current lock byte-for-byte unchanged",
 test("readPgschemaLock rejects versions outside the supported minor line", () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-range-"));
   try {
-    writeFileSync(pgschemaLockPath(root), JSON.stringify(pgschemaLock("1.13.0", "d".repeat(64))));
-    expect(() => readPgschemaLock(root)).toThrow("outside the supported range >=1.12 <1.13");
+    for (const version of ["1.12.5", "1.14.0", "2.0.0"]) {
+      writeFileSync(pgschemaLockPath(root), JSON.stringify(pgschemaLock(version, "d".repeat(64))));
+      expect(() => readPgschemaLock(root)).toThrow("outside the supported range >=1.13 <1.14");
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -384,7 +386,7 @@ test("readPgschemaLock rejects versions outside the supported minor line", () =>
 
 test("readPgschemaLock rejects malformed lock authority fields", () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-invalid-lock-"));
-  const valid = pgschemaLock("1.12.3", "d".repeat(64));
+  const valid = pgschemaLock("1.13.3", "d".repeat(64));
   const cases: Array<[value: unknown, message: string]> = [
     [{ ...valid, lockfileVersion: 2 }, "unsupported lockfileVersion"],
     [{ ...valid, source: "https://example.invalid" }, "unsupported source"],
@@ -410,19 +412,19 @@ test("runPgschemaUpdate refuses downgrades and mutated assets for the same relea
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-pgschema-monotonic-update-"));
   const releaseUrl = "https://releases.test/pgschema";
   try {
-    writeFileSync(pgschemaLockPath(root), JSON.stringify(pgschemaLock("1.12.4", "a".repeat(64))));
+    writeFileSync(pgschemaLockPath(root), JSON.stringify(pgschemaLock("1.13.4", "a".repeat(64))));
     await expect(runPgschemaUpdate({
       root,
       releasesUrl: releaseUrl,
-      fetchImpl: async () => new Response(JSON.stringify([githubRelease("1.12.3", "a".repeat(64))])),
-    })).rejects.toThrow("refusing to downgrade v1.12.4 to v1.12.3");
+      fetchImpl: async () => new Response(JSON.stringify([githubRelease("1.13.3", "a".repeat(64))])),
+    })).rejects.toThrow("refusing to downgrade v1.13.4 to v1.13.3");
 
-    writeFileSync(pgschemaLockPath(root), JSON.stringify(pgschemaLock("1.12.3", "a".repeat(64))));
+    writeFileSync(pgschemaLockPath(root), JSON.stringify(pgschemaLock("1.13.3", "a".repeat(64))));
     await expect(runPgschemaUpdate({
       root,
       releasesUrl: releaseUrl,
-      fetchImpl: async () => new Response(JSON.stringify([githubRelease("1.12.3", "b".repeat(64))])),
-    })).rejects.toThrow("release asset digests changed for locked v1.12.3");
+      fetchImpl: async () => new Response(JSON.stringify([githubRelease("1.13.3", "b".repeat(64))])),
+    })).rejects.toThrow("release asset digests changed for locked v1.13.3");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

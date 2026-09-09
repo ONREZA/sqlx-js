@@ -150,7 +150,7 @@ The managed pgschema workflow supports Linux and macOS. On Windows, run
 sqlx-js under WSL/Linux/macOS or use built-in migrations.
 
 `pgschema install` creates a missing project lock from the latest stable
-`>=1.12 <1.13` release. Commit `pgschema.lock.json`, use `install --frozen` in
+`>=1.13 <1.14` release. Commit `pgschema.lock.json`, use `install --frozen` in
 CI, and refresh only that lock with `pgschema update --patch` when a new patch
 is available. Schema execution never updates the tool implicitly.
 
