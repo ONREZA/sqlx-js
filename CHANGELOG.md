@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.38.0](https://github.com/ONREZA/sqlx-js/compare/v0.37.0...v0.38.0) (2026-09-09)
+
+
+### Features
+
+* **pgschema:** support the 1.13 release line ([6d00bf0](https://github.com/ONREZA/sqlx-js/commit/6d00bf040782614a07e21b6ff7b964681e0963b5))
+
+
+### Bug Fixes
+
+* **ci:** validate all committed prepare artifacts ([e42c928](https://github.com/ONREZA/sqlx-js/commit/e42c92859f3bc35d8a828ac53c2edb5edb0fb03b))
+* **inference:** preserve query scope contracts ([850665c](https://github.com/ONREZA/sqlx-js/commit/850665c70bb46eed3441e25e7930dd7d9ca834ce)), closes [#104](https://github.com/ONREZA/sqlx-js/issues/104) [#107](https://github.com/ONREZA/sqlx-js/issues/107)
+
 ## [0.37.0](https://github.com/ONREZA/sqlx-js/compare/v0.36.2...v0.37.0) (2026-09-08)
 
 
