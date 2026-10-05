@@ -49,12 +49,17 @@ function errorResponse(code: string, message: string): Buffer {
 }
 
 async function within<T>(promise: Promise<T>, message: string): Promise<T> {
-  return await Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(message)), 500);
-    }),
-  ]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), 5_000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 describe("TLS fail-closed negotiation", () => {

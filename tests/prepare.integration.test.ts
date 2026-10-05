@@ -1135,7 +1135,6 @@ export default {
 
       const api = createRuntimeSqlClient(dbUrl, {
         profile: { name: "api", role: apiRole },
-        operationTimeoutMs: 200,
         queryDescriptors,
       });
       const worker = createRuntimeSqlClient(dbUrl, {
@@ -1155,7 +1154,14 @@ export default {
           .toEqual([expect.objectContaining({ role: apiRole, value: 42 })]);
         expect(await worker.unsafe("SELECT current_user AS role, value FROM profile_target"))
           .toEqual([expect.objectContaining({ role: workerRole, value: "worker" })]);
-        await expect(api.unsafe("SELECT pg_sleep(1)")).rejects.toBeInstanceOf(QueryTimeoutError);
+        const timeout = api.sql.with({ timeoutMs: 200 })("SELECT pg_sleep(1)");
+        await expect(timeout).rejects.toBeInstanceOf(QueryTimeoutError);
+        await expect(timeout).rejects.toMatchObject({
+          timeoutMs: 200,
+          phase: "execution",
+          outcome: "unknown",
+          generation: 1,
+        });
         expect(api.snapshot().recycleCount).toBe(1);
         expect(await api.unsafe("SELECT current_user AS role, value FROM profile_target"))
           .toEqual([expect.objectContaining({ role: apiRole, value: 42 })]);

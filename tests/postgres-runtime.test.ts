@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -1377,33 +1377,60 @@ describe("managed generations", () => {
 
   test("one timeout recycles a generation once for concurrent stalled queries", async () => {
     let created = 0;
+    let dispatched = 0;
     let cancelled = 0;
     let ended = 0;
+    let resolveDispatched!: () => void;
+    const allDispatched = new Promise<void>((resolve) => { resolveDispatched = resolve; });
+    let resolveRetired!: () => void;
+    const retired = new Promise<void>((resolve) => { resolveRetired = resolve; });
     const db = _internal.createManagedClient(() => {
       created++;
       if (created === 1) {
-        return fakePool(() => pendingQuery(new Promise(() => {}), () => { cancelled++; }), {
-          end: async () => { ended++; },
+        return fakePool(() => Object.assign(pendingQuery(new Promise(() => {}), () => { cancelled++; }), {
+          execute() {
+            dispatched++;
+            if (dispatched === 100) resolveDispatched();
+            return this;
+          },
+        }), {
+          end: async () => { ended++; resolveRetired(); },
         });
       }
       return fakePool(async () => []);
     }, { operationTimeoutMs: 10, cancelGraceMs: 0 });
 
-    const results = await Promise.allSettled(
-      Array.from({ length: 100 }, (_, index) => db.sql(`SELECT ${index}`)),
-    );
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    expect(created).toBe(2);
-    expect(cancelled).toBe(100);
-    expect(ended).toBe(1);
-    expect(results.every((result) => result.status === "rejected")).toBe(true);
-    expect(results.filter((result) =>
-      result.status === "rejected" && result.reason instanceof QueryTimeoutError
-    )).toHaveLength(1);
-    expect(results.filter((result) =>
-      result.status === "rejected" && result.reason instanceof GenerationRecycledError
-    )).toHaveLength(99);
-    await db.close({ graceMs: 0, forceAfterMs: 0 });
+    jest.useFakeTimers({ now: 0 });
+    try {
+      const settled = Promise.allSettled(
+        Array.from({ length: 100 }, (_, index) => db.sql(`SELECT ${index}`)),
+      );
+      await allDispatched;
+      expect(dispatched).toBe(100);
+      expect(cancelled).toBe(0);
+      jest.advanceTimersByTime(10);
+      const results = await settled;
+      jest.runAllTimers();
+      await retired;
+      expect(created).toBe(2);
+      expect(cancelled).toBe(100);
+      expect(ended).toBe(1);
+      expect(results.every((result) => result.status === "rejected")).toBe(true);
+      expect(results.filter((result) =>
+        result.status === "rejected" && result.reason instanceof QueryTimeoutError
+      )).toEqual([expect.objectContaining({ reason: expect.objectContaining({
+        timeoutMs: 10,
+        phase: "execution",
+        outcome: "unknown",
+        generation: 1,
+      }) })]);
+      expect(results.filter((result) =>
+        result.status === "rejected" && result.reason instanceof GenerationRecycledError
+      )).toHaveLength(99);
+    } finally {
+      jest.useRealTimers();
+      await db.close({ graceMs: 0, forceAfterMs: 0 });
+    }
   });
 
   test("generation recovery cancels and expires a collateral transaction", async () => {
