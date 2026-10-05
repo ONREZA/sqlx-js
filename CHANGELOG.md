@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.38.1](https://github.com/ONREZA/sqlx-js/compare/v0.38.0...v0.38.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* **scanner:** resolve lexical query bindings ([19275f5](https://github.com/ONREZA/sqlx-js/commit/19275f5828c68a22e510309c01815ff0d618e876)), closes [#111](https://github.com/ONREZA/sqlx-js/issues/111)
+
+
+### Tests
+
+* **runtime:** isolate operation deadline checks ([b0b9311](https://github.com/ONREZA/sqlx-js/commit/b0b93112d4809191ffcd14d85621d2897e6e4814))
+
 ## [0.38.0](https://github.com/ONREZA/sqlx-js/compare/v0.37.0...v0.38.0) (2026-09-09)
 
 
