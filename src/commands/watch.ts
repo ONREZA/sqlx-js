@@ -10,6 +10,7 @@ import {
   type PrepareSession,
 } from "./prepare";
 import { configHash, loadConfig } from "../config";
+import { fatal } from "./prepare-diagnostics";
 import { profileFingerprint } from "../cache";
 import { embeddedSqlOutputPath } from "../embedded-sql";
 import { enumCatalogOutputPath } from "../enum-catalog";
@@ -19,7 +20,7 @@ import {
   formatDatabaseTarget,
   type DatabaseTargetSummary,
 } from "../pg/target-summary";
-import { findSourceFiles, scanFile, scanProject, type QueryCallSite } from "../scan/scanner";
+import { findSourceFiles, scanFile, scanProject, ScanError, type QueryCallSite } from "../scan/scanner";
 
 const EXT_RE = /\.(ts|tsx|mts|cts|sql)$/;
 const SKIP_DIRS = ["node_modules", ".git", ".sqlx-js", "dist", "build", ".next"];
@@ -67,6 +68,7 @@ export function watchErrorEvents(
   error: unknown,
   target?: DatabaseTargetSummary,
 ): Record<string, unknown>[] {
+  if (error instanceof ScanError) error = fatal("scan", error, target);
   const message = error instanceof Error ? error.message : String(error);
   const resolvedTarget = error instanceof PrepareFatalError ? error.target ?? target : target;
   if (!(error instanceof PrepareFatalError)) {
@@ -299,10 +301,11 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
 
   if (opts.jsonl) event("start", { root: opts.root });
   else log("watch: initial prepare");
+  let initialSummary: string | undefined;
   try {
     const r = await prepareWatchedOnce(opts, state, log, err);
     if (opts.jsonl) report(r);
-    else log(`watch: ready — ${r.entries} queries, ${r.failures} failures`);
+    else initialSummary = `watch: ready — ${r.entries} queries, ${r.failures} failures`;
   } catch (e) {
     if (opts.jsonl) {
       for (const data of watchErrorEvents(e, state.session?.target)) event("error", data);
@@ -314,9 +317,6 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
       err(`watch: initial prepare failed — ${(e as Error).message}`);
     }
   }
-  if (opts.jsonl) event("watching", { root: opts.root });
-  else log(`watch: monitoring ${opts.root}`);
-
   let pending = false;
   let running: Promise<unknown> | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -396,6 +396,11 @@ export async function runWatch(opts: WatchOptions): Promise<void> {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+  if (opts.jsonl) event("watching", { root: opts.root });
+  else {
+    if (initialSummary) log(initialSummary);
+    log(`watch: monitoring ${opts.root}`);
+  }
 
   await new Promise<void>(() => {});
 }

@@ -1012,6 +1012,57 @@ test("prepare --check --json preserves scanner source location", () => {
   }
 });
 
+test.each([
+  { args: ["prepare", "--check"], status: 1 },
+  { args: ["prepare", "--offline"], status: 1 },
+  { args: ["queries"], status: 2 },
+  { args: ["queries", "audit"], status: 2 },
+  { args: ["queries", "similarities"], status: 2 },
+])("CLI scanner diagnostics preserve interpolation failures through adapters %j", ({ args, status }) => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-cli-interpolation-"));
+  try {
+    writeFileSync(join(root, "queries.ts"),
+      'import {defineQuery} from "@onreza/sqlx-js";\n'
+      + 'const fragment="1";\n'
+      + 'const q=defineQuery("repro.q", `SELECT ${fragment}`);\n',
+    );
+    const message = "defineQuery() SQL must be a string literal; template interpolation is not supported";
+    const location = "queries.ts:3:32";
+    const diagnostic = {
+      severity: "error",
+      phase: "scan",
+      message: `sqlx-js: ${location} — ${message}`,
+      file: "queries.ts",
+      line: 3,
+      column: 32,
+    };
+    const env = { ...process.env, DATABASE_URL: "" };
+    const json = spawnSync("bun", [binPath, ...args, "--json", "--root", root], { encoding: "utf8", env });
+    expect(json.status).toBe(status);
+    expect(json.stderr).toBe("");
+    expect(JSON.parse(json.stdout)).toMatchObject({ formatVersion: 1, ok: false, diagnostics: [diagnostic] });
+
+    const human = spawnSync("bun", [binPath, ...args, "--root", root], { encoding: "utf8", env });
+    expect(human.status).toBe(status);
+    expect(human.stdout).toBe("");
+    expect(human.stderr).toBe(args[0] === "prepare"
+      ? `scan failed: ${location} — ${message}\nsummary: 0 warnings, 1 error (scan: 1)\n`
+      : `${diagnostic.message}\n`);
+
+    for (const [format, output] of [
+      ["unix", `${location}: error: [scan] ${message}`],
+      ["github", `::error file=queries.ts,line=3,col=32::[scan] ${message}`],
+    ] as const) {
+      const adapter = spawnSync("bun", [diagnosticsBinPath, format], { encoding: "utf8", input: json.stdout });
+      expect(adapter.status).toBe(1);
+      expect(adapter.stderr).toBe("");
+      expect(adapter.stdout.trim()).toBe(output);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("ci --json keeps provider verification failures machine-readable", () => {
   const root = mkdtempSync(join(tmpdir(), "sqlx-js-ci-json-"));
   try {

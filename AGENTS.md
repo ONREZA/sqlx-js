@@ -52,6 +52,7 @@ The library is **PostgreSQL-only** and keeps SQL/result validation at prepare ti
 │   │   └── watch.ts          fs.watch loop with debounced re-prepare
 │   ├── scan/
 │   │   ├── scanner.ts        TypeScript AST walk for sql() call sites
+│   │   ├── scopes.ts         Lexical bindings, hoisting, and lazy constant ownership
 │   │   └── client-bindings.ts Local createSqlClient binding resolution
 │   └── pg/
 │       ├── wire.ts           Raw PG wire protocol client (SCRAM-SHA-256)
@@ -79,7 +80,7 @@ The library is **PostgreSQL-only** and keeps SQL/result validation at prepare ti
 
 A `prepare` run executes the following pipeline:
 
-1. **Scan** (`src/scan/scanner.ts`) — TypeScript AST walk over files selected by the root `tsconfig.json` and its project references, with optional `scan.include` / `scan.exclude` overrides. Finds reusable `defineQuery` definitions, direct bindings returned by imported `createSqlClient(...)`, one direct local-module hop to an exported client, compatible SQL executors from configured `scan.modules`, and the same SQL surface inside recognized transaction callbacks. Configured connection profiles are propagated from direct client bindings or explicit `defineQuery.for(...)` declarations. Profiles with `transactionSettings` reject root query sites during scanning. Refuses non-literal query/file/profile arguments.
+1. **Scan** (`src/scan/scanner.ts`) — TypeScript AST walk over files selected by the root `tsconfig.json` and its project references, with optional `scan.include` / `scan.exclude` overrides. Finds reusable `defineQuery` definitions, direct bindings returned by imported `createSqlClient(...)`, one direct local-module hop to an exported client, compatible SQL executors from configured `scan.modules`, and the same SQL surface inside recognized transaction callbacks. Lexical binding resolution preserves local shadows and hoisting, including closures over later constant clients or `sql.with(...)` bindings. Configured connection profiles are propagated from direct client bindings or explicit `defineQuery.for(...)` declarations. Profiles with `transactionSettings` reject root query sites during scanning. Refuses non-literal query/file/profile arguments.
 2. **Describe** (`src/pg/wire.ts`) — for each unique query, sends `Parse` + `Describe Statement` + `Sync` to PostgreSQL. Returns parameter OIDs and distinguishes `RowDescription` from `NoData`, including valid zero-column result sets; row fields carry column name, type OID, source table OID, and source column attno.
 3. **Plan** (`src/pg/wire.ts`) — after Describe establishes the server-side parameter contract, statements accepted by PostgreSQL's SQL `PREPARE` surface are prepared on the same session and run through `EXPLAIN EXECUTE` under `plan_cache_mode = force_generic_plan`. Profiled queries use a dedicated session with `SET ROLE` applied before Describe/Plan, so PostgreSQL validates the role's planning-time privileges. This invokes a parameter-independent PostgreSQL plan without `ANALYZE` or query execution. Statements outside that server-owned surface are persisted and reported as `parse-only`.
 4. **Schema introspection** (`src/pg/schema.ts`) — batch-loads `pg_class`, `pg_attribute`, `pg_type`, `pg_enum` for everything touched by the queries. Cached per-session.
@@ -166,7 +167,7 @@ Keep schema ownership and runtime roles separate. RLS-aware query typing and dia
 Releases are automated. The flow:
 
 1. **Commit using conventional-commits** (`feat:`, `fix:`, `chore:`, `docs:`, etc.). `lefthook` enforces this locally via `cog verify` on every commit.
-2. **Push to `main`.** `release-please.yml` reads conventional commits since the last release and opens (or updates) a release PR titled `chore(main): release X.Y.Z`. The PR contains the `package.json` version bump and the generated `CHANGELOG.md` entry.
+2. **Push to `main`.** After CI passes, `release.yml` reads conventional commits since the last release and opens (or updates) a release PR titled `chore(main): release X.Y.Z`. The PR contains the `package.json` version bump and the generated `CHANGELOG.md` entry.
 3. **Review and merge the release PR.** release-please tags the merge commit `vX.Y.Z`.
 4. **The same `release.yml` run triggers the publish job**, which type-checks, tests, builds JS + declarations into `dist/`, smoke-tests package entrypoints, verifies version parity, and publishes to npm with provenance through Trusted Publishing.
 
@@ -236,7 +237,7 @@ short `why` comment or in a concrete refactor issue/task.
 - The codegen writes literal SQL strings as keys in `SqlxJsGeneratedQueries`. Whitespace in the source must match exactly when the query is rewritten — the runtime sees the user's literal, then the generated registry is looked up by that literal. The fingerprint normalization is only for cache deduplication, not type lookup.
 - JSON and PostgreSQL arrays are explicit parameter representations. Generated parameter types require `sql.json(...)` and `sql.array(...)`; do not reintroduce runtime array guessing.
 - Named `$name` parameters are rewritten to PostgreSQL `$N` placeholders in first-use order. Repeated names reuse the same position; never rewrite placeholders with a regex because quoted strings, comments, and dollar-quoted bodies must remain unchanged.
-- `bun install` runs `prepare` lifecycle scripts. Don't name a script `prepare` in `package.json`; it'll loop. We use `sqlx:prepare`.
+- `bun install` runs the `prepare` package lifecycle script. Reserve it for the guarded package build and hook installation; SQL artifact generation belongs in `sqlx:prepare` so installation never requires a database or recursively prepares the project.
 - Watch mode depends on recursive `fs.watch` support from the active runtime. It incrementally rescans affected files and reuses unchanged cache fingerprints; config/tsconfig changes must keep forcing a full prepare. Don't use chokidar; it adds dependencies for no real gain here.
 - `sql.file(path)` is root-relative. Prepare resolves against `--root`; runtime resolves against `fileRoot` (default: `process.cwd()`). Runtime file contents are immutable-cached by default; `reloadSqlFiles: true` restores development mtime checks. Keep roots aligned in embedded/package layouts.
 

@@ -74,6 +74,12 @@ function githubProperty(value: string): string {
   return githubData(value).replaceAll(":", "%3A").replaceAll(",", "%2C");
 }
 
+function diagnosticMessage(diagnostic: Diagnostic): string {
+  if (!diagnostic.file || diagnostic.line === undefined || diagnostic.column === undefined) return diagnostic.message;
+  const prefix = `sqlx-js: ${diagnostic.file}:${diagnostic.line}:${diagnostic.column} — `;
+  return diagnostic.message.startsWith(prefix) ? diagnostic.message.slice(prefix.length) : diagnostic.message;
+}
+
 function renderGithub(diagnostic: Diagnostic): string {
   const properties: string[] = [];
   if (diagnostic.file) properties.push(`file=${githubProperty(diagnostic.file)}`);
@@ -83,7 +89,7 @@ function renderGithub(diagnostic: Diagnostic): string {
   const profile = diagnostic.profile ? ` profile:${diagnostic.profile}` : "";
   const code = diagnostic.code ? ` ${diagnostic.code}` : "";
   const subject = diagnostic.functionSignature ? `${diagnostic.functionSignature}: ` : "";
-  return `::${diagnostic.severity}${propertyText}::${githubData(`[${diagnostic.phase}${profile}${code}] ${subject}${diagnostic.message}`)}`;
+  return `::${diagnostic.severity}${propertyText}::${githubData(`[${diagnostic.phase}${profile}${code}] ${subject}${diagnosticMessage(diagnostic)}`)}`;
 }
 
 function renderUnix(diagnostic: Diagnostic): string {
@@ -94,7 +100,7 @@ function renderUnix(diagnostic: Diagnostic): string {
   const profile = diagnostic.profile ? ` profile:${clean(diagnostic.profile)}` : "";
   const code = diagnostic.code ? ` ${clean(diagnostic.code)}` : "";
   const subject = diagnostic.functionSignature ? `${clean(diagnostic.functionSignature)}: ` : "";
-  return `${file}:${line}:${column}: ${diagnostic.severity}: [${clean(diagnostic.phase)}${profile}${code}] ${subject}${clean(diagnostic.message)}`;
+  return `${file}:${line}:${column}: ${diagnostic.severity}: [${clean(diagnostic.phase)}${profile}${code}] ${subject}${clean(diagnosticMessage(diagnostic))}`;
 }
 
 function usage(): never {

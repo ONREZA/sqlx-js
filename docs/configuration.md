@@ -168,6 +168,12 @@ const db = createSqlClient<SqlxJsRegistry>(process.env.DATABASE_URL, {
 
 By default the scanner uses the root `tsconfig.json` file list and follows TypeScript project references, so a referenced monorepo is scanned without walking unrelated folders. `scan.include` replaces that source-file universe with TypeScript glob patterns; `scan.exclude` is added to the built-in dependency/build exclusions. `scan.modules` replaces the default `@onreza/sqlx-js` import source list for applications that expose a compatible SQL executor or client factory from another package. Direct imports of an exported local `const` created by `createSqlClient(...)` are followed automatically for one local-module hop. Include `@onreza/sqlx-js` explicitly when direct package imports and configured application-module imports are both used. If there is no root `tsconfig.json`, the fallback is a recursive TypeScript scan.
 
+The scanner resolves lexical bindings rather than matching names in statement
+order. Local declarations shadow imported factories throughout their scope;
+closures can use a later `const` client or `sql.with(...)` binding. SQL, file
+paths, profile names, and definition options still require their documented
+literal forms.
+
 `queryAudit.exactDuplicates.ignore` acknowledges an intentional repeated query
 fingerprint for `queries audit`. Every entry requires the stable query ID, the
 exact reviewed source occurrence count, and a non-empty reason. Changed counts,

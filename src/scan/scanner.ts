@@ -12,6 +12,7 @@ import {
   type ClientExecution,
 } from "./client-bindings";
 import { parseQueryDefinitionOptions } from "./query-options";
+import { createLexicalScopes, type LexicalScope } from "./scopes";
 
 export type QueryCallSite = {
   file: string;
@@ -99,186 +100,81 @@ export function findSourceFiles(root: string, scan: ScanConfig = {}): string[] {
   return [...configured].filter((file) => allowed.has(file)).sort();
 }
 
-type ScopeState = {
-  sqlAliases: Map<string, {
-    profile?: string;
-    transactionScoped?: boolean;
-    execution?: ClientExecution;
-  }>;
-  namespaces: Set<string>;
-  clientFactories: Set<string>;
-  queryFactories: Set<string>;
-  clients: Map<string, ClientBinding>;
+type SqlBinding = {
+  kind: "sql";
+  profile?: string;
+  transactionScoped?: boolean;
+  execution?: ClientExecution;
 };
-
+type ScannerBinding = SqlBinding
+  | { kind: "namespace" | "clientFactory" | "queryFactory" }
+  | { kind: "client"; binding: ClientBinding };
+type ScopeState = LexicalScope<ScannerBinding>;
 type Cardinality = "many" | "one" | "optional" | "execute";
-type CalleeKind = "inline" | "file" | "transaction" | null;
 type CalleeClassification = {
-  kind: Exclude<CalleeKind, null>;
+  kind: "inline" | "file" | "transaction";
   cardinality?: Cardinality;
   profiles?: string[];
   transactionScoped?: boolean;
   execution?: ClientExecution;
 };
 
-function classifyWithCall(
-  callee: ts.CallExpression,
-  scope: ScopeState,
-): CalleeClassification | null {
-  if (!ts.isPropertyAccessExpression(callee.expression)) return null;
-  if (callee.expression.name.text !== "with") return null;
-  const classified = classifyCallee(callee.expression.expression, scope);
+function classifySqlRoot(expression: ts.Expression, scope: ScopeState): CalleeClassification | null {
+  const callee = unwrapExpression(expression);
+  let binding: SqlBinding | ClientBinding | undefined;
+  if (ts.isIdentifier(callee)) {
+    const resolved = scope.get(callee.text);
+    if (resolved?.kind === "sql") binding = resolved;
+  } else if (ts.isPropertyAccessExpression(callee) && callee.name.text === "sql") {
+    const receiver = unwrapExpression(callee.expression);
+    if (ts.isIdentifier(receiver)) {
+      const resolved = scope.get(receiver.text);
+      if (resolved?.kind === "namespace") binding = { execution: "adaptive" };
+      if (resolved?.kind === "client") binding = resolved.binding;
+    }
+  }
+  if (!binding) return null;
+  return {
+    kind: "inline",
+    cardinality: "many",
+    ...(binding.profile ? { profiles: [binding.profile] } : {}),
+    ...("transactionScoped" in binding && binding.transactionScoped ? { transactionScoped: true } : {}),
+    ...(binding.execution ? { execution: binding.execution } : {}),
+  };
+}
+
+function classifyWithCall(callee: ts.CallExpression, scope: ScopeState): CalleeClassification | null {
+  const expression = unwrapExpression(callee.expression);
+  if (!ts.isPropertyAccessExpression(expression) || expression.name.text !== "with") return null;
+  const classified = classifyCallee(expression.expression, scope);
   return classified?.kind === "inline" ? classified : null;
 }
 
-function classifyWithMethod(
-  classified: CalleeClassification,
-  method: string,
-): CalleeClassification | null {
-  if (method === "one" || method === "optional" || method === "execute") {
-    return { ...classified, kind: "inline", cardinality: method };
-  }
-  if (method === "file") return { ...classified, kind: "file", cardinality: "many" };
-  return null;
-}
-
-function classifyCallee(
-  callee: ts.LeftHandSideExpression,
-  scope: ScopeState,
-): CalleeClassification | null {
+function classifyCallee(expression: ts.Expression, scope: ScopeState): CalleeClassification | null {
+  const callee = unwrapExpression(expression);
   if (ts.isCallExpression(callee)) return classifyWithCall(callee, scope);
-
-  if (ts.isIdentifier(callee)) {
-    const binding = scope.sqlAliases.get(callee.text);
-    if (!binding) return null;
-    return {
-      kind: "inline",
-      cardinality: "many",
-      ...(binding.profile ? { profiles: [binding.profile] } : {}),
-      ...(binding.transactionScoped ? { transactionScoped: true } : {}),
-      ...(binding.execution ? { execution: binding.execution } : {}),
-    };
-  }
-
+  const root = classifySqlRoot(callee, scope);
+  if (root) return root;
   if (!ts.isPropertyAccessExpression(callee)) return null;
-  if (!ts.isIdentifier(callee.name)) return null;
-  const methodName = callee.name.text;
-
-  if (ts.isCallExpression(callee.expression)) {
-    const classified = classifyWithCall(callee.expression, scope);
-    return classified ? classifyWithMethod(classified, methodName) : null;
-  }
-
-  if (ts.isIdentifier(callee.expression)) {
-    const id = callee.expression.text;
-    if (scope.namespaces.has(id)) {
-      if (methodName === "sql") return { kind: "inline", cardinality: "many", execution: "adaptive" };
-      return null;
-    }
-    if (scope.clients.has(id)) {
-      const client = scope.clients.get(id)!;
-      if (methodName === "sql") {
-        return {
-          kind: "inline",
-          cardinality: "many",
-          ...(client.profile ? { profiles: [client.profile] } : {}),
-          execution: client.execution,
-        };
-      }
-      return null;
-    }
-    const binding = scope.sqlAliases.get(id);
-    if (!binding) return null;
-    const assigned = binding.profile ? { profiles: [binding.profile] } : {};
-    const transactionScoped = binding.transactionScoped ? { transactionScoped: true } : {};
-    const execution = binding.execution ? { execution: binding.execution } : {};
-    if (methodName === "transaction" || methodName === "savepoint") {
-      return { kind: "transaction", ...assigned, ...execution };
-    }
-    if (methodName === "file") {
-      return { kind: "file", cardinality: "many", ...assigned, ...transactionScoped, ...execution };
-    }
-    if (methodName === "one" || methodName === "optional" || methodName === "execute") {
-      return { kind: "inline", cardinality: methodName, ...assigned, ...transactionScoped, ...execution };
-    }
-    return null;
-  }
-
-  if (ts.isPropertyAccessExpression(callee.expression)) {
-    const mid = callee.expression;
-    if (!ts.isIdentifier(mid.name)) return null;
-
-    if (ts.isCallExpression(mid.expression)) {
-      const classified = classifyWithCall(mid.expression, scope);
-      if (
-        classified &&
-        mid.name.text === "file" &&
-        (methodName === "one" || methodName === "optional" || methodName === "execute")
-      ) {
-        return { ...classified, kind: "file", cardinality: methodName };
-      }
-      return null;
-    }
-
-    // ns.sql.X(...) and client.sql.X(...) chains
-    if (
-      ts.isIdentifier(mid.expression) &&
-      (scope.namespaces.has(mid.expression.text) || scope.clients.has(mid.expression.text))
-    ) {
-      if (mid.name.text !== "sql") return null;
-      const client = scope.clients.get(mid.expression.text);
-      const assigned = client?.profile ? { profiles: [client.profile] } : {};
-      const execution = client
-        ? { execution: client.execution }
-        : { execution: "adaptive" as const };
-      if (methodName === "one" || methodName === "optional" || methodName === "execute") {
-        return { kind: "inline", cardinality: methodName, ...assigned, ...execution };
-      }
-      if (methodName === "file") return { kind: "file", cardinality: "many", ...assigned, ...execution };
-      if (methodName === "transaction") return { kind: "transaction", ...assigned, ...execution };
-      return null;
-    }
-
-    // sqlAlias.file.X(...) — file.one / file.optional
-    if (ts.isIdentifier(mid.expression)) {
-      const root = mid.expression.text;
-      const binding = scope.sqlAliases.get(root);
-      if (!binding) return null;
-      if (mid.name.text !== "file") return null;
-      const transactionScoped = binding.transactionScoped ? { transactionScoped: true } : {};
-      const execution = binding.execution ? { execution: binding.execution } : {};
-      if (methodName === "one" || methodName === "optional" || methodName === "execute") {
-        return {
-          kind: "file",
-          cardinality: methodName,
-          ...(binding.profile ? { profiles: [binding.profile] } : {}),
-          ...transactionScoped,
-          ...execution,
-        };
-      }
-      return null;
-    }
-
-    // ns.sql.file.X(...) and client.sql.file.X(...) chains
-    if (
-      ts.isPropertyAccessExpression(mid.expression) &&
-      ts.isIdentifier(mid.expression.expression) &&
-      ts.isIdentifier(mid.expression.name) &&
-      (scope.namespaces.has(mid.expression.expression.text) || scope.clients.has(mid.expression.expression.text)) &&
-      mid.expression.name.text === "sql" &&
-      mid.name.text === "file" &&
-      (methodName === "one" || methodName === "optional" || methodName === "execute")
-    ) {
-      const client = scope.clients.get(mid.expression.expression.text);
-      return {
-        kind: "file",
-        cardinality: methodName,
-        ...(client?.profile ? { profiles: [client.profile] } : {}),
-        execution: client?.execution ?? "adaptive",
-      };
+  const receiver = unwrapExpression(callee.expression);
+  const method = callee.name.text;
+  const cardinality = method === "one" || method === "optional" || method === "execute" ? method : undefined;
+  const direct = classifySqlRoot(receiver, scope);
+  const withOptions = ts.isCallExpression(receiver) ? classifyWithCall(receiver, scope) : null;
+  const base = direct ?? withOptions;
+  if (base) {
+    if (cardinality) return { ...base, kind: "inline", cardinality };
+    if (method === "file") return { ...base, kind: "file", cardinality: "many" };
+    if (direct && (method === "transaction" || (method === "savepoint" && ts.isIdentifier(receiver)))) {
+      return { ...direct, kind: "transaction" };
     }
   }
-
+  if (cardinality && ts.isPropertyAccessExpression(receiver) && receiver.name.text === "file") {
+    const fileRoot = unwrapExpression(receiver.expression);
+    const file = classifySqlRoot(fileRoot, scope)
+      ?? (ts.isCallExpression(fileRoot) ? classifyWithCall(fileRoot, scope) : null);
+    if (file) return { ...file, kind: "file", cardinality };
+  }
   return null;
 }
 
@@ -287,50 +183,28 @@ type DefinitionClassification = {
   profileArgs?: ts.NodeArray<ts.Expression>;
 };
 
-function classifyDefinitionCallee(
-  callee: ts.LeftHandSideExpression,
-  scope: ScopeState,
-): DefinitionClassification | null {
-  if (ts.isIdentifier(callee)) return scope.queryFactories.has(callee.text) ? { cardinality: "many" } : null;
-  if (!ts.isPropertyAccessExpression(callee) || !ts.isIdentifier(callee.name)) return null;
+function isDefinitionFactory(expression: ts.Expression, scope: ScopeState): boolean {
+  const callee = unwrapExpression(expression);
+  if (ts.isIdentifier(callee)) return scope.get(callee.text)?.kind === "queryFactory";
+  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "defineQuery") return false;
+  const receiver = unwrapExpression(callee.expression);
+  return ts.isIdentifier(receiver) && scope.get(receiver.text)?.kind === "namespace";
+}
+
+function classifyDefinitionCallee(expression: ts.Expression, scope: ScopeState): DefinitionClassification | null {
+  const callee = unwrapExpression(expression);
+  if (isDefinitionFactory(callee, scope)) return { cardinality: "many" };
+  if (!ts.isPropertyAccessExpression(callee)) return null;
   const method = callee.name.text;
-  if (ts.isIdentifier(callee.expression) && scope.queryFactories.has(callee.expression.text)) {
-    return method === "one" || method === "optional" || method === "execute"
-      ? { cardinality: method }
-      : null;
-  }
-  if (
-    method === "defineQuery" &&
-    ts.isIdentifier(callee.expression) &&
-    scope.namespaces.has(callee.expression.text)
-  ) return { cardinality: "many" };
-  if (
-    (method === "one" || method === "optional" || method === "execute") &&
-    ts.isPropertyAccessExpression(callee.expression) &&
-    ts.isIdentifier(callee.expression.expression) &&
-    scope.namespaces.has(callee.expression.expression.text) &&
-    callee.expression.name.text === "defineQuery"
-  ) return { cardinality: method };
-  if (
-    (method === "many" || method === "one" || method === "optional" || method === "execute") &&
-    ts.isCallExpression(callee.expression) &&
-    ts.isPropertyAccessExpression(callee.expression.expression) &&
-    callee.expression.expression.name.text === "for"
-  ) {
-    const root = callee.expression.expression.expression;
-    const imported = ts.isIdentifier(root) && scope.queryFactories.has(root.text);
-    const namespaced = ts.isPropertyAccessExpression(root) &&
-      root.name.text === "defineQuery" &&
-      ts.isIdentifier(root.expression) &&
-      scope.namespaces.has(root.expression.text);
-    if (imported || namespaced) {
-      return {
-        cardinality: method === "many" ? "many" : method,
-        profileArgs: callee.expression.arguments,
-      };
-    }
-  }
-  return null;
+  if (method !== "many" && method !== "one" && method !== "optional" && method !== "execute") return null;
+  const receiver = unwrapExpression(callee.expression);
+  if (method !== "many" && isDefinitionFactory(receiver, scope)) return { cardinality: method };
+  if (!ts.isCallExpression(receiver)) return null;
+  const profiled = unwrapExpression(receiver.expression);
+  return ts.isPropertyAccessExpression(profiled) && profiled.name.text === "for"
+    && isDefinitionFactory(profiled.expression, scope)
+    ? { cardinality: method, profileArgs: receiver.arguments }
+    : null;
 }
 
 export function scanFile(
@@ -359,17 +233,13 @@ export function scanFile(
     return { line: line + 1, column: character + 1 };
   };
   const fileRel = relative(root, absPath).replace(/\\/g, "/");
-  const importedAliases = new Set<string>();
-  const importedNamespaces = new Set<string>();
-  const importedClientFactories = new Set<string>();
-  const importedQueryFactories = new Set<string>();
-  const importedClients = new Map<string, ClientBinding>();
+  const imports = new Map<string, ScannerBinding>();
   for (const stmt of source.statements) {
     if (!ts.isImportDeclaration(stmt)) continue;
     const mod = stmt.moduleSpecifier;
     if (!ts.isStringLiteral(mod)) continue;
     const ic = stmt.importClause;
-    if (!ic) continue;
+    if (!ic || ic.isTypeOnly) continue;
     const nb = ic.namedBindings;
     if (!nb) continue;
     const localClients = resolveLocalClientExports(
@@ -381,6 +251,7 @@ export function scanFile(
     );
     if (localClients.size > 0 && ts.isNamedImports(nb)) {
       for (const elem of nb.elements) {
+        if (elem.isTypeOnly) continue;
         const imported = (elem.propertyName ?? elem.name).text;
         const resolved = localClients.get(imported);
         if (!resolved) continue;
@@ -402,29 +273,24 @@ export function scanFile(
             `createSqlClient references unknown profile ${JSON.stringify(binding.profile)}`,
           );
         }
-        importedClients.set(elem.name.text, binding);
+        imports.set(elem.name.text, { kind: "client", binding });
       }
     }
     if (!modules.includes(mod.text)) continue;
     if (ts.isNamespaceImport(nb)) {
-      importedNamespaces.add(nb.name.text);
+      imports.set(nb.name.text, { kind: "namespace" });
     } else if (ts.isNamedImports(nb)) {
       for (const elem of nb.elements) {
+        if (elem.isTypeOnly) continue;
         const orig = (elem.propertyName ?? elem.name).text;
-        if (orig === "sql") importedAliases.add(elem.name.text);
-        if (orig === "createSqlClient") importedClientFactories.add(elem.name.text);
-        if (orig === "defineQuery") importedQueryFactories.add(elem.name.text);
+        if (orig === "sql") imports.set(elem.name.text, { kind: "sql", execution: "adaptive" });
+        if (orig === "createSqlClient") imports.set(elem.name.text, { kind: "clientFactory" });
+        if (orig === "defineQuery") imports.set(elem.name.text, { kind: "queryFactory" });
       }
     }
   }
 
-  if (
-    importedAliases.size === 0 &&
-    importedNamespaces.size === 0 &&
-    importedClientFactories.size === 0 &&
-    importedQueryFactories.size === 0 &&
-    importedClients.size === 0
-  ) return [];
+  if (imports.size === 0) return [];
 
   const out: QueryCallSite[] = [];
 
@@ -479,13 +345,28 @@ export function scanFile(
         "defineQuery() requires a SQL literal, optional name, and optional options object",
       );
     }
-    const named = args.length === 3 || (args.length === 2 && ts.isStringLiteralLike(args[1]!));
+    const named = args.length === 3 || (args.length === 2 && (
+      ts.isStringLiteralLike(args[1]!) || ts.isTemplateExpression(unwrapExpression(args[1]!))
+    ));
     const optionsNode = args.length === 3 || (args.length === 2 && !named)
       ? args[args.length - 1]
       : undefined;
     const queryNode = named ? args[1]! : args[0]!;
     const nameNode = named ? args[0]! : undefined;
-    if (!ts.isStringLiteralLike(queryNode) || (nameNode && !ts.isStringLiteralLike(nameNode))) {
+    if (ts.isTemplateExpression(unwrapExpression(queryNode))) {
+      const pos = here(queryNode);
+      throw new ScanError(
+        fileRel,
+        pos.line,
+        pos.column,
+        "defineQuery() SQL must be a string literal; template interpolation is not supported",
+      );
+    }
+    if (nameNode && !ts.isStringLiteralLike(nameNode)) {
+      const pos = here(nameNode);
+      throw new ScanError(fileRel, pos.line, pos.column, "defineQuery() name must be a string literal");
+    }
+    if (!ts.isStringLiteralLike(queryNode)) {
       const pos = here(queryNode);
       throw new ScanError(fileRel, pos.line, pos.column, "defineQuery() requires string literals for its name and SQL");
     }
@@ -496,8 +377,9 @@ export function scanFile(
     const pos = here(queryNode);
     let profiles: string[] | undefined;
     if (profileArgs) {
-      if (profileArgs.length === 0 || profileArgs.some((profile) => !ts.isStringLiteralLike(profile))) {
-        const profileNode = profileArgs[0] ?? callee;
+      const invalidLiteral = profileArgs.find((profile) => !ts.isStringLiteralLike(profile));
+      if (profileArgs.length === 0 || invalidLiteral) {
+        const profileNode = invalidLiteral ?? callee;
         const profilePos = here(profileNode);
         throw new ScanError(
           fileRel,
@@ -506,14 +388,24 @@ export function scanFile(
           "defineQuery.for() requires one or more profile name string literals",
         );
       }
-      profiles = profileArgs.map((profile) => (profile as ts.StringLiteralLike).text);
-      if (new Set(profiles).size !== profiles.length) {
-        throw new ScanError(fileRel, pos.line, pos.column, "defineQuery.for() profile names must be unique");
+      const profileNodes = profileArgs.filter(ts.isStringLiteralLike);
+      const seenProfiles = new Set<string>();
+      for (const profileNode of profileNodes) {
+        const profilePos = here(profileNode);
+        if (profileNode.text.trim() === "") {
+          throw new ScanError(fileRel, profilePos.line, profilePos.column, "defineQuery.for() profile names must not be empty");
+        }
+        if (seenProfiles.has(profileNode.text)) {
+          throw new ScanError(fileRel, profilePos.line, profilePos.column, "defineQuery.for() profile names must be unique");
+        }
+        seenProfiles.add(profileNode.text);
       }
-      const unknown = profiles.find((profile) => !configuredProfiles.has(profile));
-      if (unknown) {
-        throw new ScanError(fileRel, pos.line, pos.column, `defineQuery.for() references unknown profile ${JSON.stringify(unknown)}`);
+      const unknown = profileNodes.find((profile) => !configuredProfiles.has(profile.text));
+      if (unknown !== undefined) {
+        const profilePos = here(unknown);
+        throw new ScanError(fileRel, profilePos.line, profilePos.column, `defineQuery.for() references unknown profile ${JSON.stringify(unknown.text)}`);
       }
+      profiles = profileNodes.map((profile) => profile.text);
     }
     let rewritten: ReturnType<typeof rewriteNamedParameters>;
     try {
@@ -605,270 +497,93 @@ export function scanFile(
     return true;
   };
 
-  const bindingDeclares = (binding: ts.BindingName, name: string): boolean => {
-    if (ts.isIdentifier(binding)) return binding.text === name;
-    for (const el of binding.elements) {
-      if (ts.isOmittedExpression(el)) continue;
-      if (bindingDeclares(el.name, name)) return true;
-    }
-    return false;
-  };
-
-  const scopeWithoutBindingShadows = (scope: ScopeState, bindings: readonly ts.BindingName[]): ScopeState => {
-    let changed = false;
-    const nextSql = new Map(scope.sqlAliases);
-    const nextNs = new Set(scope.namespaces);
-    const nextFactories = new Set(scope.clientFactories);
-    const nextQueryFactories = new Set(scope.queryFactories);
-    const nextClients = new Map(scope.clients);
-    for (const binding of bindings) {
-      for (const a of scope.sqlAliases.keys()) {
-        if (bindingDeclares(binding, a)) {
-          nextSql.delete(a);
-          changed = true;
-        }
-      }
-      for (const a of scope.namespaces) {
-        if (bindingDeclares(binding, a)) {
-          nextNs.delete(a);
-          changed = true;
-        }
-      }
-      for (const a of scope.clientFactories) {
-        if (bindingDeclares(binding, a)) {
-          nextFactories.delete(a);
-          changed = true;
-        }
-      }
-      for (const a of scope.queryFactories) {
-        if (bindingDeclares(binding, a)) {
-          nextQueryFactories.delete(a);
-          changed = true;
-        }
-      }
-      for (const a of scope.clients.keys()) {
-        if (bindingDeclares(binding, a)) {
-          nextClients.delete(a);
-          changed = true;
-        }
-      }
-    }
-    return changed
-      ? {
-          sqlAliases: nextSql,
-          namespaces: nextNs,
-          clientFactories: nextFactories,
-          queryFactories: nextQueryFactories,
-          clients: nextClients,
-        }
-      : scope;
-  };
-
-  const scopeWithClientDeclarations = (
-    scope: ScopeState,
-    declarations: readonly ts.VariableDeclaration[],
-    constant: boolean,
-  ): ScopeState => {
-    const nextClients = new Map(scope.clients);
-    let changed = false;
-    for (const declaration of declarations) {
-      if (!ts.isIdentifier(declaration.name)) continue;
-      const resolved = resolveClientInitializer(
-        declaration.initializer,
-        scope.clientFactories,
-        scope.namespaces,
-      );
-      if (!resolved.client) continue;
+  const scopes = createLexicalScopes(source, imports, (declaration, constant, scope): ScannerBinding | undefined => {
+    if (!ts.isIdentifier(declaration.name) || !declaration.initializer) return undefined;
+    const initializer = unwrapExpression(declaration.initializer);
+    if (!ts.isCallExpression(initializer)) return undefined;
+    const resolved = resolveClientInitializer(
+      declaration.initializer,
+      { has: (name) => scope.get(name)?.kind === "clientFactory" },
+      { has: (name) => scope.get(name)?.kind === "namespace" },
+    );
+    if (resolved.client) {
       if (resolved.invalidProfile) {
         const pos = here(resolved.invalidProfile);
-        throw new ScanError(
-          fileRel,
-          pos.line,
-          pos.column,
-          "createSqlClient profile must be profiles.<name>, profiles[\"name\"], or an inline profile with a literal name",
-        );
+        throw new ScanError(fileRel, pos.line, pos.column,
+          "createSqlClient profile must be profiles.<name>, profiles[\"name\"], or an inline profile with a literal name");
       }
       const binding = resolved.binding!;
       if (binding.profile && !configuredProfiles.has(binding.profile)) {
         const pos = here(declaration.name);
-        throw new ScanError(
-          fileRel,
-          pos.line,
-          pos.column,
-          `createSqlClient references unknown profile ${JSON.stringify(binding.profile)}`,
-        );
+        throw new ScanError(fileRel, pos.line, pos.column,
+          `createSqlClient references unknown profile ${JSON.stringify(binding.profile)}`);
       }
       if (!constant) {
         const pos = here(declaration.name);
-        throw new ScanError(
-          fileRel,
-          pos.line,
-          pos.column,
-          "createSqlClient bindings must use const so their profile and execution mode cannot change",
-        );
+        throw new ScanError(fileRel, pos.line, pos.column,
+          "createSqlClient bindings must use const so their profile and execution mode cannot change");
       }
-      nextClients.set(declaration.name.text, binding);
-      changed = true;
+      return { kind: "client", binding };
     }
-    return changed ? { ...scope, clients: nextClients } : scope;
-  };
-
-  const scopeWithSqlOptionDeclarations = (
-    scope: ScopeState,
-    declarations: readonly ts.VariableDeclaration[],
-    constant: boolean,
-  ): ScopeState => {
-    const nextSql = new Map(scope.sqlAliases);
-    let changed = false;
-    for (const declaration of declarations) {
-      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
-      const initializer = unwrapExpression(declaration.initializer);
-      if (!ts.isCallExpression(initializer)) continue;
-      const classified = classifyWithCall(initializer, scope);
-      if (!classified) continue;
-      if (!constant) {
-        const pos = here(declaration.name);
-        throw new ScanError(
-          fileRel,
-          pos.line,
-          pos.column,
-          "sql.with() bindings must use const so their query ownership cannot change",
-        );
-      }
-      const profile = classified.profiles?.[0];
-      nextSql.set(declaration.name.text, {
-        ...(profile ? { profile } : {}),
-        ...(classified.transactionScoped ? { transactionScoped: true } : {}),
-        ...(classified.execution ? { execution: classified.execution } : {}),
-      });
-      changed = true;
+    const classified = classifyWithCall(initializer, scope);
+    if (!classified) return undefined;
+    if (!constant) {
+      const pos = here(declaration.name);
+      throw new ScanError(fileRel, pos.line, pos.column,
+        "sql.with() bindings must use const so their query ownership cannot change");
     }
-    return changed ? { ...scope, sqlAliases: nextSql } : scope;
-  };
+    return {
+      kind: "sql",
+      ...(classified.profiles?.[0] ? { profile: classified.profiles[0] } : {}),
+      ...(classified.transactionScoped ? { transactionScoped: true } : {}),
+      ...(classified.execution ? { execution: classified.execution } : {}),
+    };
+  });
 
-  const visit = (node: ts.Node, scope: ScopeState) => {
+  const visit = (node: ts.Node) => {
+    const scope = scopes.at(node);
+    if (ts.isVariableDeclaration(node)) scopes.resolveDeclaration(node);
     if (ts.isCallExpression(node)) {
       const definition = classifyDefinitionCallee(node.expression, scope);
       if (definition) {
         recordDefinition(node.arguments, node.expression, definition.cardinality, definition.profileArgs);
       }
       const classified = classifyCallee(node.expression, scope);
-      if (classified) {
-        if (classified.kind === "transaction") {
-          const fn = node.arguments[node.arguments.length - 1];
-          if (fn && (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn))) {
-            const param = fn.parameters[0];
-            const shadowed = param ? scopeWithoutBindingShadows(scope, [param.name]) : scope;
-            const innerSql = new Map(shadowed.sqlAliases);
-            if (param && ts.isIdentifier(param.name)) {
-              const profile = classified.profiles?.[0];
-              innerSql.set(param.name.text, {
-                ...(profile ? { profile } : {}),
-                transactionScoped: true,
-                ...(classified.execution ? { execution: classified.execution } : {}),
-              });
-            }
-            visit(fn.body, {
-              ...shadowed,
-              sqlAliases: innerSql,
-            });
-            return;
-          }
-        } else {
-          const contextualProfile = classified.profiles?.find((profile) =>
-            transactionOnlyProfiles.has(profile)
-          );
-          if (contextualProfile && !classified.transactionScoped) {
-            const pos = here(node.expression);
-            throw new ScanError(
-              fileRel,
-              pos.line,
-              pos.column,
-              `profile ${JSON.stringify(contextualProfile)} requires transaction settings; `
-              + "execute its queries inside sql.transaction({ settings }, callback)",
-            );
-          }
+      if (classified?.kind === "transaction") {
+        const argument = node.arguments[node.arguments.length - 1];
+        const fn = argument ? unwrapExpression(argument) : undefined;
+        if (fn && (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn))) {
+          const param = fn.parameters[0];
+          if (param) scopes.setParameter(param, {
+            kind: "sql",
+            ...(classified.profiles?.[0] ? { profile: classified.profiles[0] } : {}),
+            transactionScoped: true,
+            ...(classified.execution ? { execution: classified.execution } : {}),
+          });
+        }
+      } else if (classified) {
+        const contextualProfile = classified.profiles?.find((profile) => transactionOnlyProfiles.has(profile));
+        if (contextualProfile && !classified.transactionScoped) {
+          const pos = here(node.expression);
+          throw new ScanError(fileRel, pos.line, pos.column,
+            `profile ${JSON.stringify(contextualProfile)} requires transaction settings; `
+            + "execute its queries inside sql.transaction({ settings }, callback)");
+        }
+        const first = node.arguments[0];
+        if (first) {
           if (classified.kind === "file") {
-            const first = node.arguments[0];
-            if (first) {
-              recordFile(
-                first,
-                node.arguments,
-                node.expression,
-                classified.cardinality ?? "many",
-                classified.profiles,
-                classified.execution,
-              );
-            }
-          } else if (classified.kind === "inline") {
-            const first = node.arguments[0];
-            if (first) {
-              recordInline(
-                first,
-                node.arguments,
-                classified.cardinality ?? "many",
-                classified.profiles,
-                classified.execution,
-              );
-            }
+            recordFile(first, node.arguments, node.expression, classified.cardinality ?? "many",
+              classified.profiles, classified.execution);
+          } else {
+            recordInline(first, node.arguments, classified.cardinality ?? "many",
+              classified.profiles, classified.execution);
           }
         }
       }
     }
-    if (ts.isBlock(node) || ts.isSourceFile(node) || ts.isModuleBlock(node)) {
-      let current = scope;
-      const stmts = (node as { statements: ts.NodeArray<ts.Statement> }).statements;
-      for (const stmt of stmts) {
-        if (ts.isVariableStatement(stmt)) {
-          const declarations = stmt.declarationList.declarations;
-          const constant = (stmt.declarationList.flags & ts.NodeFlags.Const) !== 0;
-          current = scopeWithoutBindingShadows(current, declarations.map((d) => d.name));
-          visit(stmt, current);
-          current = scopeWithClientDeclarations(current, declarations, constant);
-          current = scopeWithSqlOptionDeclarations(current, declarations, constant);
-          continue;
-        } else if (ts.isFunctionDeclaration(stmt) && stmt.name) {
-          current = scopeWithoutBindingShadows(current, [stmt.name]);
-        }
-        visit(stmt, current);
-      }
-      return;
-    }
-    if (ts.isCatchClause(node) && node.variableDeclaration?.name) {
-      const next = scopeWithoutBindingShadows(scope, [node.variableDeclaration.name]);
-      if (next !== scope) {
-        visit(node.block, next);
-        return;
-      }
-    }
-    if (
-      (ts.isFunctionDeclaration(node) ||
-        ts.isFunctionExpression(node) ||
-        ts.isArrowFunction(node) ||
-        ts.isMethodDeclaration(node) ||
-        ts.isConstructorDeclaration(node) ||
-        ts.isGetAccessorDeclaration(node) ||
-        ts.isSetAccessorDeclaration(node)) &&
-      node.body
-    ) {
-      const bindings = node.parameters.map((p) => p.name);
-      if (ts.isFunctionExpression(node) && node.name) bindings.push(node.name);
-      const next = scopeWithoutBindingShadows(scope, bindings);
-      for (const param of node.parameters) {
-        if (param.initializer) visit(param.initializer, next);
-      }
-      visit(node.body, next);
-      return;
-    }
-    ts.forEachChild(node, (child) => visit(child, scope));
+    ts.forEachChild(node, visit);
   };
-  visit(source, {
-    sqlAliases: new Map([...importedAliases].map((name) => [name, { execution: "adaptive" as const }])),
-    namespaces: importedNamespaces,
-    clientFactories: importedClientFactories,
-    queryFactories: importedQueryFactories,
-    clients: importedClients,
-  });
+  visit(source);
   if (configuredProfiles.size > 0) {
     const unassigned = out.find((site) => !site.profiles || site.profiles.length === 0);
     if (unassigned) {

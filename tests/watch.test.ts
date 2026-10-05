@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,7 @@ import {
 import { PrepareFatalError, type PrepareIncrementalInput, type PrepareResult, type PrepareSession } from "../src/commands/prepare";
 import { profileFingerprint } from "../src/cache";
 import { formatDatabaseTarget } from "../src/pg/target-summary";
+import { scanFile } from "../src/scan/scanner";
 
 const target = {
   database: "watch",
@@ -458,6 +460,80 @@ test("watch reacts to source, SQL, config, and tsconfig graph changes", () => {
   expect(shouldWatchFile("src/db-errors.ts", ["src/db-errors.ts"])).toBe(false);
   expect(shouldWatchFile("src/sql-files.generated.ts", ["src/sql-files.generated.ts"])).toBe(false);
 });
+
+test("watch JSONL retains locations from direct scanner failures", () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-watch-scan-error-"));
+  const file = join(root, "queries.ts");
+  try {
+    writeFileSync(file, 'import { defineQuery } from "@onreza/sqlx-js";\n'
+      + 'const fragment = "1";\n'
+      + 'const q=defineQuery("repro.q", `SELECT ${fragment}`);\n');
+    let failure: unknown;
+    try {
+      scanFile(file, root);
+    } catch (error) {
+      failure = error;
+    }
+    expect(watchErrorEvents(failure, target)).toEqual([{
+      target,
+      diagnostic: {
+        severity: "error",
+        phase: "scan",
+        message: expect.stringContaining("template interpolation is not supported"),
+        file: "queries.ts",
+        line: 3,
+        column: 32,
+      },
+    }]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("watch observes a source change immediately after announcing readiness", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sqlx-js-watch-ready-"));
+  const file = join(root, "query.ts");
+  writeFileSync(file, "export {};\n");
+  const child = spawn("bun", [
+    join(import.meta.dir, "../bin/sqlx-js.ts"), "prepare", "--watch", "--jsonl", "--root", root,
+  ], { env: { ...process.env, DATABASE_URL: "invalid-url" }, stdio: ["ignore", "pipe", "pipe"] });
+  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  const events: Array<{ event: string }> = [];
+  let buffer = "";
+  let stderr = "";
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`watch readiness timeout: ${JSON.stringify({ events, stderr })}`)), 15000);
+      child.once("error", reject);
+      child.once("exit", () => reject(new Error(`watch exited before observing the change: ${stderr}`)));
+      child.stdout.on("data", (chunk) => {
+        buffer += chunk;
+        while (buffer.includes("\n")) {
+          const index = buffer.indexOf("\n");
+          const line = buffer.slice(0, index);
+          buffer = buffer.slice(index + 1);
+          try {
+            const event = JSON.parse(line) as { event: string };
+            events.push(event);
+            if (event.event === "watching") writeFileSync(file, "export const changed = true;\n");
+            if (events.filter(({ event }) => event === "error").length === 2) resolve();
+          } catch (error) {
+            reject(error);
+          }
+        }
+      });
+    });
+    expect(events.map(({ event }) => event)).toEqual(["start", "error", "watching", "error"]);
+    expect(stderr).toBe("");
+  } finally {
+    if (timer) clearTimeout(timer);
+    child.kill("SIGTERM");
+    await exited;
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 20000);
 
 test("watch JSONL events are one versioned document per line", () => {
   expect(JSON.parse(formatWatchEvent("prepared", { ok: true, entries: 2 }, "2026-07-11T00:00:00.000Z"))).toEqual({

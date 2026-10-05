@@ -89,21 +89,15 @@
     }
   },
   "dependencies": {
-    "libpg-query": "^18.1.4"
+    "libpg-query": "^18.1.5"
   },
   "devDependencies": {
-    "@testcontainers/postgresql": "^12.1.0",
-    "@types/bun": "^1.4.0",
-    "lefthook": "^2.1.10",
+    "@testcontainers/postgresql": "^12.2.0",
+    "@types/bun": "^1.4.2",
+    "lefthook": "^2.1.17",
     "postgres": "3.4.9",
-    "testcontainers": "^12.1.0",
-    "temporal-polyfill": "^1.0.4",
+    "testcontainers": "^12.2.0",
+    "temporal-polyfill": "^1.0.5",
     "typescript": "^6.0.3"
-  },
-  "overrides": {
-    "@grpc/grpc-js": "1.14.4",
-    "archiver": "8.0.0",
-    "brace-expansion": "5.0.9",
-    "protobufjs": "7.6.5"
   }
 }

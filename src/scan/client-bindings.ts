@@ -48,18 +48,19 @@ function propertyName(item: ts.ObjectLiteralElementLike): string | undefined {
 
 export function resolveClientInitializer(
   initializer: ts.Expression | undefined,
-  clientFactories: ReadonlySet<string>,
-  namespaces: ReadonlySet<string>,
+  clientFactories: Pick<ReadonlySet<string>, "has">,
+  namespaces: Pick<ReadonlySet<string>, "has">,
 ): ClientInitializer {
   if (!initializer) return { client: false };
   const expression = unwrapExpression(initializer);
   if (!ts.isCallExpression(expression)) return { client: false };
   const callee = unwrapExpression(expression.expression);
+  const receiver = ts.isPropertyAccessExpression(callee) ? unwrapExpression(callee.expression) : undefined;
   const client = ts.isIdentifier(callee)
     ? clientFactories.has(callee.text)
     : ts.isPropertyAccessExpression(callee)
-      && ts.isIdentifier(callee.expression)
-      && namespaces.has(callee.expression.text)
+      && receiver && ts.isIdentifier(receiver)
+      && namespaces.has(receiver.text)
       && callee.name.text === "createSqlClient";
   if (!client) return { client: false };
 
@@ -181,13 +182,16 @@ export function resolveLocalClientExports(
   for (const statement of source.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
     if (!sqlxModules.includes(statement.moduleSpecifier.text)) continue;
-    const bindings = statement.importClause?.namedBindings;
+    const clause = statement.importClause;
+    if (!clause || clause.isTypeOnly) continue;
+    const bindings = clause.namedBindings;
     if (!bindings) continue;
     if (ts.isNamespaceImport(bindings)) {
       namespaces.add(bindings.name.text);
       continue;
     }
     for (const element of bindings.elements) {
+      if (element.isTypeOnly) continue;
       if ((element.propertyName ?? element.name).text === "createSqlClient") {
         factories.add(element.name.text);
       }

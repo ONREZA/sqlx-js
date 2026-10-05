@@ -1,7 +1,7 @@
 import { test, expect, afterAll } from "bun:test";
 import { writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { scanProject } from "../src/scan/scanner";
+import { ScanError, scanProject } from "../src/scan/scanner";
 
 const tmp = join(import.meta.dir, ".tmp-scan");
 
@@ -400,6 +400,117 @@ test("defineQuery rejects dynamic SQL", () => {
     `,
   });
   expect(() => scanProject(tmp)).toThrow(/requires string literals/);
+});
+
+const definitionFactories = [
+  ["query", "many", false],
+  ["query.one", "one", false],
+  ["query.optional", "optional", false],
+  ["query.execute", "execute", false],
+  ["db.defineQuery", "many", false],
+  ["db.defineQuery.one", "one", false],
+  ["db.defineQuery.optional", "optional", false],
+  ["db.defineQuery.execute", "execute", false],
+  ["query.for(\"api\").many", "many", true],
+  ["query.for(\"api\").one", "one", true],
+  ["query.for(\"api\").optional", "optional", true],
+  ["query.for(\"api\").execute", "execute", true],
+  ["db.defineQuery.for(\"api\").many", "many", true],
+  ["db.defineQuery.for(\"api\").one", "one", true],
+  ["db.defineQuery.for(\"api\").optional", "optional", true],
+  ["db.defineQuery.for(\"api\").execute", "execute", true],
+] as const;
+
+for (const [factory, cardinality, profiled] of definitionFactories) {
+  const imports = 'import { defineQuery as query } from "@onreza/sqlx-js";\n'
+    + 'import * as db from "@onreza/sqlx-js";\n';
+  const profiles = profiled ? ["api"] : [];
+
+  test.each([
+    '`SELECT ${fragment}`',
+    '(`SELECT ${fragment}`)',
+    '`SELECT ${fragment}` as string',
+    '`SELECT ${fragment}` satisfies string',
+    '`SELECT ${fragment}`!',
+    '<string>`SELECT ${fragment}`',
+  ].flatMap((sql) => ["", ", {}"].map((options) => [sql, options] as const)))(
+    `${factory} rejects interpolated named SQL %j with options %j at the SQL argument`,
+    (sql, options) => {
+      setup({
+        "queries.ts": imports
+          + 'const fragment = "1";\n'
+          + `const q = ${factory}(\n`
+          + '  "repro.q",\n'
+          + '  ' + sql + options + '\n'
+          + ');\n',
+      });
+      let error: unknown;
+      try {
+        scanProject(tmp, {}, profiles);
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(ScanError);
+      expect(error).toMatchObject({ file: "queries.ts", line: 6, column: 3 });
+      expect((error as ScanError).message).toContain("SQL must be a string literal; template interpolation is not supported");
+    },
+  );
+
+  test(`${factory} preserves literal SQL and options overloads`, () => {
+    setup({
+      "queries.ts": imports
+        + `${factory}(\`SELECT $1::text\`);\n`
+        + `${factory}("repro.q", \`SELECT $1::text\`);\n`
+        + `${factory}(\`SELECT $1::text\`, { nullableParams: [1] });\n`
+        + `${factory}("repro.q", \`SELECT $1::text\`, { nullableParams: [1] });\n`,
+    });
+    const sites = scanProject(tmp, {}, profiles);
+    expect(sites).toHaveLength(4);
+    expect(sites.map(({ query, queryName, nullableParams, cardinality: mode, profiles }) => ({
+      query, queryName, nullableParams, cardinality: mode, profiles,
+    }))).toEqual([undefined, "repro.q", undefined, "repro.q"].map((queryName, index) => ({
+      query: "SELECT $1::text",
+      queryName,
+      nullableParams: index < 2 ? undefined : [1],
+      cardinality,
+      profiles: profiled ? ["api"] : undefined,
+    })));
+  });
+}
+
+test.each(["options", "getOptions()"])("defineQuery preserves diagnostics for ambiguous dynamic options %j", (options) => {
+  setup({
+    "queries.ts": 'import { defineQuery } from "@onreza/sqlx-js";\n'
+      + 'const options = {};\n'
+      + `defineQuery("SELECT 1", ${options});\n`,
+  });
+  expect(() => scanProject(tmp)).toThrow("queries.ts:3:25 — defineQuery() options must be an object literal");
+});
+
+test.each(["fragment", '`query.${fragment}`'])("defineQuery locates the invalid name %j instead of valid SQL", (name) => {
+  setup({
+    "queries.ts": 'import { defineQuery } from "@onreza/sqlx-js";\n'
+      + 'const fragment = "query";\n'
+      + `defineQuery(${name}, "SELECT 1");\n`,
+  });
+  expect(() => scanProject(tmp)).toThrow("queries.ts:3:13 — defineQuery() name must be a string literal");
+});
+
+test.each([
+  ['`worker.${fragment}`', "requires one or more profile name string literals"],
+  ['""', "profile names must not be empty"],
+  ['"   "', "profile names must not be empty"],
+  ['"api"', "profile names must be unique"],
+  ['"missing"', 'references unknown profile "missing"'],
+])("defineQuery.for locates the invalid profile %j", (profile, message) => {
+  setup({
+    "queries.ts": 'import { defineQuery } from "@onreza/sqlx-js";\n'
+      + 'const fragment = "worker";\n'
+      + 'defineQuery.for("api",\n'
+      + `  ${profile},\n`
+      + ').one("SELECT 1");\n',
+  });
+  expect(() => scanProject(tmp, {}, ["api"])).toThrow(`queries.ts:4:3 — defineQuery.for() ${message}`);
 });
 
 test("defineQuery rejects an empty observability name", () => {

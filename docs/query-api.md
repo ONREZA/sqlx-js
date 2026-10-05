@@ -38,7 +38,12 @@ compile time.
 
 ## `defineQuery`
 
-Define a query once without closing over a global client, then run the same generated contract through a root or transaction executor:
+Define a query once without closing over a global client, then run the same generated contract through a root or transaction executor.
+
+Prepare requires literal SQL in both `defineQuery(sql, options)` and
+`defineQuery(name, sql, options)`. A template literal without substitutions is
+supported; template interpolation (`${...}`) is rejected at the SQL argument.
+Pass query values through SQL parameters instead.
 
 ```ts
 import {
