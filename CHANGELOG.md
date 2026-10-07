@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.38.2](https://github.com/ONREZA/sqlx-js/compare/v0.38.1...v0.38.2) (2026-10-07)
+
+
+### Bug Fixes
+
+* **inference:** preserve described wire types ([376e176](https://github.com/ONREZA/sqlx-js/commit/376e176d9e087cda573bc09aa89b4f53c5eac7d4)), closes [#113](https://github.com/ONREZA/sqlx-js/issues/113)
+
 ## [0.38.1](https://github.com/ONREZA/sqlx-js/compare/v0.38.0...v0.38.1) (2026-10-05)
 
 
