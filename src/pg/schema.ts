@@ -56,6 +56,8 @@ export class SchemaCache {
   private customArrayElements = new Map<number, number>();
   private containedTypeOids = new Map<number, Set<number>>();
   private typesProbed = new Set<number>();
+  private typesLoading = new Set<number>();
+  private typeMaterializers = new Map<number, () => CustomTypeInfo | undefined>();
   private typeRegistry: Record<string, string> = {};
   private userTypeRegistry: Record<string, string> = {};
 
@@ -268,11 +270,25 @@ export class SchemaCache {
   }
 
   async loadCustomTypes(typeOids: number[]): Promise<void> {
-    const need = typeOids.filter((oid) => oid > 0 && !isBuiltinOid(oid) && !this.typesProbed.has(oid));
-    if (need.length === 0) return;
-    for (const oid of need) this.typesProbed.add(oid);
+    await this.loadTypeCatalog(typeOids);
+    for (const oid of this.typeMaterializers.keys()) this.materializeType(oid, new Set());
+  }
 
-    const list1 = [...new Set(need)].join(",");
+  private async loadTypeCatalog(typeOids: number[]): Promise<void> {
+    const need = [...new Set(typeOids)].filter((oid) =>
+      oid > 0 && !isBuiltinOid(oid) && !this.typesProbed.has(oid) && !this.typesLoading.has(oid));
+    if (need.length === 0) return;
+    for (const oid of need) this.typesLoading.add(oid);
+    try {
+      await this.discoverTypes(need);
+      for (const oid of need) this.typesProbed.add(oid);
+    } finally {
+      for (const oid of need) this.typesLoading.delete(oid);
+    }
+  }
+
+  private async discoverTypes(need: number[]): Promise<void> {
+    const list1 = need.join(",");
     const sql1 = `SELECT t.oid::int8, t.typname, t.typtype, t.typcategory, t.typelem::int8, t.typbasetype::int8, t.typrelid::int8, t.typnotnull, n.nspname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.oid IN (${list1}) ORDER BY t.oid`;
     const r1 = await this.client.simpleQueryAll(sql1);
 
@@ -362,7 +378,7 @@ export class SchemaCache {
     }
     const rangesToProbe = rangeSubtypes.filter((o) => !this.typesProbed.has(o) && !isBuiltinOid(o));
     const recurse = [...new Set([...elemsToProbe, ...basesToProbe, ...fieldsToProbe, ...rangesToProbe])];
-    if (recurse.length > 0) await this.loadCustomTypes(recurse);
+    if (recurse.length > 0) await this.loadTypeCatalog(recurse);
 
     if (enumOids.length > 0) {
       const list2 = enumOids.join(",");
@@ -377,34 +393,47 @@ export class SchemaCache {
     }
 
     for (const { oid, name, baseOid, notNull } of domainInfos) {
-      const resolved = this.resolveBaseTs(baseOid);
-      if (resolved) {
-        this.customTypes.set(oid, { kind: "scalar", name, tsType: resolved, notNull, baseOid });
-      }
+      this.typeMaterializers.set(oid, () => ({
+        kind: "scalar", name, tsType: this.resolveBaseTs(baseOid) ?? "unknown", notNull, baseOid,
+      }));
     }
 
     for (const { oid, name } of compositeInfos) {
       const attrs = compositeAttrs.get(oid) ?? [];
-      const fields: CompositeField[] = attrs.map((a) => ({
-        name: a.name,
-        typeOid: a.typeOid,
-        tsType: this.resolveBaseTs(a.typeOid) ?? "unknown",
-        nullable: !a.notNull,
+      this.typeMaterializers.set(oid, () => ({
+        kind: "composite", name,
+        fields: attrs.map((a) => ({
+          name: a.name,
+          typeOid: a.typeOid,
+          tsType: this.resolveBaseTs(a.typeOid) ?? "unknown",
+          nullable: !a.notNull,
+        })),
       }));
-      this.customTypes.set(oid, { kind: "composite", name, fields });
     }
 
     for (const { arrayOid, arrayName, elemOid } of arrayInfos) {
-      const elem = this.customTypes.get(elemOid);
-      if (elem && elem.kind === "enum") {
-        this.customTypes.set(arrayOid, { kind: "enumArray", element: elem });
-      } else if (elem && elem.kind === "scalar") {
-        this.customTypes.set(arrayOid, { kind: "scalarArray", name: arrayName, element: elem });
-      } else if (elem && elem.kind === "composite") {
-        this.customTypes.set(arrayOid, { kind: "compositeArray", name: arrayName, element: elem });
-      }
+      this.typeMaterializers.set(arrayOid, () => {
+        const elem = this.customTypes.get(elemOid);
+        if (elem?.kind === "enum") return { kind: "enumArray", element: elem };
+        if (elem?.kind === "scalar") return { kind: "scalarArray", name: arrayName, element: elem };
+        if (elem?.kind === "composite") return { kind: "compositeArray", name: arrayName, element: elem };
+        return undefined;
+      });
     }
 
+  }
+
+  private materializeType(oid: number, resolving: Set<number>): void {
+    const materialize = this.typeMaterializers.get(oid);
+    if (!materialize || resolving.has(oid)) return;
+    resolving.add(oid);
+    for (const dependency of this.containedTypeOids.get(oid) ?? []) {
+      this.materializeType(dependency, resolving);
+    }
+    resolving.delete(oid);
+    const type = materialize();
+    if (type) this.customTypes.set(oid, type);
+    this.typeMaterializers.delete(oid);
   }
 
   private resolveBaseTs(baseOid: number): string | undefined {

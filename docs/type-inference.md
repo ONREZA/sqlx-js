@@ -112,8 +112,12 @@ branch from incorrectly narrowing the complete result.
 `UNION`, `INTERSECT`, and `EXCEPT` align columns by position. A result field is
 non-null only when every branch that can contribute that field is non-null.
 Compatible configured application types are preserved across direct and
-CTE-backed branches; incompatible declarations fall back or fail according to
-the contract instead of being selected by traversal order.
+CTE-backed branches only when every contributing source has the same
+declaration and its PostgreSQL type is compatible with the described result
+type. PostgreSQL can promote that type even for `EXCEPT`, where only the left
+branch supplies values: an `int4` column compared with an `int8` column produces
+`bigint` results and does not retain an assertion for the `int4` source.
+Array-element assertions follow the same compatibility rule.
 
 ### DML RETURNING
 
@@ -181,6 +185,15 @@ type. sqlx-js then maps each `$N` to its direct SQL use:
 All compatible targets are aggregated. Conflicting application-owned
 declarations fail prepare with the affected columns instead of silently
 choosing one.
+
+Column assertions apply only when the stored type and PostgreSQL's described
+parameter type have compatible representations: matching types with domains
+resolved to their base, the `text`/`varchar`/`char` family, the `json`/`jsonb`
+family, or arrays with compatible elements. For example, a JSONB destination
+does not turn a `$payload::text::jsonb` input into an object: its parameter
+type remains `string`. A direct JSONB input still uses `SqlxJson<T>`.
+Incompatible targets retain their SQL nullability constraints but do not
+contribute type or array-element assertions.
 
 CTE and derived-relation references do not inherit declarations from an
 equally named physical table. When parameter provenance cannot be traced to

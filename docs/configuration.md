@@ -242,7 +242,22 @@ that parameter accepts it; use `sql.json(null)` for JSON `null`.
 
 `columnTypes` is the single application-owned type assertion for a direct table column. It supports non-array columns, JSON/JSONB columns, domains over those types, and JSON/JSONB arrays. JSON assertions remain wrapped in `SqlxJson<T>`; a JSON-array assertion names the element's `T`. Non-JSON PostgreSQL arrays use their database type plus `arrayElementNullability` and cannot be replaced through `columnTypes`.
 
-The assertion affects result fields that PostgreSQL attributes to the exact column, compatible set-operation branches reconstructed by sqlx-js, and parameters mapped back through `INSERT`, `UPDATE`, data-modifying CTE, `WHERE`, or `JOIN` analysis. For stored values, sqlx-js aggregates every DML target and accepts one unique configured declaration; when no DML target exists, predicate references provide the parameter declaration instead. Conflicting declarations within the effective target set fail prepare rather than depending on traversal order. It never changes arbitrary expressions such as `upper(action)`. Use a schema-qualified key when table names can collide.
+The assertion affects result fields that PostgreSQL attributes to the exact column, compatible set-operation branches reconstructed by sqlx-js, and parameters mapped back through `INSERT`, `UPDATE`, data-modifying CTE, `WHERE`, or `JOIN` analysis. For stored values, DML targets take precedence; predicate references provide the parameter declaration only when no DML target exists. Only targets compatible with PostgreSQL's described parameter type contribute declarations. Conflicting declarations within that compatible target set fail prepare rather than depending on traversal order. It never changes arbitrary expressions such as `upper(action)`. Use a schema-qualified key when table names can collide.
+
+Type compatibility requires the same PostgreSQL type after resolving
+domains to their base type, or the `text`/`varchar`/`char` or `json`/`jsonb`
+type families. Arrays compare their element types by the same rule. A cast
+across incompatible representations does not transfer `columnTypes` or
+`arrayElementNullability` to the input. For example, assigning
+`$payload::text::jsonb` to an asserted JSONB column generates a `string`
+parameter; `$payload::jsonb` retains `SqlxJson<T>`. Stored targets still
+constrain SQL nullability across casts. These assertions do not prove that
+a conversion preserves values or satisfies a database constraint.
+
+Result assertions use the same compatibility rule. Every contributing source
+must provide the same compatible declaration; an incompatible source cannot
+be dropped to narrow the whole result. PostgreSQL's promoted result type
+remains authoritative, including for `EXCEPT`.
 
 This assertion does not validate stored values at runtime. Prefer a PostgreSQL enum/domain when the database truly owns a closed value set; use `columnTypes` when the database deliberately stores a broader scalar such as `text` and the application accepts responsibility for the narrower TypeScript contract.
 

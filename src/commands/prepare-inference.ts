@@ -17,6 +17,7 @@ import { SchemaCache, compositeLiteral, type CustomTypeInfo } from "../pg/schema
 import type { FieldDescription } from "../pg/wire";
 
 const JSON_OIDS = new Set([114, 3802]);
+const TEXT_OIDS = new Set([25, 1042, 1043]);
 
 function sqlxJson(type: string): string {
   return `import("@onreza/sqlx-js").SqlxJson<${type}>`;
@@ -66,7 +67,8 @@ export function resolveColumnTs(
   const nonNullElements = arrayElementNullability === "non-null"
     || schemaArray?.nullability === "non-null"
     || (effectiveSources.length > 0 && effectiveSources.every((source) =>
-      lookupArrayElementNullability(cfg, source.schema, source.table, source.column) === "non-null"));
+      compatibleColumnSource(f.typeOid, source, schema)
+      && lookupArrayElementNullability(cfg, source.schema, source.table, source.column) === "non-null"));
   if (f.tableOid !== 0 && f.columnAttr !== 0) {
     const tbl = schema.tableNameByOid(f.tableOid);
     const colName = schema.columnNameByAttno(f.tableOid, f.columnAttr);
@@ -128,21 +130,15 @@ function configuredColumnTs(
   source: ColumnSource,
   nonNullElements: boolean,
 ): string | undefined {
-  const storedTypeOid = sourceColumnTypeOid(source, schema);
-  if (jsonScalarOid(typeOid, schema) || (storedTypeOid && jsonScalarOid(storedTypeOid, schema))) {
-    const declaration = lookupColumnType(cfg, source.schema, source.table, source.column);
-    return declaration ? sqlxJson(declaration) : undefined;
-  }
-  const array = schema.arrayElement(typeOid)
-    ?? (storedTypeOid === undefined ? undefined : schema.arrayElement(storedTypeOid));
+  if (!compatibleColumnSource(typeOid, source, schema)) return undefined;
+  const declaration = lookupColumnType(cfg, source.schema, source.table, source.column);
+  if (!declaration) return undefined;
+  if (jsonScalarOid(typeOid, schema)) return sqlxJson(declaration);
+  const array = schema.arrayElement(typeOid);
   if (array && jsonScalarOid(array.typeOid, schema)) {
-    const declaration = lookupColumnType(cfg, source.schema, source.table, source.column);
-    return declaration ? arrayTsType(sqlxJson(declaration), nonNullElements ? "non-null" : "unknown") : undefined;
+    return arrayTsType(sqlxJson(declaration), nonNullElements ? "non-null" : "unknown");
   }
-  if (supportsDirectColumnTypeOverride(storedTypeOid ?? typeOid, schema)) {
-    return lookupColumnType(cfg, source.schema, source.table, source.column);
-  }
-  return undefined;
+  return supportsDirectColumnTypeOverride(typeOid, schema) ? declaration : undefined;
 }
 
 export function resolveParamTs(
@@ -153,43 +149,54 @@ export function resolveParamTs(
   schema: SchemaCache,
   cfg: SqlxJsConfig,
 ): string {
-  const sources = resolveParamSources(effectiveParamTargets(paramMap.get(paramIndex)), schema);
+  const sources = resolveParamSources(effectiveParamTargets(paramMap.get(paramIndex)), schema)
+    .filter((source) => compatibleColumnSource(paramOid, source, schema));
+  const array = schema.arrayElement(paramOid);
+  const scalarJson = jsonScalarOid(paramOid, schema);
+  const arrayJson = array && jsonScalarOid(array.typeOid, schema);
   const configuredNonNullElements = sources.some((source) =>
     lookupArrayElementNullability(cfg, source.schema, source.table, source.column) === "non-null");
-  const schemaNonNullElements = schema.arrayElement(paramOid)?.nullability === "non-null";
+  const schemaNonNullElements = array?.nullability === "non-null";
   const nonNullElements = configuredNonNullElements || schemaNonNullElements;
-  if (jsonScalarOid(paramOid, schema)) {
-    const decl = resolveConfiguredParamDeclaration(
+  const declaration = scalarJson || arrayJson || supportsDirectColumnTypeOverride(paramOid, schema)
+    ? resolveConfiguredParamDeclaration(
       paramLabel,
-      "JSON",
+      scalarJson ? "JSON" : "columnTypes",
       sources,
       (source) => lookupColumnType(cfg, source.schema, source.table, source.column),
-    );
-    if (decl) return sqlxJson(decl);
-    return JSON_INPUT_TS;
+    )
+    : undefined;
+  if (scalarJson) return declaration ? sqlxJson(declaration) : JSON_INPUT_TS;
+  if (array) {
+    const element = arrayJson
+      ? declaration ? sqlxJson(declaration) : JSON_INPUT_TS
+      : inputTsType(array.typeOid, schema);
+    return arrayParameter(element, nonNullElements);
   }
-  const array = schema.arrayElement(paramOid);
-  if (array && jsonScalarOid(array.typeOid, schema)) {
-    const decl = resolveConfiguredParamDeclaration(
-      paramLabel,
-      "columnTypes",
-      sources,
-      (source) => lookupColumnType(cfg, source.schema, source.table, source.column),
-    );
-    if (decl) return arrayParameter(sqlxJson(decl), nonNullElements);
-    return arrayParameter(JSON_INPUT_TS, nonNullElements);
+  return declaration ?? inputTsType(paramOid, schema);
+}
+
+function compatibleColumnSource(typeOid: number, source: ColumnSource, schema: SchemaCache): boolean {
+  const storedTypeOid = sourceColumnTypeOid(source, schema);
+  return storedTypeOid !== undefined && compatibleColumnTypes(typeOid, storedTypeOid, schema);
+}
+
+function compatibleColumnTypes(typeOid: number, columnOid: number, schema: SchemaCache): boolean {
+  if (typeOid === columnOid) return true;
+  const type = schema.customType(typeOid);
+  if (type?.kind === "scalar" && type.baseOid) {
+    return compatibleColumnTypes(type.baseOid, columnOid, schema);
   }
-  if (supportsDirectColumnTypeOverride(paramOid, schema)) {
-    const decl = resolveConfiguredParamDeclaration(
-      paramLabel,
-      "columnTypes",
-      sources,
-      (source) => lookupColumnType(cfg, source.schema, source.table, source.column),
-    );
-    if (decl) return decl;
+  const column = schema.customType(columnOid);
+  if (column?.kind === "scalar" && column.baseOid) {
+    return compatibleColumnTypes(typeOid, column.baseOid, schema);
   }
-  if (array) return arrayParameter(inputTsType(array.typeOid, schema), nonNullElements);
-  return inputTsType(paramOid, schema);
+  if (JSON_OIDS.has(typeOid) && JSON_OIDS.has(columnOid)) return true;
+  if (TEXT_OIDS.has(typeOid) && TEXT_OIDS.has(columnOid)) return true;
+  const typeArray = schema.arrayElement(typeOid);
+  const columnArray = schema.arrayElement(columnOid);
+  return typeArray !== undefined && columnArray !== undefined
+    && compatibleColumnTypes(typeArray.typeOid, columnArray.typeOid, schema);
 }
 
 function sourceColumnTypeOid(source: ColumnSource, schema: SchemaCache): number | undefined {

@@ -296,7 +296,12 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Run PostgreSQL integration matrix
-        run: bun test tests/prepare.integration.test.ts tests/returning.integration.test.ts --timeout 120000
+        run: >-
+          bun test tests/prepare.integration.test.ts
+          tests/returning.integration.test.ts
+          tests/param-casts.integration.test.ts
+          tests/schema-types.integration.test.ts
+          --timeout 120000
 
   platform-smoke:
     strategy:
