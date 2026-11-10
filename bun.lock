@@ -11,7 +11,7 @@
         "@testcontainers/postgresql": "^12.2.0",
         "@types/bun": "^1.4.2",
         "lefthook": "^2.1.17",
-        "postgres": "3.4.9",
+        "postgres": "4.1.0",
         "temporal-polyfill": "^1.0.5",
         "testcontainers": "^12.2.0",
         "typescript": "^6.0.3",
@@ -219,7 +219,7 @@
 
     "lefthook-windows-x64": ["lefthook-windows-x64@2.2.2", "", { "os": "win32", "cpu": "x64" }, "sha512-9Ck4zancQilBfXT3ZeRipm7Lcq4RQfxyMpy8SAVINw0t/BrbjsT25V46ZuziERcwdajnE4myfMzC33GoCBwr7g=="],
 
-    "libpg-query": ["libpg-query@18.2.0", "", { "dependencies": { "@pgsql/types": "^18.0.0" } }, "sha512-xoNEjLosxCZsDIP9DXjy9/m3g3uc3trfSg2G3hm2CEzqC/DVorogLy7sKOMxPLDRffr2eibbF7klx0ySOPjB6Q=="],
+    "libpg-query": ["libpg-query@18.2.2", "", { "dependencies": { "@pgsql/types": "^18.0.0" } }, "sha512-BOKY0X05vnxkFe+FD8JH71sSO560UKoSRv9Fsy67zapmryhqcew+4Hq0Phu8a6mcENklK7LiHJi0d0j8DbIb4A=="],
 
     "lodash": ["lodash@4.18.1", "", {}, "sha512-dMInicTPVE8d1e5otfwmmjlxkZoUpiVLwyeTdUsi/Caj/gfzzblBcCE5sRHV/AsjuCmxWrte2TNGSYuCeCq+0Q=="],
 
@@ -251,7 +251,7 @@
 
     "path-scurry": ["path-scurry@1.11.1", "", { "dependencies": { "lru-cache": "^10.2.0", "minipass": "^5.0.0 || ^6.0.2 || ^7.0.0" } }, "sha512-Xa4Nw17FS9ApQFJ9umLiJS4orGjm7ZzwUrwamcGQuHSzDyth9boKDaycYdDcZDuqYATXw4HFXgaqWTctW/v1HA=="],
 
-    "postgres": ["postgres@3.4.9", "", {}, "sha512-GD3qdB0x1z9xgFI6cdRD6xu2Sp2WCOEoe3mtnyB5Ee0XrrL5Pe+e4CCnJrRMnL1zYtRDZmQQVbvOttLnKDLnaw=="],
+    "postgres": ["postgres@4.1.0", "", {}, "sha512-s+0WH67YAyLdBQUb6XczbziBhY+C9uiQsg9S8R5RHdZhk6sdyK6202E+T2tXpiInSEEjDLRSJ3OpYBe3PN6MsQ=="],
 
     "process": ["process@0.11.10", "", {}, "sha512-cdGef/drWFoydD1JsMzuFf8100nZl+GT+yacc2bEced5f9Rjk4z+WtFUTBu9PhOi9j/jfmBPu0mMEY4wIdAF8A=="],
 
@@ -307,11 +307,11 @@
 
     "teex": ["teex@1.0.1", "", { "dependencies": { "streamx": "^2.12.5" } }, "sha512-eYE6iEI62Ni1H8oIa7KlDU6uQBtqr4Eajni3wX7rpfXD8ysFx8z0+dri+KWEPWpBsxXfxu58x/0jvTVT1ekOSg=="],
 
-    "temporal-polyfill": ["temporal-polyfill@1.0.6", "", { "dependencies": { "temporal-spec": "1.0.1", "temporal-utils": "1.0.3" } }, "sha512-tYyEry1HLGUDbm2356W3iYD0OZdo7rlP7h98Zr/EnjqLZQwTAfcBDUvJnJbfA15v/vQad57hJZScG5O0W2oKEA=="],
+    "temporal-polyfill": ["temporal-polyfill@1.0.8", "", { "dependencies": { "temporal-spec": "1.0.1", "temporal-utils": "1.0.4" } }, "sha512-RCCGa0GddT099XG49ijdD0tDf86L8vfuZun1+JyJiO4Y2NP9PACQsG0OnvNPXwVLisdvhr/zqL2nhKQmXXx08A=="],
 
     "temporal-spec": ["temporal-spec@1.0.1", "", {}, "sha512-wxVoanmDeavXie1vu2JaQ3WIc3JZnWAOYFBsJyATaVsXsycKYUflGsyBmrRSnoCpZJpwPyr38VpgSUlQ8CbFxg=="],
 
-    "temporal-utils": ["temporal-utils@1.0.3", "", {}, "sha512-9jbTSX3HvkOWvDpNpFzwX/d1mkCrgQgwLmVTOEiuocZGKHsrQJtttGZFmybJ2zYP5zCSZuU5ZyeS8+eOEPABiQ=="],
+    "temporal-utils": ["temporal-utils@1.0.4", "", {}, "sha512-4mAcgbWlaxe+gn23gk8g0iHxCVGVOhKzSCfF5HM3lfvH8BdT+/pBmH/R/E4CrIse+koUgs8ThkPzCLnui6Fi8w=="],
 
     "testcontainers": ["testcontainers@12.2.1", "", { "dependencies": { "@balena/dockerignore": "^1.0.2", "@types/dockerode": "^4.0.1", "archiver": "^7.0.1", "async-lock": "^1.4.1", "byline": "^5.0.0", "debug": "^4.4.3", "docker-compose": "^1.5.0", "dockerode": "^5.0.1", "get-port": "^5.1.1", "proper-lockfile": "^4.1.2", "properties-reader": "^3.0.1", "ssh-remote-port-forward": "^1.0.4", "tar-fs": "^3.1.3", "tmp": "^0.2.7", "undici": "^8.11.2" } }, "sha512-JfbCyOvLdzatwgqUI3AvYCwRW0P5mCkKQVBPO8U5qSH1efC2kHvnfWmi9VHloy1rAFG2MEqWZObRH4bq0gU1kQ=="],
 
